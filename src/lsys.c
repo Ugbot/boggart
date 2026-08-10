@@ -199,6 +199,79 @@ static int l_rmtree(lua_State *L) {
   return 1;
 }
 
+/* sys.tmpdir() -> path
+ * uv_os_tmpdir consults TMPDIR/TMP/TEMP and the platform defaults in the right
+ * order, so Lua never has to guess at environment variables. */
+static int l_tmpdir(lua_State *L) {
+  char buf[4096];
+  size_t len = sizeof(buf);
+  if (uv_os_tmpdir(buf, &len) == 0) lua_pushlstring(L, buf, len);
+  else lua_pushstring(L, ".");
+  return 1;
+}
+
+/* sys.caps() -> table of platform capabilities.
+ *
+ * The point of this table is that the Lua layer never asks "am I on Windows".
+ * It asks whether the thing it wants to do is *available* -- can I signal a
+ * process, is there a process group to kill, will a symlink work. Those are the
+ * questions the code actually has, and phrasing them that way keeps the OS
+ * knowledge on this side of the boundary where it belongs. A new platform then
+ * means editing this function, not hunting for path-separator tests scattered
+ * through the harness. */
+static int l_caps(lua_State *L) {
+  lua_newtable(L);
+#ifdef _WIN32
+  lua_pushstring(L, "cmd");   lua_setfield(L, -2, "shell_kind");
+  lua_pushstring(L, "\\");    lua_setfield(L, -2, "path_sep");
+  lua_pushboolean(L, 0);      lua_setfield(L, -2, "signals");
+  lua_pushboolean(L, 0);      lua_setfield(L, -2, "process_groups");
+  lua_pushboolean(L, 0);      lua_setfield(L, -2, "symlinks");
+  lua_pushstring(L, "windows"); lua_setfield(L, -2, "name");
+#else
+  lua_pushstring(L, "posix"); lua_setfield(L, -2, "shell_kind");
+  lua_pushstring(L, "/");     lua_setfield(L, -2, "path_sep");
+  lua_pushboolean(L, 1);      lua_setfield(L, -2, "signals");
+  lua_pushboolean(L, 1);      lua_setfield(L, -2, "process_groups");
+  lua_pushboolean(L, 1);      lua_setfield(L, -2, "symlinks");
+#if defined(__APPLE__)
+  lua_pushstring(L, "macos"); lua_setfield(L, -2, "name");
+#else
+  lua_pushstring(L, "linux"); lua_setfield(L, -2, "name");
+#endif
+#endif
+  /* Signal numbers as plain integers, so callers need no <signal.h> and no
+   * per-platform spelling. These two are the same everywhere that has them. */
+  lua_pushinteger(L, 15); lua_setfield(L, -2, "SIGTERM");
+  lua_pushinteger(L, 9);  lua_setfield(L, -2, "SIGKILL");
+  return 1;
+}
+
+/* sys.kill_tree(pid, signum) -> true | nil, err
+ *
+ * Kill a child *and its descendants*. Shell commands routinely leave
+ * grandchildren behind, so signalling only the direct child orphans them.
+ * On POSIX that means negating the pid to hit the whole process group; on
+ * Windows there is no process group to signal and only the named process
+ * dies -- doing better needs a Job Object, which libuv does not expose.
+ * Either way the caller just says "kill the tree" and this decides how. */
+static int l_kill_tree(lua_State *L) {
+  int pid = (int)luaL_checkinteger(L, 1);
+  int sig = (int)luaL_optinteger(L, 2, 15);
+#ifdef _WIN32
+  int rc = uv_kill(pid, sig);
+#else
+  int rc = uv_kill(-pid, sig);
+#endif
+  if (rc != 0) {
+    lua_pushnil(L);
+    lua_pushstring(L, uv_strerror(rc));
+    return 2;
+  }
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
 /* sys.pid() -> integer. uv_os_getpid rather than getpid(), which MSVC spells
  * _getpid() in <process.h>. Used to keep temp filenames distinct per process. */
 static int l_pid(lua_State *L) {
@@ -303,6 +376,9 @@ static const luaL_Reg sys_lib[] = {
   {"rmtree", l_rmtree},
   {"shell", l_shell},
   {"pid", l_pid},
+  {"tmpdir", l_tmpdir},
+  {"caps", l_caps},
+  {"kill_tree", l_kill_tree},
   {"uv_version", l_uv_version},
   {NULL, NULL},
 };

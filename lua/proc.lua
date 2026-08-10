@@ -18,6 +18,11 @@
 --   h:kill()
 local uv = require("uv")
 
+-- Platform facts come from the C core, never from sniffing package.config or a
+-- path separator in here. sys.caps() answers the question this code actually
+-- has -- "is there a process group to kill?" -- rather than "which OS is this?".
+local caps = sys.caps()
+
 local M = {}
 
 M.MAX_OUTPUT = 16 * 1024 * 1024 -- match the old sys.exec cap
@@ -25,24 +30,21 @@ M.MAX_OUTPUT = 16 * 1024 * 1024 -- match the old sys.exec cap
 local Proc = {}
 Proc.__index = Proc
 
--- Terminate the child. On POSIX the child is spawned detached, which makes it
--- a process-group leader, so negating the pid signals the whole tree -- shell
--- commands routinely leave grandchildren behind and killing only the direct
--- child would orphan them.
+-- Terminate the child and, where the platform allows it, its descendants:
+-- shell commands routinely leave grandchildren behind, and killing only the
+-- direct child would orphan them.
 --
--- On Windows there is no process group to signal: luv's process_kill ends the
--- named process only, and any grandchildren survive. Doing better needs a Job
--- Object, which libuv does not expose. Documented rather than pretended away.
+-- How that is achieved is sys.kill_tree's problem, not this file's. Whether it
+-- is possible at all is caps.process_groups, which is false on Windows -- there
+-- is no group to signal there, and doing better needs a Job Object that libuv
+-- does not expose. Stated once, in C, rather than branched on here.
 function Proc:kill(sig)
   if self.killed or not self.handle then return end
   self.killed = true
-  local ok = pcall(function()
-    if package.config:sub(1, 1) ~= "\\" and self.pid then
-      uv.kill(-self.pid, sig or "sigterm")
-    else
-      uv.process_kill(self.handle, sig or "sigterm")
-    end
-  end)
+  local signum = (sig == "sigkill") and caps.SIGKILL or caps.SIGTERM
+  -- sys.kill_tree owns the whole "how do I reach the descendants" question:
+  -- negated pid on POSIX, direct process on Windows (no process groups there).
+  local ok = self.pid and pcall(sys.kill_tree, self.pid, signum)
   if not ok then pcall(uv.process_kill, self.handle, sig or "sigterm") end
 end
 
@@ -115,8 +117,9 @@ function M.start(cmd, timeout_sec)
   local handle, pid = uv.spawn(exe, {
     args = { flag, cmd },
     stdio = { nil, self.stdout, self.stderr },
-    -- Own process group so a timeout can take the whole tree down (POSIX).
-    detached = package.config:sub(1, 1) ~= "\\",
+    -- Ask for our own process group where the platform has them, so a timeout
+    -- can take the whole tree down rather than orphaning grandchildren.
+    detached = caps.process_groups,
   }, function(code, signal)
     -- Signal deaths reported as 128+signum, matching the old sys.exec contract.
     self.code = (signal and signal ~= 0) and (128 + signal) or code

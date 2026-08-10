@@ -72,7 +72,7 @@ end
 -- rather than fragmenting the prompt cache.
 function M.shell_note()
   local exe, flag = sys.shell()
-  local win = flag == "/c"
+  local win = sys.caps().shell_kind == "cmd"
   return table.concat({
     "# Shell",
     string.format("The `bash` tool runs: %s %s <your command>", exe, flag),

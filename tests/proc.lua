@@ -5,23 +5,25 @@
 -- actor got exactly zero resumes while another actor sat in a shell command.
 local proc = require("proc")
 
--- The bash tool runs commands through the platform shell, so these tests must
--- speak whichever one they are on: /bin/sh here, cmd.exe on Windows. Anything
--- that has no cmd.exe equivalent at all (signals, process groups) is skipped
--- explicitly rather than quietly asserted away.
-local WIN = package.config:sub(1, 1) == "\\"
+-- The bash tool runs commands through the platform shell, so these tests have
+-- to speak whichever one they are on. That fact comes from sys.caps(), like
+-- everywhere else in the harness -- no test sniffs package.config either.
+-- Cases with no equivalent at all are skipped on the capability that is
+-- missing (signals, process groups), not on the name of the OS.
+local caps = sys.caps()
+local CMD = caps.shell_kind == "cmd"
 
 -- cmd.exe has no sleep. `ping -n N 127.0.0.1` waits N-1 seconds and, unlike
 -- `timeout`, works with redirected stdin (which is how ctest runs us).
 local function SLEEP(sec)
-  if WIN then return ("ping -n %d 127.0.0.1 >NUL"):format(math.floor(sec) + 2) end
+  if CMD then return ("ping -n %d 127.0.0.1 >NUL"):format(math.floor(sec) + 2) end
   return ("sleep %s"):format(sec)
 end
 local function SEQ(n, prefix)
-  if WIN then return ("for /L %%i in (1,1,%d) do @echo %s%%i"):format(n, prefix) end
+  if CMD then return ("for /L %%i in (1,1,%d) do @echo %s%%i"):format(n, prefix) end
   return ("for i in $(seq 1 %d); do echo %s$i; done"):format(n, prefix)
 end
-local SEP = WIN and " & " or "; "   -- statement separator
+local SEP = CMD and " & " or "; "   -- statement separator
 
 local passed, failed = 0, 0
 local function ok(cond, name)
@@ -68,7 +70,7 @@ ok(big.out:find("line-2000", 1, true) ~= nil, "last line present")
 -- ---- a signal death reports 128 + signum, matching the old contract ----
 -- POSIX only: Windows has no signals, and TerminateProcess yields an ordinary
 -- exit code rather than a signal number.
-if not WIN then
+if caps.signals then
   local killed = proc.run("kill -TERM $$", 10)
   ok(killed.code >= 128, "signal death reported as 128+signum (" .. tostring(killed.code) .. ")")
 end
@@ -86,7 +88,7 @@ ok(took < 6, "timeout actually fired early (took " .. took .. "s)")
 -- process group and signals the negated pid. Windows has no process groups,
 -- luv's process_kill ends only the named process, and doing better needs a Job
 -- Object that libuv does not expose. Documented there; asserted here.
-if not WIN then
+if caps.process_groups then
   local marker = bog.userdir .. "/orphan_marker"
   proc.run(string.format("(sleep 3; echo alive > %q) & sleep 10", marker), 1)
   sys.exec("sleep 4", 10) -- outlive the orphan's write, if it survived
@@ -98,7 +100,7 @@ local bad = proc.run("this-command-definitely-does-not-exist-xyz", 10)
 ok(bad.code ~= 0, "unknown command yields non-zero exit")
 
 -- ---- handle-level API ----
-local h = proc.start(WIN and ("ping -n 2 127.0.0.1 >NUL & echo late") or "sleep 0.3; echo late", 10)
+local h = proc.start(CMD and "ping -n 2 127.0.0.1 >NUL & echo late" or "sleep 0.3; echo late", 10)
 local polls, deadline = 0, os.time() + 15
 -- Bound by wall clock, not by iteration count: poll() never blocks, so a
 -- fixed iteration cap can easily expire before a 0.3s child has finished.

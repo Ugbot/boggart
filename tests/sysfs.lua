@@ -55,15 +55,15 @@ for _, bad in ipairs({ "/", "", ".", ".." }) do
 end
 
 -- ---- rmtree must not follow a symlink out of the tree ----
--- Skipped on Windows: creating a symlink there needs either an elevated
--- process or Developer Mode, so the setup -- not the behaviour under test --
--- is what would fail. rmtree still uses lstat on every platform.
-local WIN = package.config:sub(1, 1) == "\\"
+-- Gated on caps.symlinks rather than on the OS: where symlinks need elevation
+-- or Developer Mode, the *setup* would fail rather than the behaviour under
+-- test. rmtree still uses lstat on every platform.
+local caps = sys.caps()
 local outside = os.tmpname() .. "_boggart_sysfs_outside"
 sys.mkdir_p(outside)
 local keep = io.open(outside .. "/keepme.txt", "w"); keep:write("precious"); keep:close()
 
-if not WIN then
+if caps.symlinks then
   sys.exec(string.format("ln -s %q %q", outside, root .. "/a/link"), 10)
   eq(sys.stat(root .. "/a/link"), "dir", "symlink to a dir stats as dir (follows)")
 end
@@ -90,8 +90,8 @@ eq(home, home:gsub("%z", ""), "home has no embedded NUL")
 local exe, flag = sys.shell()
 ok(type(exe) == "string" and #exe > 0, "shell exe is a non-empty string")
 ok(type(flag) == "string" and #flag > 0, "shell flag is a non-empty string")
-ok(sys.stat(exe) == "file" or exe:lower():find("cmd.exe", 1, true) ~= nil,
-   "shell exe exists (or is cmd.exe on Windows)")
+ok(sys.stat(exe) == "file" or caps.shell_kind == "cmd",
+   "shell exe exists (or is the cmd.exe the platform names)")
 
 -- ---- libuv is genuinely linked ----
 ok(sys.uv_version():match("^%d+%.%d+%.%d+$") ~= nil, "uv_version looks like a version")

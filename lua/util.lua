@@ -71,19 +71,17 @@ end
 -- os.tmpname() is not usable on Windows: the CRT returns a path in the root of
 -- the current drive ("\s2h4.") which is not writable without elevation, and it
 -- does not consult %TEMP%. It is also only a *name* on POSIX, so there is a
--- race either way. Prefer the environment's temp dir and add the pid plus a
--- counter, which is enough to keep concurrent agents in one process apart.
+-- race either way. sys.tmpdir() (uv_os_tmpdir) knows the right directory on
+-- every platform, so this does not go environment-variable hunting; the pid
+-- plus a counter keeps concurrent agents in one process apart.
 local tmp_seq = 0
 function M.tmpname(suffix)
-  local dir = os.getenv("TMPDIR") or os.getenv("TMP") or os.getenv("TEMP")
-  if not dir or dir == "" then
-    dir = (sys.stat("/tmp") == "dir") and "/tmp" or bog.userdir
-  end
+  local dir = sys.tmpdir()
+  if not dir or dir == "" then dir = bog.userdir end
   dir = dir:gsub("[/\\]+$", "")
   sys.mkdir_p(dir)
   tmp_seq = tmp_seq + 1
-  return string.format("%s/boggart-%d-%d%s", dir, sys.pid and sys.pid() or 0,
-                       tmp_seq, suffix or "")
+  return string.format("%s/boggart-%d-%d%s", dir, sys.pid(), tmp_seq, suffix or "")
 end
 
 function M.slug(title)
