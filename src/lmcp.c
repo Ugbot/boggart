@@ -74,18 +74,43 @@ static const char *seterr(const char *fmt, ...) {
   return g_err[g_err_slot];
 }
 
-/* ---- the MCP event loop --------------------------------------------------- */
-/* A loop of our own rather than uv_default_loop(): running the default loop from
- * here would advance handles owned by other modules at arbitrary points. */
-static uv_loop_t g_loop;
-static uv_timer_t g_wake;
-static int g_loop_ready = 0;
+/* ---- the event loop -------------------------------------------------------
+ * boggart has exactly one uv loop: the one luv creates for this lua_State.
+ *
+ * This module used to run a private loop, on the reasoning that running the
+ * *default* loop here would advance handles owned by other modules at
+ * arbitrary points. That was right about uv_default_loop() and wrong about the
+ * conclusion. With separate loops, blocking in one starves every other -- an
+ * MCP call would stop advancing subprocesses and timers, which is precisely
+ * the class of stall this port removed from MCP itself. One shared loop means
+ * a single uv.run("nowait") from lua/sched.lua drives everything.
+ *
+ * Advancing another module's handles is not a hazard here: no uv callback in
+ * boggart re-enters Lua (they only mutate C state that Lua reads afterwards),
+ * so there is no reentrancy to protect against.
+ */
 
-static int loop_ensure(void) {
-  if (g_loop_ready) return 0;
-  if (uv_loop_init(&g_loop) != 0) return -1;
-  if (uv_timer_init(&g_loop, &g_wake) != 0) { uv_loop_close(&g_loop); return -1; }
-  g_loop_ready = 1;
+/* From luv.h. Declared rather than included so luv's headers stay off this
+ * target's include path -- it is the only symbol we need. */
+extern uv_loop_t *luv_loop(lua_State *L);
+
+static uv_loop_t *g_loop = NULL;
+static uv_timer_t g_wake;
+
+static int loop_ensure(lua_State *L) {
+  if (g_loop) return 0;
+  /* luv is registered as package.preload["uv"] (see src/boggart.c) and the
+   * loop is created inside luaopen_luv, so it must be instantiated before
+   * luv_loop() has anything to hand back. */
+  lua_getglobal(L, "require");
+  lua_pushliteral(L, "uv");
+  if (lua_pcall(L, 1, 1, 0) != LUA_OK) { lua_pop(L, 1); return -1; }
+  lua_pop(L, 1);
+
+  uv_loop_t *loop = luv_loop(L);
+  if (!loop) return -1;
+  if (uv_timer_init(loop, &g_wake) != 0) return -1;
+  g_loop = loop;
   return 0;
 }
 
@@ -98,13 +123,13 @@ static void reap_dead(void); /* frees connections whose handles have all closed 
 /* Advance every MCP connection once. wait_ms > 0 blocks at most that long,
  * returning as soon as anything happens; 0 is a pure non-blocking poll. */
 static void mcp_pump(int wait_ms) {
-  if (g_loop_ready) {
+  if (g_loop) {
     if (wait_ms > 0) {
       uv_timer_start(&g_wake, wake_cb, (uint64_t)wait_ms, 0);
-      uv_run(&g_loop, UV_RUN_ONCE);
+      uv_run(g_loop, UV_RUN_ONCE);
       uv_timer_stop(&g_wake);
     } else {
-      uv_run(&g_loop, UV_RUN_NOWAIT);
+      uv_run(g_loop, UV_RUN_NOWAIT);
     }
   }
   reap_dead();
@@ -673,7 +698,7 @@ static void walk_find(uv_handle_t *h, void *arg) {
 }
 
 static int connect_stdio(mcpconn *c, lua_State *L, int spec_idx, const char **err) {
-  if (loop_ensure() != 0) { *err = "uv_loop_init failed"; return -1; }
+  if (loop_ensure(L) != 0) { *err = "could not obtain the uv loop"; return -1; }
 
   lua_getfield(L, spec_idx, "command");
   const char *command = luaL_checkstring(L, -1);
@@ -698,13 +723,13 @@ static int connect_stdio(mcpconn *c, lua_State *L, int spec_idx, const char **er
   char **envp = build_env(L, spec_idx);
 
   mcpio *io = c->io;
-  if (uv_pipe_init(&g_loop, &io->cin, 0) != 0) {
+  if (uv_pipe_init(g_loop, &io->cin, 0) != 0) {
     free_strv(argv); free_strv(envp);
     *err = "uv_pipe_init failed";
     return -1;
   }
   io->cin.data = io; io->have_in = 1; io->refs++;
-  if (uv_pipe_init(&g_loop, &io->cout, 0) != 0) {
+  if (uv_pipe_init(g_loop, &io->cout, 0) != 0) {
     free_strv(argv); free_strv(envp);
     *err = "uv_pipe_init failed";
     return -1;
@@ -730,7 +755,7 @@ static int connect_stdio(mcpconn *c, lua_State *L, int spec_idx, const char **er
   opts.flags = UV_PROCESS_WINDOWS_HIDE;
 
   io->proc.data = io;
-  int rc = uv_spawn(&g_loop, &io->proc, &opts);
+  int rc = uv_spawn(g_loop, &io->proc, &opts);
   free_strv(argv);
   free_strv(envp);
   if (rc != 0) {
@@ -743,7 +768,7 @@ static int connect_stdio(mcpconn *c, lua_State *L, int spec_idx, const char **er
      * so it must never be signalled -- its pid is still 0, and killing pid 0
      * would signal our own process group. */
     walkfind wf = { (uv_handle_t *)&io->proc, 0 };
-    uv_walk(&g_loop, walk_find, &wf);
+    uv_walk(g_loop, walk_find, &wf);
     if (wf.found) { io->have_proc = 1; io->refs++; }
     *err = seterr("spawn failed: %s", uv_strerror(rc));
     return -1;
