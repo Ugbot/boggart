@@ -62,10 +62,37 @@ function M.discipline()
   return DISCIPLINE
 end
 
+-- Which shell the `bash` tool actually runs commands through.
+--
+-- This is a correctness statement, not decoration: sys.exec hands the command
+-- to the platform shell, so on Windows the model is writing for cmd.exe. Left
+-- unsaid, it will confidently emit `ls | grep foo`, `2>/dev/null`, `rm -rf` and
+-- forward-slash paths, all of which fail or silently misbehave there. Kept out
+-- of the cached DISCIPLINE block below so the text stays identical per platform
+-- rather than fragmenting the prompt cache.
+function M.shell_note()
+  local exe, flag = sys.shell()
+  local win = flag == "/c"
+  return table.concat({
+    "# Shell",
+    string.format("The `bash` tool runs: %s %s <your command>", exe, flag),
+    win
+      and ("This is Windows cmd.exe, not a POSIX shell. Use `dir`, `type`, "
+        .. "`findstr`, `del`, `copy`, `move`; `&&` and `|` work, but `2>/dev/null` "
+        .. "(use `2>NUL`), single quotes, `$(...)`, and POSIX tools like grep/sed/awk "
+        .. "generally do not. Prefer boggart's own read/write/edit/list tools over "
+        .. "shell equivalents, and prefer PowerShell via `powershell -Command ...` "
+        .. "when you genuinely need pipelines.")
+      or  ("This is a POSIX shell. Prefer boggart's own read/write/edit/list "
+        .. "tools over shell equivalents where they fit."),
+  }, "\n")
+end
+
 function M.system()
   local mem = bog.memory.index_text()
   return {
     { type = "text", text = DISCIPLINE, cache_control = { type = "ephemeral" } },
+    { type = "text", text = M.shell_note() },
     { type = "text", text = "# Memory (durable, from earlier sessions)\n" .. mem },
   }
 end
@@ -86,6 +113,7 @@ function M.swarm_system(rec)
   local parts = { SWARM_BASE }
   if rec.sys_override and rec.sys_override ~= "" then parts[#parts + 1] = rec.sys_override end
   if rec.instructions and rec.instructions ~= "" then parts[#parts + 1] = rec.instructions end
+  parts[#parts + 1] = M.shell_note()
   parts[#parts + 1] = "# Memory (durable)\n" .. bog.memory.index_text()
   return { { type = "text", text = table.concat(parts, "\n\n"), cache_control = { type = "ephemeral" } } }
 end

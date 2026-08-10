@@ -92,7 +92,11 @@ end
 local function tool_bash(a)
   if type(a.command) ~= "string" then return "Tool error: bash requires 'command'" end
   local timeout = tonumber(a.timeout_sec) or 120
-  local r = sys.exec(a.command, timeout)
+  -- proc.run, not sys.exec: under the swarm scheduler this yields between
+  -- polls so a long build no longer freezes every other agent (and every
+  -- in-flight LLM stream with it). Off a coroutine it blocks on the loop,
+  -- which is the same observable behaviour as before.
+  local r = require("proc").run(a.command, timeout)
   local out = r.out or ""
   local shaped = util.shape_result(out, { max_bytes = 6000, head_lines = 100 })
   local status = string.format("[exit=%d%s]", r.code, r.timed_out and " TIMED OUT" or "")

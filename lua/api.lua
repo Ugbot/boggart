@@ -22,8 +22,18 @@ local function auth_headers()
   if key and #key > 0 then
     h[#h + 1] = "x-api-key: " .. key
   else
-    local r = sys.exec("ant auth print-credentials --access-token 2>/dev/null", 20)
-    local tok = (r.out or ""):match("^%s*(.-)%s*$")
+    -- No `2>/dev/null`: that is sh redirection syntax, and cmd.exe would hand
+    -- it to `ant` as a literal argument. But sys.exec folds stderr into r.out,
+    -- so we cannot just trim the whole buffer either -- a warning line would
+    -- end up concatenated into the token. Pick the last line that actually
+    -- looks like a credential (one run of token characters, no spaces), which
+    -- is robust whether or not the tool writes anything to stderr.
+    local r = sys.exec("ant auth print-credentials --access-token", 20)
+    local tok = ""
+    for line in ((r.out or "") .. "\n"):gmatch("(.-)\r?\n") do
+      local cand = line:match("^%s*([%w%-%._~%+/=]+)%s*$")
+      if cand and #cand >= 16 then tok = cand end
+    end
     if r.code == 0 and tok ~= "" then
       h[#h + 1] = "authorization: Bearer " .. tok
       h[#h + 1] = "anthropic-beta: oauth-2025-04-20"

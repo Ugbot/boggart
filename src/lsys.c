@@ -207,6 +207,13 @@ static int l_rmtree(lua_State *L) {
   return 1;
 }
 
+/* sys.pid() -> integer. uv_os_getpid rather than getpid(), which MSVC spells
+ * _getpid() in <process.h>. Used to keep temp filenames distinct per process. */
+static int l_pid(lua_State *L) {
+  lua_pushinteger(L, (lua_Integer)uv_os_getpid());
+  return 1;
+}
+
 /* sys.shell() -> exe, flag
  * The platform shell, so Lua never hardcodes /bin/sh. prompt.lua uses this to
  * tell the model which shell it is writing commands for -- getting that wrong
@@ -391,6 +398,7 @@ static const luaL_Reg sys_lib[] = {
   {"add_history", l_add_history},
   {"rmtree", l_rmtree},
   {"shell", l_shell},
+  {"pid", l_pid},
   {"uv_version", l_uv_version},
   {NULL, NULL},
 };

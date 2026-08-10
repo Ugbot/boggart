@@ -139,8 +139,13 @@ local function do_reset()
   local target = boggart.reset_target or ""
   local dir = bog.userdir .. "/lua"
   if target == "" then
-    local r = sys.exec("rm -rf " .. string.format("%q", dir), 30)
-    io.write("removed overlay dir ", dir, " (exit ", r.code, ")\n")
+    -- sys.rmtree, not a `rm -rf` shell-out: there is no rm on native Windows,
+    -- and interpolating a path into a shell command was never a good idea even
+    -- where there is. The C side also refuses "/", "", "." and "..", and uses
+    -- lstat so a symlink in the overlay dir is unlinked rather than followed.
+    local ok, err = sys.rmtree(dir)
+    if ok then io.write("removed overlay dir ", dir, "\n")
+    else io.write("could not remove ", dir, ": ", tostring(err), "\n") end
   else
     local p = dir .. "/" .. target .. ".lua"
     os.remove(p)
