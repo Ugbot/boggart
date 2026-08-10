@@ -187,8 +187,64 @@ local function build_def(name, description, input_schema, body)
   }
 end
 
-local function tools_dir()
-  return bog.userdir .. "/lua/tools"
+-- ---------------------------------------------------------------------------
+-- Scopes (paper §9)
+--
+--   session  in memory only; dies with the process. For task-shaped helpers
+--            ("compare these three configs") that have no life beyond today.
+--   project  keyed to the current repository. This is where learned repository
+--            expertise belongs, and the reason a later session can start with
+--            better operational knowledge than the first one had.
+--   global   every project, forever. Powerful and easy to regret.
+--
+-- Default is `project`, which is the case the whole idea exists for. Global is
+-- available but never the default: a tool that silently applies everywhere is
+-- how an agent accumulates surprising behaviour it cannot explain later.
+--
+-- Project tools are stored under ~/.boggart/projects/<slug>/, NOT inside the
+-- repository. That is deliberate. Committing generated tools would mean a
+-- checkout could inject executable code into anyone's agent, which is the
+-- untrusted-repository problem in §16.7. Keeping them in the user's own
+-- directory means a tool is only ever code this user's agent wrote.
+M.SCOPES = { session = true, project = true, global = true }
+
+-- Identify the project: the git root if there is one, else the working
+-- directory. The git root is the better key because it is stable no matter
+-- which subdirectory the agent happens to be started from.
+local project_cache = nil
+function M.project_root()
+  if project_cache then return project_cache end
+  local r = require("proc").run("git rev-parse --show-toplevel", 10)
+  local root = (r.code == 0) and (r.out or ""):match("^%s*(.-)%s*$") or nil
+  if not root or root == "" or root:find("\n") then root = sys.cwd() end
+  project_cache = root
+  return root
+end
+
+-- A filesystem-safe, human-recognisable directory name for a project path.
+-- The basename keeps it readable; the digest keeps two same-named checkouts
+-- apart. Lua has no crypto here, and none is needed -- this is a bucket name,
+-- not a security boundary.
+local function project_slug(root)
+  local base = root:gsub("[/\\]+$", ""):match("([^/\\]+)$") or "root"
+  local h = 5381
+  for i = 1, #root do h = (h * 33 + root:byte(i)) % 0x7FFFFFFF end
+  return (base:gsub("[^%w%-_]", "_")) .. "-" .. string.format("%08x", h)
+end
+
+local function tools_dir(scope)
+  if scope == "project" then
+    return bog.userdir .. "/projects/" .. project_slug(M.project_root()) .. "/tools"
+  end
+  return bog.userdir .. "/lua/tools" -- global (and the pre-scope location)
+end
+M.tools_dir = tools_dir
+
+local function git_rev()
+  local r = require("proc").run("git rev-parse --short HEAD", 10)
+  if r.code ~= 0 then return nil end
+  local rev = (r.out or ""):match("^%s*(%w+)%s*$")
+  return rev
 end
 
 -- Render a standalone .lua file that reconstructs a tool def when loaded.
@@ -215,9 +271,10 @@ local function render_tool_file(name, description, input_schema, body)
   }, "\n")
 end
 
-local function load_user_tools()
-  local dir = tools_dir()
+local function load_scope(scope)
+  local dir = tools_dir(scope)
   if sys.stat(dir) ~= "dir" then return end
+  local project = (scope == "project") and M.project_root() or ""
   for _, fname in ipairs(sys.listdir(dir) or {}) do
     if fname:match("%.lua$") then
       local name = fname:gsub("%.lua$", "")
@@ -233,7 +290,9 @@ local function load_user_tools()
       if ok and type(def) == "table" and type(def.body) == "string" then
         local bok, built = pcall(build_def, name, def.description or name,
                                  def.input_schema, def.body)
-        if bok then M.registry[name] = built
+        if bok then
+          built.scope, built.project = scope, project
+          M.registry[name] = built
         else bog.log("skipping tool " .. name .. ": " .. tostring(built)) end
       elseif ok and type(def) == "table" and type(def.run) == "function" then
         -- Pre-sandbox file format: it carries a compiled closure built against
@@ -247,6 +306,14 @@ local function load_user_tools()
       end
     end
   end
+end
+
+-- Global first, then project, so a project tool deliberately shadows a global
+-- one of the same name: the more specific knowledge about *this* repository
+-- should win over a general helper. Session tools are never on disk.
+local function load_user_tools()
+  load_scope("global")
+  load_scope("project")
 end
 
 local function tool_define(a)
@@ -276,15 +343,32 @@ local function tool_define(a)
     return M.err(M.ERR.validation, (tostring(def):gsub("^.-tool body compile error: ", "")))
   end
 
-  -- persist so it survives restarts and reloads
-  sys.mkdir_p(tools_dir())
-  local fileok, ferr = util.write_file(tools_dir() .. "/" .. name .. ".lua",
+  local scope = a.scope or "project"
+  if not M.SCOPES[scope] then
+    return M.err(M.ERR.validation, "scope must be session, project or global (got %q)", tostring(scope))
+  end
+  def.scope = scope
+  def.project = (scope == "project") and M.project_root() or ""
+
+  if scope == "session" then
+    -- Nothing on disk: it exists for this process and no longer.
+    M.registry[name] = def
+    M.record_provenance(name, def)
+    return string.format("Defined tool '%s' (scope=session; it will not persist).", name)
+  end
+
+  local dir = tools_dir(scope)
+  sys.mkdir_p(dir)
+  local fileok, ferr = util.write_file(dir .. "/" .. name .. ".lua",
     render_tool_file(name, a.description, schema, a.lua))
   if not fileok then return M.err(M.ERR.capability, "could not save tool: " .. tostring(ferr)) end
 
   M.registry[name] = def
-  return string.format("Defined tool '%s'. It is available now and persisted to %s/%s.lua",
-    name, tools_dir(), name)
+  M.record_provenance(name, def)
+  return string.format("Defined tool '%s' (scope=%s%s). Available now; persisted to %s/%s.lua",
+    name, scope,
+    scope == "project" and (", project=" .. def.project) or "",
+    dir, name)
 end
 
 local function tool_reload(a)
@@ -429,6 +513,17 @@ local function run_bounded(d, args)
   return res
 end
 
+-- Record who made a tool, when, and against which revision (paper §17).
+-- Best-effort: a store that is not open must never stop a tool working.
+function M.record_provenance(name, def)
+  if not bog.db or not bog.store or not bog.store.tool_record then return end
+  pcall(bog.store.tool_record, name, def.scope or "global", def.project or "", {
+    session_id = bog.session and bog.session.id,
+    version = bog.version,
+    git_rev = (def.scope == "project") and git_rev() or nil,
+  })
+end
+
 function M.run(name, input)
   local d = M.registry[name]
   if not d then
@@ -439,7 +534,16 @@ function M.run(name, input)
   -- on their fast path. Only model-authored bodies carry a `body` string.
   local res
   if d.body then
+    local t0 = os.clock()
     res = run_bounded(d, input or {})
+    -- Usage accounting (paper §24): calls, failures and cumulative time are
+    -- what turn "did this tool pay for itself" from a rhetorical question into
+    -- an answerable one.
+    if bog.db and bog.store and bog.store.tool_used then
+      local failed = type(res) == "string" and res:sub(1, 11) == "Tool error:"
+      pcall(bog.store.tool_used, name, d.scope or "global", d.project or "",
+            (os.clock() - t0) * 1000, failed)
+    end
   else
     local ok, r = pcall(d.run, input or {})
     if not ok then return M.err(M.ERR.runtime, tostring(r)) end
@@ -514,10 +618,58 @@ M.register("list", {
   },
   run = tool_list,
 })
+-- Inspecting what has been learned, and whether it was worth it (paper §17/§24).
+local function tool_tools(a)
+  local stats = {}
+  if bog.db and bog.store and bog.store.tool_stats then
+    local okq, rows = pcall(bog.store.tool_stats, M.project_root())
+    if okq then for _, r in ipairs(rows) do stats[r.name] = r end end
+  end
+  local names = M.names()
+  local out = { string.format("%d tools active", #names) }
+  local learned = {}
+  for _, n in ipairs(names) do
+    local d = M.registry[n]
+    if d.body then learned[#learned + 1] = n end
+  end
+  if #learned == 0 then
+    out[#out + 1] = "no model-defined tools yet"
+  else
+    out[#out + 1] = ""
+    out[#out + 1] = string.format("%-22s %-8s %6s %6s %9s  %s",
+      "name", "scope", "calls", "fails", "avg ms", "description")
+    for _, n in ipairs(learned) do
+      local d, st = M.registry[n], stats[n] or {}
+      local calls = st.calls or 0
+      out[#out + 1] = string.format("%-22s %-8s %6d %6d %9s  %s",
+        n, d.scope or "?", calls, st.failures or 0,
+        calls > 0 and string.format("%.1f", (st.total_ms or 0) / calls) or "-",
+        (d.description or ""):sub(1, 60))
+    end
+  end
+  if a and a.name and M.registry[a.name] and M.registry[a.name].body then
+    out[#out + 1] = ""
+    out[#out + 1] = "-- " .. a.name .. " --"
+    out[#out + 1] = M.registry[a.name].body
+  end
+  return table.concat(out, "\n")
+end
+M.report = tool_tools
+
+M.register("tools", {
+  description = "List the tools you have defined, with scope and usage counts, so you can tell "
+    .. "which ones are earning their keep. Pass a name to also see its source.",
+  input_schema = { type = "object",
+    properties = { name = { type = "string", description = "show this tool's body" } } },
+  run = tool_tools,
+})
+
 M.register("define_tool", {
   description = "Create a new tool at runtime by writing its Lua. The body receives a table `args` "
-    .. "and must `return` a string. It may use the globals sys, io, os, json. This is how you grow "
-    .. "your own capabilities.",
+    .. "and must `return` a string. It runs against a capability environment: sys (exec/listdir/stat/"
+    .. "mkdir_p/rmtree/home/shell), db, json, gold, tools.call(name, args) to invoke another tool, "
+    .. "and the pure Lua stdlib. Raw io/os/require/uv are deliberately absent -- compose the "
+    .. "capabilities instead. This is how you grow your own vocabulary for a codebase.",
   input_schema = {
     type = "object",
     properties = {
@@ -525,6 +677,9 @@ M.register("define_tool", {
       description = { type = "string" },
       input_schema = { type = "object", description = "JSON Schema for the tool's arguments" },
       lua = { type = "string", description = "Lua body; receives `args`, must return a string" },
+      scope = { type = "string", enum = { "session", "project", "global" },
+        description = "session = this process only; project (default) = this repository, "
+          .. "available to future sessions here; global = every project, use sparingly" },
     },
     required = { "name", "description", "lua" },
   },

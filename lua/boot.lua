@@ -171,7 +171,7 @@ local function print_help()
   io.write([[
 boggart commands:
   /help            this help
-  /tools           list active tools
+  /tools [name]    list tools with scope + usage; name shows its source
   /memory          list stored memories
   /sessions        list recent saved sessions
   /resume <id>     resume a saved session
@@ -189,7 +189,7 @@ local function handle_command(line)
   if cmd == "help" then print_help()
   elseif cmd == "quit" or cmd == "exit" then return true
   elseif cmd == "tools" then
-    io.write("tools: ", table.concat(bog.tools.names(), ", "), "\n")
+    io.write(bog.tools.report(rest ~= "" and { name = rest } or {}), "\n")
   elseif cmd == "memory" then
     io.write(bog.memory.index_text(), "\n")
   elseif cmd == "sessions" then

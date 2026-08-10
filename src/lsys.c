@@ -199,6 +199,15 @@ static int l_rmtree(lua_State *L) {
   return 1;
 }
 
+/* sys.cwd() -> path. Used to identify the project a tool belongs to. */
+static int l_cwd(lua_State *L) {
+  char buf[4096];
+  size_t len = sizeof(buf);
+  if (uv_cwd(buf, &len) == 0) lua_pushlstring(L, buf, len);
+  else lua_pushstring(L, ".");
+  return 1;
+}
+
 /* sys.tmpdir() -> path
  * uv_os_tmpdir consults TMPDIR/TMP/TEMP and the platform defaults in the right
  * order, so Lua never has to guess at environment variables. */
@@ -377,6 +386,7 @@ static const luaL_Reg sys_lib[] = {
   {"shell", l_shell},
   {"pid", l_pid},
   {"tmpdir", l_tmpdir},
+  {"cwd", l_cwd},
   {"caps", l_caps},
   {"kill_tree", l_kill_tree},
   {"uv_version", l_uv_version},

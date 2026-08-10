@@ -85,7 +85,7 @@ eq(bog.tools.run("adder2", {}), "3", "a generated tool can compose another via t
 -- The first version of this fix applied the environment only at define time.
 -- The persisted file carried its own load() call, so a tool restored on the
 -- next run got _G back and the sandbox lasted exactly one session.
-bog.tools.run("define_tool", { name = "persisted", description = "d",
+bog.tools.run("define_tool", { name = "persisted", description = "d", scope = "global",
   lua = 'return "io=" .. tostring(io) .. ",uv=" .. tostring(uv) .. ",sys=" .. tostring(sys ~= nil)' })
 eq(bog.tools.run("persisted", {}), "io=nil,uv=nil,sys=true", "sandboxed when freshly defined")
 

@@ -92,7 +92,10 @@ do
   eq(bog.tools.run("shout", { text = "hi" }), "HI", "defined tool runs live")
 
   -- the file was persisted and a reload re-registers it
-  ok(sys.stat(bog.userdir .. "/lua/tools/shout.lua") == "file", "tool persisted to disk")
+  -- define_tool now defaults to scope=project, so the file lands under the
+  -- project bucket rather than the old global directory.
+  ok(sys.stat(bog.tools.tools_dir("project") .. "/shout.lua") == "file",
+     "tool persisted to disk (project scope)")
   local names = {}
   for _, n in ipairs(bog.tools.names()) do names[n] = true end
   ok(names.shout, "shout in registry")

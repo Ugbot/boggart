@@ -48,6 +48,33 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 -- The swarm message journal. Rows are written by the C bus (src/lswarm.c);
 -- Lua reads them for /journal views and resume.
+-- Provenance and usage for model-defined tools (paper §17, §24).
+--
+-- Deliberately not in the tool file: description/schema/body are stable and
+-- belong on disk where they can be read and edited, whereas call counts change
+-- on every invocation and rewriting the file each time would be absurd.
+--
+-- The counts are the point. The paper's sharpest observation is that a tool
+-- costing 2,000 tokens to build that saves 50 once is noise, while one that
+-- removes four round trips on each of twenty later calls is infrastructure --
+-- and you cannot tell those apart without measuring. git_rev is recorded so a
+-- project tool can later be flagged as possibly stale when the repo has moved
+-- on (§18).
+CREATE TABLE IF NOT EXISTS tools (
+  name TEXT NOT NULL,
+  scope TEXT NOT NULL,           -- session | project | global
+  project TEXT NOT NULL DEFAULT '',
+  created INTEGER,
+  created_session INTEGER,
+  version TEXT,
+  git_rev TEXT,
+  calls INTEGER NOT NULL DEFAULT 0,
+  failures INTEGER NOT NULL DEFAULT 0,
+  last_used INTEGER,
+  total_ms INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (name, scope, project)
+);
+
 CREATE TABLE IF NOT EXISTS journal (
   id INTEGER PRIMARY KEY,
   ts INTEGER,
@@ -274,6 +301,37 @@ end
 
 function M.thread_set_status(id, status)
   return bog.db:run("UPDATE sessions SET status=?, updated=? WHERE id=?", { status, now(), id })
+end
+
+-- ---- tool provenance + usage (paper §17, §24) ------------------------------
+function M.tool_record(name, scope, project, meta)
+  meta = meta or {}
+  return bog.db:run(
+    "INSERT INTO tools(name,scope,project,created,created_session,version,git_rev) "
+    .. "VALUES(?,?,?,?,?,?,?) ON CONFLICT(name,scope,project) DO UPDATE SET "
+    -- Re-defining a tool keeps its call history: the counts describe the
+    -- *procedure*, and losing them on every edit would defeat the measurement.
+    .. "created=excluded.created, created_session=excluded.created_session, "
+    .. "version=excluded.version, git_rev=excluded.git_rev",
+    { name, scope, project or "", now(), meta.session_id, meta.version, meta.git_rev })
+end
+
+function M.tool_used(name, scope, project, ms, failed)
+  return bog.db:run(
+    "UPDATE tools SET calls=calls+1, failures=failures+?, last_used=?, total_ms=total_ms+? "
+    .. "WHERE name=? AND scope=? AND project=?",
+    { failed and 1 or 0, now(), math.floor(ms or 0), name, scope, project or "" })
+end
+
+function M.tool_stats(project)
+  return bog.db:query(
+    "SELECT name,scope,project,created,calls,failures,last_used,total_ms,git_rev FROM tools "
+    .. "WHERE project='' OR project=? ORDER BY calls DESC, name", { project or "" })
+end
+
+function M.tool_forget(name, scope, project)
+  return bog.db:run("DELETE FROM tools WHERE name=? AND scope=? AND project=?",
+    { name, scope, project or "" })
 end
 
 -- ---- journal (read side; the C bus writes) ---------------------------------
