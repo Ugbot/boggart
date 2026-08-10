@@ -1,0 +1,103 @@
+-- util.lua -- small helpers shared across the harness.
+local json = require("json")
+local M = {}
+
+-- Is t a dense 1..n array?
+function M.is_array(t)
+  local n = 0
+  for _ in pairs(t) do n = n + 1 end
+  for i = 1, n do if t[i] == nil then return false end end
+  return n > 0
+end
+
+-- Serialize a plain data value (from json.decode or hand-built) to a Lua
+-- literal string. Used to persist model-defined tools as readable .lua files.
+local function ser(v, ind)
+  local t = type(v)
+  if v == json.null then return "nil" end
+  if t == "string" then return string.format("%q", v)
+  elseif t == "boolean" then return tostring(v)
+  elseif t == "nil" then return "nil"
+  elseif t == "number" then
+    return math.type(v) == "integer" and string.format("%d", v) or string.format("%.14g", v)
+  elseif t == "table" then
+    local nind = ind .. "  "
+    local parts = {}
+    if M.is_array(v) then
+      for i = 1, #v do parts[#parts + 1] = nind .. ser(v[i], nind) end
+    else
+      local keys = {}
+      for k in pairs(v) do keys[#keys + 1] = k end
+      table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+      for _, k in ipairs(keys) do
+        local kk
+        if type(k) == "string" and k:match("^[%a_][%w_]*$") then
+          kk = k
+        else
+          kk = "[" .. ser(k, nind) .. "]"
+        end
+        parts[#parts + 1] = nind .. kk .. " = " .. ser(v[k], nind)
+      end
+    end
+    if #parts == 0 then return "{}" end
+    return "{\n" .. table.concat(parts, ",\n") .. "\n" .. ind .. "}"
+  end
+  return "nil"
+end
+
+function M.serialize(v)
+  return ser(v, "")
+end
+
+-- File helpers ----------------------------------------------------------------
+function M.read_file(path)
+  local f, err = io.open(path, "rb")
+  if not f then return nil, err end
+  local data = f:read("*a")
+  f:close()
+  return data
+end
+
+function M.write_file(path, content)
+  local f, err = io.open(path, "wb")
+  if not f then return nil, err end
+  f:write(content)
+  f:close()
+  return true
+end
+
+function M.slug(title)
+  local s = title:lower():gsub("[^%w%-_]+", "-"):gsub("^%-+", ""):gsub("%-+$", "")
+  if s == "" then s = "note" end
+  return s
+end
+
+-- Result-shaping (ds4 pattern): keep small output inline; for large output,
+-- write the whole thing to a temp file and return a head plus the path so the
+-- model can page through it with the read tool instead of blowing the context.
+function M.shape_result(text, opts)
+  opts = opts or {}
+  local max_bytes = opts.max_bytes or 6000
+  local head_lines = opts.head_lines or 80
+  if #text <= max_bytes then return text end
+
+  local tmp = os.tmpname()
+  M.write_file(tmp, text)
+
+  -- collect the first head_lines lines (or first max_bytes, whichever is less)
+  local lines, count, bytes = {}, 0, 0
+  for line in (text .. "\n"):gmatch("(.-)\n") do
+    count = count + 1
+    bytes = bytes + #line + 1
+    lines[#lines + 1] = line
+    if count >= head_lines or bytes >= max_bytes then break end
+  end
+  local total_lines = select(2, text:gsub("\n", "\n")) + 1
+  local head = table.concat(lines, "\n")
+  return string.format(
+    "%s\n\n[output truncated: %d bytes, ~%d lines. Full output saved to %s -- "
+      .. "read it with the read tool, e.g. read{path=%q, start_line=%d, max_lines=200}]",
+    head, #text, total_lines, tmp, tmp, head_lines + 1)
+end
+
+return M

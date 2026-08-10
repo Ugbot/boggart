@@ -1,0 +1,16 @@
+# build artifacts
+boggart
+boggart.exe
+build/
+build-*/
+*.o
+*.a
+*.lib
+src/embedded.c
+
+# clangd / editor index
+.cache/
+
+# vendored object files (legacy Makefile build)
+src/vendor/lua/src/*.o
+src/vendor/sqlite/sqlite3.o

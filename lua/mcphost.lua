@@ -1,0 +1,90 @@
+-- mcphost.lua -- thin Lua glue over the C MCP client (`mcp` global). Connects
+-- servers and registers each server tool as an ordinary boggart tool named
+-- mcp__<server>__<tool>, so MCP is "just more tools" -- gated per agent by the
+-- normal skill allowlists (a skill can grant a whole server via mcp__<name>__*
+-- or individual tools). The client lives in C; this is only registration.
+local json = require("json")
+local M = { conns = {}, tools = {} }
+
+-- Flatten an MCP tools/call result (a {content=[...], isError?} object, as JSON
+-- text) into a plain string for the tool_result.
+local function format_result(result_json)
+  local ok, r = pcall(json.decode, result_json)
+  if not ok or type(r) ~= "table" then return result_json end
+  if type(r.content) == "table" then
+    local parts = {}
+    for _, blk in ipairs(r.content) do
+      if type(blk) == "table" and blk.type == "text" then parts[#parts + 1] = blk.text or ""
+      else parts[#parts + 1] = json.encode(blk) end
+    end
+    local text = table.concat(parts, "\n")
+    if r.isError then return "Tool error: " .. text end
+    return text ~= "" and text or "(ok)"
+  end
+  return result_json
+end
+
+-- Connect a server and register its tools. spec:
+--   stdio: { name, command, args?, env? }
+--   http:  { name, transport="http", url, headers? }
+function M.add(spec)
+  if type(spec) ~= "table" or type(spec.name) ~= "string" or spec.name == "" then
+    return nil, "mcp server spec needs a 'name'"
+  end
+  if spec.name:find("[^%w_%-]") then
+    return nil, "mcp server name must be [A-Za-z0-9_-]"
+  end
+  local conn, err = mcp.connect(spec)
+  if not conn then return nil, err end
+  M.conns[spec.name] = conn
+
+  local ok, tools = pcall(function() return json.decode(conn:tools()) end)
+  if not ok or type(tools) ~= "table" then
+    return nil, "tools/list failed: " .. tostring(tools)
+  end
+
+  local names = {}
+  for _, t in ipairs(tools) do
+    if type(t) == "table" and type(t.name) == "string" then
+      local server = spec.name
+      local remote = t.name
+      local tname = "mcp__" .. server .. "__" .. remote
+      bog.tools.register(tname, {
+        description = "[" .. server .. "] " .. (t.description or ""),
+        input_schema = t.inputSchema or { type = "object", properties = {} },
+        mcp = { server = server, tool = remote }, -- provenance
+        run = function(a)
+          local c = M.conns[server]
+          if not c then return "Tool error: mcp server '" .. server .. "' is not connected" end
+          local res, e = c:call(remote, json.encode(a or {}))
+          if not res then return "Tool error: " .. tostring(e) end
+          return format_result(res)
+        end,
+      })
+      names[#names + 1] = tname
+    end
+  end
+  M.tools[spec.name] = names
+  return names
+end
+
+-- Connect all servers declared in the ~/.boggart/lua/mcp_servers.lua overlay
+-- (a Lua module returning an array of specs). Missing file is fine.
+function M.load()
+  local ok, servers = pcall(require, "mcp_servers")
+  if not ok or type(servers) ~= "table" then return end
+  for _, spec in ipairs(servers) do
+    local names, err = M.add(spec)
+    if names then bog.log(string.format("mcp: connected '%s' (%d tools)", spec.name, #names))
+    else bog.log(string.format("mcp: '%s' failed: %s", tostring(spec.name), tostring(err))) end
+  end
+end
+
+function M.list()
+  local out = {}
+  for name, names in pairs(M.tools) do out[#out + 1] = { server = name, tools = names } end
+  table.sort(out, function(a, b) return a.server < b.server end)
+  return out
+end
+
+return M

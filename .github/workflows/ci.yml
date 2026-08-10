@@ -1,0 +1,93 @@
+name: ci
+
+# Three platforms, one recipe: configure with Ninja, build, ctest.
+#
+# Windows is the reason this file exists. The project has only ever been built
+# on macOS, so the windows-latest job is the *first* native MSVC compile --
+# expect it to be red until src/lsys.c and src/lmcp.c finish moving onto the
+# src/sysproc.h abstraction (they still include <poll.h>, <sys/wait.h> and
+# <dirent.h> today). fail-fast is off so a red Windows job does not hide the
+# state of the two that are known-good.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux (gcc)
+            os: ubuntu-latest
+          - name: macos (appleclang)
+            os: macos-latest
+          - name: windows (msvc)
+            os: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---- toolchain -------------------------------------------------------
+      # CMake is preinstalled on all three runner images; Ninja is not
+      # guaranteed anywhere, so install it explicitly.
+      #
+      # Linux deps: libcurl is found with find_package(CURL REQUIRED), and
+      # ncurses with find_package(Curses REQUIRED) + CURSES_NEED_NCURSES.
+      # libncurses-dev is the modern name and ships the wide (ncursesw)
+      # libraries too; libncursesw5-dev is now only a transitional alias.
+      - name: Install deps (linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build libcurl4-openssl-dev libncurses-dev
+
+      - name: Install deps (macos)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Install deps (windows)
+        if: runner.os == 'Windows'
+        run: choco install ninja -y --no-progress
+
+      # Puts cl.exe, the CRT/SDK headers and the linker on PATH for every
+      # later step. Without this, Ninja has no compiler on windows-latest --
+      # the MSVC toolchain is only reachable through a vcvars environment.
+      # x64 is explicit: the default host/target pairing has changed between
+      # runner images before, and a 32-bit cl would run out of heap on
+      # embedded.c (a ~1.4 MB single translation unit of byte-array
+      # initialisers).
+      - name: Set up MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # ---- build -----------------------------------------------------------
+      # No -DCMAKE_BUILD_TYPE: the project defaults to RelWithDebInfo when it
+      # is unset, and CI should exercise that default.
+      #
+      # On Windows this also fetches and builds libcurl 8.20.0 with the
+      # Schannel backend (see CMakeLists.txt); the first configure therefore
+      # needs network access and takes about a minute longer.
+      - name: Configure
+        run: cmake -B build -G Ninja
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
