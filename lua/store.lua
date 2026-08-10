@@ -93,6 +93,25 @@ function M.open()
     local c, err = db.open(path)
     if not c then error("store: " .. tostring(err)) end
     bog.db = c
+    -- WAL: readers never block the writer and the writer never blocks readers,
+    -- which is what lets many actors read the journal while one appends to it.
+    -- It also survives across processes (via the -shm file), so it is the mode
+    -- a multi-process swarm would need anyway. Note there is still exactly ONE
+    -- writer at a time for the whole database -- WAL widens read concurrency,
+    -- it does not parallelise writes.
+    --
+    -- WAL needs a local filesystem; on a network mount SQLite refuses and stays
+    -- in the previous mode, so we check rather than assume.
+    local mode = c:query("PRAGMA journal_mode=WAL")
+    M.journal_mode = (mode and mode[1] and (mode[1].journal_mode or mode[1][1])) or "unknown"
+    -- NORMAL is the documented-safe pairing with WAL: a crash can lose the tail
+    -- of the last transaction but cannot corrupt the database, and it drops an
+    -- fsync per commit. Every send/publish writes a journal row, so this is on
+    -- the hot path of the bus.
+    c:run("PRAGMA synchronous=NORMAL")
+    -- Don't fail instantly if another connection holds the write lock; wait.
+    c:run("PRAGMA busy_timeout=5000")
+    c:run("PRAGMA foreign_keys=ON")
   end
   assert(bog.db:exec(SCHEMA))
   -- migrate older DBs to the agent/thread columns

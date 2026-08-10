@@ -150,8 +150,20 @@ endif()
 # ---- vendored SQLite (FTS5, single-threaded, no loadable extensions) --------
 # Upstream code: warnings suppressed, as in the Makefile.
 add_library(sqlite_vendor STATIC ${VENDOR}/sqlite/sqlite3.c)
+# SQLITE_THREADSAFE=2 ("multi-thread"), not 0.
+#
+# 0 compiles SQLite with no mutexes whatsoever: correct only while exactly one
+# thread ever touches it, and undefined behaviour with no diagnostic the moment
+# that stops being true. Since the bus journals a row on every send/publish,
+# any second thread makes that a live hazard.
+#
+# 2 is safe to use from multiple threads provided a single *connection* is not
+# used by two threads at once -- which is the discipline we want anyway: the
+# Lua thread owns bog.db, and any worker thread that needs the store opens its
+# own connection. It costs mutexes only around shared global structures, not
+# per-connection, so it is materially cheaper than 1 (fully serialized).
 target_compile_definitions(sqlite_vendor PRIVATE
-  SQLITE_ENABLE_FTS5 SQLITE_THREADSAFE=0 SQLITE_OMIT_LOAD_EXTENSION)
+  SQLITE_ENABLE_FTS5 SQLITE_THREADSAFE=2 SQLITE_OMIT_LOAD_EXTENSION)
 target_include_directories(sqlite_vendor PUBLIC ${VENDOR}/sqlite)
 target_link_libraries(sqlite_vendor PRIVATE boggart_quiet)
 
