@@ -277,13 +277,24 @@ function M.thread_set_status(id, status)
 end
 
 -- ---- journal (read side; the C bus writes) ---------------------------------
+-- Journal writes are asynchronous: src/lswarm.c hands rows to the writer
+-- thread in src/jwriter.c, which batches them into one transaction. That makes
+-- the table eventually-consistent for readers, so every read-back below has to
+-- drain the ring first or it can miss rows that have already been "sent".
+-- swarm.redeliver() does the same internally for the same reason.
+local function flush_journal()
+  if swarm and swarm.flush then swarm.flush() end
+end
+
 function M.journal_list(limit)
+  flush_journal()
   return bog.db:query(
     "SELECT id,ts,from_id,to_id,topic,kind,payload,processed_at FROM journal ORDER BY id DESC LIMIT ?",
     { limit or 50 })
 end
 
 function M.journal_for(id, limit)
+  flush_journal()
   return bog.db:query(
     "SELECT id,ts,from_id,to_id,topic,kind,payload,processed_at FROM journal "
     .. "WHERE from_id=? OR to_id=? ORDER BY id DESC LIMIT ?", { id, id, limit or 50 })

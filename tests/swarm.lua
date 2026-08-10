@@ -139,6 +139,11 @@ do
   ok(other_first and first_last and other_first < first_last, "two child agents ran concurrently (interleaved)")
 
   -- journal: two child->coordinator 'send' rows, both marked processed by await
+  -- Journal writes are async (src/jwriter.c batches them on a writer thread),
+  -- so a direct SQL read has to drain the ring first. bog.store.journal_list()
+  -- and swarm.redeliver() do this for you; raw queries like this one must not
+  -- forget to.
+  swarm.flush()
   local rows = bog.db:query("SELECT from_id,to_id,processed_at FROM journal WHERE kind='send' AND to_id=?", { coord.id })
   eq(#rows, 2, "journal recorded 2 result sends to coordinator")
   ok(rows[1].processed_at ~= nil and rows[1].processed_at ~= json.null, "await marked messages processed")

@@ -31,17 +31,21 @@
  * and pin libuv, so that churn only bites on a deliberate re-vendor; if you
  * bump libuv and this file stops compiling, that is why.
  *
- * ---- locking ----------------------------------------------------------------
- * Bus mutations are guarded by a uv_mutex_t. Today every actor is a coroutine
- * on one thread, so the mutex is always uncontended (tens of nanoseconds, at a
- * message rate of a few per second per agent -- unmeasurable). It is here so
- * that moving actors onto their own threads later is not a rewrite of this
- * file.
+ * ---- threading ------------------------------------------------------------
+ * The bus is single-threaded by ownership, not by locking, and there are no
+ * mutexes here on purpose.
  *
- * IMPORTANT, and deliberately not papered over: this lock makes *the bus*
- * thread-safe, NOT the system. journal_insert() writes to SQLite, which is
- * built with SQLITE_THREADSAFE=0, and lua/store.lua touches the same handle
- * outside this lock. Genuinely multi-threaded actors need that addressed too.
+ * Every actor is a Lua coroutine on the one thread that owns the lua_State, so
+ * every entry point below is reached from that thread and only that thread. A
+ * lock would be permanently uncontended -- but worse than useless, because it
+ * would advertise a thread-safety property the surrounding code does not have
+ * (journal writes and lua/store.lua reads are not covered by it). A lock that
+ * guards half an invariant is a trap for the next reader.
+ *
+ * Work that genuinely needs another thread crosses by *ownership transfer*
+ * instead: durable journal writes are handed to the writer thread through the
+ * lock-free SPSC ring in jwriter.c, which takes ownership of each record. No
+ * memory is shared mutably across threads, so there is nothing to lock.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -54,6 +58,7 @@
 #include "lua.h"
 #include "lauxlib.h"
 #include "ldb.h"
+#include "jwriter.h"
 
 static sqlite3 *g_db = NULL;
 
@@ -84,7 +89,6 @@ typedef struct topic {
 
 static struct uv__queue g_mboxes;
 static struct uv__queue g_topics;
-static uv_mutex_t g_lock;
 static uv_once_t g_once = UV_ONCE_INIT;
 
 /* Called after a message lands in a mailbox, while the bus lock is held.
@@ -96,17 +100,12 @@ static void (*g_notify)(int to_id) = NULL;
 static void bus_init(void) {
   uv__queue_init(&g_mboxes);
   uv__queue_init(&g_topics);
-  uv_mutex_init(&g_lock);
 }
 
-static void bus_lock(void) {
-  uv_once(&g_once, bus_init);
-  uv_mutex_lock(&g_lock);
-}
+/* Lazy init only; see the threading note above for why there is no lock. */
+static void bus_ready(void) { uv_once(&g_once, bus_init); }
 
-static void bus_unlock(void) { uv_mutex_unlock(&g_lock); }
-
-/* ---- mailbox helpers (callers hold the bus lock) ---- */
+/* ---- mailbox helpers (single-threaded; see the threading note) ---- */
 static mbox *mbox_find(int id, int create) {
   struct uv__queue *it;
   uv__queue_foreach(it, &g_mboxes) {
@@ -137,7 +136,7 @@ static void mbox_push(int id, const char *data, size_t len, sqlite3_int64 jid) {
   if (g_notify) g_notify(id);
 }
 
-/* ---- topic helpers (callers hold the bus lock) ---- */
+/* ---- topic helpers (single-threaded; see the threading note) ---- */
 static topic *topic_find(const char *name, int create) {
   struct uv__queue *it;
   uv__queue_foreach(it, &g_topics) {
@@ -154,10 +153,51 @@ static topic *topic_find(const char *name, int create) {
   return t;
 }
 
-/* ---- journal ---- */
+/* ---- journal ---------------------------------------------------------------
+ * Journal rows are handed to the writer thread (jwriter.c) rather than written
+ * inline: an fsync on the Lua thread would sit directly in the path of an
+ * actor's turn, and the writer batches a burst of messages into one commit.
+ *
+ * The row id is allocated here rather than taken from SQLite's rowid, so
+ * swarm.send() can still return an id immediately without waiting for the
+ * write. If the writer is not running (start failed, or tests that never
+ * attach) everything falls back to the original inline path.
+ */
+static sqlite3_int64 journal_write(int from, int to, int has_to, const char *topic_s,
+                                   const char *kind, const char *payload, size_t plen,
+                                   int processed);
+
 static sqlite3_int64 journal_insert(int from, int to, int has_to, const char *topic_s,
                                     const char *kind, const char *payload, size_t plen,
                                     int processed) {
+  if (!g_db) return -1;
+
+  if (jwriter_running()) {
+    jw_rec r;
+    memset(&r, 0, sizeof(r));
+    r.kind = JW_INSERT;
+    r.id = jwriter_next_id();
+    r.ts = (int64_t)time(NULL);
+    r.from_id = from;
+    r.to_id = to;
+    r.has_to = has_to;
+    r.kind_s = kind; /* always a static literal from the call sites below */
+    r.processed = processed;
+    if (topic_s) r.topic = strdup(topic_s);
+    if (payload) {
+      r.payload = (char *)malloc(plen ? plen : 1);
+      if (r.payload) { memcpy(r.payload, payload, plen); r.plen = plen; }
+    }
+    if (jwriter_push(&r) == 0) return (sqlite3_int64)r.id; /* ownership moved */
+    free(r.topic);
+    free(r.payload); /* push refused: fall through and write inline */
+  }
+  return journal_write(from, to, has_to, topic_s, kind, payload, plen, processed);
+}
+
+static sqlite3_int64 journal_write(int from, int to, int has_to, const char *topic_s,
+                                   const char *kind, const char *payload, size_t plen,
+                                   int processed) {
   if (!g_db) return -1;
   sqlite3_stmt *st;
   const char *sql =
@@ -181,7 +221,32 @@ static sqlite3_int64 journal_insert(int from, int to, int has_to, const char *to
 /* ---- Lua entry points ---- */
 static int l_attach(lua_State *L) {
   g_db = boggart_db_handle(L, 1);
+  /* Start the journal writer on the same file. sqlite3_db_filename gives the
+   * path the caller already opened, so the writer never needs it passed in.
+   * An in-memory or temp database yields an empty name; there is nothing for a
+   * second connection to attach to, so we stay on the inline path. */
+  if (g_db) {
+    const char *path = sqlite3_db_filename(g_db, "main");
+    if (path && *path) jwriter_start(path);
+  }
   return 0;
+}
+
+/* swarm.flush() -- block until every journalled record is committed. */
+static int l_flush(lua_State *L) {
+  (void)L;
+  jwriter_flush();
+  return 0;
+}
+
+/* swarm.jstats() -> pushed, written, stalls */
+static int l_jstats(lua_State *L) {
+  uint64_t p = 0, w = 0, st = 0;
+  jwriter_stats(&p, &w, &st);
+  lua_pushinteger(L, (lua_Integer)p);
+  lua_pushinteger(L, (lua_Integer)w);
+  lua_pushinteger(L, (lua_Integer)st);
+  return 3;
 }
 
 static int l_send(lua_State *L) {
@@ -191,10 +256,9 @@ static int l_send(lua_State *L) {
   const char *payload = luaL_checklstring(L, 3, &len);
   /* Journal and enqueue under one lock, so a queued message always has its
    * durable row: a reader can never observe a message the journal lacks. */
-  bus_lock();
+  bus_ready();
   sqlite3_int64 jid = journal_insert(from, to, 1, NULL, "send", payload, len, 0);
   mbox_push(to, payload, len, jid);
-  bus_unlock();
   lua_pushinteger(L, (lua_Integer)jid);
   return 1;
 }
@@ -204,7 +268,7 @@ static int l_publish(lua_State *L) {
   const char *tname = luaL_checkstring(L, 2);
   size_t len;
   const char *payload = luaL_checklstring(L, 3, &len);
-  bus_lock();
+  bus_ready();
   topic *t = topic_find(tname, 0);
   int n = 0;
   if (t && !uv__queue_empty(&t->subs)) {
@@ -219,7 +283,6 @@ static int l_publish(lua_State *L) {
     /* no subscribers: record an audit row, already "processed" */
     journal_insert(from, 0, 0, tname, "publish", payload, len, 1);
   }
-  bus_unlock();
   lua_pushinteger(L, n);
   return 1;
 }
@@ -227,26 +290,25 @@ static int l_publish(lua_State *L) {
 static int l_subscribe(lua_State *L) {
   int id = (int)luaL_checkinteger(L, 1);
   const char *tname = luaL_checkstring(L, 2);
-  bus_lock();
+  bus_ready();
   topic *t = topic_find(tname, 1);
-  if (!t) { bus_unlock(); return 0; }
+  if (!t) { return 0; }
   struct uv__queue *it;
   uv__queue_foreach(it, &t->subs) {
-    if (uv__queue_data(it, sub, q)->id == id) { bus_unlock(); return 0; } /* already subscribed */
+    if (uv__queue_data(it, sub, q)->id == id) { return 0; } /* already subscribed */
   }
   sub *s = (sub *)malloc(sizeof(sub));
-  if (!s) { bus_unlock(); return 0; }
+  if (!s) { return 0; }
   s->id = id;
   uv__queue_insert_tail(&t->subs, &s->q);
   journal_insert(id, 0, 0, tname, "subscribe", NULL, 0, 1);
-  bus_unlock();
   return 0;
 }
 
 static int l_unsubscribe(lua_State *L) {
   int id = (int)luaL_checkinteger(L, 1);
   const char *tname = luaL_checkstring(L, 2);
-  bus_lock();
+  bus_ready();
   topic *t = topic_find(tname, 0);
   if (t) {
     struct uv__queue *it = t->subs.next;
@@ -262,22 +324,20 @@ static int l_unsubscribe(lua_State *L) {
     }
   }
   journal_insert(id, 0, 0, tname, "unsubscribe", NULL, 0, 1);
-  bus_unlock();
   return 0;
 }
 
 static int l_recv(lua_State *L) {
   int id = (int)luaL_checkinteger(L, 1);
-  bus_lock();
+  bus_ready();
   mbox *m = mbox_find(id, 0);
-  if (!m || uv__queue_empty(&m->msgs)) { bus_unlock(); return 0; } /* empty -> nil */
+  if (!m || uv__queue_empty(&m->msgs)) { return 0; } /* empty -> nil */
   struct uv__queue *h = uv__queue_head(&m->msgs);
   uv__queue_remove(h);
   m->count--;
   msg *n = uv__queue_data(h, msg, q);
-  bus_unlock();
-  /* Push outside the lock: lua_pushlstring can raise on OOM, and unwinding
-   * through a held mutex would deadlock every later bus call. */
+  /* The node is already unlinked, so an OOM raise out of lua_pushlstring
+   * cannot leave the queue half-modified -- it only leaks this one record. */
   lua_pushlstring(L, n->data, n->len);
   lua_pushinteger(L, (lua_Integer)n->jid);
   free(n->data);
@@ -287,18 +347,27 @@ static int l_recv(lua_State *L) {
 
 static int l_pending(lua_State *L) {
   int id = (int)luaL_checkinteger(L, 1);
-  bus_lock();
+  bus_ready();
   mbox *m = mbox_find(id, 0);
   lua_Integer c = m ? (lua_Integer)m->count : 0;
-  bus_unlock();
   lua_pushinteger(L, c);
   return 1;
 }
 
 static int l_mark_processed(lua_State *L) {
   sqlite3_int64 jid = (sqlite3_int64)luaL_checkinteger(L, 1);
+  if (g_db && jid >= 0 && jwriter_running()) {
+    jw_rec r;
+    memset(&r, 0, sizeof(r));
+    r.kind = JW_PROCESSED;
+    r.id = (int64_t)jid;
+    r.ts = (int64_t)time(NULL);
+    /* Same queue as the insert: FIFO from a single producer is what guarantees
+     * the stamp cannot be applied before the row it refers to exists. */
+    if (jwriter_push(&r) == 0) return 0;
+  }
   if (g_db && jid >= 0) {
-    bus_lock();
+    bus_ready();
     sqlite3_stmt *st;
     if (sqlite3_prepare_v2(g_db, "UPDATE journal SET processed_at=? WHERE id=?", -1, &st, NULL) == SQLITE_OK) {
       sqlite3_bind_int64(st, 1, (sqlite3_int64)time(NULL));
@@ -306,7 +375,6 @@ static int l_mark_processed(lua_State *L) {
       sqlite3_step(st);
       sqlite3_finalize(st);
     }
-    bus_unlock();
   }
   return 0;
 }
@@ -315,14 +383,16 @@ static int l_mark_processed(lua_State *L) {
  * Does NOT create new journal rows -- it carries the existing row ids. */
 static int l_redeliver(lua_State *L) {
   if (!g_db) { lua_pushinteger(L, 0); return 1; }
-  bus_lock();
+  /* Reading the journal back means every pending write must have landed. */
+  jwriter_flush();
+  bus_ready();
   sqlite3_stmt *st;
   const char *sql =
     "SELECT id,to_id,payload FROM journal "
     "WHERE processed_at IS NULL AND to_id IS NOT NULL ORDER BY id";
   if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) != SQLITE_OK) {
     const char *err = sqlite3_errmsg(g_db);
-    bus_unlock(); /* never raise through a held lock */
+   
     return luaL_error(L, "swarm.redeliver: %s", err);
   }
   int n = 0;
@@ -335,7 +405,6 @@ static int l_redeliver(lua_State *L) {
     n++;
   }
   sqlite3_finalize(st);
-  bus_unlock();
   lua_pushinteger(L, n);
   return 1;
 }
@@ -344,7 +413,7 @@ static int l_redeliver(lua_State *L) {
  * bus without discarding the journal). */
 static int l_clear(lua_State *L) {
   (void)L;
-  bus_lock();
+  bus_ready();
   struct uv__queue *it = g_mboxes.next;
   while (it != &g_mboxes) {
     struct uv__queue *next = it->next;
@@ -377,7 +446,6 @@ static int l_clear(lua_State *L) {
     it = next;
   }
   uv__queue_init(&g_topics);
-  bus_unlock();
   return 0;
 }
 
@@ -392,12 +460,14 @@ static const luaL_Reg swarm_lib[] = {
   {"mark_processed", l_mark_processed},
   {"redeliver", l_redeliver},
   {"clear", l_clear},
+  {"flush", l_flush},
+  {"jstats", l_jstats},
   {NULL, NULL},
 };
 
 int luaopen_boggart_swarm(lua_State *L) {
   /* Initialise the bus before any Lua can touch it, so the uv_once in
-   * bus_lock() is a formality rather than the only initialisation path. */
+   * bus_ready() is a formality rather than the only initialisation path. */
   uv_once(&g_once, bus_init);
   luaL_newlib(L, swarm_lib);
   return 1;
