@@ -299,7 +299,10 @@ static void io_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
   uv_read_stop(s);
 }
 
-static void on_exit(uv_process_t *p, int64_t exit_status, int term_signal) {
+/* NOT on_exit(): glibc declares an on_exit() in <stdlib.h>, so a static
+ * function of that name is a conflicting declaration and fails to compile on
+ * Linux. macOS has no such function, which is why this only showed up in CI. */
+static void on_proc_exit(uv_process_t *p, int64_t exit_status, int term_signal) {
   mcpio *io = (mcpio *)p->data;
   (void)term_signal;
   io->proc_exited = 1;
@@ -751,7 +754,7 @@ static int connect_stdio(mcpconn *c, lua_State *L, int spec_idx, const char **er
   opts.env = envp;  /* NULL = inherit */
   opts.stdio = stdio;
   opts.stdio_count = 3;
-  opts.exit_cb = on_exit;
+  opts.exit_cb = on_proc_exit;
   opts.flags = UV_PROCESS_WINDOWS_HIDE;
 
   io->proc.data = io;
