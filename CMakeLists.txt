@@ -172,17 +172,17 @@ add_library(cjson_vendor STATIC ${VENDOR}/cjson/cJSON.c)
 target_include_directories(cjson_vendor PUBLIC ${VENDOR}/cjson)
 target_link_libraries(cjson_vendor PRIVATE boggart_quiet)
 
-# ---- vendored linenoise ----------------------------------------------------
-# POSIX only: linenoise.c is termios/ioctl to the core and has no Windows port,
-# so on Windows the target does not exist and the line editor has to come from
-# elsewhere (a Windows console-API line editor). Anything still
-# calling linenoise() there will fail at link with an unresolved symbol, which
-# is the honest signal.
-if(NOT WIN32)
-  add_library(linenoise_vendor STATIC ${VENDOR}/linenoise.c)
-  target_include_directories(linenoise_vendor PUBLIC ${VENDOR})
-  target_link_libraries(linenoise_vendor PRIVATE boggart_warnings)
-endif()
+# ---- isocline: the line editor (MIT, Daan Leijen) ---------------------------
+# Replaces linenoise, which was termios/ioctl to the core with no Windows port
+# -- so on Windows the REPL previously had no line editor at all. isocline
+# carries a console-API backend alongside the POSIX one, and keeps history,
+# completion, multi-line editing and UTF-8.
+#
+# Single translation unit: src/isocline.c #includes the other .c files unless
+# IC_SEPARATE_OBJS is set, which we leave off so no internal symbols escape.
+add_library(isocline_vendor STATIC ${VENDOR}/isocline/src/isocline.c)
+target_include_directories(isocline_vendor PUBLIC ${VENDOR}/isocline/include)
+target_link_libraries(isocline_vendor PRIVATE boggart_quiet)
 
 # ---- libuv (MIT) -----------------------------------------------------------
 # Vendored for the cross-platform primitives the C stdlib lacks: process spawn
@@ -311,10 +311,8 @@ add_executable(boggart
 target_include_directories(boggart PRIVATE src)
 target_link_libraries(boggart PRIVATE
   boggart_warnings
-  lua_vendor sqlite_vendor cjson_vendor ltui_curses luv_lua uv_a CURL::libcurl)
-if(NOT WIN32)
-  target_link_libraries(boggart PRIVATE linenoise_vendor)
-endif()
+  lua_vendor sqlite_vendor cjson_vendor ltui_curses luv_lua uv_a
+  isocline_vendor CURL::libcurl)
 
 # Keep ./boggart at the repo root, as the README documents. The per-config
 # properties matter only for multi-config generators (Visual Studio, Xcode),

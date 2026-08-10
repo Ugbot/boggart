@@ -17,8 +17,8 @@ Two references shaped this: antirez's **ds4** agent harness (the loop
 *mechanics*) and rxi's **lite** editor (the embedding *patterns*).
 
 - **The C core knows nothing about the LLM.** `http.request` streams bytes to a
-  Lua callback; `sys.exec` runs a shell command with a timeout; that's most of
-  it. The Anthropic client, SSE parsing, and tool loop live in `lua/api.lua`.
+  Lua callback; subprocesses run on the libuv loop from `lua/proc.lua`; that's
+  most of it. The Anthropic client, SSE parsing, and tool loop live in `lua/api.lua`.
 - **Overlay mutability.** Every module loads from `~/.boggart/lua/<name>.lua`
   if present, else from the copy baked into the binary. The agent edits its own
   Lua with the ordinary `write`/`edit` tools and calls `reload` to hot-swap it;
@@ -50,19 +50,21 @@ Two references shaped this: antirez's **ds4** agent harness (the loop
 ```sh
 cmake -B build -G Ninja     # configure
 cmake --build build         # → ./boggart (one binary; libcurl is the only dynamic dep)
-ctest --test-dir build      # the four Lua suites, each against a throwaway HOME
+ctest --test-dir build      # nine Lua suites, each against a throwaway HOME
 ```
 
 Requires CMake ≥ 3.20, Ninja, a C compiler, and libcurl (present in the macOS
-SDK). Lua 5.4, SQLite, cJSON and linenoise are vendored under `src/vendor/` and
-built statically. The binary is written to the source root so the invocations
+SDK; built from source with the Schannel backend on Windows). Lua 5.4, SQLite,
+cJSON, libuv, luv, ltui/PDCurses and isocline are vendored under `src/vendor/`
+and built statically. The binary is written to the source root so the invocations
 below work as documented; everything else stays in `build/`.
 
 On Apple silicon the build re-signs the binary ad-hoc after linking — a stale
 linker signature is what makes macOS `SIGKILL` a freshly built arm64 exe.
 
-The older `Makefile` (`make`, `make test`) still builds the same binary and is
-kept as a no-CMake fallback.
+There is no longer a plain-`make` fallback: the build now pulls in libuv, luv,
+ltui/PDCurses and isocline, all with their own flag sets, and maintaining a
+second description of that by hand was a standing source of drift.
 
 ## Use
 
@@ -91,8 +93,8 @@ message log), a **skills** list (bundles of instructions + a permitted tool
 set), a **mailbox**, and its **tool calling**. Every agent — the coordinator and
 every sub-agent — is an actor on one internal pub/sub bus; they differ only by
 spec and lineage. Fan-out is the coordinator spawning child agents that run
-**concurrently** (async `curl_multi` under a cooperative scheduler — no OS
-threads) and report back.
+**concurrently** (async `curl_multi` plus a libuv loop under a cooperative
+scheduler — no OS threads for actors) and report back.
 
 - **Messaging machinery is in C** (`src/lswarm.c`): per-agent FIFO mailboxes,
   topic pub/sub, and a write-through **journal** to the same SQLite DB. Lua owns
@@ -162,6 +164,10 @@ tests/          test.lua (units), integration.lua (turn loop), swarm.lua (actors
 
 - Lua 5.4 — MIT (© Lua.org, PUC-Rio), vendored in `src/vendor/lua/`.
 - SQLite — public domain, amalgamation vendored in `src/vendor/sqlite/`.
-- linenoise — BSD-2-Clause (© Salvatore Sanfilippo, Pieter Noordhuis).
+- libuv — MIT, vendored in `src/vendor/libuv/` (event loop, processes, fs).
+- luv — Apache-2.0 (© the luvit authors), libuv bindings for Lua.
+- ltui — Apache-2.0 (© tboox), terminal UI; PDCurses (public domain) on Windows.
+- isocline — MIT (© Daan Leijen), the line editor; replaced linenoise, which
+  had no Windows port.
 - `strict.lua` and several harness patterns adapted from rxi/lite — MIT (© rxi).
 - Loop mechanics studied from antirez/ds4.

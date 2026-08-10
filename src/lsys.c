@@ -28,7 +28,7 @@
 
 #include "lua.h"
 #include "lauxlib.h"
-#include "linenoise.h"
+#include "isocline.h"
 
 /* MSVC's <sys/stat.h> defines S_IFDIR/S_IFREG but not the S_IS* predicates,
  * so test the format bits directly. uv_stat_t fills st_mode portably. */
@@ -370,21 +370,41 @@ static int l_exec(lua_State *L) {
   return 1;
 }
 
+/* isocline rather than linenoise: linenoise is termios/ioctl throughout with
+ * no Windows port, so the REPL had no line editor there at all. isocline
+ * carries a console-API backend alongside the POSIX one and keeps history,
+ * completion, multi-line editing and UTF-8.
+ *
+ * NOTE: ic_readline() blocks until the user presses Enter, so the uv loop does
+ * not turn while input is being typed. That matches the previous behaviour and
+ * is fine while the REPL has nothing to do meanwhile; if it ever needs
+ * background work (live agents, a status line), the fix is to run the editor on
+ * its own thread and hand the finished line back via uv_async_send -- the same
+ * ownership-transfer pattern as src/jwriter.c. */
 static int l_readline(lua_State *L) {
   const char *prompt = luaL_optstring(L, 1, "");
-  char *line = linenoise(prompt);
+  char *line = ic_readline(prompt);
   if (line == NULL) {
     lua_pushnil(L);
     return 1;
   }
   lua_pushstring(L, line);
-  free(line);
+  ic_free(line);
   return 1;
+}
+
+/* sys.history_file(path [, max]) -- persist REPL history across sessions.
+ * linenoise never had this wired up; isocline gives it for one call. */
+static int l_history_file(lua_State *L) {
+  const char *path = luaL_checkstring(L, 1);
+  long max = (long)luaL_optinteger(L, 2, 500);
+  ic_set_history(path, max);
+  return 0;
 }
 
 static int l_add_history(lua_State *L) {
   const char *line = luaL_checkstring(L, 1);
-  if (line[0]) linenoiseHistoryAdd(line);
+  if (line[0]) ic_history_add(line);
   return 0;
 }
 
@@ -396,6 +416,7 @@ static const luaL_Reg sys_lib[] = {
   {"exec", l_exec},
   {"readline", l_readline},
   {"add_history", l_add_history},
+  {"history_file", l_history_file},
   {"rmtree", l_rmtree},
   {"shell", l_shell},
   {"pid", l_pid},

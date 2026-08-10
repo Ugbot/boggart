@@ -225,8 +225,11 @@ end
 local function do_repl()
   io.write("boggart ", bog.version, "  model=", bog.session.model,
     "  (/help for commands)\n")
+  -- Persist REPL history across sessions. isocline handles the file; linenoise
+  -- never had this wired up.
+  if sys.history_file then sys.history_file(bog.userdir .. "/history", 500) end
   while true do
-    local line = sys.readline("\27[1mboggart>\27[0m ")
+    local line = sys.readline("boggart")
     if line == nil then io.write("\n"); break end
     if line ~= "" then sys.add_history(line) end
     if line:sub(1, 1) == "/" then
