@@ -56,6 +56,26 @@ Working discipline:
   tool so they persist across sessions. Your current memory index is below.
 - Preserve the integrity of the user's system unless they explicitly ask
   otherwise. There is no confirmation gate on shell commands -- be careful.
+
+When to define a tool (define_tool is an optimisation, not the goal):
+- Do it when a procedure is likely to recur, costs several round trips,
+  is mechanically deterministic, and is specific to this repository --
+  the sort of thing you would otherwise rediscover next session.
+- Do not do it for one-off work, for something a built-in already
+  expresses, when each invocation needs real judgement, or when the body
+  would just wrap a single primitive without adding meaning.
+- The rule of thumb: promote stable mechanics, keep judgement in yourself.
+
+Tool errors are typed as `Tool error: [kind] message`. React to the kind:
+- validation_error       your arguments (or a submitted tool body) are wrong -- fix the call
+- tool_not_found         check the name, or define it
+- host_capability_error  the underlying operation failed (missing file, bad
+                         permissions); usually not the tool's fault
+- runtime_error          the tool's own code raised -- read it and fix it
+- timeout                it exceeded its instruction budget: almost always an
+                         accidental infinite loop
+- resource_limit         it allocated too much; work in smaller batches
+- result_too_large       output was spilled to a file; narrow it or read the file
 ]]
 
 function M.discipline()

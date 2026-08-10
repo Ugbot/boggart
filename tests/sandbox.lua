@@ -108,6 +108,58 @@ package.loaded["tools"] = nil
 bog.tools = require("tools")
 ok(bog.tools.registry["nasty"] == nil, "a tool file calling os.* fails to load rather than running")
 
+-- ---- execution limits (paper §16.8) ---------------------------------------
+-- Bodies are model-written, and the failure that matters is the boring one: an
+-- accidental infinite loop. Since everything shares one libuv loop now, a
+-- spinning tool would stall every other agent's token stream behind it.
+--
+-- The budget is on instructions, not wall clock, and that is deliberate: a tool
+-- that shells out to a ten-minute build is legitimate and spends that time
+-- yielded, executing nothing. proc.run carries its own timeout for I/O.
+bog.tools.run("define_tool", { name = "spin", description = "d", lua = "while true do end" })
+local spun = bog.tools.run("spin", {})
+ok(spun:find("[timeout]", 1, true) ~= nil, "an infinite loop is stopped, not hung: " .. spun:sub(1, 60))
+
+bog.tools.run("define_tool", { name = "hog", description = "d",
+  lua = "local t = {} while true do t[#t+1] = string.rep('x', 100000) end" })
+ok(bog.tools.run("hog", {}):find("[resource_limit]", 1, true) ~= nil,
+   "runaway allocation is stopped and reported as resource_limit")
+
+-- the hook must not leak onto the harness afterwards
+bog.tools.run("define_tool", { name = "quick", description = "d", lua = "return 'ok'" })
+eq(bog.tools.run("quick", {}), "ok", "a normal tool still runs after a limit trip")
+eq(debug.gethook(), nil, "the instruction hook is cleared after every call")
+
+-- ---- error taxonomy (paper §15) -------------------------------------------
+-- One opaque error class leaves the model guessing whether to fix the tool,
+-- change the call, or fall back to primitives. Each kind implies a response.
+-- %w excludes underscore in Lua patterns, and every kind has one.
+local function kind_of(s) return s:match("^Tool error: %[([%w_]+)%]") end
+eq(kind_of(bog.tools.run("no_such_tool_xyz", {})), "tool_not_found", "unknown tool")
+eq(kind_of(bog.tools.run("read", {})), "validation_error", "missing required argument")
+eq(kind_of(bog.tools.run("read", { path = "/no/such/file/here" })), "host_capability_error",
+   "a failed host call is not a validation error")
+eq(kind_of(bog.tools.run("edit", { path = "x", old = "", new = "y" })), "validation_error",
+   "empty 'old' is a validation error")
+eq(kind_of(bog.tools.run("define_tool", { name = "nope", description = "d",
+   lua = "this is not lua ((" })), "validation_error",
+   "an uncompilable body is bad input to define_tool, not a runtime fault")
+bog.tools.run("define_tool", { name = "raiser", description = "d", lua = "local t = nil\nreturn t.x" })
+eq(kind_of(bog.tools.run("raiser", {})), "runtime_error", "a body that raises is a runtime error")
+
+-- the prefix api.lua tests for must survive the added kind
+for _, s2 in ipairs({ bog.tools.run("read", {}), bog.tools.run("no_such_xyz", {}) }) do
+  eq(s2:sub(1, 11), "Tool error:", "is_error detection in api.lua still matches")
+end
+
+-- ---- oversized results are spilled, not returned (paper §14) --------------
+bog.tools.run("define_tool", { name = "flood", description = "d",
+  lua = "return string.rep('spam\\n', 400000)" })
+local flooded = bog.tools.run("flood", {})
+eq(kind_of(flooded), "result_too_large", "an oversized result is classified")
+ok(#flooded < 20000, "the oversized result was spilled, not returned inline (" .. #flooded .. " bytes)")
+ok(flooded:find("read the saved file", 1, true) ~= nil, "it points at the saved file")
+
 if bog.db then bog.db:close() end
 sys.rmtree(bog.userdir)
 

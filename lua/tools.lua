@@ -16,10 +16,10 @@ end
 
 local function tool_read(a)
   local path = a.path
-  if type(path) ~= "string" then return "Tool error: read requires 'path'" end
+  if type(path) ~= "string" then return M.err(M.ERR.validation, "read requires 'path'") end
   local data, err = util.read_file(path)
-  if not data then return "Tool error: cannot read " .. path .. ": " .. tostring(err) end
-  if #data > 16 * 1024 * 1024 then return "Tool error: file too large (>16MiB)" end
+  if not data then return M.err(M.ERR.capability, "cannot read " .. path .. ": " .. tostring(err)) end
+  if #data > 16 * 1024 * 1024 then return M.err(M.ERR.too_large, "file too large (>16MiB)") end
 
   -- split into lines
   local lines = {}
@@ -45,35 +45,35 @@ local function tool_read(a)
 end
 
 local function tool_write(a)
-  if type(a.path) ~= "string" then return "Tool error: write requires 'path'" end
-  if type(a.content) ~= "string" then return "Tool error: write requires string 'content'" end
+  if type(a.path) ~= "string" then return M.err(M.ERR.validation, "write requires 'path'") end
+  if type(a.content) ~= "string" then return M.err(M.ERR.validation, "write requires string 'content'") end
   -- create parent dir
   local parent = a.path:match("^(.*)/[^/]+$")
   if parent and parent ~= "" then sys.mkdir_p(parent) end
   local ok, err = util.write_file(a.path, a.content)
-  if not ok then return "Tool error: " .. tostring(err) end
+  if not ok then return M.err(M.ERR.runtime, tostring(err)) end
   local n = select(2, a.content:gsub("\n", "\n")) + 1
   return string.format("Wrote %s (%d bytes, %d lines)", a.path, #a.content, n)
 end
 
 local function tool_edit(a)
-  if type(a.path) ~= "string" then return "Tool error: edit requires 'path'" end
-  if type(a.old) ~= "string" or a.old == "" then return "Tool error: edit requires a non-empty 'old'" end
-  if type(a.new) ~= "string" then return "Tool error: edit requires 'new'" end
+  if type(a.path) ~= "string" then return M.err(M.ERR.validation, "edit requires 'path'") end
+  if type(a.old) ~= "string" or a.old == "" then return M.err(M.ERR.validation, "edit requires a non-empty 'old'") end
+  if type(a.new) ~= "string" then return M.err(M.ERR.validation, "edit requires 'new'") end
   local data, err = util.read_file(a.path)
-  if not data then return "Tool error: cannot read " .. a.path .. ": " .. tostring(err) end
+  if not data then return M.err(M.ERR.capability, "cannot read " .. a.path .. ": " .. tostring(err)) end
 
   -- count occurrences (plain, non-pattern)
   local first = data:find(a.old, 1, true)
-  if not first then return "Tool error: `old` not found in " .. a.path end
+  if not first then return M.err(M.ERR.validation, "`old` not found in " .. a.path) end
   local second = data:find(a.old, first + 1, true)
-  if second then return "Tool error: `old` matches more than once in " .. a.path .. "; add context to make it unique" end
+  if second then return M.err(M.ERR.validation, "`old` matches more than once in " .. a.path .. "; add context to make it unique") end
 
   local before = data:sub(1, first - 1)
   local after = data:sub(first + #a.old)
   local updated = before .. a.new .. after
   local ok, werr = util.write_file(a.path, updated)
-  if not ok then return "Tool error: " .. tostring(werr) end
+  if not ok then return M.err(M.ERR.runtime, tostring(werr)) end
 
   -- return post-edit context (ds4 6.4): cheap tokens to save a re-read
   local start_line = select(2, before:gsub("\n", "\n")) + 1
@@ -90,7 +90,7 @@ local function tool_edit(a)
 end
 
 local function tool_bash(a)
-  if type(a.command) ~= "string" then return "Tool error: bash requires 'command'" end
+  if type(a.command) ~= "string" then return M.err(M.ERR.validation, "bash requires 'command'") end
   local timeout = tonumber(a.timeout_sec) or 120
   -- proc.run, not sys.exec: under the swarm scheduler this yields between
   -- polls so a long build no longer freezes every other agent (and every
@@ -107,7 +107,7 @@ end
 local function tool_list(a)
   local path = a.path or "."
   local names, err = sys.listdir(path)
-  if not names then return "Tool error: cannot list " .. path .. ": " .. tostring(err) end
+  if not names then return M.err(M.ERR.capability, "cannot list " .. path .. ": " .. tostring(err)) end
   table.sort(names)
   local out = {}
   for _, name in ipairs(names) do
@@ -252,29 +252,35 @@ end
 local function tool_define(a)
   local name = a.name
   if type(name) ~= "string" or not name:match("^[%a_][%w_]*$") then
-    return "Tool error: define_tool needs a 'name' matching [A-Za-z_][A-Za-z0-9_]*"
+    return M.err(M.ERR.validation, "define_tool needs a 'name' matching [A-Za-z_][A-Za-z0-9_]*")
   end
   if type(a.description) ~= "string" or a.description == "" then
-    return "Tool error: define_tool needs a 'description'"
+    return M.err(M.ERR.validation, "define_tool needs a 'description'")
   end
   if type(a.lua) ~= "string" or a.lua == "" then
-    return "Tool error: define_tool needs a Lua 'lua' body that returns a string"
+    return M.err(M.ERR.validation, "define_tool needs a Lua 'lua' body that returns a string")
   end
   local schema = a.input_schema
   if schema == nil or schema == json.null then schema = { type = "object", properties = {} } end
-  if type(schema) ~= "table" then return "Tool error: 'input_schema' must be a JSON object" end
+  if type(schema) ~= "table" then return M.err(M.ERR.validation, "'input_schema' must be a JSON object") end
   -- An empty `required` decodes to an empty Lua table, which json.encode would
   -- emit as {} (an object) -- invalid JSON Schema. Drop it if empty.
   if type(schema.required) == "table" and next(schema.required) == nil then schema.required = nil end
 
   local ok, def = pcall(build_def, name, a.description, schema, a.lua)
-  if not ok then return "Tool error: " .. tostring(def) end
+  -- A body that will not compile is bad *input* to define_tool, not a fault in
+  -- a tool -- the model should fix the code it just submitted. Strip our own
+  -- frame off the front so the message points at the body's line, not at
+  -- tools.lua's.
+  if not ok then
+    return M.err(M.ERR.validation, (tostring(def):gsub("^.-tool body compile error: ", "")))
+  end
 
   -- persist so it survives restarts and reloads
   sys.mkdir_p(tools_dir())
   local fileok, ferr = util.write_file(tools_dir() .. "/" .. name .. ".lua",
     render_tool_file(name, a.description, schema, a.lua))
-  if not fileok then return "Tool error: could not save tool: " .. tostring(ferr) end
+  if not fileok then return M.err(M.ERR.capability, "could not save tool: " .. tostring(ferr)) end
 
   M.registry[name] = def
   return string.format("Defined tool '%s'. It is available now and persisted to %s/%s.lua",
@@ -283,7 +289,7 @@ end
 
 local function tool_reload(a)
   local ok, err = bog.reload()
-  if not ok then return "Tool error: reload failed (old code kept): " .. tostring(err) end
+  if not ok then return M.err(M.ERR.runtime, "reload failed (old code kept): " .. tostring(err)) end
   return "Reloaded harness. Active tools: " .. table.concat(M.names(), ", ")
 end
 
@@ -344,10 +350,112 @@ end
 
 -- Run a tool by name; may return a "Tool error: ..." string or raise (the API
 -- loop turns a raise into a tool_result too).
+-- ---------------------------------------------------------------------------
+-- Execution limits for generated tools
+--
+-- A generated tool is model-written code, and the failure mode that matters is
+-- the boring one: an accidental infinite loop. Since everything now shares one
+-- libuv loop, a spinning tool does not just hang its own agent -- it stops the
+-- scheduler reaching http.pump and every other agent's token stream stalls
+-- behind it. Bounding it is what makes the shared loop safe.
+--
+-- The budget is on *instructions*, not wall clock, and that distinction is the
+-- whole design. A tool that shells out to a ten-minute build is legitimate and
+-- spends that time yielded, executing nothing; a tool stuck in `while true do
+-- end` burns instructions. Wall-clock limits would kill the first and are not
+-- needed for the second -- proc.run already carries its own timeout for I/O.
+--
+-- Enforced with a count hook. `debug` is deliberately absent from the tool
+-- environment, so a body cannot clear the hook that is watching it.
+M.LIMITS = {
+  instructions = 200e6,     -- ~a few seconds of a tight loop
+  memory_kb    = 256 * 1024,-- growth, not total: the session is already large
+  check_every  = 200000,    -- hook granularity
+  result_bytes = 1024 * 1024,
+}
+
+-- Error taxonomy. The "Tool error:" prefix is load-bearing -- api.lua tests the
+-- first 11 characters to set is_error on the tool_result -- so the kind goes
+-- after it. The point (paper §15) is that the model can tell *what to do*:
+-- fix the tool, change the invocation, or fall back to primitives. A single
+-- opaque error class leaves it guessing.
+M.ERR = {
+  validation = "validation_error",     -- bad arguments: change the invocation
+  permission = "permission_error",     -- not allowed: ask, or use another route
+  not_found  = "tool_not_found",       -- no such tool: check the name
+  runtime    = "runtime_error",        -- the body raised: fix the tool
+  timeout    = "timeout",              -- instruction budget gone: it is looping
+  resource   = "resource_limit",       -- memory: the tool needs a smaller working set
+  cancelled  = "cancelled",
+  too_large  = "result_too_large",     -- narrow the query, or read the file
+  capability = "host_capability_error",-- a host call failed: usually not the tool
+}
+
+function M.err(kind, fmt, ...)
+  local msg = select("#", ...) > 0 and string.format(fmt, ...) or tostring(fmt)
+  return string.format("Tool error: [%s] %s", kind, msg)
+end
+
+local LIMIT_SENTINEL = "\0__bog_limit__"
+
+-- Run a generated body under the instruction/memory budget.
+local function run_bounded(d, args)
+  local ticks, tripped, tripped_kind = 0, nil, M.ERR.timeout
+  local mem0 = collectgarbage("count")
+  local step = M.LIMITS.check_every
+
+  debug.sethook(function()
+    ticks = ticks + step
+    if ticks > M.LIMITS.instructions then
+      tripped = string.format("exceeded the instruction budget (%d)", M.LIMITS.instructions)
+      error(LIMIT_SENTINEL, 0)
+    end
+    if collectgarbage("count") - mem0 > M.LIMITS.memory_kb then
+      tripped_kind = M.ERR.resource
+      tripped = string.format("allocated more than %d MB", M.LIMITS.memory_kb // 1024)
+      error(LIMIT_SENTINEL, 0)
+    end
+  end, "", step)
+
+  -- pcall is yieldable in 5.4, so a body that yields through proc.run still
+  -- reaches the scheduler; the hook is per-coroutine and survives the yield.
+  local ok, res = pcall(d.run, args)
+  debug.sethook()
+
+  if not ok then
+    if tripped then return M.err(tripped_kind, "%s and was stopped", tripped) end
+    return M.err(M.ERR.runtime, tostring(res))
+  end
+  return res
+end
+
 function M.run(name, input)
   local d = M.registry[name]
-  if not d then return "Tool error: unknown tool: " .. tostring(name) end
-  return d.run(input or {})
+  if not d then
+    return M.err(M.ERR.not_found, "unknown tool: %s", tostring(name))
+  end
+
+  -- Built-ins are harness code and trusted; skipping the hook keeps read/edit
+  -- on their fast path. Only model-authored bodies carry a `body` string.
+  local res
+  if d.body then
+    res = run_bounded(d, input or {})
+  else
+    local ok, r = pcall(d.run, input or {})
+    if not ok then return M.err(M.ERR.runtime, tostring(r)) end
+    res = r
+  end
+
+  -- A tool returning 50,000 lines has defeated the purpose (paper §14): spill
+  -- to a file and hand back a head plus the path, exactly as bash and read do.
+  if type(res) ~= "string" then res = tostring(res) end
+  if #res > M.LIMITS.result_bytes then
+    local shaped = util.shape_result(res, { max_bytes = 6000, head_lines = 100 })
+    return M.err(M.ERR.too_large,
+      "%d bytes exceeds the %d byte cap. Head follows; read the saved file for the rest.\n%s",
+      #res, M.LIMITS.result_bytes, shaped)
+  end
+  return res
 end
 
 -- Populate the registry (called fresh on every load/reload).
@@ -444,18 +552,18 @@ M.register("sql", {
     required = { "sql" },
   },
   run = function(a)
-    if type(a.sql) ~= "string" then return "Tool error: sql requires 'sql'" end
+    if type(a.sql) ~= "string" then return M.err(M.ERR.validation, "sql requires 'sql'") end
     local params = a.params
     if params == json.null then params = nil end
     if a.write then
       local ok, r, e = pcall(bog.db.run, bog.db, a.sql, params)
-      if not ok then return "Tool error: " .. tostring(r) end
-      if r == nil then return "Tool error: " .. tostring(e) end
+      if not ok then return M.err(M.ERR.runtime, tostring(r)) end
+      if r == nil then return M.err(M.ERR.runtime, tostring(e)) end
       return string.format("ok: changes=%d rowid=%d", r.changes, r.rowid)
     end
     local ok, rows, e = pcall(bog.db.query, bog.db, a.sql, params)
-    if not ok then return "Tool error: " .. tostring(rows) end
-    if rows == nil then return "Tool error: " .. tostring(e) end
+    if not ok then return M.err(M.ERR.runtime, tostring(rows)) end
+    if rows == nil then return M.err(M.ERR.runtime, tostring(e)) end
     return string.format("%d row(s):\n%s", #rows, json.encode(rows))
   end,
 })
@@ -477,7 +585,7 @@ M.register("kv", {
       local v = bog.store.kv_get(a.key or "")
       return v ~= nil and v or "(nil)"
     elseif op == "set" then
-      if type(a.key) ~= "string" then return "Tool error: kv set requires 'key'" end
+      if type(a.key) ~= "string" then return M.err(M.ERR.validation, "kv set requires 'key'") end
       bog.store.kv_set(a.key, a.value or "")
       return "ok"
     elseif op == "del" then
@@ -486,7 +594,7 @@ M.register("kv", {
     elseif op == "list" then
       return json.encode(bog.store.kv_list(a.key))
     end
-    return "Tool error: kv op must be get/set/del/list"
+    return M.err(M.ERR.validation, "kv op must be get/set/del/list")
   end,
 })
 
@@ -507,9 +615,9 @@ M.register("mcp_add", {
     required = { "name" },
   },
   run = function(a)
-    if not bog.mcphost then return "Tool error: MCP host unavailable" end
+    if not bog.mcphost then return M.err(M.ERR.capability, "MCP host unavailable") end
     local names, err = bog.mcphost.add(a)
-    if not names then return "Tool error: " .. tostring(err) end
+    if not names then return M.err(M.ERR.runtime, tostring(err)) end
     return string.format("connected '%s' with %d tool(s): %s", a.name, #names, table.concat(names, ", "))
   end,
 })
