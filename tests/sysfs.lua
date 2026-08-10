@@ -55,11 +55,18 @@ for _, bad in ipairs({ "/", "", ".", ".." }) do
 end
 
 -- ---- rmtree must not follow a symlink out of the tree ----
+-- Skipped on Windows: creating a symlink there needs either an elevated
+-- process or Developer Mode, so the setup -- not the behaviour under test --
+-- is what would fail. rmtree still uses lstat on every platform.
+local WIN = package.config:sub(1, 1) == "\\"
 local outside = os.tmpname() .. "_boggart_sysfs_outside"
 sys.mkdir_p(outside)
 local keep = io.open(outside .. "/keepme.txt", "w"); keep:write("precious"); keep:close()
-sys.exec(string.format("ln -s %q %q", outside, root .. "/a/link"), 10)
-eq(sys.stat(root .. "/a/link"), "dir", "symlink to a dir stats as dir (follows)")
+
+if not WIN then
+  sys.exec(string.format("ln -s %q %q", outside, root .. "/a/link"), 10)
+  eq(sys.stat(root .. "/a/link"), "dir", "symlink to a dir stats as dir (follows)")
+end
 
 ok(sys.rmtree(root), "rmtree removes the tree")
 eq(sys.stat(root), nil, "tree is gone")

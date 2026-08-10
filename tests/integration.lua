@@ -303,8 +303,14 @@ do
   local target = bog.userdir .. "/s5_out.txt"
   -- fragments split inside keys, inside string values, and inside escapes;
   -- the whole SSE byte stream is additionally re-chunked by feed_chunked.
+  -- The path goes into a JSON *string*, so it has to be escaped: on Windows
+  -- bog.userdir is a backslash path and the raw form would be a stream of
+  -- invalid escapes. Escaping before splitting is safe precisely because the
+  -- decoder reassembles every fragment before parsing -- which is the property
+  -- under test.
+  local esc = target:gsub("\\", "\\\\")
   local frags = {
-    '{"pa', 'th', '": "', target:sub(1, 5), target:sub(6), '", "co',
+    '{"pa', 'th', '": "', esc:sub(1, 5), esc:sub(6), '", "co',
     'nten', 't": "spl', 'it', '-ok\\', 'n"}',
   }
   queue[1] = message_start()
