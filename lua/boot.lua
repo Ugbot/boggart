@@ -51,6 +51,18 @@ end
 -- embedded fallback searcher was installed at the top of this file.
 package.path = bog.userdir .. "/lua/?.lua;" .. bog.userdir .. "/lua/?/init.lua;" .. package.path
 
+-- sys.exec used to be a fork/execl/poll/waitpid implementation in C. It is now
+-- lua/proc.lua on the libuv loop: portable to Windows, and able to yield to the
+-- cooperative scheduler instead of freezing it. Installed here under the old
+-- name so every existing caller (api.lua's auth probe, gold.sh, the tests) is
+-- unchanged, and lazily so a run that never shells out does not pay for
+-- creating the loop.
+--
+-- Same contract as before: { out = <stdout+stderr>, code, timed_out, truncated }.
+function sys.exec(cmd, timeout_sec)
+  return require("proc").run(cmd, timeout_sec)
+end
+
 -- Universal error funnel (from lite's core.try): returns (ok, result_or_err)
 -- and never lets a failure unwind past the caller.
 function bog.try(fn, ...)

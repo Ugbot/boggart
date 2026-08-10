@@ -101,11 +101,16 @@ do
     return ticks
   end
 
-  local blocking = trial(function() sys.exec("sleep 1", 30) end)
-  local yielding = trial(function() proc.run("sleep 1", 30) end)
-  eq(blocking, 0, "sys.exec starves every other actor (the bug)")
-  ok(yielding > 500, "proc.run keeps peers running (" .. yielding .. " resumes)")
-  ok(yielding > blocking * 100 or blocking == 0, "non-blocking path is decisively better")
+  -- Both paths are asserted, because sys.exec is no longer a separate
+  -- implementation: boot.lua installs it as proc.run, so the old
+  -- fork/execl/poll/waitpid version in C is gone entirely. Historically the
+  -- sys.exec figure here was exactly 0 -- an agent in a shell command starved
+  -- every other actor for the command's whole duration. If either number ever
+  -- returns to ~0, the stall is back.
+  local via_proc = trial(function() proc.run("sleep 1", 30) end)
+  local via_exec = trial(function() sys.exec("sleep 1", 30) end)
+  ok(via_proc > 500, "proc.run keeps peers running (" .. via_proc .. " resumes)")
+  ok(via_exec > 500, "sys.exec keeps peers running too (" .. via_exec .. " resumes)")
 end
 
 if bog.db then bog.db:close() end

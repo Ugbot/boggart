@@ -4,7 +4,7 @@
  *   sys.mkdir_p(path)            -> true                  | nil, err
  *   sys.stat(path)               -> "file" | "dir" | nil
  *   sys.home()                   -> $HOME (or ".")
- *   sys.exec(cmd [, timeout_sec])-> { out=string, code=int, timed_out=bool }
+ *   sys.exec                     -- installed by boot.lua from lua/proc.lua
  *   sys.readline(prompt)         -> line:string | nil (EOF/^D)
  *   sys.add_history(line)        -> (void)
  *
@@ -12,17 +12,9 @@
  * the Lua standard library, so we do not re-bind them.
  */
 #include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <dirent.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <poll.h>
-#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
 
 #include "uv.h"
 
@@ -252,123 +244,15 @@ static int l_home(lua_State *L) {
 
 /* Run cmd via /bin/sh -c, capturing stdout+stderr, with an optional wall-clock
  * timeout. Runs in its own process group so a timeout kills the whole tree. */
-static int l_exec(lua_State *L) {
-  const char *cmd = luaL_checkstring(L, 1);
-  double timeout = luaL_optnumber(L, 2, 0); /* 0 => no timeout */
-
-  int pipefd[2];
-  if (pipe(pipefd) != 0) return luaL_error(L, "pipe: %s", strerror(errno));
-
-  pid_t pid = fork();
-  if (pid < 0) {
-    close(pipefd[0]);
-    close(pipefd[1]);
-    return luaL_error(L, "fork: %s", strerror(errno));
-  }
-
-  if (pid == 0) {
-    /* child */
-    setpgid(0, 0);
-    dup2(pipefd[1], STDOUT_FILENO);
-    dup2(pipefd[1], STDERR_FILENO);
-    close(pipefd[0]);
-    close(pipefd[1]);
-    int devnull = open("/dev/null", O_RDONLY);
-    if (devnull >= 0) { dup2(devnull, STDIN_FILENO); close(devnull); }
-    execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
-    _exit(127);
-  }
-
-  /* parent */
-  setpgid(pid, pid);
-  close(pipefd[1]);
-  /* Non-blocking read end: the timeout drain must never block on a child that
-   * escaped the process group (setsid/daemon) and holds the pipe open. */
-  int fl = fcntl(pipefd[0], F_GETFL, 0);
-  if (fl != -1) fcntl(pipefd[0], F_SETFL, fl | O_NONBLOCK);
-
-  luaL_Buffer out;
-  luaL_buffinit(L, &out);
-
-  const size_t MAX_OUTPUT = 16 * 1024 * 1024; /* bound memory on runaway output */
-  size_t total = 0;
-  struct timespec start;
-  clock_gettime(CLOCK_MONOTONIC, &start);
-  int timed_out = 0, truncated = 0, done = 0;
-
-  while (!done) {
-    struct pollfd pfd = { .fd = pipefd[0], .events = POLLIN };
-    int pr = poll(&pfd, 1, 200);
-    if (pr > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL))) {
-      for (;;) {
-        char buf[8192];
-        ssize_t n = read(pipefd[0], buf, sizeof(buf));
-        if (n > 0) {
-          if (total < MAX_OUTPUT) {
-            size_t take = (total + (size_t)n > MAX_OUTPUT) ? (MAX_OUTPUT - total) : (size_t)n;
-            luaL_addlstring(&out, buf, take);
-            total += take;
-            if (total >= MAX_OUTPUT) { truncated = 1; kill(-pid, SIGKILL); done = 1; break; }
-          }
-        } else if (n == 0) {
-          done = 1; break; /* EOF */
-        } else {
-          if (errno == EAGAIN || errno == EWOULDBLOCK) break; /* nothing more for now */
-          done = 1; break; /* real read error */
-        }
-      }
-      if (pfd.revents & (POLLERR | POLLNVAL)) done = 1;
-    }
-    if (!done && timeout > 0) {
-      struct timespec now;
-      clock_gettime(CLOCK_MONOTONIC, &now);
-      double elapsed = (now.tv_sec - start.tv_sec) + (now.tv_nsec - start.tv_nsec) / 1e9;
-      if (elapsed >= timeout) {
-        timed_out = 1;
-        kill(-pid, SIGTERM);
-        struct timespec ts = { .tv_sec = 1, .tv_nsec = 0 };
-        nanosleep(&ts, NULL);
-        kill(-pid, SIGKILL);
-        /* drain already-buffered bytes; non-blocking, so this cannot hang even
-         * if a daemonized grandchild still holds the pipe open */
-        for (;;) {
-          char buf[8192];
-          ssize_t n = read(pipefd[0], buf, sizeof(buf));
-          if (n > 0 && total < MAX_OUTPUT) {
-            size_t take = (total + (size_t)n > MAX_OUTPUT) ? (MAX_OUTPUT - total) : (size_t)n;
-            luaL_addlstring(&out, buf, take);
-            total += take;
-          } else {
-            break;
-          }
-        }
-        done = 1;
-      }
-    }
-  }
-  close(pipefd[0]);
-
-  int status = 0;
-  waitpid(pid, &status, 0); /* reaps the direct child (killed on timeout/cap) */
-  int code = WIFEXITED(status) ? WEXITSTATUS(status)
-             : WIFSIGNALED(status) ? 128 + WTERMSIG(status)
-             : -1;
-
-  /* Finalize the buffer FIRST (its boxed userdata must stay on the stack top
-   * until pushresult); only then build the result table. */
-  luaL_pushresult(&out);          /* [str] */
-  lua_newtable(L);                /* [str][tbl] */
-  lua_pushvalue(L, -2);           /* [str][tbl][str] */
-  lua_setfield(L, -2, "out");     /* [str][tbl] */
-  lua_pushinteger(L, code);
-  lua_setfield(L, -2, "code");
-  lua_pushboolean(L, timed_out);
-  lua_setfield(L, -2, "timed_out");
-  lua_pushboolean(L, truncated);
-  lua_setfield(L, -2, "truncated");
-  lua_remove(L, -2);              /* drop the leftover [str] -> [tbl] */
-  return 1;
-}
+/* sys.exec used to live here: a fork/execl/pipe/poll/waitpid implementation,
+ * ~115 lines of POSIX that had no Windows counterpart and blocked its caller
+ * for the whole life of the child. It is gone. lua/proc.lua does the same job
+ * on the libuv loop -- portable, and able to yield to the scheduler -- and
+ * boot.lua installs it as sys.exec so every existing caller is unchanged.
+ *
+ * Removing it is what takes the last fork/exec/poll/waitpid out of this file,
+ * and with them <unistd.h>, <sys/wait.h>, <poll.h>, <dirent.h>, <fcntl.h>,
+ * <signal.h> and <sys/types.h>. */
 
 /* isocline rather than linenoise: linenoise is termios/ioctl throughout with
  * no Windows port, so the REPL had no line editor there at all. isocline
@@ -413,7 +297,6 @@ static const luaL_Reg sys_lib[] = {
   {"mkdir_p", l_mkdir_p},
   {"stat", l_stat},
   {"home", l_home},
-  {"exec", l_exec},
   {"readline", l_readline},
   {"add_history", l_add_history},
   {"history_file", l_history_file},
