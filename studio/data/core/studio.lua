@@ -358,6 +358,40 @@ function studio.pick(mode, on_pick)
   return studio.picker
 end
 
+-- Work in a folder: the agent's working directory, the file tree, and the
+-- window title all move together.
+--
+-- The agent's tools resolve relative paths against the process's working
+-- directory, so this is a real chdir rather than a setting -- and everything
+-- derived from it has to be told: the cached git project root (which decides
+-- where project-scoped tools are filed), the file scanner, and the tree, which
+-- caches per path. The model is told by the system prompt, which now states
+-- the working directory and is rebuilt each turn.
+function studio.work_in(path)
+  if sys.stat(path) ~= "dir" then
+    core.error("%s is not a directory", tostring(path))
+    return false
+  end
+  local ok, err = pcall(system.chdir, path)
+  if not ok then
+    core.error("cannot work in %s: %s", path, tostring(err))
+    return false
+  end
+
+  if bog.tools and bog.tools.forget_project then bog.tools.forget_project() end
+  core.project_roots = {}
+  core.project_files = {}
+
+  local tree = package.loaded["plugins.treeview"]
+  if type(tree) == "table" and tree.cache then tree.cache = {} end
+
+  system.set_window_title(path:match("[^/\\]+$") or path)
+  studio.say("Working in %s. The agent's read, write, edit, list and bash now "
+    .. "resolve relative paths here.", path)
+  core.log("working in %s", path)
+  return true
+end
+
 -- Add a folder to the project. The scanner picks it up on its next pass, so
 -- the tree and ctrl+p find it without anything having to be told twice.
 function studio.add_folder(path)
@@ -862,7 +896,19 @@ command.add(nil, {
     end)
   end,
 
+  -- Choosing a folder means working in it. That is what people mean by it, and
+  -- what the first version got wrong: it added the folder to the file tree and
+  -- left the agent standing in whatever directory boggart was launched from,
+  -- so the tree showed one project while read and bash operated on another.
   ["studio:open-folder"] = function()
+    studio.pick("folder", function(path)
+      if path then studio.work_in(path) end
+    end)
+  end,
+
+  -- The old behaviour, kept and named honestly: another tree to search and
+  -- open from, without moving the agent.
+  ["studio:add-folder"] = function()
     studio.pick("folder", function(path)
       if path then studio.add_folder(path) end
     end)
@@ -1019,6 +1065,7 @@ keymap.add {
   ["ctrl+shift+l"]    = "agent:library",
   ["ctrl+o"]          = "studio:open-file",
   ["ctrl+shift+o"]    = "studio:open-folder",
+  ["ctrl+alt+o"]      = "studio:add-folder",
   ["ctrl+shift+m"]    = "swarm:open",
 }
 

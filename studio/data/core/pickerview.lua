@@ -162,12 +162,27 @@ function PickerView:on_key_pressed(key)
   local list = self:visible_entries()
   if key == "escape" then self:cancel(); return true
   elseif key == "return" then
-    if self.mode == "folder" and self.filter == "" and #list > 0
-       and list[self.selected] and not list[self.selected].dir then
-      self:choose_current()
+    -- In folder mode Enter CHOOSES; right-arrow descends. The other way round
+    -- leaves no key for "this one", and the obvious candidate is taken:
+    -- ctrl+return is bound to toggling the agent panel, and a bound command
+    -- always beats a view, so the picker never saw it.
+    if self.mode == "folder" then
+      local e = list[self.selected]
+      if e and e.dir and not e.up then
+        self:finish(self.dir .. PATHSEP .. e.name)
+      else
+        self:choose_current()
+      end
     else
       self:choose()
     end
+    return true
+  elseif key == "right" then
+    local e = list[self.selected]
+    if e then self:choose(e) end       -- descend, in both modes
+    return true
+  elseif key == "left" then
+    self:cd(self.dir .. PATHSEP .. "..")
     return true
   elseif key == "backspace" then
     if self.filter ~= "" then self.filter = self.filter:sub(1, -2)
@@ -177,8 +192,6 @@ function PickerView:on_key_pressed(key)
     self.selected = math.max(1, self.selected - 1); core.redraw = true; return true
   elseif key == "down" then
     self.selected = math.min(#list, self.selected + 1); core.redraw = true; return true
-  elseif key == "ctrl+return" or key == "cmd+return" then
-    self:choose_current(); return true
   end
   return false
 end
@@ -227,7 +240,9 @@ function PickerView:draw()
   local y = self.position.y + vpad
 
   common.draw_text(font, style.dim,
-    self.mode == "folder" and "Choose a folder" or "Open a file",
+    self.mode == "folder"
+      and "Choose a folder to work in -- enter chooses, right arrow opens"
+      or "Open a file -- enter opens, left arrow goes up",
     "left", x, y, w, lh)
   y = y + lh
   common.draw_text(font, style.text, self.dir, "left", x, y, w, lh)

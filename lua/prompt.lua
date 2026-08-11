@@ -115,12 +115,38 @@ function M.shell_note()
   }, "\n")
 end
 
+-- Where the agent is standing.
+--
+-- The prompt never said. Relative paths in read, write, edit, list and bash all
+-- resolve against the process's working directory, and the model was left to
+-- infer it from whatever a tool happened to return -- or to spend a turn
+-- running pwd. It matters more now that the directory can change while the
+-- session is running: someone picks a folder in the GUI, and without this the
+-- model carries on reasoning about the old one.
+--
+-- Deliberately last and uncached: it is small, and it is the one part of the
+-- prompt that can change mid-session, so it must not sit inside a cached block.
+function M.place()
+  local cwd = sys.cwd()
+  -- The cached root only. Computing it runs git, and a system prompt is built
+  -- from places that cannot absorb a subprocess yield; whichever tool needed
+  -- the root will have filled the cache already.
+  local root = bog.tools and bog.tools.project_root_cached
+    and bog.tools.project_root_cached()
+  local text = "# Where you are\nWorking directory: " .. cwd
+  if root and root ~= cwd then
+    text = text .. "\nProject root (git): " .. root
+  end
+  return text .. "\nRelative paths in read/write/edit/list/bash resolve here."
+end
+
 function M.system()
   local mem = bog.memory.index_text()
   return {
     { type = "text", text = DISCIPLINE, cache_control = { type = "ephemeral" } },
     { type = "text", text = M.shell_note() },
     { type = "text", text = "# Memory (durable, from earlier sessions)\n" .. mem },
+    { type = "text", text = M.place() },
   }
 end
 

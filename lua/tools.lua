@@ -243,6 +243,21 @@ M.SCOPES = { session = true, project = true, ["global"] = true }
 -- directory. The git root is the better key because it is stable no matter
 -- which subdirectory the agent happens to be started from.
 local project_cache = nil
+-- Drop the cached project root. Needed when the working directory changes
+-- while the process is running -- which it now can, because the GUI lets you
+-- choose a folder to work in. Without this, project-scoped tools would keep
+-- being filed under the directory boggart happened to start in.
+function M.forget_project() project_cache = nil end
+
+-- The project root only if it is already known.
+--
+-- project_root() shells out to `git rev-parse`, and proc.run yields
+-- ("proc", handle) when it is called from inside a coroutine -- correct under
+-- boggart's scheduler, and fatal anywhere else, because the editor's thread
+-- runner expects a yield to be a number of seconds. Callers that merely want
+-- to *report* the root must not be the ones to compute it.
+function M.project_root_cached() return project_cache end
+
 function M.project_root()
   if project_cache then return project_cache end
   local r = require("proc").run("git rev-parse --show-toplevel", 10)
