@@ -39,6 +39,22 @@ local ROLE = {
 -- list and the model's own helpers are not worth interrupting for.
 local GATED = { write = true, edit = true, bash = true }
 
+-- Permission modes. The same four goose settled on, because the space really
+-- does have four useful points in it: never ask, always ask, ask about the
+-- things that can break something, and do not use tools at all.
+--
+-- "smart" is the default and is not a risk model -- it is the GATED list
+-- above. Calling it a judgement about risk would be overselling a table.
+local MODES = {
+  { id = "auto",   label = "Autonomous",     help = "tools run without asking" },
+  { id = "smart",  label = "Smart approval", help = "ask before writes, edits and commands" },
+  { id = "manual", label = "Manual approval", help = "ask before every tool" },
+  { id = "chat",   label = "Chat only",      help = "no tools at all" },
+}
+local MODE_BY_ID = {}
+for _, m in ipairs(MODES) do MODE_BY_ID[m.id] = m end
+AgentView.MODES = MODES
+
 function AgentView:new()
   AgentView.super.new(self)
   self.scrollable = true
@@ -47,7 +63,8 @@ function AgentView:new()
   self.co = nil
   self.status = "idle"
   self.approve_all = false     -- "always allow" for this session
-  self.gate = true             -- approval on by default, like goose/codex
+  self.mode = "smart"          -- approval on by default, like goose/codex
+  self.tool_policy = {}        -- name -> "allow" | "ask" | "deny", overrides mode
   self.pending = nil           -- { name, input, diff, path, decision }
   self.history, self.hpos = {}, 0
 
@@ -233,6 +250,35 @@ function AgentView:request_approval(name, input)
   return rec
 end
 
+-- What should happen when the model calls `name`: "allow", "ask" or "deny".
+-- An explicit per-tool policy always wins over the mode, which is the point of
+-- having one -- "manual approval, except never ask about read" is a reasonable
+-- thing to want and a mode alone cannot express it.
+function AgentView:policy_for(name)
+  local explicit = self.tool_policy[name]
+  if explicit then return explicit end
+  if self.mode == "chat" then return "deny" end
+  if self.mode == "auto" then return "allow" end
+  if self.approve_all then return "allow" end
+  if self.mode == "manual" then return "ask" end
+  return GATED[name] and "ask" or "allow"   -- smart
+end
+
+function AgentView:mode_label()
+  local m = MODE_BY_ID[self.mode]
+  return m and m.label or self.mode
+end
+
+function AgentView:set_mode(id)
+  if not MODE_BY_ID[id] then return false end
+  self.mode = id
+  self.approve_all = false   -- a mode change is an explicit re-decision
+  self:push("system", "mode: " .. self:mode_label()
+    .. " -- " .. MODE_BY_ID[id].help)
+  core.redraw = true
+  return true
+end
+
 function AgentView:decide(decision)
   if not self.pending then return end
   if decision == "always" then
@@ -265,6 +311,21 @@ function AgentView:submit(text)
       {
         async = true,
 
+        -- Chat-only withholds the schemas rather than only refusing the calls.
+        -- Denying a tool the model can see invites it to keep trying; a model
+        -- that was never offered one simply answers.
+        tools = (self.mode == "chat") and function() return {} end or nil,
+
+        -- Compaction is not a silent event. Losing the earlier conversation
+        -- without being told is how you end up puzzled that the agent forgot
+        -- something you definitely said.
+        on_compact = function()
+          self:push("system", string.format(
+            "context compacted (%d/%d tokens) -- earlier turns replaced by a summary",
+            select(2, bog.api.context_fraction(bog.session)),
+            bog.api.context_limit(bog.session)))
+        end,
+
         on_tool = function(name, input)
           local hint = ""
           if type(input) == "table" then
@@ -280,7 +341,14 @@ function AgentView:submit(text)
         -- continues from the same place whichever way the user decides.
         run_tool = function(name, input)
           input = input or {}
-          if self.gate and not self.approve_all and GATED[name] then
+          local policy = self:policy_for(name)
+          if policy == "deny" then
+            self:push("system", "blocked: " .. name)
+            return "Tool error: [permission_error] the user's settings do not "
+              .. "permit the " .. name .. " tool. Do not retry it; say what you "
+              .. "would have done and ask."
+          end
+          if policy == "ask" then
             local rec = self:request_approval(name, input)
             if rec then
               self.pending = rec
@@ -476,8 +544,7 @@ function AgentView:on_key_pressed(key)
     return true
 
   elseif key == "ctrl+g" then
-    self.gate = not self.gate
-    self:push("system", "approval " .. (self.gate and "on" or "off"))
+    self:set_mode(self.mode == "auto" and "smart" or "auto")
     return true
 
   elseif key == "escape" then

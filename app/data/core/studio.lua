@@ -13,6 +13,7 @@ local command = require "core.command"
 local keymap = require "core.keymap"
 local style = require "core.style"
 local AgentView = require "core.agentview"
+local recipes = require "core.recipes"
 
 local studio = {}
 
@@ -98,16 +99,30 @@ function studio.status_items()
   local v = studio.agent_view()
   local out = { style.dim, "agent ", style.text, (bog.session and bog.session.model) or "?" }
 
-  -- Token usage: what this conversation has cost, and how big the next
-  -- request will be. The second number is the one that predicts a compaction.
+  -- Token usage: what this conversation has cost, and how full the context is.
+  -- The percentage is the actionable one -- it says when a compaction is
+  -- coming -- so it gets a colour when it matters instead of being one more
+  -- grey number.
   local u = bog.session and bog.session.usage
   if u and u.turns and u.turns > 0 then
     out[#out + 1] = style.dim
     out[#out + 1] = string.format("  %s in / %s out",
       human_tokens((u.input or 0) + (u.cached or 0)), human_tokens(u.output))
-    if u.last_input and u.last_input > 0 then
-      out[#out + 1] = "  ctx " .. human_tokens(u.last_input)
+  end
+  if bog.api and bog.api.context_fraction then
+    local frac, used = bog.api.context_fraction(bog.session)
+    if used > 0 then
+      local ratio = bog.api.COMPACT_RATIO or 0.8
+      out[#out + 1] = (frac >= ratio and (style.warn or style.accent))
+        or (frac >= ratio * 0.75 and style.text) or style.dim
+      out[#out + 1] = string.format("  ctx %s (%d%%)", human_tokens(used), frac * 100 + 0.5)
     end
+  end
+
+  if studio.schedule then
+    out[#out + 1] = style.dim
+    out[#out + 1] = string.format("  [every %gm: %s]",
+      studio.schedule.minutes, studio.schedule.name)
   end
 
   if v then
@@ -117,12 +132,19 @@ function studio.status_items()
     elseif v.busy then
       out[#out + 1] = style.dim
       out[#out + 1] = "  [" .. (v.status or "busy") .. "]"
-    elseif not v.gate then
-      out[#out + 1] = style.warn or style.dim
-      out[#out + 1] = "  [approval off]"
+    elseif v.mode ~= "smart" then
+      out[#out + 1] = (v.mode == "auto" and (style.warn or style.dim)) or style.dim
+      out[#out + 1] = "  [" .. v:mode_label():lower() .. "]"
     end
   end
   return out
+end
+
+function studio.stop_schedule()
+  if not studio.schedule then return false end
+  studio.schedule.stop = true
+  studio.schedule = nil
+  return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -195,15 +217,85 @@ command.add(nil, {
   -- ---- approval -----------------------------------------------------------
   ["agent:toggle-approval"] = function()
     local v = studio.open_agent()
-    v.gate = not v.gate
-    core.log("approval %s", v.gate and "on -- writes, edits and commands will ask"
-                                    or "OFF -- the agent acts without asking")
+    v:set_mode(v.mode == "auto" and "smart" or "auto")
+    core.log("mode: %s", v:mode_label())
+  end,
+
+  ["agent:set-mode"] = function()
+    local v = studio.open_agent()
+    local items, byname = {}, {}
+    for _, m in ipairs(v.MODES) do
+      local label = string.format("%s -- %s", m.label, m.help)
+      items[#items + 1] = label
+      byname[label] = m.id
+    end
+    core.command_view:enter("Permission mode:", function(text, item)
+      local id = byname[item or text]
+      if id then v:set_mode(id) end
+    end, function(text) return common.fuzzy_match(items, text) end)
+  end,
+
+  -- Per-tool overrides, because a mode alone cannot say "ask about everything
+  -- except read".
+  ["agent:tool-permission"] = function()
+    local v = studio.open_agent()
+    local names = {}
+    for _, t in ipairs(bog.tools.schemas()) do names[#names + 1] = t.name end
+    table.sort(names)
+    core.command_view:enter("Tool:", function(text, item)
+      local name = item or text
+      if name == "" then return end
+      local choices = { "ask", "allow", "deny", "default (follow the mode)" }
+      core.command_view:enter("Permission for " .. name .. ":", function(t2, i2)
+        local pick = i2 or t2
+        v.tool_policy[name] = (pick ~= "default (follow the mode)") and pick or nil
+        v:push("system", string.format("%s: %s", name, v:policy_for(name)))
+        core.log("%s -> %s", name, v:policy_for(name))
+      end, function(t2) return common.fuzzy_match(choices, t2) end)
+    end, function(text) return common.fuzzy_match(names, text) end)
+  end,
+
+  ["agent:show-permissions"] = function()
+    local v = studio.open_agent()
+    core.log_quiet("mode: %s", v:mode_label())
+    local any = false
+    for name, p in pairs(v.tool_policy) do
+      core.log_quiet("  %s = %s", name, p); any = true
+    end
+    core.log("mode %s%s (details in the log)", v:mode_label(),
+      any and ", with per-tool overrides" or "")
   end,
   ["agent:approve"] = function()
     local v = studio.agent_view(); if v then v:decide("approve") end
   end,
   ["agent:reject"] = function()
     local v = studio.agent_view(); if v then v:decide("reject") end
+  end,
+
+  -- ---- context ------------------------------------------------------------
+  ["agent:compact-now"] = function()
+    local v = studio.agent_view()
+    if v and v.busy then core.error("busy -- cancel the turn first"); return end
+    local frac, used = bog.api.context_fraction(bog.session)
+    if used == 0 then core.log("nothing to compact"); return end
+    core.log("compacting %d tokens (%d%%)...", used, frac * 100 + 0.5)
+    -- Synchronous on purpose: this is a deliberate, user-initiated pause, and
+    -- the alternative is a second concurrent turn against the same session.
+    local ok, err = pcall(bog.api.compact, bog.session, {})
+    if not ok then core.error("compaction failed: %s", tostring(err)); return end
+    if v then
+      v:repaint(bog.session.messages)
+      v:push("system", "context compacted by hand")
+    end
+    core.log("compacted -- now %d tokens", select(2, bog.api.context_fraction(bog.session)))
+  end,
+
+  ["agent:show-context"] = function()
+    local frac, used = bog.api.context_fraction(bog.session)
+    core.log("context %d / %d tokens (%d%%), compacts at %d%%; %d compaction(s) so far",
+      used, bog.api.context_limit(bog.session), frac * 100 + 0.5,
+      (bog.api.COMPACT_RATIO or 0.8) * 100,
+      (bog.session.usage and bog.session.usage.compactions) or 0)
   end,
 
   -- ---- usage --------------------------------------------------------------
@@ -347,6 +439,147 @@ command.add(nil, {
         .. "return {\n}\n")
     end
     core.root_view:open_doc(core.open_doc(path))
+  end,
+
+  -- ---- editing the conversation -------------------------------------------
+  -- Both of these rewrite history, so they operate on bog.session.messages --
+  -- the thing the model actually sees -- and repaint the panel from it
+  -- afterwards. Editing the transcript without editing the messages would give
+  -- you a panel that disagrees with the conversation.
+  ["agent:edit-message"] = function()
+    local v = studio.open_agent()
+    if v.busy then core.error("busy -- cancel the turn first"); return end
+    local items, byname = {}, {}
+    for i, m in ipairs(bog.session.messages) do
+      if m.role == "user" and type(m.content) == "string" then
+        local label = string.format("%d: %s", i,
+          m.content:gsub("%s+", " "):sub(1, 70))
+        items[#items + 1] = label
+        byname[label] = i
+      end
+    end
+    if #items == 0 then core.log("no editable messages yet"); return end
+    core.command_view:enter("Edit which message:", function(text, item)
+      local idx = byname[item or text]
+      if not idx then return end
+      local original = bog.session.messages[idx].content
+      prompt("Edited message:", function(edited)
+        if edited == "" then return end
+        prompt("[e]dit in place or [f]ork to a new session?", function(choice)
+          local fork = choice:sub(1, 1):lower() == "f"
+          local kept = {}
+          for i = 1, idx - 1 do kept[i] = bog.session.messages[i] end
+          if fork then
+            bog.new_session()
+            core.log("forked to session %s", tostring(bog.session.id))
+          end
+          -- Everything after the edited message described a conversation that
+          -- no longer happened, so it goes either way. Fork differs only in
+          -- whether the original session keeps its copy.
+          bog.session.messages = kept
+          v:repaint(bog.session.messages)
+          v:push("system", fork and ("forked at message " .. idx)
+                                 or ("edited message " .. idx
+                                     .. "; later turns discarded"))
+          v:submit(edited)
+        end, "e")
+      end, original)
+    end, function(text) return common.fuzzy_match(items, text) end)
+  end,
+
+  -- ---- recipes ------------------------------------------------------------
+  ["agent:run-recipe"] = function()
+    local names = recipes.list()
+    if #names == 0 then
+      core.log("no recipes yet -- 'agent: save recipe' stores the current draft")
+      return
+    end
+    core.command_view:enter("Recipe:", function(text, item)
+      local name = item or text
+      local body = recipes.load(name)
+      if not body then core.error("no recipe '%s'", name); return end
+      local v = studio.open_agent()
+      recipes.prompt_params(body, function(filled)
+        v:push("system", "recipe: " .. name)
+        v:submit(v:expand_mentions(filled))
+      end)
+    end, function(text) return common.fuzzy_match(names, text) end)
+  end,
+
+  ["agent:save-recipe"] = function()
+    local v = studio.open_agent()
+    local draft = v:input_text()
+    if draft == "" then
+      core.error("nothing in the input to save -- type the prompt first")
+      return
+    end
+    prompt("Recipe name:", function(name)
+      if name == "" then return end
+      name = name:gsub("[^%w_%-]", "-")
+      local path = recipes.save(name, draft)
+      local params = recipes.params(draft)
+      core.log("saved %s%s", path, #params > 0
+        and (" (parameters: " .. table.concat(params, ", ") .. ")") or "")
+      v:push("system", "saved recipe '" .. name .. "' -- {{name}} marks a parameter")
+    end)
+  end,
+
+  ["agent:edit-recipe"] = function()
+    local names = recipes.list()
+    if #names == 0 then core.log("no recipes yet"); return end
+    core.command_view:enter("Edit recipe:", function(text, item)
+      local name = item or text
+      if recipes.load(name) then
+        core.root_view:open_doc(core.open_doc(recipes.path(name)))
+      end
+    end, function(text) return common.fuzzy_match(names, text) end)
+  end,
+
+  -- ---- scheduler ----------------------------------------------------------
+  -- In-process and while-the-window-is-open only. A scheduler that outlives
+  -- the app would need a daemon, a persisted queue and a story for what
+  -- happens when a run wants approval while nobody is watching -- and boggart
+  -- already has `boggart swarm` for unattended work. This is the small honest
+  -- version: repeat a recipe on an interval, visibly, in front of you.
+  ["agent:schedule-recipe"] = function()
+    local names = recipes.list()
+    if #names == 0 then core.log("no recipes to schedule"); return end
+    core.command_view:enter("Schedule recipe:", function(text, item)
+      local name = item or text
+      local body = recipes.load(name)
+      if not body then return end
+      if #recipes.params(body) > 0 then
+        core.error("'%s' takes parameters; schedule only runs fixed prompts", name)
+        return
+      end
+      prompt("Every how many minutes:", function(mins)
+        local n = tonumber(mins)
+        if not n or n <= 0 then core.error("not a number of minutes"); return end
+        studio.stop_schedule()
+        local v = studio.open_agent()
+        studio.schedule = { name = name, minutes = n, runs = 0, stop = false }
+        core.add_thread(function()
+          while studio.schedule and not studio.schedule.stop do
+            for _ = 1, math.floor(n * 60 / 0.5) do
+              if not studio.schedule or studio.schedule.stop then return end
+              coroutine.yield(0.5)
+            end
+            if studio.schedule and not studio.schedule.stop and not v.busy then
+              studio.schedule.runs = studio.schedule.runs + 1
+              v:push("system", string.format("scheduled run %d of '%s'",
+                studio.schedule.runs, name))
+              v:submit(body)
+            end
+          end
+        end)
+        core.log("'%s' every %g min -- 'agent: stop schedule' to cancel", name, n)
+      end, "30")
+    end, function(text) return common.fuzzy_match(names, text) end)
+  end,
+
+  ["agent:stop-schedule"] = function()
+    if studio.stop_schedule() then core.log("schedule stopped")
+    else core.log("nothing scheduled") end
   end,
 
   -- ---- build / run --------------------------------------------------------

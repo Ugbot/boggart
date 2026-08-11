@@ -421,16 +421,67 @@ approaches, known bugs, and pending next steps. Do not invent facts, do not
 include raw file contents, and do not call tools. Output only the summary.
 ]]
 
+-- Context windows, by model. Only used to decide when to compact, so being
+-- approximately right is enough; sess.context_limit overrides for anything not
+-- listed, and a local server can be told its own number.
+M.CONTEXT = {
+  default = 200000,
+  ["claude-opus-5"] = 200000,
+  ["claude-sonnet-5"] = 200000,
+  ["claude-haiku-4-5-20251001"] = 200000,
+}
+M.COMPACT_RATIO = 0.8   -- compact at 80% of the window, as goose does
+
+function M.context_limit(sess)
+  sess = sess or bog.session
+  return sess.context_limit or M.CONTEXT[sess.model] or M.CONTEXT.default
+end
+
+-- How full the context is, in tokens, and where the number came from.
+--
+-- Prefer the measured size of the last request: it is the only figure that
+-- accounts for the system prompt, the tool schemas and the cache, none of
+-- which are in sess.messages. Before the first response there is nothing to
+-- measure, so fall back to characters/4 -- crude, but it only has to be good
+-- enough to catch a resumed session that is already enormous.
+function M.context_used(sess)
+  sess = sess or bog.session
+  local u = sess.usage
+  if u and u.last_input and u.last_input > 0 then return u.last_input, "measured" end
+  local total = 0
+  for _, m in ipairs(sess.messages) do total = total + #msg_text(m) end
+  return total // 4, "estimated"
+end
+
+-- Fraction of the window in use, 0..1+. What the UI shows.
+function M.context_fraction(sess)
+  sess = sess or bog.session
+  local used = M.context_used(sess)
+  return used / M.context_limit(sess), used
+end
+
 -- maybe_compact(sess?, opts?) -- defaults to the single-agent session + sync.
 function M.maybe_compact(sess, opts)
+  sess = sess or bog.session
+  local used, how = M.context_used(sess)
+  local limit = M.context_limit(sess)
+  if used < limit * (sess.compact_ratio or M.COMPACT_RATIO) then return false end
+  bog.log(string.format("context %d/%d tokens (%s) -- compacting", used, limit, how))
+  return M.compact(sess, opts)
+end
+
+-- Compact unconditionally. Separate from maybe_compact so the UI can offer it
+-- before you hit the threshold, which is when you actually want it: at a
+-- natural break, not in the middle of a tool chain.
+function M.compact(sess, opts)
   sess = sess or bog.session
   opts = opts or {}
   local stream = opts.async and stream_async or stream_once
   local system = opts.system or function() return bog.prompt.system() end
 
+  if #sess.messages == 0 then return false end
   local total = 0
   for _, m in ipairs(sess.messages) do total = total + #msg_text(m) end
-  if total < (sess.compact_at or 400000) then return end
 
   bog.log(string.format("compacting context (~%d chars)...", total))
   local copy = {}
@@ -460,6 +511,17 @@ function M.maybe_compact(sess, opts)
     newmsgs[1] = { role = "user", content = preamble }
   end
   sess.messages = newmsgs
+
+  -- Forget the measured size. It described the request *before* compaction,
+  -- and leaving it in place would keep the threshold tripped on every
+  -- subsequent turn -- compacting an already-compacted conversation in a loop
+  -- until there was nothing left of it. The next response measures the truth.
+  if sess.usage then
+    sess.usage.last_input = nil
+    sess.usage.compactions = (sess.usage.compactions or 0) + 1
+  end
+  if opts.on_compact then opts.on_compact(summary) end
+  return true
 end
 
 -- ---- the turn loop ---------------------------------------------------------
