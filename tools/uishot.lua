@@ -151,6 +151,54 @@ core.add_thread(function()
       "sidebar width is " .. tostring(studio.sidebar.size.x) .. " (collapsed)")
     check_hits("representative")
 
+    -- ---- scrolling reaches the bottom -------------------------------------
+    --
+    -- Two bugs lived here, and neither is visible in a screenshot: the
+    -- scrollable height omitted the toolbar, so the last inch of transcript
+    -- could not be reached; and "am I at the bottom?" was asked of the layout
+    -- AFTER the new content had grown it, so any message taller than six lines
+    -- stopped the panel following the tail -- which is every code block and
+    -- every diff.
+    do
+      local saved = v.entries
+      v.entries = {}
+      for i = 1, 80 do v:push("assistant", "scroll probe line " .. i) end
+      frame(4)
+      v.scroll.y = v.scroll.to.y
+      v:draw()
+      local max = math.max(0, (v.content_height or 0) - v.size.y)
+      check(math.abs(v.scroll.to.y - max) < 2,
+        string.format("a fresh transcript does not scroll to the bottom "
+          .. "(at %.0f of %.0f)", v.scroll.to.y, max))
+      -- The one that matters, and the one a self-consistent maximum cannot
+      -- answer: with the view scrolled as far as it goes, is the end of the
+      -- transcript actually on screen?
+      check(v.content_bottom_y and v.content_bottom_y <= v.body_bottom_y + 1,
+        string.format("scrolled fully down, the transcript still ends %.0f px "
+          .. "below the visible area", (v.content_bottom_y or 0) - (v.body_bottom_y or 0)))
+
+      local tall = {}
+      for i = 1, 30 do tall[i] = "tall line " .. i end
+      v:push("assistant", table.concat(tall, "\n"))
+      frame(4)
+      v.scroll.y = v.scroll.to.y
+      v:draw()
+      max = math.max(0, (v.content_height or 0) - v.size.y)
+      check(math.abs(v.scroll.to.y - max) < 2,
+        "a message taller than the slack stops the panel following the tail")
+
+      v.scroll.to.y, v.scroll.y = 0, 0
+      v:draw()
+      v:push("assistant", "arrived while reading history")
+      frame(3)
+      check(v.scroll.to.y < 50,
+        "a new message yanks the view down while the user is reading history")
+
+      v.entries = saved
+      v.scroll.to.y, v.scroll.y = 0, 0
+      frame(2)
+    end
+
     -- Focusing the conversation must also bring its tab forward. Taking only
     -- the keyboard leaves you typing into a panel the window is not showing.
     core.set_active_view(studio.open_agent())

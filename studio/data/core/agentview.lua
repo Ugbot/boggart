@@ -1208,13 +1208,49 @@ function AgentView:draw()
       "center", self.position.x, body_top, self.size.x, body_bottom - body_top)
   end
 
-  self.content_height = (y + self.scroll.y) - body_top + composer_h + pending_h
+  -- The scrollable height, in the terms lite's View uses: it clamps scrolling
+  -- at get_scrollable_size() - size.y, so this must be the height that makes
+  -- that expression the real maximum.
+  --
+  -- The body is not the view. Three bands are subtracted from it -- the
+  -- toolbar above, the composer below, and the approval bar when there is one
+  -- -- so the visible body is size.y - toolbar_h - composer_h - pending_h, and
+  -- the maximum scroll is the content height minus THAT. This line used to
+  -- omit toolbar_h, which made the maximum short by exactly the toolbar's
+  -- height: the last inch of the transcript could not be scrolled to, and the
+  -- newest message sat under the composer no matter how far you scrolled. The
+  -- trailing vpad is so the final line clears the composer instead of touching
+  -- it.
+  -- Where the transcript actually ended this frame, in screen coordinates, and
+  -- the band it had to fit inside. Recorded rather than recomputed by the
+  -- checks: a test that derives these from the same arithmetic it is testing
+  -- agrees with a wrong answer. tools/uishot.lua asserts the first is above
+  -- the second once scrolled to the end.
+  self.content_bottom_y = y
+  self.body_bottom_y = body_bottom
+
+  -- "Were we at the bottom?" has to be asked of the layout the user was
+  -- looking at, which is last frame's, not the one just computed.
+  --
+  -- This compared the scroll position against the NEW maximum, after the new
+  -- content had already made it taller. Anything arriving that was taller than
+  -- the six-line slack -- a code block, a diff, most real answers -- moved the
+  -- bottom further than the test allowed, so the panel decided the user had
+  -- scrolled away and stopped following, exactly when the newest text was the
+  -- thing worth seeing. Streaming hid it, because chunks arrive a few
+  -- characters at a time; a message pushed whole did not.
+  local prev_max = math.max(0, (self.content_height or 0) - self.size.y)
+  local was_at_bottom = self.scroll.to.y >= prev_max - lh * 2
+
+  self.content_height = (y + self.scroll.y) - body_top
+    + toolbar_h + composer_h + pending_h + vpad
 
   if self.scroll_to_end then
     self.scroll_to_end = false
-    local max = math.max(0, self.content_height - self.size.y)
-    if self.scroll.to.y > max - lh * 6 or self.busy then
-      self.scroll.to.y = max
+    -- While a turn is running, follow regardless: the user has not scrolled,
+    -- they are watching it arrive.
+    if was_at_bottom or self.busy then
+      self.scroll.to.y = math.max(0, self.content_height - self.size.y)
     end
   end
 
