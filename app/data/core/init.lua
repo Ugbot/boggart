@@ -125,6 +125,15 @@ function core.init()
   local got_user_error = not core.try(require, "user")
   local got_project_error = not core.load_project_module()
 
+  -- A scripted entry point, for driving the GUI without a human at the
+  -- keyboard. The panel-attachment bug this exists to catch was invisible to
+  -- every headless test of the view -- the view was fine; it was never added
+  -- to the node tree -- and only a rendered frame showed it. Deliberately an
+  -- environment variable rather than a flag: it must not clobber the user
+  -- module, which is the file a person keeps their own config in.
+  local script = os.getenv("BOGGART_STUDIO_SCRIPT")
+  if script then core.try(dofile, script) end
+
   for _, filename in ipairs(files) do
     core.root_view:open_doc(core.open_doc(filename))
   end

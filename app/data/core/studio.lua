@@ -20,10 +20,15 @@ local studio = {}
 -- The panel
 -- ---------------------------------------------------------------------------
 
+-- Is the panel still on screen?
+--
+-- Asked of the node tree, not of the view: lite never sets view.node, so the
+-- obvious-looking studio.view.node check was nil every time -- which silently
+-- disabled the status indicator, cancel, approve and reject, and made every
+-- "open panel" split a fresh panel instead of focusing the existing one.
 function studio.agent_view()
-  if studio.view and studio.view.node and not studio.view.node.is_deleted then
-    return studio.view
-  end
+  local v = studio.view
+  if v and core.root_view.root_node:get_node_for_view(v) then return v end
   return nil
 end
 
@@ -37,7 +42,11 @@ function studio.open_agent()
   studio.view = view
   -- Split right: the agent belongs beside the code, not on top of it.
   local node = core.root_view:get_active_node()
-  node:split("right", view, true)
+  -- No `locked` third argument. A locked node is pinned to its view's current
+  -- size, and a freshly constructed View is 0x0 -- so locking it here gave the
+  -- panel zero width for the lifetime of the process. Unlocked, it is an
+  -- ordinary split the user can drag.
+  node:split("right", view)
   core.set_active_view(view)
   return view
 end

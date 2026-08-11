@@ -405,6 +405,19 @@ if(BOGGART_BUILD_APP AND SDL2_FOUND)
       COMMAND codesign -f -s - $<TARGET_FILE:boggart-studio>
       COMMENT "Ad-hoc signing boggart-studio")
   endif()
+  # `ninja ui-check` renders the studio with representative content, asserts
+  # the agent panel is attached and non-zero, and writes a screenshot to look
+  # at. Not a ctest: it needs a window server, and CI has none. It exists
+  # because the two panel-attachment bugs it catches were invisible to every
+  # headless test of the view -- the view was correct in isolation both times.
+  add_custom_target(ui-check
+    COMMAND ${CMAKE_COMMAND} -E env
+      BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/uishot.lua
+      BOGGART_STUDIO_SHOT=${CMAKE_CURRENT_BINARY_DIR}/studio-shot.bmp
+      $<TARGET_FILE:boggart-studio> ${CMAKE_CURRENT_SOURCE_DIR}
+    DEPENDS boggart-studio
+    COMMENT "Rendering boggart-studio and checking the agent panel"
+    USES_TERMINAL)
 elseif(BOGGART_BUILD_APP)
   message(STATUS "SDL2 not found -- skipping boggart-studio (the CLI still builds)")
 endif()

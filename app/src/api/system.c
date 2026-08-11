@@ -205,6 +205,34 @@ static int f_set_cursor(lua_State *L) {
 }
 
 
+/* system.save_screenshot(path) -> true | nil, err
+ *
+ * Writes the window's current framebuffer to a BMP. This exists so the GUI can
+ * be checked without a human at the keyboard: an automated run can seed the
+ * panel, render a frame, and produce an image to look at. Reaching for the
+ * platform's screen-capture tool instead would mean screen-recording
+ * permission, a focused window, and whatever else happens to be on the desktop
+ * in the shot -- none of which a test should depend on.
+ *
+ * BMP because SDL2 can write it with no extra dependency, which is the whole
+ * bar for a diagnostic. */
+static int f_save_screenshot(lua_State *L) {
+  const char *path = luaL_checkstring(L, 1);
+  SDL_Surface *surf = SDL_GetWindowSurface(window);
+  if (!surf) {
+    lua_pushnil(L);
+    lua_pushstring(L, "no window surface");
+    return 2;
+  }
+  if (SDL_SaveBMP(surf, path) != 0) {
+    lua_pushnil(L);
+    lua_pushstring(L, SDL_GetError());
+    return 2;
+  }
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
 static int f_set_window_title(lua_State *L) {
   const char *title = luaL_checkstring(L, 1);
   SDL_SetWindowTitle(window, title);
@@ -414,6 +442,7 @@ static int f_fuzzy_match(lua_State *L) {
 
 
 static const luaL_Reg lib[] = {
+  { "save_screenshot",     f_save_screenshot     },
   { "poll_event",          f_poll_event          },
   { "wait_event",          f_wait_event          },
   { "set_cursor",          f_set_cursor          },

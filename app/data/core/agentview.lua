@@ -572,9 +572,11 @@ function AgentView:layout(e, cols)
   for line in (e.text .. "\n"):gmatch("(.-)\n") do
     local fence, lang = line:match("^%s*(```+)%s*([%w_+#%-]*)")
     if fence then
+      -- The fence is markup, not content. Every chat UI worth using shows the
+      -- block, not the backticks that delimit it; a band behind the code says
+      -- the same thing without spending three rows on punctuation.
       if in_code then in_code, syn, state = false, nil, nil
       else in_code, syn, state = true, syntax_for(lang), nil end
-      rows[#rows + 1] = { { style.dim, line } }
     elseif in_code and syn then
       -- The newline matters. Several of lite's patterns are anchored to it --
       -- Lua's line comment is "%-%-.-\n" -- because a DocView's lines keep
@@ -588,9 +590,13 @@ function AgentView:layout(e, cols)
         if text ~= "" then toks[#toks + 1] = { style.syntax[type] or style.text, text } end
       end
       if #toks == 0 then toks[1] = { style.text, "" } end
-      for _, row in ipairs(fit(toks, cols)) do rows[#rows + 1] = row end
+      for _, row in ipairs(fit(toks, cols)) do
+        row.code = true
+        rows[#rows + 1] = row
+      end
     elseif in_code then
       for _, row in ipairs(fit({ { style.text, line } }, cols)) do
+        row.code = true
         rows[#rows + 1] = row
       end
     else
@@ -614,16 +620,23 @@ function AgentView:get_scrollable_size()
 end
 
 -- The approval bar: what is about to happen, and the keys that decide it.
+-- The approval bar. This is the one piece of the UI that must be read rather
+-- than glanced at, so the keys are in style.text rather than style.dim: a hint
+-- you cannot read is not a hint. The accent stripe on the left is there to
+-- catch the eye of someone who has been watching the transcript scroll.
 function AgentView:draw_pending(x, y, w, lh, font)
   local p = self.pending
-  local h = lh * 2
+  local pad = style.padding.y
+  local h = lh * 2 + pad * 2
   renderer.draw_rect(self.position.x, y, self.size.x, h, style.selection)
+  renderer.draw_rect(self.position.x, y, math.max(2, style.padding.x / 3), h,
+    style.warn or style.accent)
   common.draw_text(font, style.accent,
     (p.name == "bash" and "run: " or "apply: ") .. (p.summary or p.name),
-    "left", x, y, w, lh)
-  common.draw_text(font, style.dim,
-    "[a]pprove   [r]eject   shift+[A] always allow this session",
-    "left", x, y + lh, w, lh)
+    "left", x, y + pad, w, lh)
+  common.draw_text(font, style.text,
+    "[a]pprove    [r]eject    shift+[A] always allow this session",
+    "left", x, y + pad + lh, w, lh)
   return h
 end
 
@@ -641,7 +654,7 @@ function AgentView:draw()
   -- input height grows with the draft, bounded so it never eats the transcript
   local input_lines = math.min(#self.lines, 8)
   local input_h = lh * input_lines + style.padding.y * 2
-  local pending_h = self.pending and (lh * 2) or 0
+  local pending_h = self.pending and (lh * 2 + style.padding.y * 2) or 0
   local body_bottom = self.position.y + self.size.y - input_h - pending_h
 
   local y = self.position.y + style.padding.y - self.scroll.y
@@ -666,6 +679,10 @@ function AgentView:draw()
     else
       for i, row in ipairs(self:layout(e, cols)) do
         if y + lh > self.position.y and y < body_bottom then
+          if row.code then
+            renderer.draw_rect(self.position.x, y, self.size.x, lh,
+              style.background2)
+          end
           local tx = x
           for _, t in ipairs(row) do
             tx = renderer.draw_text(font, t[2], tx, y + voff, t[1])
