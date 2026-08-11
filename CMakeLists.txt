@@ -504,6 +504,20 @@ if(BOGGART_BUILD_APP AND SDL2_FOUND)
   # viewport rather than the transcript, the layout cache actually caching, and
   # streaming not re-laying-out settled entries. Also not a ctest -- it needs a
   # window server, and a headless machine cannot measure a frame.
+  # `ninja core-parity` proves the terminal agent and the desktop application
+  # are one engine: same version, same API surface, same prompt, same limits,
+  # same tools bar the window-only ones. See tools/parity.cmake.
+  add_custom_target(core-parity
+    COMMAND ${CMAKE_COMMAND}
+      -DCLI=$<TARGET_FILE:boggart> -DGUI=$<TARGET_FILE:boggart-studio>
+      -DFP=${CMAKE_CURRENT_SOURCE_DIR}/tools/fingerprint.lua
+      -DFPGUI=${CMAKE_CURRENT_SOURCE_DIR}/tools/fingerprint_studio.lua
+      -DCMAKE_CURRENT_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/parity.cmake
+    DEPENDS boggart boggart-studio
+    COMMENT "Checking the CLI and the studio share one core"
+    USES_TERMINAL)
+
   add_custom_target(ui-bench
     COMMAND ${CMAKE_COMMAND} -E env
       BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/uibench.lua
@@ -529,7 +543,7 @@ endif()
 # Windows spells that %USERPROFILE%, so set both -- sysproc.h's sysfs_home()
 # reads USERPROFILE there and HOME everywhere else.
 enable_testing()
-foreach(suite test integration swarm mcp ltui sysfs bus jwriter proc sandbox scopes errors studio events)
+foreach(suite test integration swarm mcp ltui sysfs bus jwriter proc sandbox scopes errors studio events lifecycle)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home})
