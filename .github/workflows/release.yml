@@ -1,0 +1,261 @@
+name: release
+
+# Builds the two binaries -- boggart (CLI) and boggart-studio (desktop) -- for
+# Linux, macOS and Windows, and packages each into an archive you can download.
+#
+# ci.yml proves the code compiles and passes its suites. This file exists to
+# produce something a person can actually run, which is a different job with
+# different failure modes: a binary that builds fine on a runner is useless if
+# it cannot find its Lua at startup, or if it links a library that only exists
+# on the machine that built it. Both of those are handled below and both are
+# the reason this is not just "upload build/boggart".
+#
+# Triggered by pushing a tag (v0.1.0, v1.2.3) which also publishes a GitHub
+# Release, or by hand from the Actions tab, which builds and uploads the
+# archives without releasing anything.
+#
+# WHAT IS AND IS NOT SELF-CONTAINED. boggart (the CLI) statically links
+# everything it needs except the platform's own libc, libcurl and ncurses, so
+# it runs anywhere of the same vintage. boggart-studio additionally needs SDL2
+# at runtime:
+#   Windows  self-contained -- SDL2.dll ships in the archive next to the exe.
+#   Linux    needs libsdl2-2.0-0 from the distro (apt install libsdl2-2.0-0).
+#   macOS    needs `brew install sdl2`.
+# Bundling SDL2 into the macOS archive is deliberately not attempted: Homebrew's
+# `sdl2` is really sdl2-compat, a shim that dlopen()s SDL3 from an absolute
+# Cellar path, so copying the dylib next to the binary produces something that
+# still fails on a machine without Homebrew. Making that self-contained needs
+# SDL2 built from source, which is a bigger change than this file.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 rather than latest on purpose: a binary is linked against the
+          # glibc it was built on and runs on that version or newer, never
+          # older. Building on the oldest image GitHub still offers is what
+          # makes the download work on more than the newest Ubuntu.
+          - target: linux-x86_64
+            os: ubuntu-22.04
+          # Apple silicon and Intel are separate binaries. macos-14 and later
+          # are arm64 runners; macos-13 is the last x86_64 one.
+          - target: macos-arm64
+            os: macos-14
+          - target: macos-x86_64
+            os: macos-13
+          - target: windows-x86_64
+            os: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # The newest released CMake and Ninja on every platform, rather than
+      # whatever each runner image happens to ship -- those drift apart by
+      # years between images, and "works on the Linux runner, fails on the
+      # Windows one" is nearly always a version difference. This also replaces
+      # the three separate ninja installs the matrix would otherwise need.
+      - name: CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      # ---- SDL2 --------------------------------------------------------------
+      # CMakeLists.txt calls find_package(SDL2 QUIET), and SDL2 ships its own
+      # sdl2-config.cmake, so every platform below just has to put that config
+      # file somewhere CMake looks. (CMake's own FindSDL module is documented as
+      # being for SDL 1 only -- it says to use find_package(SDL2) for SDL2,
+      # which is what this project already does.)
+      #
+      # If SDL2 is missing the project still configures and builds; it just
+      # skips boggart-studio and prints "SDL2 not found". That would silently
+      # ship an archive with one binary in it, so the package step below fails
+      # loudly if boggart-studio is absent.
+      - name: SDL2 (linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev libncurses-dev libsdl2-dev
+
+      - name: SDL2 (macos)
+        if: runner.os == 'macOS'
+        run: brew install sdl2
+
+      # The official SDL2 development package. It contains cmake/, so pointing
+      # SDL2_DIR at that directory is all find_package(SDL2) needs, and
+      # lib/x64/SDL2.dll is what the archive ships.
+      - name: SDL2 (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ver = '2.32.10'
+          $url = "https://github.com/libsdl-org/SDL/releases/download/release-$ver/SDL2-devel-$ver-VC.zip"
+          Invoke-WebRequest -Uri $url -OutFile sdl2.zip
+          Expand-Archive sdl2.zip -DestinationPath $env:RUNNER_TEMP\sdl2
+          $root = "$env:RUNNER_TEMP\sdl2\SDL2-$ver"
+          "SDL2_DIR=$root\cmake"   | Out-File -FilePath $env:GITHUB_ENV -Append
+          "SDL2_DLL=$root\lib\x64\SDL2.dll" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # Puts cl.exe, the CRT/SDK headers and the linker on PATH. Without it
+      # Ninja has no compiler on windows-latest. x64 is explicit because the
+      # default host/target pairing has changed between runner images, and a
+      # 32-bit cl runs out of heap on embedded.c.
+      - name: Set up MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # ---- build -------------------------------------------------------------
+      # Release, not the project's RelWithDebInfo default: this is the build
+      # people download, so it should be the small one. ci.yml still exercises
+      # the default.
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      # A release that has not been tested is not worth publishing, and these
+      # suites are headless -- ui-check and ui-bench need a window server and
+      # deliberately are not ctest, so they cannot run here.
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      # ---- package -----------------------------------------------------------
+      # Layout matters. studio/src/main.c resolves DATADIR from the directory
+      # the executable is in: it looks for <exedir>/data/core/init.lua and only
+      # then <exedir>/studio/data. So the Lua tree ships as `data/` beside the
+      # binaries, and the studio finds it wherever the archive is unpacked.
+      # Without this the download starts and immediately dies with
+      # "module 'core' not found".
+      #
+      # CMakeLists.txt writes both binaries to the source root, not into
+      # build/, which is why they are collected from there.
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          set -eu
+          test -x ./boggart        || { echo "boggart was not built"; exit 1; }
+          test -x ./boggart-studio || { echo "boggart-studio was not built -- SDL2 missing?"; exit 1; }
+          name="boggart-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp boggart boggart-studio "dist/$name/"
+          cp -R studio/data "dist/$name/data"
+          cp README.md "dist/$name/" 2>/dev/null || true
+          tar -C dist -czf "$name.tar.gz" "$name"
+          echo "ARCHIVE=$name.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path ./boggart.exe))        { throw "boggart.exe was not built" }
+          if (-not (Test-Path ./boggart-studio.exe)) { throw "boggart-studio.exe was not built -- SDL2 missing?" }
+          $tag  = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { $env:GITHUB_SHA }
+          $name = "boggart-$tag-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
+          Copy-Item boggart.exe, boggart-studio.exe "dist/$name/"
+          Copy-Item -Recurse studio/data "dist/$name/data"
+          Copy-Item README.md "dist/$name/" -ErrorAction SilentlyContinue
+          # SDL2.dll is the studio's only non-system runtime dependency on
+          # Windows; libcurl is static with the Schannel backend and PDCurses is
+          # vendored, so with this the archive is self-contained.
+          Copy-Item $env:SDL2_DLL "dist/$name/"
+          Compress-Archive -Path "dist/$name" -DestinationPath "$name.zip"
+          "ARCHIVE=$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # Smoke-test what is actually in the archive rather than what is in the
+      # build tree: this is the step that catches a missing data/ directory or
+      # a binary that cannot find its own libraries.
+      # Run what is actually in the archive, not what is in the build tree.
+      # This is the step that catches a missing data/ directory or a binary
+      # that cannot find its own libraries -- neither of which the Build or
+      # Test steps above can see, because both run against the source tree with
+      # every dependency already in place.
+      #
+      # `--eval <file>` rather than a --version flag: boggart has no --version,
+      # and an unrecognised argument falls through to the interactive banner,
+      # which exits 0 without having proved anything. Evaluating a script
+      # exercises the embedded Lua and the C bindings it is wrapped around.
+      - name: Smoke-test the package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          set -eu
+          d=$(mktemp -d); tar -C "$d" -xzf "$ARCHIVE"
+          p=$(echo "$d"/boggart-*)
+          cat > "$d/smoke.lua" <<'LUA'
+          assert(sys.width("日本語") == 6, "width tables missing from the package")
+          assert(bog.version, "the harness did not load")
+          io.write("packaged boggart ok, version ", bog.version, "\n")
+          LUA
+          HOME=$(mktemp -d) "$p/boggart" --eval "$d/smoke.lua"
+          test -f "$p/data/core/init.lua" || { echo "the studio's data/ tree is missing"; exit 1; }
+
+      - name: Smoke-test the package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $d = Join-Path $env:RUNNER_TEMP "smoke"
+          Expand-Archive "$env:ARCHIVE" -DestinationPath $d -Force
+          $p = (Get-ChildItem $d -Directory)[0].FullName
+          # An array of single-quoted lines rather than a here-string: PowerShell
+          # requires the closing '@ to sit in column 0, which cannot happen
+          # inside a YAML block scalar without ending the block.
+          #
+          # The ideograph is written as a Lua \u escape so this file stays
+          # ASCII and no encoding decision (BOM, code page, Set-Content default)
+          # can change what the test actually asserts.
+          $lua = Join-Path $d "smoke.lua"
+          Set-Content -Path $lua -Encoding utf8 -Value @(
+            'assert(sys.width("\u{65e5}\u{672c}\u{8a9e}") == 6, "width tables missing")',
+            'assert(bog.version, "the harness did not load")',
+            'io.write("packaged boggart ok, version ", bog.version, "\n")'
+          )
+          & "$p\boggart.exe" --eval $lua
+          if ($LASTEXITCODE -ne 0) { throw "packaged boggart.exe did not run" }
+          if (-not (Test-Path "$p\data\core\init.lua")) { throw "the studio's data/ tree is missing" }
+          if (-not (Test-Path "$p\SDL2.dll"))          { throw "SDL2.dll is missing from the archive" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  # Separate job so a release is only cut once every platform has built and
+  # tested. A partial release -- Linux published, Windows still red -- is worse
+  # than no release, because the tag looks done.
+  publish:
+    name: publish release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

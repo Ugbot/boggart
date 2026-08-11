@@ -2,12 +2,18 @@ name: ci
 
 # Three platforms, one recipe: configure with Ninja, build, ctest.
 #
-# Windows is the reason this file exists. The project has only ever been built
-# on macOS, so the windows-latest job is the *first* native MSVC compile --
-# expect it to be red until src/lsys.c and src/lmcp.c finish moving onto the
-# src/sysproc.h abstraction (they still include <poll.h>, <sys/wait.h> and
-# <dirent.h> today). fail-fast is off so a red Windows job does not hide the
-# state of the two that are known-good.
+# Windows is the reason this file exists. The project was written on macOS, so
+# the windows-latest job is the native MSVC compile that keeps the POSIX
+# assumptions out -- it has caught real ones. All three platforms have been
+# green since src/lsys.c and src/lmcp.c finished moving onto src/sysproc.h;
+# fail-fast is off so one red platform does not hide the state of the others.
+#
+# SDL2 is installed on every platform so boggart-studio is actually built.
+# Without it CMakeLists.txt prints "SDL2 not found -- skipping boggart-studio"
+# and carries on green, which meant the whole studio -- renderer, font
+# fallback, the SDL event loop -- compiled nowhere but a developer's Mac.
+# `ninja ui-check` and `ui-bench` still cannot run here: they need a window
+# server, which is also why they are not ctest suites.
 
 on:
   push:
@@ -38,30 +44,48 @@ jobs:
             os: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # ---- toolchain -------------------------------------------------------
-      # CMake is preinstalled on all three runner images; Ninja is not
-      # guaranteed anywhere, so install it explicitly.
-      #
-      # Linux deps: libcurl is found with find_package(CURL REQUIRED), and
-      # ncurses with find_package(Curses REQUIRED) + CURSES_NEED_NCURSES.
-      # libncurses-dev is the modern name and ships the wide (ncursesw)
-      # libraries too; libncursesw5-dev is now only a transitional alias.
+      # The newest released CMake and Ninja, rather than whatever each runner
+      # image ships. The images drift apart by years, and CI that builds with
+      # three different CMake versions is CI that reports three different
+      # things. This installs both, so no per-platform ninja step is needed.
+      - name: CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      # Linux deps: libcurl is found with find_package(CURL REQUIRED), ncurses
+      # with find_package(Curses REQUIRED) + CURSES_NEED_NCURSES, and SDL2 with
+      # find_package(SDL2) against the sdl2-config.cmake that libsdl2-dev
+      # installs. libncurses-dev is the modern name and ships the wide
+      # (ncursesw) libraries too; libncursesw5-dev is now only a transitional
+      # alias.
       - name: Install deps (linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ninja-build libcurl4-openssl-dev libncurses-dev
+            libcurl4-openssl-dev libncurses-dev libsdl2-dev
 
+      # Homebrew's `sdl2` is really sdl2-compat, a shim over SDL3. That is fine
+      # for compiling and running here; it is only a problem for redistributing
+      # a binary, which release.yml documents.
       - name: Install deps (macos)
         if: runner.os == 'macOS'
-        run: brew install ninja
+        run: brew install sdl2
 
+      # The official SDL2 development package ships cmake/, so pointing
+      # SDL2_DIR at it is all find_package(SDL2) needs. There is no system SDL2
+      # on Windows and no reliable package-manager one.
       - name: Install deps (windows)
         if: runner.os == 'Windows'
-        run: choco install ninja -y --no-progress
+        shell: pwsh
+        run: |
+          $ver = '2.32.10'
+          $url = "https://github.com/libsdl-org/SDL/releases/download/release-$ver/SDL2-devel-$ver-VC.zip"
+          Invoke-WebRequest -Uri $url -OutFile sdl2.zip
+          Expand-Archive sdl2.zip -DestinationPath $env:RUNNER_TEMP\sdl2
+          "SDL2_DIR=$env:RUNNER_TEMP\sdl2\SDL2-$ver\cmake" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       # Puts cl.exe, the CRT/SDK headers and the linker on PATH for every
       # later step. Without this, Ninja has no compiler on windows-latest --

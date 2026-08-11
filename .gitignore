@@ -19,3 +19,10 @@ src/vendor/sqlite/sqlite3.o
 
 # stray run artifacts
 error.txt
+
+# release packaging (.github/workflows/release.yml stages here, and running
+# those steps by hand to debug them should not dirty the tree)
+dist/
+boggart-*.tar.gz
+boggart-*.zip
+sdl2.zip
