@@ -311,6 +311,8 @@ function AgentView:submit(text)
   self.hpos = 0
   self:push("user", text)
   self.busy, self.status = true, "thinking"
+  self.busy_since = system.get_time()
+  self.tool_running = nil
 
   self.co = coroutine.create(function()
     local okrun, err = pcall(bog.api.run_on, bog.session, text,
@@ -334,6 +336,7 @@ function AgentView:submit(text)
         end,
 
         on_tool = function(name, input)
+          self.tool_running = name
           local hint = ""
           if type(input) == "table" then
             local h = input.command or input.path or input.query or input.name
@@ -437,6 +440,7 @@ function AgentView:cancel()
   if self.pending then self:decide("reject"); return end
   if not self.busy then return end
   self.co, self.busy, self.status = nil, false, "idle"
+  self.busy_since, self.tool_running = nil, nil
   self:close_stream()
   self:push("system", "cancelled")
 end
@@ -487,6 +491,14 @@ end
 
 function AgentView:update()
   self:tick()
+  -- One place that retires the progress state, rather than a clear beside
+  -- every path that can end a turn -- there are several, and the one I missed
+  -- left the widget's start time and the tool it was running set after the
+  -- answer had arrived. Nothing draws them then, which is exactly why it would
+  -- have gone unnoticed until something else read them.
+  if not self.busy and (self.busy_since or self.tool_running) then
+    self.busy_since, self.tool_running = nil, nil
+  end
   if self.busy then core.redraw = true end
   AgentView.super.update(self)
 end
@@ -1311,6 +1323,52 @@ function AgentView:composer_items()
   }
 end
 
+-- What the agent is doing, while it is doing it.
+--
+-- The panel showed a word in the Send button and nothing else, so a turn that
+-- thought for thirty seconds was indistinguishable from a turn that had died.
+-- The bar is indeterminate on purpose: nothing here knows how long a model
+-- will take, and a progress bar that invents a percentage is worse than none
+-- -- it makes a promise the program cannot keep. A moving segment says "still
+-- working" and claims nothing else.
+--
+-- Drawn rather than spun from characters because the bundled fonts have no
+-- spinner glyphs, and this renderer draws rectangles well.
+function AgentView:draw_working(x, y, w, font)
+  local lh = font:get_height() * config.line_height
+  local elapsed = self.busy_since and (system.get_time() - self.busy_since) or 0
+
+  local what = self.status or "working"
+  if self.pending then what = "waiting for you to approve " .. self.pending.name
+  elseif self.tool_running then what = "running " .. self.tool_running end
+
+  local label = string.format("%s  %.0fs", what, elapsed)
+  common.draw_text(font, style.dim, label, "left", x, y, w, lh)
+
+  -- The track, and a segment sliding along it. Two seconds a lap: fast enough
+  -- to read as alive, slow enough not to nag.
+  local track_y = y + lh
+  local h = math.max(2, SCALE * 2)
+  renderer.draw_rect(x, track_y, w, h, style.background2)
+  if not self.pending then
+    local period = 2.0
+    local t = (system.get_time() % period) / period
+    local seg = w * 0.18
+    -- Ease at the ends so it looks like motion rather than a jump.
+    local travel = (w + seg) * t - seg
+    local sx = math.max(x, x + travel)
+    local sw = math.min(x + w, x + travel + seg) - sx
+    if sw > 0 then
+      renderer.draw_rect(sx, track_y, sw, h, style.accent)
+    end
+  else
+    -- Nothing is moving while it waits for a person; a bar that kept sliding
+    -- would say the opposite.
+    renderer.draw_rect(x, track_y, w, h, style.warn or style.accent)
+  end
+  return lh + h + style.padding.y
+end
+
 -- The approval bar. The one piece of the UI that must be read rather than
 -- glanced at, so its buttons are buttons: clicking Approve should not require
 -- knowing that "a" means approve.
@@ -1509,6 +1567,15 @@ function AgentView:draw()
   end
 
   core.pop_clip_rect()
+
+  -- The working indicator sits where the answer will appear, so the eye is
+  -- already in the right place when it does.
+  if self.busy then
+    if visible(y) then
+      self:draw_working(x, y + vpad, w, font)
+    end
+    y = y + lh * 2 + vpad
+  end
 
   -- An empty panel should say what to do, not sit there blankly.
   if #self.entries == 0 then
