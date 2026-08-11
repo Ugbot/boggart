@@ -14,7 +14,8 @@ can write itself a new tool.
 ## Design
 
 Two references shaped this: antirez's **ds4** agent harness (the loop
-*mechanics*) and rxi's **lite** editor (the embedding *patterns*).
+*mechanics*) and rxi's **lite** editor, whose C+Lua core boggart-studio grew
+out of and now owns outright.
 
 - **The C core knows nothing about the LLM.** `http.request` streams bytes to a
   Lua callback; subprocesses run on the libuv loop from `lua/proc.lua`; that's
@@ -140,8 +141,12 @@ Default model is `claude-opus-5` (adaptive thinking; no sampling params).
 src/            C core: boggart.c (main), lhttp.c (curl: blocking + async multi),
                 lsys.c (os), ldb.c (SQLite), lswarm.c (bus+journal),
                 lmcp.c (MCP client: stdio + Streamable HTTP), embedded.c (generated)
-src/vendor/     vendored Lua 5.4 + sqlite (FTS5) + cJSON + libuv + luv
+src/vendor/     vendored Lua 5.5 + sqlite (FTS5) + cJSON + libuv + luv
                 + ltui/PDCurses + isocline
+studio/         boggart-studio, the desktop app: an SDL window whose main
+  src/            surface is the conversation, with an editor behind it.
+  data/core/      agentview (chat), sidebarview (chats + Chat/Code),
+                  widgets (buttons), studio (commands), recipes, diff
 lua/            the golden default harness, baked into the binary:
   boot.lua        overlay loader, wiring, hot-reload, sessions, REPL, dispatch
   api.lua         Anthropic client: shared SSE decoder + sync & async transports + turn loop

@@ -362,12 +362,12 @@ endif()
 
 if(BOGGART_BUILD_APP AND SDL2_FOUND)
   # lite's own C, plus stb_truetype's implementation unit. Deliberately NOT
-  # app/src/lib/lua52: the app shares one interpreter with boggart, and that
+  # The studio shares one interpreter with boggart, and that
   # interpreter is the vendored 5.4. lite needs exactly one change for it.
   file(GLOB APP_SOURCES CONFIGURE_DEPENDS
-    ${CMAKE_CURRENT_SOURCE_DIR}/app/src/*.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/app/src/api/*.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/app/src/lib/stb/*.c)
+    ${CMAKE_CURRENT_SOURCE_DIR}/studio/src/*.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/studio/src/api/*.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/studio/src/lib/stb/*.c)
 
   add_executable(boggart-studio
     ${APP_SOURCES}
@@ -384,7 +384,7 @@ if(BOGGART_BUILD_APP AND SDL2_FOUND)
 
   target_include_directories(boggart-studio PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/app/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/studio/src
     ${SDL2_INCLUDE_DIRS})
   target_compile_definitions(boggart-studio PRIVATE BOGGART_STUDIO=1)
   target_link_libraries(boggart-studio PRIVATE
@@ -396,7 +396,7 @@ if(BOGGART_BUILD_APP AND SDL2_FOUND)
   else()
     target_link_libraries(boggart-studio PRIVATE SDL2::SDL2)
   endif()
-  # lite is upstream code and warns; our own files still build clean.
+  # The editor core came from rxi's lite and still warns; ours build clean.
   set_source_files_properties(${APP_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
   set_target_properties(boggart-studio PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
