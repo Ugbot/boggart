@@ -957,6 +957,29 @@ static int l_tools(lua_State *L) {
   return start_and_wait(L, c, "tools/list", NULL, 1);
 }
 
+/* tools/list, returning the whole result object rather than just result.tools.
+ *
+ * conn:tools() unwraps the array, which is convenient and quietly lossy: it
+ * discards nextCursor, so a server with more tools than fit in one page had
+ * everything past the first page silently ignored. Nobody noticed because the
+ * servers tried so far answer in one page -- Chrome DevTools MCP returns all
+ * 29 at once -- and a truncated tool list looks exactly like a server that
+ * offers fewer tools.
+ *
+ * The cursor loop belongs in Lua (mcphost.lua), where accumulating pages is a
+ * table insert rather than a second pass over cJSON ownership. So this returns
+ * the result verbatim and lets the caller drive. */
+static int l_list_tools(lua_State *L) {
+  mcpconn *c = check_conn(L);
+  const char *cursor = luaL_optstring(L, 2, NULL);
+  cJSON *params = NULL;
+  if (cursor && *cursor) {
+    params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "cursor", cursor);
+  }
+  return start_and_wait(L, c, "tools/list", params, 0);
+}
+
 static cJSON *call_params(lua_State *L) {
   const char *name = luaL_checkstring(L, 2);
   const char *args_json = luaL_optstring(L, 3, "{}");
@@ -1040,6 +1063,7 @@ static int l_close(lua_State *L) {
 
 static const luaL_Reg conn_methods[] = {
   {"tools", l_tools},
+  {"list_tools", l_list_tools},
   {"call", l_call},
   {"begin", l_begin},
   {"info", l_info},

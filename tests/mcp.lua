@@ -31,6 +31,8 @@ end
 
 -- ---- connect the mock server + register its tools ----
 do
+  -- The mock serves one tool per page, so this also asserts the client follows
+  -- nextCursor to the end rather than registering only the first page.
   local names, err = bog.mcphost.add{ name = "mock", command = "python3", args = { "tests/mock_mcp.py" } }
   ok(names ~= nil, "mcp connect + tools/list (" .. tostring(err) .. ")")
   if names then

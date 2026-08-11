@@ -24,6 +24,42 @@ local function format_result(result_json)
   return result_json
 end
 
+-- Every page of tools/list, not just the first.
+--
+-- tools/list is cursor-paginated. The client used to read result.tools and
+-- throw the rest away, so a server offering more tools than one page had the
+-- remainder silently dropped -- indistinguishable, from the outside, from a
+-- server that simply has fewer tools.
+--
+-- The page cap and the repeat-cursor check are not paranoia about hostile
+-- servers so much as about buggy ones: a server that returns the same cursor
+-- forever would otherwise hang the connect, and a connect that never returns
+-- is a much worse failure than a truncated list.
+local MAX_PAGES = 100
+
+local function list_all_tools(conn)
+  local out, cursor, seen = {}, nil, {}
+  for page = 1, MAX_PAGES do
+    local raw, err = conn:list_tools(cursor)
+    if not raw then return nil, "tools/list failed: " .. tostring(err) end
+    local ok, r = pcall(json.decode, raw)
+    if not ok or type(r) ~= "table" then
+      return nil, "tools/list returned something that is not an object"
+    end
+    for _, t in ipairs(r.tools or {}) do out[#out + 1] = t end
+    cursor = r.nextCursor
+    if type(cursor) ~= "string" or cursor == "" then return out end
+    if seen[cursor] then
+      return nil, "tools/list repeated the cursor " .. cursor .. " -- refusing to loop"
+    end
+    seen[cursor] = true
+    if page == MAX_PAGES then
+      return nil, string.format("tools/list did not finish in %d pages", MAX_PAGES)
+    end
+  end
+  return out
+end
+
 -- Connect a server and register its tools. spec:
 --   stdio: { name, command, args?, env? }
 --   http:  { name, transport="http", url, headers? }
@@ -38,10 +74,8 @@ function M.add(spec)
   if not conn then return nil, err end
   M.conns[spec.name] = conn
 
-  local ok, tools = pcall(function() return json.decode(conn:tools()) end)
-  if not ok or type(tools) ~= "table" then
-    return nil, "tools/list failed: " .. tostring(tools)
-  end
+  local tools, terr = list_all_tools(conn)
+  if not tools then return nil, terr end
 
   local names = {}
   for _, t in ipairs(tools) do

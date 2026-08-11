@@ -39,7 +39,18 @@ def main():
         elif method == "notifications/initialized":
             pass  # notification: no response
         elif method == "tools/list":
-            send({"jsonrpc": "2.0", "id": mid, "result": {"tools": TOOLS}})
+            # Paginated, one tool per page. tools/list is cursor-paginated in
+            # every revision of the spec, and the client used to read the first
+            # page and discard nextCursor -- so a server with more tools than
+            # one page had the rest silently dropped. Serving one per page here
+            # means any regression shows up as a missing tool rather than as
+            # nothing at all.
+            cur = (msg.get("params") or {}).get("cursor")
+            i = int(cur) if cur else 0
+            result = {"tools": TOOLS[i:i + 1]}
+            if i + 1 < len(TOOLS):
+                result["nextCursor"] = str(i + 1)
+            send({"jsonrpc": "2.0", "id": mid, "result": result})
         elif method == "tools/call":
             p = msg.get("params", {})
             name = p.get("name")
