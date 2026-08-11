@@ -95,8 +95,12 @@ function AgentView:has_creds()
 end
 
 function AgentView:get_name()
-  if self.pending then return "Agent ⏸" end
-  return self.busy and "Agent ●" or "Agent"
+  -- ASCII, because the bundled fonts have no pause or bullet glyph and drew
+  -- an empty box in the tab. Unicode *content* renders fine now -- there is a
+  -- fallback chain for that -- but a label is chrome, and chrome should not
+  -- depend on which fonts a machine happens to have.
+  if self.pending then return "Agent [?]" end
+  return self.busy and "Agent ..." or "Agent"
 end
 
 -- ---------------------------------------------------------------------------

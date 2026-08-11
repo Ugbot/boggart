@@ -9,7 +9,49 @@ single embedded executable.
 
 It feels like `pi` (four core tools, tight context, no product opinion) but,
 unlike most harnesses, it can grow its own capabilities: give it a task and it
-can write itself a new tool.
+can write itself a new tool — and, in the desktop app, a new panel to draw the
+result in.
+
+It ships as **two front ends over one engine**: `boggart`, a terminal agent, and
+`boggart-studio`, a desktop application. Not two products — the same core with a
+different focus, the way an editor's CLI and its GUI are the same editor. That
+is enforced rather than intended: `ninja core-parity` runs both binaries and
+fails the build if the version, API surface, system prompt, limits, scopes,
+paths or tools have drifted apart.
+
+![The conversation is the application](docs/images/chat.png)
+
+The conversation is the primary surface; files open as tabs beside it. Markdown
+and syntax highlighting in the transcript, a diff for every proposed write, and
+an approval gate you can answer with a button. Full Unicode: CJK, Cyrillic,
+Greek, Hebrew, Arabic and Devanagari all render and measure correctly, through a
+system font fallback chain.
+
+### The agent can write the interface
+
+boggart could already write its own tools, memory and skills. The one part it
+was locked out of was the window. `draw_panel` closes that: the agent writes a
+Lua `draw(ctx)` function, it is compiled into a restricted environment
+(drawing, the theme and arithmetic — no io, no require, no network, no
+credentials), and it appears as a tab that reloads when the file changes.
+
+![A panel the agent wrote, with hand-drawn diagram primitives](docs/images/panel.png)
+
+The diagram primitives are a rough.js-style sketch engine (`core/sketch.lua`),
+rewritten from rough-lua as our own. Hand-drawn on purpose: a diagram a model
+produces is a claim about a system, and precise vector output carries an
+authority the content has not earned.
+
+### Watching a swarm, and what the agent has learned
+
+![Swarm mode: live actors, bus traffic, per-agent transcripts](docs/images/swarm.png)
+
+![The library: generated tools with provenance, skills, memory, MCP servers](docs/images/library.png)
+
+The library is the self-extension surface made visible: every tool the agent
+wrote for itself, its scope (session, project or global), when it was defined
+and at which git revision, how often it has been called and how often it failed
+— plus full-text search over its memory.
 
 ## Design
 
@@ -50,12 +92,31 @@ out of and now owns outright.
 
 ```sh
 cmake -B build -G Ninja     # configure
-cmake --build build         # → ./boggart (one binary; libcurl is the only dynamic dep)
+cmake --build build         # -> ./boggart and ./boggart-studio
 ctest --test-dir build      # fifteen Lua suites, each against a throwaway HOME
 ```
 
+Both binaries are **genuinely self-contained**. The Lua harness, the studio's
+61 Lua files and its three fonts are baked in; SDL2 is fetched at configure
+time (pinned by SHA256) and linked statically. Copy `boggart-studio` alone into
+an empty directory and it runs: no `data/` beside it, no `SDL2.dll`, no
+`brew install sdl2`, no `libsdl2-2.0-0` package. `otool -L` shows system
+frameworks and libcurl, nothing else.
+
+`-DBOGGART_SDL_FROM_SOURCE=OFF` uses a system SDL2 instead, which is the right
+choice for a distribution package: a distro wants to own and patch its own SDL.
+
+Beyond the fifteen ctest suites there are three checks that need a window, so
+they are ninja targets rather than tests:
+
+```sh
+ninja -C build ui-check      # renders nine scenarios and asserts what a frame shows
+ninja -C build ui-bench      # frame-rate invariants: drawing must not scale with the transcript
+ninja -C build core-parity   # the CLI and the studio are one engine
+```
+
 Requires CMake ≥ 3.20, Ninja, a C compiler, and libcurl (present in the macOS
-SDK; built from source with the Schannel backend on Windows). Lua 5.4, SQLite,
+SDK; built from source with the Schannel backend on Windows). Lua 5.5, SQLite,
 cJSON, libuv, luv, ltui/PDCurses and isocline are vendored under `src/vendor/`
 and built statically. The binary is written to the source root so the invocations
 below work as documented; everything else stays in `build/`.
@@ -83,7 +144,16 @@ echo "task" | ./boggart --headless   # scriptable: prompt on stdin, reply on std
 ./boggart --reset [file]  # revert an overlay file (or all) to the baked-in default
 ./boggart doctor          # check the install and say, in plain words, what is wrong
 ./boggart --help          # every flag, subcommand and environment variable
+
+./boggart-studio          # the desktop app; ./boggart-studio <dir> opens a project
 ```
+
+On a new install the studio opens on a welcome screen rather than an empty
+conversation it has no credentials to run: paste an API key, or point it at a
+local server (`http://127.0.0.1:8000` speaks the Messages API), pick a model
+from the ones that server reports, and test the connection before committing to
+it. The test runs a real turn through `lua/api.lua`, so its verdicts come from
+the same error taxonomy the agent itself uses.
 
 REPL commands: `/help /tools /auth /doctor /memory /sessions /resume <id> /reload /reset [file] /model <id> /new /quit`.
 Swarm commands: `/help /threads /journal [n] /agents /model <id> /quit`.
@@ -169,6 +239,13 @@ Connect servers at startup by declaring them in `~/.boggart/lua/mcp_servers.lua`
 url=, headers=}, ... }`), or at runtime with the `mcp_add` tool; `mcp` lists
 connected servers. v1 is tools-only (resources/prompts, the server→client SSE
 channel, OAuth, and exposing boggart *as* an MCP server are future work).
+
+Verified against real third-party software, not only the mock server in
+`tests/mcp.lua`: connected to Chrome DevTools MCP (`npx chrome-devtools-mcp`),
+which registered 29 tools as `mcp__devtools__*`; loaded a page, read the element
+uid out of the accessibility snapshot, clicked a button and confirmed the page
+changed as a result; then asked the model to use `mcp__devtools__list_pages`,
+which it chose on its own and answered from correctly.
 
 Default model is `claude-opus-5` (adaptive thinking; no sampling params).
 
@@ -268,18 +345,45 @@ lua/            the golden default harness, baked into the binary:
   agents.lua agents/    standard agents (coordinator, researcher, coder, critic)
   tools_swarm.lua swarmmode.lua      swarm tools + the swarm mode entry
   mcphost.lua     MCP glue: register server tools as mcp__<server>__<tool>
-tools/          gen_embedded.sh (bakes lua/ into src/embedded.c)
-tests/          test.lua (units), integration.lua (turn loop), swarm.lua (actors/bus/journal)
+tools/          bake_embedded.cmake / bake_assets.cmake  bake lua/ and studio/data
+                  into the binaries; genwidth.py generates the Unicode width table
+                uishot.lua / uibench.lua                  the checks that need a window
+                fingerprint.lua / parity.cmake            proof the CLI and studio agree
+tests/          fifteen suites, each against a throwaway HOME. lifecycle.lua drives
+                the real binary: corrupt stores, unwritable homes, doctor's exit code
+docs/images/    the screenshots above, rendered by the app itself
 ```
 
 ## Credits & licenses
 
-- Lua 5.4 — MIT (© Lua.org, PUC-Rio), vendored in `src/vendor/lua/`.
+- Lua 5.5 — MIT (© Lua.org, PUC-Rio), vendored in `src/vendor/lua/`.
 - SQLite — public domain, amalgamation vendored in `src/vendor/sqlite/`.
 - libuv — MIT, vendored in `src/vendor/libuv/` (event loop, processes, fs).
 - luv — Apache-2.0 (© the luvit authors), libuv bindings for Lua.
 - ltui — Apache-2.0 (© tboox), terminal UI; PDCurses (public domain) on Windows.
 - isocline — MIT (© Daan Leijen), the line editor; replaced linenoise, which
   had no Windows port.
-- `strict.lua` and several harness patterns adapted from rxi/lite — MIT (© rxi).
+- cJSON — MIT (© Dave Gamble), vendored in `src/vendor/`.
+- SDL2 — zlib, fetched at configure time (pinned by SHA256) and linked
+  statically, so `boggart-studio` has no runtime SDL dependency at all.
+- stb_truetype — public domain / MIT (© Sean Barrett), the glyph rasteriser,
+  vendored in `studio/src/lib/stb/`.
+- **rxi/lite** — MIT (© rxi). `boggart-studio` grew out of its C+Lua editor
+  core and now owns it outright: renamed, re-themed, Lua 5.5, a widget layer,
+  a font fallback chain, a line primitive and a chat-first layout it never had.
+  `strict.lua` and several harness patterns in the CLI come from there too.
+- `core/sketch.lua` is our own implementation of the hand-drawn geometry in
+  **rough.js** (MIT, © Preet Shihn), by way of **rough-lua** (MIT, © Didier
+  Willis), whose port I read closely before rewriting it. Both notices are kept
+  in `studio/LICENSE-rough`; the algorithms are theirs, the code is ours.
+- Unicode width data derived from Unicode 16.0.0 `EastAsianWidth.txt` and
+  `emoji-data.txt` by `tools/genwidth.py`, following Markus Kuhn's `wcwidth`
+  rules.
+- Autocommands, extmarks and `:checkhealth` are ideas taken from **Neovim**;
+  the welcome screen's shape is taken from **Claude Desktop**; the workflow
+  builder's from **MindStudio**. No code from any of them.
 - Loop mechanics studied from antirez/ds4.
+
+boggart itself has no `LICENSE` file yet. That is a real gap now that the
+release workflow publishes binaries built from the MIT-licensed work above, and
+it should be closed before the first tagged release.
