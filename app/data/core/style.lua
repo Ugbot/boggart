@@ -27,6 +27,14 @@ style.line_highlight = { common.color "#343438" }
 style.scrollbar = { common.color "#414146" }
 style.scrollbar2 = { common.color "#4b4b52" }
 
+-- boggart-studio additions. The base theme has no success/failure pair, and a
+-- diff without red and green is not a diff. Chosen to sit with the existing
+-- palette rather than to shout.
+style.good    = { common.color "#7FB77E" }   -- added lines
+style.error   = { common.color "#F77483" }   -- removed lines, failures
+style.keyword = { common.color "#E58AC9" }   -- tool calls, matching syntax
+style.warn    = { common.color "#FFA94D" }
+
 style.syntax = {}
 style.syntax["normal"] = { common.color "#e1e1e6" }
 style.syntax["symbol"] = { common.color "#e1e1e6" }

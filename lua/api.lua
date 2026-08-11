@@ -244,10 +244,23 @@ M.msg_text = msg_text
 local function new_decoder(on_text)
   local blocks, tool_json = {}, {}
   local stop_reason, stream_err, buf = nil, nil, ""
+  -- Token usage, so the UI can show what a conversation is costing and how
+  -- close it is to the context window. message_start carries the input count,
+  -- message_delta the final output count.
+  local usage = { input_tokens = 0, output_tokens = 0,
+                  cache_read_input_tokens = 0, cache_creation_input_tokens = 0 }
+  local function take_usage(u)
+    if type(u) ~= "table" then return end
+    for k in pairs(usage) do
+      if type(u[k]) == "number" then usage[k] = u[k] end
+    end
+  end
 
   local function handle(evt)
     local t = evt.type
-    if t == "content_block_start" then
+    if t == "message_start" then
+      take_usage(evt.message and evt.message.usage)
+    elseif t == "content_block_start" then
       local b = {}
       for k, v in pairs(evt.content_block or {}) do b[k] = v end
       blocks[evt.index + 1] = b
@@ -276,6 +289,7 @@ local function new_decoder(on_text)
       end
     elseif t == "message_delta" then
       if evt.delta and evt.delta.stop_reason then stop_reason = evt.delta.stop_reason end
+      take_usage(evt.usage)
     elseif t == "error" then
       stream_err = "api stream error: " .. (evt.error and evt.error.message or "unknown")
     end
@@ -304,7 +318,10 @@ local function new_decoder(on_text)
     local content = {}
     for i = 1, maxidx do if blocks[i] then content[#content + 1] = blocks[i] end end
     if #content == 0 then content[1] = { type = "text", text = "" } end
-    return { role = "assistant", content = content }, stop_reason, stream_err
+    -- usage rides on the message but is not part of the wire format we send
+    -- back, so api.run_on strips it before the message joins the transcript.
+    return { role = "assistant", content = content, usage = usage },
+           stop_reason, stream_err
   end
 
   return { feed = feed, finish = finish }
@@ -474,6 +491,24 @@ function M.run_on(sess, user_text, on_text, opts)
     if #tools > 0 then body.tools = tools end
 
     local msg, stop = stream(body, on_text)
+    -- Account before the message joins the transcript: `usage` is our own
+    -- annotation, and sending it back to the API on the next turn would be a
+    -- wire-shape error.
+    if msg.usage then
+      sess.usage = sess.usage or { input = 0, output = 0, cached = 0, turns = 0 }
+      sess.usage.input  = sess.usage.input  + (msg.usage.input_tokens or 0)
+      sess.usage.output = sess.usage.output + (msg.usage.output_tokens or 0)
+      sess.usage.cached = sess.usage.cached + (msg.usage.cache_read_input_tokens or 0)
+      sess.usage.turns  = sess.usage.turns + 1
+      -- The whole prompt, not just the uncached part. This is the number that
+      -- says how close the conversation is to the context window, and with
+      -- prompt caching on, input_tokens alone reads as near-zero on exactly
+      -- the turns where the context is largest.
+      sess.usage.last_input = (msg.usage.input_tokens or 0)
+        + (msg.usage.cache_read_input_tokens or 0)
+        + (msg.usage.cache_creation_input_tokens or 0)
+      msg.usage = nil
+    end
     sess.messages[#sess.messages + 1] = msg
 
     local tool_uses = {}

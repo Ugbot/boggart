@@ -78,16 +78,82 @@ end
 -- Status: the agent's state belongs in the status bar, not only in the panel
 -- ---------------------------------------------------------------------------
 
+local function human_tokens(n)
+  n = tonumber(n) or 0
+  if n < 1000 then return tostring(math.floor(n)) end
+  return string.format("%.1fk", n / 1000)
+end
+
 function studio.status_items()
   if not bog then return {} end
   local v = studio.agent_view()
-  local model = (bog.session and bog.session.model) or "?"
-  local out = { style.dim, "agent:", style.text, " " .. model }
-  if v and v.busy then
+  local out = { style.dim, "agent ", style.text, (bog.session and bog.session.model) or "?" }
+
+  -- Token usage: what this conversation has cost, and how big the next
+  -- request will be. The second number is the one that predicts a compaction.
+  local u = bog.session and bog.session.usage
+  if u and u.turns and u.turns > 0 then
     out[#out + 1] = style.dim
-    out[#out + 1] = "  [" .. (v.status or "busy") .. "]"
+    out[#out + 1] = string.format("  %s in / %s out",
+      human_tokens((u.input or 0) + (u.cached or 0)), human_tokens(u.output))
+    if u.last_input and u.last_input > 0 then
+      out[#out + 1] = "  ctx " .. human_tokens(u.last_input)
+    end
+  end
+
+  if v then
+    if v.pending then
+      out[#out + 1] = style.warn or style.accent
+      out[#out + 1] = "  [approve?]"
+    elseif v.busy then
+      out[#out + 1] = style.dim
+      out[#out + 1] = "  [" .. (v.status or "busy") .. "]"
+    elseif not v.gate then
+      out[#out + 1] = style.warn or style.dim
+      out[#out + 1] = "  [approval off]"
+    end
   end
   return out
+end
+
+-- ---------------------------------------------------------------------------
+-- MCP persistence
+-- ---------------------------------------------------------------------------
+
+local function quote(v)
+  if type(v) == "table" then
+    local parts = {}
+    for _, x in ipairs(v) do parts[#parts + 1] = quote(x) end
+    return "{ " .. table.concat(parts, ", ") .. " }"
+  end
+  return string.format("%q", tostring(v))
+end
+
+-- Append a spec to ~/.boggart/lua/mcp_servers.lua. Written as source rather
+-- than parsed-and-rewritten: the file is the user's to edit, and rewriting it
+-- would throw away their comments and formatting to save one append.
+function studio.save_mcp_server(spec)
+  local path = bog.userdir .. "/lua/mcp_servers.lua"
+  local body = bog.util.read_file(path)
+  local fields = {}
+  for _, k in ipairs { "name", "transport", "command", "url" } do
+    if spec[k] then fields[#fields + 1] = k .. " = " .. quote(spec[k]) end
+  end
+  if spec.args and #spec.args > 0 then
+    fields[#fields + 1] = "args = " .. quote(spec.args)
+  end
+  local entry = "  { " .. table.concat(fields, ", ") .. " },\n"
+
+  if body and body:find("return%s*{") then
+    -- Insert before the closing brace of the returned table.
+    local head, tail = body:match("^(.-)%s*(\n%s*}%s*)$")
+    if head then
+      bog.util.write_file(path, head .. "\n" .. entry:gsub("\n$", "") .. tail)
+      return true
+    end
+  end
+  bog.util.write_file(path, (body or "") .. "\nreturn {\n" .. entry .. "}\n")
+  return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -115,6 +181,31 @@ command.add(nil, {
   ["agent:cancel"] = function()
     local v = studio.agent_view()
     if v then v:cancel() end
+  end,
+
+  -- ---- approval -----------------------------------------------------------
+  ["agent:toggle-approval"] = function()
+    local v = studio.open_agent()
+    v.gate = not v.gate
+    core.log("approval %s", v.gate and "on -- writes, edits and commands will ask"
+                                    or "OFF -- the agent acts without asking")
+  end,
+  ["agent:approve"] = function()
+    local v = studio.agent_view(); if v then v:decide("approve") end
+  end,
+  ["agent:reject"] = function()
+    local v = studio.agent_view(); if v then v:decide("reject") end
+  end,
+
+  -- ---- usage --------------------------------------------------------------
+  ["agent:show-usage"] = function()
+    local u = bog.session and bog.session.usage
+    if not u or not u.turns or u.turns == 0 then
+      core.log("no usage recorded in this session yet")
+      return
+    end
+    core.log("%d turns | %d input (+%d cached) | %d output | last request %d tokens",
+      u.turns, u.input or 0, u.cached or 0, u.output or 0, u.last_input or 0)
   end,
 
   -- ---- configuration ------------------------------------------------------
@@ -195,6 +286,60 @@ command.add(nil, {
     core.log("tool report written to the log (ctrl+l)")
   end,
 
+  -- ---- MCP servers --------------------------------------------------------
+  -- Servers are declared in ~/.boggart/lua/mcp_servers.lua, which boot.lua
+  -- already reads at startup. These commands edit that file rather than
+  -- inventing a second registry, so what the GUI configures is exactly what
+  -- the terminal boggart connects to.
+  ["agent:list-mcp-servers"] = function()
+    local live = bog.mcphost and bog.mcphost.list() or {}
+    if #live == 0 then
+      core.log("no MCP servers connected -- 'agent: add mcp server' to add one")
+      return
+    end
+    for _, e in ipairs(live) do
+      core.log_quiet("%s (%d tools): %s", e.server, #e.tools,
+        table.concat(e.tools, ", "))
+    end
+    core.log("%d MCP server(s) connected -- details in the log (ctrl+l)", #live)
+  end,
+
+  ["agent:add-mcp-server"] = function()
+    prompt("MCP server name:", function(name)
+      if name == "" then return end
+      prompt("Command (stdio), or an http(s):// URL:", function(cmd)
+        if cmd == "" then return end
+        local spec
+        if cmd:match("^https?://") then
+          spec = { name = name, transport = "http", url = cmd }
+        else
+          local args = {}
+          for word in cmd:gmatch("%S+") do args[#args + 1] = word end
+          spec = { name = name, command = table.remove(args, 1), args = args }
+        end
+        local names, err = bog.mcphost.add(spec)
+        if not names then
+          core.error("mcp '%s': %s", name, tostring(err))
+          return
+        end
+        studio.save_mcp_server(spec)
+        core.log("connected '%s' (%d tools), saved to mcp_servers.lua",
+          name, #names)
+      end)
+    end)
+  end,
+
+  ["agent:edit-mcp-servers"] = function()
+    local path = bog.userdir .. "/lua/mcp_servers.lua"
+    if not bog.util.read_file(path) then
+      bog.util.write_file(path, "-- MCP servers, one spec per entry.\n"
+        .. "-- stdio: { name = \"x\", command = \"npx\", args = { \"-y\", \"pkg\" } }\n"
+        .. "-- http:  { name = \"x\", transport = \"http\", url = \"https://...\" }\n"
+        .. "return {\n}\n")
+    end
+    core.root_view:open_doc(core.open_doc(path))
+  end,
+
   -- ---- build / run --------------------------------------------------------
   -- Deliberately routed through the agent's own bash tool rather than a second
   -- process-spawning path: it is already non-blocking, already bounded, and
@@ -220,6 +365,7 @@ keymap.add {
   ["ctrl+shift+e"]    = "agent:explain-selection",
   ["ctrl+shift+r"]    = "agent:review-selection",
   ["ctrl+shift+b"]    = "agent:run-command",
+  ["ctrl+shift+g"]    = "agent:toggle-approval",
 }
 
 return studio

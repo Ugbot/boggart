@@ -1,6 +1,8 @@
 # build artifacts
 boggart
 boggart.exe
+boggart-studio
+boggart-studio.exe
 build/
 build-*/
 *.o
@@ -14,3 +16,6 @@ src/embedded.c
 # vendored object files (legacy Makefile build)
 src/vendor/lua/src/*.o
 src/vendor/sqlite/sqlite3.o
+
+# stray run artifacts
+error.txt
