@@ -12,7 +12,27 @@
 local json = require("json")
 local M = {}
 
-local ENDPOINT = "https://api.anthropic.com/v1/messages"
+-- Where to send the request.
+--
+-- ANTHROPIC_BASE_URL is the same variable the official SDKs honour, so
+-- anything that already speaks the Messages API works without further
+-- configuration -- a proxy, a gateway, or a local engine. DwarfStar (ds4) is
+-- the interesting case: `ds4-server` exposes /v1/messages directly, so
+--
+--   ANTHROPIC_BASE_URL=http://127.0.0.1:8000 ./boggart "..."
+--
+-- runs the whole harness against a model on this machine, which is also how
+-- you exercise the agent loop with no network and no per-token cost.
+local function endpoint()
+  local base = os.getenv("ANTHROPIC_BASE_URL")
+  if not base or base == "" then return "https://api.anthropic.com/v1/messages" end
+  base = base:gsub("/+$", "")
+  -- Accept either a bare origin or a full messages URL, so callers do not have
+  -- to remember which one this wants.
+  if base:match("/v1/messages$") then return base end
+  return base .. "/v1/messages"
+end
+M.endpoint = endpoint
 
 local cached_headers = nil
 local function auth_headers()
@@ -21,6 +41,12 @@ local function auth_headers()
   local key = os.getenv("ANTHROPIC_API_KEY")
   if key and #key > 0 then
     h[#h + 1] = "x-api-key: " .. key
+  elseif os.getenv("ANTHROPIC_BASE_URL") then
+    -- A self-hosted endpoint generally wants no credential at all. Falling
+    -- through to the `ant` CLI here would fail for the wrong reason and hide
+    -- what is actually a working local setup.
+    cached_headers = h
+    return h
   else
     -- No `2>/dev/null`: that is sh redirection syntax, and cmd.exe would hand
     -- it to `ant` as a literal argument. But sys.exec folds stderr into r.out,
@@ -136,7 +162,7 @@ local function stream_once(body_tbl, on_text)
   local body = json.encode(body_tbl)
   local dec = new_decoder(on_text)
   local status, resp = http.request{
-    url = ENDPOINT, method = "POST", headers = auth_headers(),
+    url = endpoint(), method = "POST", headers = auth_headers(),
     body = body, on_chunk = dec.feed, timeout = 600,
   }
   dec.feed("\n")
@@ -155,7 +181,7 @@ local function stream_async(body_tbl, on_text)
   local dec = new_decoder(on_text)
   local raw = {}
   local req = http.begin{
-    url = ENDPOINT, method = "POST", headers = auth_headers(), body = body, timeout = 600,
+    url = endpoint(), method = "POST", headers = auth_headers(), body = body, timeout = 600,
   }
   local status, err
   while true do

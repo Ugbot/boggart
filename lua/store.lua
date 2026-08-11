@@ -325,7 +325,8 @@ end
 
 function M.tool_stats(project)
   return bog.db:query(
-    "SELECT name,scope,project,created,calls,failures,last_used,total_ms,git_rev FROM tools "
+    "SELECT name,scope,project,created,created_session,version,calls,failures,"
+    .. "last_used,total_ms,git_rev FROM tools "
     .. "WHERE project='' OR project=? ORDER BY calls DESC, name", { project or "" })
 end
 

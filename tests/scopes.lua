@@ -95,7 +95,11 @@ local by = {}
 for _, r in ipairs(rows) do by[r.name .. "/" .. r.scope] = r end
 ok(by["p_tool/project"] ~= nil, "project tool was recorded")
 ok(by["g_tool/global"] ~= nil, "global tool was recorded")
-eq(by["p_tool/project"].created_session or 4242, 4242, "creating session is recorded")
+-- Read back explicitly rather than with an `or` fallback: the first version of
+-- this assertion masked a real bug, because tool_stats did not SELECT the
+-- column at all and `nil or 4242` happily passed.
+eq(by["p_tool/project"].created_session, 4242, "creating session is recorded and returned")
+ok(by["p_tool/project"].version ~= nil, "boggart version is recorded and returned")
 ok(by["p_tool/project"].created > 0, "creation time is recorded")
 ok(by["p_tool/project"].git_rev ~= nil, "the git revision at creation is recorded (staleness, §18)")
 eq(by["g_tool/global"].git_rev, nil, "a global tool has no repository revision")
