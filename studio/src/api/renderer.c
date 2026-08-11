@@ -72,6 +72,18 @@ static int f_draw_rect(lua_State *L) {
 }
 
 
+static int f_draw_line(lua_State *L) {
+  float x0 = luaL_checknumber(L, 1);
+  float y0 = luaL_checknumber(L, 2);
+  float x1 = luaL_checknumber(L, 3);
+  float y1 = luaL_checknumber(L, 4);
+  RenColor color = checkcolor(L, 5, 255);
+  float thickness = luaL_optnumber(L, 6, 1.0);
+  rencache_draw_line(x0, y0, x1, y1, thickness, color);
+  return 0;
+}
+
+
 static int f_draw_text(lua_State *L) {
   RenFont **font = luaL_checkudata(L, 1, API_TYPE_FONT);
   const char *text = luaL_checkstring(L, 2);
@@ -91,6 +103,7 @@ static const luaL_Reg lib[] = {
   { "end_frame",     f_end_frame     },
   { "set_clip_rect", f_set_clip_rect },
   { "draw_rect",     f_draw_rect     },
+  { "draw_line",     f_draw_line     },
   { "draw_text",     f_draw_text     },
   { NULL,            NULL            }
 };

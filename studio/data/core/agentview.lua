@@ -459,6 +459,41 @@ function AgentView:set_input(s)
   self.cx = #self.lines[self.cy] + 1
 end
 
+-- Caret arithmetic. self.cx is a byte offset into the line -- the same index
+-- string.sub wants -- but it must always sit on a character boundary.
+function AgentView:prev_char(line, i)
+  i = i - 1
+  while i > 1 do
+    local b = line:byte(i)
+    if b < 0x80 or b >= 0xc0 then break end
+    i = i - 1
+  end
+  return math.max(1, i)
+end
+
+function AgentView:next_char(line, i)
+  local len = #line
+  i = i + 1
+  while i <= len do
+    local b = line:byte(i)
+    if b < 0x80 or b >= 0xc0 then break end
+    i = i + 1
+  end
+  return math.min(i, len + 1)
+end
+
+-- Keep the caret inside the current line and on a boundary, after a move that
+-- changed which line it is on.
+function AgentView:clamp_caret()
+  local l = self.lines[self.cy] or ""
+  if self.cx > #l + 1 then self.cx = #l + 1 end
+  if self.cx < 1 then self.cx = 1 end
+  if self.cx <= #l then
+    local b = l:byte(self.cx)
+    if b >= 0x80 and b < 0xc0 then self.cx = self:prev_char(l, self.cx + 1) end
+  end
+end
+
 function AgentView:on_text_input(text)
   local l = self.lines[self.cy]
   self.lines[self.cy] = l:sub(1, self.cx - 1) .. text .. l:sub(self.cx)
@@ -492,8 +527,9 @@ function AgentView:on_key_pressed(key)
   elseif key == "backspace" then
     if self.cx > 1 then
       local l = self.lines[self.cy]
-      self.lines[self.cy] = l:sub(1, self.cx - 2) .. l:sub(self.cx)
-      self.cx = self.cx - 1
+      local prev = self:prev_char(l, self.cx)
+      self.lines[self.cy] = l:sub(1, prev - 1) .. l:sub(self.cx)
+      self.cx = prev
     elseif self.cy > 1 then
       local prev = self.lines[self.cy - 1]
       self.cx = #prev + 1
@@ -505,21 +541,29 @@ function AgentView:on_key_pressed(key)
     return true
 
   elseif key == "ctrl+backspace" or key == "alt+backspace" then
+    -- The tail has to be taken before the caret moves. Reading l:sub(self.cx)
+    -- after reassigning self.cx put the deleted word straight back: this key
+    -- did nothing at all except walk the caret backwards, so a second press
+    -- silently left the caret in the middle of the line.
     local l = self.lines[self.cy]
     local head = l:sub(1, self.cx - 1):gsub("%s*%S+%s*$", "")
-    self.cx = #head + 1
-    self.lines[self.cy] = head .. l:sub(self.cx + (#l:sub(1, self.cx - 1) - #head))
     self.lines[self.cy] = head .. l:sub(self.cx)
+    self.cx = #head + 1
     core.redraw = true
     return true
 
+  -- Caret motion steps whole characters. Stepping bytes let the caret settle
+  -- inside a codepoint, where backspace would delete half of one and the drawn
+  -- line -- which splices the caret glyph in at that offset -- became invalid
+  -- UTF-8 for the renderer.
   elseif key == "left" then
-    if self.cx > 1 then self.cx = self.cx - 1
+    if self.cx > 1 then self.cx = self:prev_char(self.lines[self.cy], self.cx)
     elseif self.cy > 1 then self.cy = self.cy - 1; self.cx = #self.lines[self.cy] + 1 end
     core.redraw = true; return true
 
   elseif key == "right" then
-    if self.cx <= #self.lines[self.cy] then self.cx = self.cx + 1
+    if self.cx <= #self.lines[self.cy] then
+      self.cx = self:next_char(self.lines[self.cy], self.cx)
     elseif self.cy < #self.lines then self.cy = self.cy + 1; self.cx = 1 end
     core.redraw = true; return true
 
@@ -533,16 +577,28 @@ function AgentView:on_key_pressed(key)
     self.lines[self.cy] = self.lines[self.cy]:sub(self.cx)
     self.cx = 1; core.redraw = true; return true
 
-  -- History, but only from a single-line empty-ish input, so up/down still
-  -- move the caret in a multi-line draft.
-  elseif key == "up" and #self.lines == 1 then
+  -- History, but only from a single-line input, so up/down move the caret in a
+  -- multi-line draft. They used to do nothing there at all -- the comment
+  -- claimed the caret moved and no branch ever moved it, so a shift+enter draft
+  -- could only be navigated with left and right.
+  elseif key == "up" then
+    if #self.lines > 1 then
+      if self.cy > 1 then self.cy = self.cy - 1; self:clamp_caret() end
+      core.redraw = true
+      return true
+    end
     if #self.history > 0 then
       self.hpos = math.min(self.hpos + 1, #self.history)
       self:set_input(self.history[#self.history - self.hpos + 1] or "")
     end
     return true
 
-  elseif key == "down" and #self.lines == 1 then
+  elseif key == "down" then
+    if #self.lines > 1 then
+      if self.cy < #self.lines then self.cy = self.cy + 1; self:clamp_caret() end
+      core.redraw = true
+      return true
+    end
     if self.hpos > 1 then
       self.hpos = self.hpos - 1
       self:set_input(self.history[#self.history - self.hpos + 1] or "")
@@ -576,10 +632,46 @@ end
 -- already recognises, then run the same tokenizer a DocView runs.
 --
 -- Everything here draws in style.code_font, which is monospace, so widths are
--- character counts. That is what makes wrapping a token row cheap. It also
--- means a multi-byte character measures as its byte length -- the same
--- limitation lua/dash.lua has, and the same reason: doing it properly needs
--- wcwidth, which is a bigger job than this panel justifies today.
+-- character counts. That is what makes wrapping a token row cheap.
+--
+-- A character is not a byte, and this used to count bytes. Two things came of
+-- that: "café" measured five columns wide, and -- much worse -- a word too long
+-- for the column was cut with string.sub at a byte offset, which lands in the
+-- middle of a codepoint. The renderer then got a fragment beginning with a
+-- continuation byte, which it cannot decode: on screen a wrapped run of "é"
+-- grew a stray "À" at each break and an orphan blank at each row start, and in
+-- C the decoder produced a negative codepoint and indexed the glyphset array
+-- below zero. Counting and slicing on codepoint boundaries costs one pass and
+-- removes the whole class.
+--
+-- What remains: a double-width CJK glyph still counts as one column. Getting
+-- that right needs wcwidth, and the bundled fonts have no CJK coverage to draw
+-- in the first place, so it stays a known remainder rather than a half-fix.
+
+-- The number of characters in s. Every byte that is not a UTF-8 continuation
+-- byte starts one, which gsub counts at C speed.
+local function cols_of(s)
+  local _, n = s:gsub("[^\128-\191]", "")
+  return n
+end
+
+-- The byte index one past the n-th character of s (#s + 1 if s is shorter).
+local function byte_at(s, n)
+  local i, len = 1, #s
+  while n > 0 and i <= len do
+    i = i + 1
+    while i <= len do
+      local b = s:byte(i)
+      if b < 0x80 or b >= 0xc0 then break end
+      i = i + 1
+    end
+    n = n - 1
+  end
+  return i
+end
+
+local function ctake(s, n) return s:sub(1, byte_at(s, n) - 1) end
+local function cdrop(s, n) return s:sub(byte_at(s, n)) end
 
 local EXT = {
   lua = "lua", c = "c", h = "h", cpp = "cpp", cc = "cpp", ["c++"] = "cpp",
@@ -608,10 +700,11 @@ local function fit(tokens, cols)
     while #text > 0 do
       if used >= cols then rows[#rows + 1] = cur; cur, used = {}, 0 end
       local room = cols - used
-      if #text <= room then
-        cur[#cur + 1] = { col, text }; used = used + #text; text = ""
+      local n = cols_of(text)
+      if n <= room then
+        cur[#cur + 1] = { col, text }; used = used + n; text = ""
       else
-        cur[#cur + 1] = { col, text:sub(1, room) }; text = text:sub(room + 1)
+        cur[#cur + 1] = { col, ctake(text, room) }; text = cdrop(text, room)
         used = cols
       end
     end
@@ -683,22 +776,22 @@ local function wrap_tokens(tokens, cols)
     -- the next token began with the space that got skipped.
     if t[2] ~= "" and t[2]:match("^%s*$") then
       cur[#cur + 1] = { t[1], t[2] }
-      used = used + #t[2]
+      used = used + cols_of(t[2])
     end
     for lead, chunk in t[2]:gmatch("(%s*)(%S+)") do
       -- Copied out of the loop variable: Lua 5.5 makes the control variable
       -- read-only, and this loop consumes it.
       local word = lead .. chunk
-      local wlen = #word
+      local wlen = cols_of(word)
       if used + wlen > cols and used > 0 then
         flush()
         word = word:gsub("^%s+", "")   -- no leading space at the start of a row
-        wlen = #word
+        wlen = cols_of(word)
       end
       while wlen > cols do   -- a single word longer than the column
-        cur[#cur + 1] = { t[1], word:sub(1, cols), bold = t.bold, link = t.link }
+        cur[#cur + 1] = { t[1], ctake(word, cols), bold = t.bold, link = t.link }
         rows[#rows + 1] = cur; cur, used = {}, 0
-        word = word:sub(cols + 1); wlen = #word
+        word = cdrop(word, cols); wlen = cols_of(word)
       end
       cur[#cur + 1] = { t[1], word, bold = t.bold, link = t.link }
       used = used + wlen
@@ -709,7 +802,7 @@ local function wrap_tokens(tokens, cols)
     local tail = t[2]:match("%s+$")
     if tail and t[2]:match("%S") then
       cur[#cur + 1] = { t[1], tail }
-      used = used + #tail
+      used = used + cols_of(tail)
     end
   end
   flush()
@@ -717,28 +810,35 @@ local function wrap_tokens(tokens, cols)
   return rows
 end
 
--- Rows for one entry, cached against (cols, text length). Streaming only ever
--- appends, so the length is a sufficient invalidation key -- and re-laying-out
--- a growing reply on every one of sixty frames a second is exactly what this
--- cache exists to avoid.
+-- Rows for one entry, cached against (cols, text). Keyed on the string itself
+-- rather than its length: identical strings are the same object here, so the
+-- comparison is a pointer test in the common case, and a rewritten entry of the
+-- same length -- which a length key silently kept stale -- invalidates. Streams
+-- append constantly, and re-laying-out a growing reply sixty times a second is
+-- exactly what this cache exists to avoid.
 function AgentView:layout(e, cols)
   local c = e._layout
-  if c and c.cols == cols and c.n == #e.text then return c.rows end
+  if c and c.cols == cols and c.text == e.text then return c.rows end
 
   local r = ROLE[e.role] or ROLE.assistant
   local base = style[r.color] or style.text
   local rows = {}
   local in_code, syn, state = false, nil, nil
+  local fence_len = 0
   local first = true
 
   for line in (e.text .. "\n"):gmatch("(.-)\n") do
     local fence, lang = line:match("^%s*(```+)%s*([%w_+#%-]*)")
-    if fence then
+    -- A fence only closes one at least as long as the one that opened it,
+    -- which is how a ````-fenced markdown block can contain a ``` block. Any
+    -- fence closing any other ate the inner block's contents: they rendered as
+    -- prose, with the markers gone and no sign anything had been dropped.
+    if fence and (not in_code or #fence >= fence_len) then
       -- The fence is markup, not content. Every chat UI worth using shows the
       -- block, not the backticks that delimit it; a band behind the code says
       -- the same thing without spending three rows on punctuation.
-      if in_code then in_code, syn, state = false, nil, nil
-      else in_code, syn, state = true, syntax_for(lang), nil end
+      if in_code then in_code, syn, state, fence_len = false, nil, nil, 0
+      else in_code, syn, state, fence_len = true, syntax_for(lang), nil, #fence end
     elseif in_code and syn then
       -- The newline matters. Several of lite's patterns are anchored to it --
       -- Lua's line comment is "%-%-.-\n" -- because a DocView's lines keep
@@ -799,7 +899,7 @@ function AgentView:layout(e, cols)
     first = false
   end
 
-  e._layout = { cols = cols, n = #e.text, rows = rows }
+  e._layout = { cols = cols, text = e.text, rows = rows }
   return rows
 end
 
@@ -854,7 +954,10 @@ local COLUMN_COLS = 96   -- widest the conversation column gets, in characters
 
 function AgentView:toolbar_items()
   local busy = self.busy
+  local sidebar = core.studio and core.studio.sidebar
   return {
+    { label = (sidebar and sidebar.visible) and "<" or ">",
+      command = "studio:toggle-sidebar" },
     { label = "New chat", command = "agent:new-session" },
     { label = "Chats",    command = "agent:resume-session" },
     { label = "Recipes",  command = "agent:run-recipe" },
@@ -891,9 +994,17 @@ function AgentView:draw_pending(x, y, w, font)
   renderer.draw_rect(self.position.x, y, math.max(2, style.padding.x / 3), h,
     style.warn or style.accent)
 
-  common.draw_text(font, style.accent,
-    (p.name == "bash" and "run: " or "apply: ") .. (p.summary or p.name),
-    "left", x, y + pad, w, lh)
+  -- Truncated from the left, keeping the tail. This is a security question --
+  -- "apply what, to which file?" -- and the answer lives at the end of a path,
+  -- so a long one used to run off the right edge of the panel and hide exactly
+  -- the filename you were being asked to approve.
+  local verb = (p.name == "bash" and "run: " or "apply: ")
+  local body = p.summary or p.name
+  local room = math.floor(w / font:get_width("0")) - #verb
+  if room > 4 and cols_of(body) > room then
+    body = "..." .. cdrop(body, cols_of(body) - (room - 3))
+  end
+  common.draw_text(font, style.accent, verb .. body, "left", x, y + pad, w, lh)
 
   local hits = widgets.row(font, {
     { label = "Approve", action = function() self:decide("approve") end },
@@ -944,6 +1055,13 @@ function AgentView:draw()
 
   local function visible(yy) return yy + lh > body_top and yy < body_bottom end
 
+  -- The transcript is clipped to the band between the toolbar and the composer.
+  -- Without this a row straddling either edge is drawn whole -- half of it over
+  -- the toolbar's buttons, or sliced through the middle where the composer's
+  -- fill happens to end.
+  core.push_clip_rect(self.position.x, body_top, self.size.x,
+    math.max(0, body_bottom - body_top))
+
   for _, e in ipairs(self.entries) do
     if e.role == "diff" and e.diff then
       if visible(y) then
@@ -965,57 +1083,70 @@ function AgentView:draw()
     else
       local rows = self:layout(e, cols)
 
-      -- A user turn is a bubble, sized to its own text and pushed to the right;
-      -- everything the agent says is plain and full width. That asymmetry is
-      -- what makes a transcript skimmable -- the eye finds "where did I last
-      -- say something" by shape, without reading a word.
-      local ex, bw = x, nil
-      if e.role == "user" then
-        local widest = 0
-        for _, row in ipairs(rows) do
-          local n = 0
-          for _, t in ipairs(row) do n = n + #t[2] end
-          widest = math.max(widest, n)
-        end
-        bw = math.min(w, widest * charw + pad)
-        ex = x + w - bw
-        if visible(y) then
+      -- Rows are a fixed height, so an entry that is entirely above or below
+      -- the band can be stepped over in one addition. That is what keeps a
+      -- thousand-turn transcript at frame rate: the per-frame cost follows what
+      -- is on screen, not what is in the session. It also replaces a hard stop
+      -- at 600 rows, which quietly dropped the rest of a long entry *and* left
+      -- content_height too small to scroll to it.
+      local eh = #rows * lh
+      if y + eh < body_top or y > body_bottom then
+        y = y + eh
+      else
+        -- A user turn is a bubble, sized to its own text and pushed to the
+        -- right; everything the agent says is plain and full width. That
+        -- asymmetry is what makes a transcript skimmable -- the eye finds
+        -- "where did I last say something" by shape, without reading a word.
+        local ex = x
+        if e.role == "user" then
+          local widest = 0
+          for _, row in ipairs(rows) do
+            local n = 0
+            for _, t in ipairs(row) do n = n + cols_of(t[2]) end
+            widest = math.max(widest, n)
+          end
+          local bw = math.min(w, widest * charw + pad)
+          ex = x + w - bw
+          -- Drawn whenever any part of the bubble is in the band, not only
+          -- when its first row is: a bubble scrolled halfway off the top used
+          -- to lose its background entirely and read as an agent message.
           renderer.draw_rect(ex - pad / 2, y - vpad / 2, bw + pad,
-            #rows * lh + vpad, style.selection)
+            eh + vpad, style.selection)
         end
-      end
 
-      for i, row in ipairs(rows) do
-        if visible(y) then
-          if row.code then
-            renderer.draw_rect(x - pad / 2, y, w + pad, lh, style.background2)
-          end
-          if row.rule then
-            renderer.draw_rect(ex, y + lh / 2, row.thin and (w / 3) or w,
-              math.max(1, SCALE), style.divider)
-          end
-          local tx = ex
-          for _, t in ipairs(row) do
-            local nx = renderer.draw_text(font, t[2], tx, y + voff, t[1])
-            -- Faux-bold: the same glyphs a pixel to the right. Cheap, and the
-            -- only way to show emphasis with one font cut.
-            if t.bold then
-              renderer.draw_text(font, t[2], tx + math.max(1, SCALE * 0.5),
-                y + voff, t[1])
+        for _, row in ipairs(rows) do
+          if visible(y) then
+            if row.code then
+              renderer.draw_rect(x - pad / 2, y, w + pad, lh, style.background2)
             end
-            if t.link then
-              renderer.draw_rect(tx, y + voff + font:get_height(),
-                nx - tx, math.max(1, SCALE), t[1])
+            if row.rule then
+              renderer.draw_rect(ex, y + lh / 2, row.thin and (w / 3) or w,
+                math.max(1, SCALE), style.divider)
             end
-            tx = nx
+            local tx = ex
+            for _, t in ipairs(row) do
+              local nx = renderer.draw_text(font, t[2], tx, y + voff, t[1])
+              -- Faux-bold: the same glyphs a pixel to the right. Cheap, and the
+              -- only way to show emphasis with one font cut.
+              if t.bold then
+                renderer.draw_text(font, t[2], tx + math.max(1, SCALE * 0.5),
+                  y + voff, t[1])
+              end
+              if t.link then
+                renderer.draw_rect(tx, y + voff + font:get_height(),
+                  nx - tx, math.max(1, SCALE), t[1])
+              end
+              tx = nx
+            end
           end
+          y = y + lh
         end
-        y = y + lh
-        if i > 600 then break end
       end
     end
     y = y + lh * 0.4
   end
+
+  core.pop_clip_rect()
 
   -- An empty panel should say what to do, not sit there blankly.
   if #self.entries == 0 then
@@ -1051,8 +1182,14 @@ function AgentView:draw()
   renderer.draw_rect(bx, iy + vpad, 1, composer_h - vpad * 2, border)
   renderer.draw_rect(bx + bw - 1, iy + vpad, 1, composer_h - vpad * 2, border)
 
+  -- The box shows at most eight lines, so a longer draft has to scroll to the
+  -- caret. It did not: it always drew lines 1..8, and from the ninth line on
+  -- you were typing into a line that was not on screen, with no caret to say
+  -- where you were.
+  local top_line = math.max(1, math.min(self.cy - input_lines + 1,
+    #self.lines - input_lines + 1))
   local ty = iy + vpad * 2
-  for i = 1, input_lines do
+  for i = top_line, top_line + input_lines - 1 do
     local line = self.lines[i] or ""
     local shown = line
     if i == self.cy and not self.busy and focused then
@@ -1070,12 +1207,15 @@ function AgentView:draw()
 
   -- controls inside the box: attachments and pickers left, send right
   local crow = iy + composer_h - vpad * 2 - bh
-  for _, hit in ipairs(widgets.row(font, self:composer_items(), x, crow, self.mouse)) do
-    self.hits[#self.hits + 1] = hit
-  end
   local send_label = self.busy and (self.status or "working") or "Send"
   local sw = widgets.width(font, send_label)
   local sx = x + w - sw
+  -- Bounded so the pickers stop where Send begins. In a narrow window they
+  -- used to run underneath it and out through the right-hand border of the box.
+  for _, hit in ipairs(widgets.row(font, self:composer_items(), x, crow,
+      self.mouse, sx - style.padding.x * widgets.GAP)) do
+    self.hits[#self.hits + 1] = hit
+  end
   local shit = widgets.button(font, send_label, sx, crow, {
     w = sw,
     active = not self.busy and self:input_text() ~= "",

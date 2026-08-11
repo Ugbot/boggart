@@ -233,6 +233,40 @@ static int f_save_screenshot(lua_State *L) {
   return 1;
 }
 
+/* system.set_window_size(w, h) or set_window_size(x, y, w, h) -- points, as SDL
+ * sizes and places windows.
+ *
+ * Only the automated checks use this: a layout bug that only appears in a very
+ * narrow or very wide window is otherwise unreachable without a person dragging
+ * the frame, and the developer's display size would silently decide which
+ * layouts `ninja ui-check` exercised. There is no matching event to raise --
+ * the frame loop reads renderer.get_size() from the window surface every
+ * iteration, so the next frame already has the new size.
+ *
+ * Both arities are accepted because both callers exist: a size is all a layout
+ * check needs, and a position matters when a probe must not land under another
+ * window. Refusing one of them would only mean two functions that do the same
+ * SDL calls. */
+static int f_set_window_size(lua_State *L) {
+  int n = lua_gettop(L);
+  int x = 0, y = 0, w, h;
+  if (n >= 4) {
+    x = (int) luaL_checknumber(L, 1);
+    y = (int) luaL_checknumber(L, 2);
+    w = (int) luaL_checknumber(L, 3);
+    h = (int) luaL_checknumber(L, 4);
+  } else {
+    w = (int) luaL_checknumber(L, 1);
+    h = (int) luaL_checknumber(L, 2);
+  }
+  if (w < 1 || h < 1) { return luaL_error(L, "window size must be positive"); }
+  SDL_RestoreWindow(window);
+  if (n >= 4) { SDL_SetWindowPosition(window, x, y); }
+  SDL_SetWindowSize(window, w, h);
+  return 0;
+}
+
+
 static int f_set_window_title(lua_State *L) {
   const char *title = luaL_checkstring(L, 1);
   SDL_SetWindowTitle(window, title);
@@ -447,6 +481,7 @@ static const luaL_Reg lib[] = {
   { "wait_event",          f_wait_event          },
   { "set_cursor",          f_set_cursor          },
   { "set_window_title",    f_set_window_title    },
+  { "set_window_size",     f_set_window_size     },
   { "set_window_mode",     f_set_window_mode     },
   { "window_has_focus",    f_window_has_focus    },
   { "show_confirm_dialog", f_show_confirm_dialog },

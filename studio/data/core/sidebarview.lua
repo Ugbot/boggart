@@ -19,6 +19,7 @@ local View = require "core.view"
 local widgets = require "core.widgets"
 
 config.sidebar_size = 210 * SCALE
+config.sidebar_min  = 120 * SCALE
 
 local SidebarView = View:extend()
 
@@ -35,6 +36,38 @@ end
 
 function SidebarView:get_name() return "Sidebar" end
 
+-- A rail wider than a third of the window is no longer a rail, and below the
+-- minimum the labels are unreadable. One function owns both ends so the drag,
+-- the animation and the frame-by-frame ceiling cannot disagree about them.
+function SidebarView:allowed_size(value)
+  local max = math.max(config.sidebar_min, core.root_view.size.x / 3)
+  return common.clamp(value, config.sidebar_min, max)
+end
+
+-- Dragging the edge. Dragging a collapsed sidebar back open is deliberate --
+-- if you can grab the edge at all, pulling it should work.
+function SidebarView:set_target_size(axis, value)
+  if axis ~= "x" then return false end
+  config.sidebar_size = self:allowed_size(value)
+  self.visible = true
+  self.init_size = true       -- take the new width immediately, do not glide
+  return true
+end
+
+-- Where the rail is heading, which is not where it is during a collapse or an
+-- expand. RootView drags against this so that grabbing the edge mid-animation
+-- adjusts the width you asked for rather than the width you happen to see.
+function SidebarView:get_target_size(axis)
+  if axis ~= "x" then return nil end
+  return self.visible and self:allowed_size(config.sidebar_size) or 0
+end
+
+function SidebarView:toggle()
+  self.visible = not self.visible
+  core.redraw = true
+  return self.visible
+end
+
 -- Recents. Re-read on a timer rather than on every frame: it is a SQLite
 -- query, and the list changes when a session is created or renamed, which is
 -- not sixty times a second.
@@ -47,7 +80,11 @@ function SidebarView:refresh(force)
 end
 
 function SidebarView:update()
-  local dest = self.visible and config.sidebar_size or 0
+  -- The same ceiling the drag honours, applied every frame. Only the drag
+  -- enforced it, so a window made narrow after the fact kept the width it was
+  -- dragged to: at 840px the rail took 420 of them and the conversation -- the
+  -- thing this application is -- got the other half.
+  local dest = self:get_target_size("x")
   if self.init_size then
     self.size.x = dest
     self.init_size = false

@@ -82,10 +82,15 @@ function bog.try(fn, ...)
 end
 
 -- ---- wiring & hot reload ---------------------------------------------------
-local CORE = { "json", "util", "store", "memory", "mcphost", "prompt", "tools", "api" }
+-- events is first: tools.lua and api.lua emit at load-independent points, and
+-- putting it in the reload set means an edited ~/.boggart/lua/events.lua takes
+-- effect like any other module. Registrations themselves survive the reload --
+-- they live on bog.__events, not in the module (see lua/events.lua).
+local CORE = { "events", "json", "util", "store", "memory", "mcphost", "prompt", "tools", "api" }
 
 local function wire()
   for _, m in ipairs(CORE) do package.loaded[m] = nil end
+  bog.events = require("events")
   bog.json = require("json")
   bog.util = require("util")
   bog.store = require("store")
@@ -102,10 +107,14 @@ function bog.new_session()
   S.messages = {}
   S.title = nil
   S.id = bog.store.sess_create(nil, S.model)
+  bog.events.emit("session:created", { id = S.id })
 end
 function bog.save_session()
   local S = bog.session
-  if S.id then bog.store.sess_save(S.id, S.title, S.model, S.messages) end
+  if S.id then
+    bog.store.sess_save(S.id, S.title, S.model, S.messages)
+    bog.events.emit("session:saved", { id = S.id, count = #S.messages })
+  end
 end
 function bog.resume_session(id)
   local s = bog.store.sess_load(id)
@@ -115,6 +124,7 @@ function bog.resume_session(id)
   S.title = s.title
   S.model = s.model or S.model
   S.messages = s.messages or {}
+  bog.events.emit("session:resumed", { id = S.id, count = #S.messages })
   return true
 end
 

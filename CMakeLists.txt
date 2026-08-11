@@ -410,6 +410,18 @@ if(BOGGART_BUILD_APP AND SDL2_FOUND)
   # at. Not a ctest: it needs a window server, and CI has none. It exists
   # because the two panel-attachment bugs it catches were invisible to every
   # headless test of the view -- the view was correct in isolation both times.
+  # `ninja ui-bench` guards the frame-rate invariants: drawing bounded by the
+  # viewport rather than the transcript, the layout cache actually caching, and
+  # streaming not re-laying-out settled entries. Also not a ctest -- it needs a
+  # window server, and a headless machine cannot measure a frame.
+  add_custom_target(ui-bench
+    COMMAND ${CMAKE_COMMAND} -E env
+      BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/uibench.lua
+      $<TARGET_FILE:boggart-studio> ${CMAKE_CURRENT_SOURCE_DIR}
+    DEPENDS boggart-studio
+    COMMENT "Checking boggart-studio's frame-rate invariants"
+    USES_TERMINAL)
+
   add_custom_target(ui-check
     COMMAND ${CMAKE_COMMAND} -E env
       BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/uishot.lua

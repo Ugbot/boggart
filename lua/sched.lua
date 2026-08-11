@@ -11,8 +11,9 @@ local uv = require("uv")
 
 local M = {}
 
-M.actors = {}        -- array of { id, co, status, req }
+M.actors = {}        -- array of { id, co, status, req, paused }
 M.by_id = {}
+M.idle = 0           -- consecutive iterations in which nothing progressed
 local current_id = nil
 
 function M.current() return current_id end
@@ -65,69 +66,116 @@ local function resume(a)
   else a.status = "runnable"; a.req = nil end
 end
 
+-- Stop resuming one actor without discarding it. Its coroutine keeps whatever
+-- it was in the middle of; anything already in flight for it (an HTTP request,
+-- a child process) still completes, because those engines are shared and are
+-- pumped for everybody. So "paused" means exactly "the scheduler will not
+-- resume this one", and nothing stronger.
+function M.pause(id, on)
+  local a = M.by_id[id]
+  if not a then return false end
+  a.paused = (on ~= false) or nil
+  return true
+end
+
+-- Drop an actor. Its coroutine is never resumed again and is collected with
+-- the rest of its frame; there is no way to unwind a suspended coroutine in
+-- Lua, so this is as close to "kill" as the language gets. Persisted state
+-- (the thread row's status) is the caller's business -- the scheduler has no
+-- opinion about what a killed agent should look like in the store.
+function M.kill(id)
+  local a = M.by_id[id]
+  if not a then return false end
+  remove(a)
+  return true
+end
+
+-- One scheduler iteration: advance the engines, resume whoever can, notice
+-- quiescence. Split out of M.run so something that already owns a frame loop
+-- can drive the swarm a slice at a time -- studio/data/core/swarmview.lua
+-- calls step(false) once per frame and must never block, while the CLI calls
+-- step(true) and is allowed to sleep inside libuv until something happens.
+--
+-- Returns false when stepping again would be pointless: the actor set has
+-- drained, a fatal condition was diagnosed, or everything left is wedged.
+function M.step(block)
+  if #M.actors == 0 then return false end
+
+  -- Two things can be in flight: HTTP (curl_multi, via http.pump) and
+  -- anything on the libuv loop -- subprocesses from lua/proc.lua, MCP stdio
+  -- pipes, timers. Both must be advanced every iteration, or an actor
+  -- waiting on one starves while the other is serviced.
+  local io_wait, proc_wait, runnable, paused = false, false, false, false
+  for _, a in ipairs(M.actors) do
+    if a.paused then paused = true
+    elseif a.status == "io" then io_wait = true
+    elseif a.status == "proc" then proc_wait = true
+    elseif a.status == "runnable" then runnable = true
+    elseif a.status == "recv" and swarm.pending(a.id) > 0 then runnable = true end
+  end
+
+  -- Whether we may *block* here is the whole question. If any actor can make
+  -- progress right now, blocking would starve it -- so advance both engines
+  -- without waiting. Only when every actor is parked on something external
+  -- is it correct to sleep, and then we let the wait happen inside libuv
+  -- (uv.run("once") returns the instant a handle fires) rather than burning
+  -- a fixed 50ms, so a child's output is picked up immediately.
+  --
+  -- A caller that owns a frame loop never gets to make that trade: a 50ms
+  -- http.pump is three dropped frames and uv.run("once") is unbounded, so it
+  -- polls both engines and comes back next frame.
+  if not block then
+    if proc_wait then uv.run("nowait") end
+    if io_wait then http.pump(0) end
+  elseif runnable then
+    if proc_wait then uv.run("nowait") end
+    if io_wait then http.pump(0) end
+  elseif proc_wait then
+    uv.run("once")
+    if io_wait then http.pump(0) end
+  elseif io_wait then
+    http.pump(50)
+    uv.run("nowait")
+  end
+
+  local did = false
+  local snap = {}
+  for _, a in ipairs(M.actors) do snap[#snap + 1] = a end
+  for _, a in ipairs(snap) do
+    if M.by_id[a.id] and not a.paused then
+      if a.status == "runnable" or a.status == "io" or a.status == "proc" then
+        resume(a); did = true
+      elseif a.status == "recv" and swarm.pending(a.id) > 0 then
+        a.status = "runnable"; resume(a); did = true
+      end
+    end
+  end
+
+  -- Quiescence guard: if nothing progressed and nothing is in flight, every
+  -- remaining actor is blocked on mail that will never come. Bail rather than
+  -- spin forever. A paused actor is not evidence of that -- it is a human
+  -- holding the swarm still, and it can be resumed.
+  if not did and not io_wait and not proc_wait and not paused then
+    M.idle = M.idle + 1
+    if M.idle > 3 then
+      bog.log("scheduler idle with " .. #M.actors .. " blocked agent(s); stopping")
+      return false
+    end
+  else
+    M.idle = 0
+  end
+
+  return not M.fatal and #M.actors > 0
+end
+
 -- Run until every actor has finished (one-shot / per-turn drain), or should_stop.
 function M.run(opts)
   opts = opts or {}
-  local idle = 0
-  M.fatal = nil
+  M.fatal, M.idle = nil, 0
   while #M.actors > 0 do
     if opts.should_stop and opts.should_stop() then break end
     if M.fatal then break end
-
-    -- Two things can be in flight: HTTP (curl_multi, via http.pump) and
-    -- anything on the libuv loop -- subprocesses from lua/proc.lua, MCP stdio
-    -- pipes, timers. Both must be advanced every iteration, or an actor
-    -- waiting on one starves while the other is serviced.
-    local io_wait, proc_wait, runnable = false, false, false
-    for _, a in ipairs(M.actors) do
-      if a.status == "io" then io_wait = true
-      elseif a.status == "proc" then proc_wait = true
-      elseif a.status == "runnable" then runnable = true
-      elseif a.status == "recv" and swarm.pending(a.id) > 0 then runnable = true end
-    end
-
-    -- Whether we may *block* here is the whole question. If any actor can make
-    -- progress right now, blocking would starve it -- so advance both engines
-    -- without waiting. Only when every actor is parked on something external
-    -- is it correct to sleep, and then we let the wait happen inside libuv
-    -- (uv.run("once") returns the instant a handle fires) rather than burning
-    -- a fixed 50ms, so a child's output is picked up immediately.
-    if runnable then
-      if proc_wait then uv.run("nowait") end
-      if io_wait then http.pump(0) end
-    elseif proc_wait then
-      uv.run("once")
-      if io_wait then http.pump(0) end
-    elseif io_wait then
-      http.pump(50)
-      uv.run("nowait")
-    end
-
-    local did = false
-    local snap = {}
-    for _, a in ipairs(M.actors) do snap[#snap + 1] = a end
-    for _, a in ipairs(snap) do
-      if M.by_id[a.id] then
-        if a.status == "runnable" or a.status == "io" or a.status == "proc" then
-          resume(a); did = true
-        elseif a.status == "recv" and swarm.pending(a.id) > 0 then
-          a.status = "runnable"; resume(a); did = true
-        end
-      end
-    end
-
-    -- Quiescence guard: if nothing progressed and nothing is in flight, every
-    -- remaining actor is blocked on mail that will never come. Bail rather than
-    -- spin forever.
-    if not did and not io_wait and not proc_wait then
-      idle = idle + 1
-      if idle > 3 then
-        bog.log("scheduler idle with " .. #M.actors .. " blocked agent(s); stopping")
-        break
-      end
-    else
-      idle = 0
-    end
+    if not M.step(true) then break end
   end
 end
 

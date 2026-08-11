@@ -64,12 +64,18 @@ end
 -- does not fit is clipped, which is honest and keeps this trivial.
 --
 -- `items` is a list of { label, command|action, active?, dim?, tone? }.
+-- `limit` is an optional right edge: a button that would cross it is dropped
+-- rather than drawn. Clipping at the edge of a *view* is fine -- you can widen
+-- the window -- but a row that runs under a neighbouring button leaves two
+-- controls stacked on the same pixels, and the hit test then answers with
+-- whichever was registered first.
 -- Returns the list of hit rects, each carrying its item.
-function widgets.row(font, items, x, y, hover)
+function widgets.row(font, items, x, y, hover, limit)
   local gap = style.padding.x * widgets.GAP
   local hits = {}
   for _, it in ipairs(items) do
     local w = widgets.width(font, it.label)
+    if limit and x + w > limit then break end
     local is_hover = hover and hover.x and widgets.inside(
       { x = x, y = y, w = w, h = widgets.height(font) }, hover.x, hover.y)
     local r = widgets.button(font, it.label, x, y, {

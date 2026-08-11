@@ -123,6 +123,24 @@ function TreeView:on_mouse_pressed(button, x, y)
 end
 
 
+-- Same drag protocol as the sidebar: RootView hands a locked panel its own
+-- resize rather than moving a split ratio the layout will ignore.
+function TreeView:set_target_size(axis, value)
+  if axis ~= "x" then return false end
+  local max = math.max(100 * SCALE, core.root_view.size.x / 3)
+  config.treeview_size = common.clamp(value, 100 * SCALE, max)
+  self.visible = true
+  self.init_size = true
+  return true
+end
+
+
+function TreeView:get_target_size(axis)
+  if axis ~= "x" then return nil end
+  return self.visible and config.treeview_size or 0
+end
+
+
 function TreeView:update()
   -- update width
   local dest = self.visible and config.treeview_size or 0

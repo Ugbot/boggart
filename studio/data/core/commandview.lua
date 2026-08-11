@@ -103,7 +103,12 @@ function CommandView:submit()
 end
 
 
-function CommandView:enter(text, submit, suggest, cancel)
+-- `default` pre-fills the field, selected, so return accepts it and typing
+-- replaces it. Callers were already passing one -- the endpoint, the model, the
+-- text of a message being edited, "30" minutes -- and it was silently dropped
+-- on the floor, which turned every "here is the current value, change it"
+-- prompt into "type it again from memory".
+function CommandView:enter(text, submit, suggest, cancel, default)
   if self.state ~= default_state then
     return
   end
@@ -113,9 +118,11 @@ function CommandView:enter(text, submit, suggest, cancel)
     cancel = cancel or noop,
   }
   core.set_active_view(self)
+  if default and default ~= "" then self:set_text(default, true) end
   self:update_suggestions()
   self.gutter_text_brightness = 100
-  self.label = text .. ": "
+  -- Callers write the label either way; two colons is nobody's intention.
+  self.label = (text:gsub(":%s*$", "")) .. ": "
 end
 
 

@@ -8,6 +8,7 @@ void rencache_show_debug(bool enable);
 void rencache_free_font(RenFont *font);
 void rencache_set_clip_rect(RenRect rect);
 void rencache_draw_rect(RenRect rect, RenColor color);
+void rencache_draw_line(float x0, float y0, float x1, float y1, float thickness, RenColor color);
 int  rencache_draw_text(RenFont *font, const char *text, int x, int y, RenColor color);
 void rencache_invalidate(void);
 void rencache_begin_frame(void);

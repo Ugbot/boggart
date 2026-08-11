@@ -348,6 +348,10 @@ function M.observe(now)
         if rec then
           rec.db = r.status
           rec.parent = r.parent_id
+          -- Not shown in a terminal row (there is no width for it), but an
+          -- agent can be spawned with its own model, so the fact is worth
+          -- carrying: studio's swarm view has a column for it.
+          rec.model = r.model
           if not rec.kind_locked and r.title then rec.kind = M.kind_of(r.title) end
         end
       end

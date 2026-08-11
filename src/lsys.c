@@ -129,11 +129,17 @@ static int l_stat(lua_State *L) {
     return 1;
   }
   uint64_t mode = req.statbuf.st_mode;
+  /* Modification time as a second return. Additive on purpose: every existing
+   * caller wants the kind and reads only the first value, while a caller that
+   * needs to notice a file changing (the studio reloads agent-written panels
+   * when they do) would otherwise have to re-read and compare the contents. */
+  double mtime = (double)req.statbuf.st_mtim.tv_sec;
   uv_fs_req_cleanup(&req);
   if (BOG_ISDIR(mode)) lua_pushstring(L, "dir");
   else if (BOG_ISREG(mode)) lua_pushstring(L, "file");
   else lua_pushstring(L, "other");
-  return 1;
+  lua_pushnumber(L, mtime);
+  return 2;
 }
 
 /* Recursive delete, depth-limited. Replaces the `rm -rf` shell-out that

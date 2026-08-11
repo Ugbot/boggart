@@ -10,6 +10,7 @@
 -- agent (bog.session, sync) and swarm agents (own session, async, own tools/
 -- system) run the identical loop.
 local json = require("json")
+local events = require("events")
 local M = {}
 
 local cached_headers = nil
@@ -521,6 +522,10 @@ function M.compact(sess, opts)
     sess.usage.compactions = (sess.usage.compactions or 0) + 1
   end
   if opts.on_compact then opts.on_compact(summary) end
+  -- Sizes, not text: a handler that wants the summary can read the first
+  -- message, and shipping it on the event would put a few thousand tokens on
+  -- the bus every time.
+  events.emit("context:compacted", { session = sess.id, before = total, after = #summary })
   return true
 end
 
@@ -539,6 +544,45 @@ function M.run_on(sess, user_text, on_text, opts)
     sess.messages[#sess.messages + 1] = { role = "user", content = user_text }
   end
 
+  events.emit("turn:start", {
+    session = sess.id,
+    -- A preview, not the prompt: a pasted file would otherwise ride on every
+    -- turn:start. The full text is in sess.messages for anyone who needs it.
+    preview = user_text and user_text:sub(1, 200) or nil,
+    chars = user_text and #user_text or 0,
+  })
+
+  -- turn:end and turn:error come off a to-be-closed variable rather than a
+  -- pcall wrapper around the loop. __close runs during the unwind, so the error
+  -- keeps travelling to the caller untouched -- same value, same traceback,
+  -- bog.try still sees a diagnosed api error as diagnosed. A pcall/rethrow
+  -- would have moved the traceback to the rethrow line.
+  --
+  -- Caveat: if a swarm actor is dropped mid-turn (sched.kill), its coroutine is
+  -- never resumed, so turn:end fires whenever that coroutine is collected, or
+  -- not at all. Handlers must not assume every turn:start is paired.
+  local stop_reason = nil
+  local turn <close> = setmetatable({}, { __close = function(_, err)
+    if err == nil then
+      events.emit("turn:end", { session = sess.id, stop = stop_reason })
+    else
+      events.emit("turn:error", {
+        session = sess.id, message = tostring(err),
+        kind = (type(err) == "table" and err.kind) or nil,
+      })
+    end
+  end })
+
+  -- Wrapped rather than replaced: turn:text is the one genuinely hot emit here
+  -- (once per streamed delta), so the payload is built only when something is
+  -- subscribed. events.any is a single table lookup once the name has resolved.
+  local sink = function(chunk)
+    if on_text then on_text(chunk) end
+    if events.any("turn:text") then
+      events.emit("turn:text", { session = sess.id, text = chunk })
+    end
+  end
+
   while true do
     M.maybe_compact(sess, opts)
 
@@ -552,7 +596,8 @@ function M.run_on(sess, user_text, on_text, opts)
     local tools = tools_fn()
     if #tools > 0 then body.tools = tools end
 
-    local msg, stop = stream(body, on_text)
+    local msg, stop = stream(body, sink)
+    stop_reason = stop -- what turn:end reports on the way out
     -- Account before the message joins the transcript: `usage` is our own
     -- annotation, and sending it back to the API on the next turn would be a
     -- wire-shape error.
@@ -586,6 +631,15 @@ function M.run_on(sess, user_text, on_text, opts)
         local content
         if ok then content = res else content = "Tool error: " .. tostring(res) end
         if type(content) ~= "string" then content = tostring(content) end
+        -- A refused call never reaches tools.M.run -- the gate returns instead
+        -- of calling it -- so tool:refused cannot come from there. Every gate
+        -- in the tree (the studio's approval prompt, thread.lua's per-agent
+        -- allowlist) already spells refusal as this exact result, so testing it
+        -- once here covers all of them and needs no new hook.
+        if events.any("tool:refused")
+            and content:find("^Tool error: %[permission_error%]") then
+          events.emit("tool:refused", { name = b.name, reason = content })
+        end
         local is_err = content:sub(1, 11) == "Tool error:"
         results[#results + 1] = {
           type = "tool_result", tool_use_id = b.id, content = content,

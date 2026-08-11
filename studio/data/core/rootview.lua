@@ -418,9 +418,21 @@ end
 
 function RootView:open_doc(doc)
   local node = self:get_active_node()
-  if node.locked and core.last_active_view then
+  if node and node.locked and core.last_active_view then
     core.set_active_view(core.last_active_view)
     node = self:get_active_node()
+  end
+  -- The sidebar's node is locked and the sidebar is a view you can be focused
+  -- in, so this is reachable by clicking: its own "Open a file..." button
+  -- leaves focus in the rail, and by the time the file is chosen the command
+  -- view that briefly held focus has closed, which makes last_active_view the
+  -- rail again. That asserted, so the button threw instead of opening a file.
+  --
+  -- Land in the primary node, which is where documents belong regardless of
+  -- what happened to have focus when the request was made.
+  if not node or node.locked then
+    node = self:get_primary_node()
+    if node.active_view then core.set_active_view(node.active_view) end
   end
   assert(not node.locked, "Cannot open doc on locked node")
   for i, view in ipairs(node.views) do
@@ -465,9 +477,44 @@ function RootView:on_mouse_released(...)
 end
 
 
+-- A docked panel that can be resized by dragging its edge.
+--
+-- Docked panels are locked nodes, and a locked node takes its size from its
+-- view rather than from the split ratio -- which is why dragging their divider
+-- did nothing at all: the ratio moved and the layout ignored it. A view that
+-- implements set_target_size(axis, value) is asking to be resized directly, so
+-- the drag is handed to it instead.
+--
+-- Doing this here rather than inside the panel matters: the pointer leaves the
+-- panel the instant you drag outward, and RootView is the only place that
+-- keeps hold of a drag across that boundary.
+local function resizable_panel(node)
+  if node.type == "leaf" then return nil end
+  for _, child in ipairs { node.a, node.b } do
+    if child.type == "leaf" and child.locked and child.active_view
+       and child.active_view.set_target_size then
+      return child.active_view, child == node.a
+    end
+  end
+end
+
+
 function RootView:on_mouse_moved(x, y, dx, dy)
   if self.dragged_divider then
     local node = self.dragged_divider
+    local panel, is_first = resizable_panel(node)
+    if panel then
+      local axis = (node.type == "hsplit") and "x" or "y"
+      local delta = (axis == "x") and dx or dy
+      if not is_first then delta = -delta end
+      -- Against the panel's target size, not its current one. A panel that is
+      -- still animating open reports a size somewhere in the middle of the
+      -- transition, and moving the pointer one pixel would otherwise pin it
+      -- there and throw the rest of the width away.
+      local from = panel.get_target_size and panel:get_target_size(axis)
+      panel:set_target_size(axis, (from or panel.size[axis]) + delta)
+      return
+    end
     if node.type == "hsplit" then
       node.divider = node.divider + dx / node.size.x
     else

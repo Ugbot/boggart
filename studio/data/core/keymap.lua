@@ -65,9 +65,25 @@ function keymap.on_key_pressed(k)
     local commands = keymap.map[stroke]
     if commands then
       for _, cmd in ipairs(commands) do
-        local performed = command.perform(cmd)
-        if performed then break end
+        if command.perform(cmd) then return true end
       end
+    end
+    -- Nothing claimed the stroke: offer it to the focused view.
+    --
+    -- Upstream stops at the line above, because in a text editor every key
+    -- belongs to a command and a View is a passive rectangle. That is no longer
+    -- true here: the chat composer, the settings form and the workflow editor
+    -- are text fields that own their own editing keys, and without this line
+    -- their Enter, Backspace and arrows silently did nothing at all -- typing
+    -- worked, because on_text_input goes to the view, and every other key was
+    -- swallowed. Every probe missed it by calling on_key_pressed directly,
+    -- which is the one thing the real keyboard never does.
+    --
+    -- Commands still win, so a binding always beats a view. The view sees the
+    -- full stroke ("ctrl+u", not "u") so it can tell them apart.
+    local core = require "core"
+    local view = core.active_view
+    if view and view.on_key_pressed and view:on_key_pressed(stroke) then
       return true
     end
   end

@@ -11,7 +11,7 @@
 #define CELL_SIZE 96
 #define COMMAND_BUF_SIZE (1024 * 512)
 
-enum { FREE_FONT, SET_CLIP, DRAW_TEXT, DRAW_RECT };
+enum { FREE_FONT, SET_CLIP, DRAW_TEXT, DRAW_RECT, DRAW_LINE };
 
 typedef struct {
   int type, size;
@@ -19,6 +19,7 @@ typedef struct {
   RenColor color;
   RenFont *font;
   int tab_width;
+  float x0, y0, x1, y1, thickness;   /* DRAW_LINE */
   char text[0];
 } Command;
 
@@ -125,6 +126,29 @@ void rencache_draw_rect(RenRect rect, RenColor color) {
   if (cmd) {
     cmd->rect = rect;
     cmd->color = color;
+  }
+}
+
+
+/* The damage rectangle is the line's bounding box grown by the stroke width,
+ * because a thick stroke reaches half its thickness either side of the ideal
+ * line and the anti-aliasing reaches one pixel past that. Under-reporting it
+ * leaves stale pixels on screen, which is the classic dirty-rect bug. */
+void rencache_draw_line(float x0, float y0, float x1, float y1,
+                        float thickness, RenColor color) {
+  int pad = (int) (thickness < 1.0f ? 1.0f : thickness) + 2;
+  RenRect rect;
+  rect.x = (int) (x0 < x1 ? x0 : x1) - pad;
+  rect.y = (int) (y0 < y1 ? y0 : y1) - pad;
+  rect.width  = (int) (x0 < x1 ? x1 - x0 : x0 - x1) + pad * 2;
+  rect.height = (int) (y0 < y1 ? y1 - y0 : y0 - y1) + pad * 2;
+  if (!rects_overlap(screen_rect, rect)) { return; }
+  Command *cmd = push_command(DRAW_LINE, sizeof(Command));
+  if (cmd) {
+    cmd->rect = rect;
+    cmd->color = color;
+    cmd->x0 = x0; cmd->y0 = y0; cmd->x1 = x1; cmd->y1 = y1;
+    cmd->thickness = thickness;
   }
 }
 
@@ -254,6 +278,10 @@ void rencache_end_frame(void) {
           break;
         case DRAW_RECT:
           ren_draw_rect(cmd->rect, cmd->color);
+          break;
+        case DRAW_LINE:
+          ren_draw_line(cmd->x0, cmd->y0, cmd->x1, cmd->y1, cmd->thickness,
+                        cmd->color);
           break;
         case DRAW_TEXT:
           ren_set_font_tab_width(cmd->font, cmd->tab_width);

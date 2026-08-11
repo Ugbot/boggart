@@ -39,16 +39,29 @@ static void* check_alloc(void *ptr) {
 }
 
 
+/* A lone continuation byte (0x80..0xbf) reached the default arm, where `res =
+ * *p` on a signed char sign-extends to something like 0xffffff80. get_glyphset
+ * then computed (int)res >> 8 == -1 and indexed font->sets[-1], reading a
+ * pointer out of the middle of the stbtt_fontinfo above it and dereferencing
+ * whatever it found. Nothing in this file produces such a byte; a caller that
+ * slices text by byte offset does, and one of them did.
+ *
+ * Text arriving here is not always well-formed, so this decodes what it can and
+ * treats the rest as one opaque byte rather than trusting its length. */
 static const char* utf8_to_codepoint(const char *p, unsigned *dst) {
   unsigned res, n;
-  switch (*p & 0xf0) {
-    case 0xf0 :  res = *p & 0x07;  n = 3;  break;
-    case 0xe0 :  res = *p & 0x0f;  n = 2;  break;
+  unsigned char c = (unsigned char) *p;
+  switch (c & 0xf0) {
+    case 0xf0 :  res = c & 0x07;  n = 3;  break;
+    case 0xe0 :  res = c & 0x0f;  n = 2;  break;
     case 0xd0 :
-    case 0xc0 :  res = *p & 0x1f;  n = 1;  break;
-    default   :  res = *p;         n = 0;  break;
+    case 0xc0 :  res = c & 0x1f;  n = 1;  break;
+    default   :  res = c;         n = 0;  break;
   }
+  /* Stop at anything that is not a continuation byte, including the string's
+   * own terminator: a truncated sequence must not read past the end. */
   while (n--) {
+    if (((unsigned char) p[1] & 0xc0) != 0x80) { break; }
     res = (res << 6) | (*(++p) & 0x3f);
   }
   *dst = res;
@@ -151,7 +164,10 @@ retry:
 
 
 static GlyphSet* get_glyphset(RenFont *font, int codepoint) {
-  int idx = (codepoint >> 8) % MAX_GLYPHSET;
+  /* Unsigned, so the index cannot come out negative for a codepoint above
+   * 0x7fffffff or a decode that went wrong -- font->sets[-1] is a pointer read
+   * out of the struct above this array. */
+  int idx = (int) (((unsigned) codepoint >> 8) % MAX_GLYPHSET);
   if (!font->sets[idx]) {
     font->sets[idx] = load_glyphset(font, idx);
   }
@@ -274,6 +290,80 @@ static inline RenColor blend_pixel2(RenColor dst, RenColor src, RenColor color) 
     }                               \
     d += dr;                        \
   }
+
+/* Anti-aliased line, clipped to the current clip rect.
+ *
+ * The editor core this grew from draws axis-aligned rectangles and glyphs,
+ * which is everything a text editor needs and nothing a diagram does. A line at
+ * an arbitrary angle is the one primitive that unlocks the rest: rough-lua --
+ * and any other vector work -- reduces curves, ellipses, arrows and hatch fills
+ * to short straight segments, so a line is not one feature among many, it is
+ * the whole capability.
+ *
+ * Sampled and bilinearly blended rather than Bresenham. A hard-edged diagonal
+ * looks like a mistake next to anti-aliased glyphs, and the sketchy strokes
+ * this exists to draw are mostly shallow diagonals where aliasing is worst.
+ * The cost is one pass along the longer axis, which is the same order as
+ * Bresenham with a constant on it. */
+static inline void blend_px(SDL_Surface *surf, int x, int y, RenColor color, float a) {
+  if (x < clip.left || x >= clip.right || y < clip.top || y >= clip.bottom) { return; }
+  if (a <= 0.0f) { return; }
+  if (a > 1.0f) { a = 1.0f; }
+  RenColor c = color;
+  c.a = (uint8_t) ((float) color.a * a);
+  if (c.a == 0) { return; }
+  RenColor *d = (RenColor*) surf->pixels + x + y * surf->w;
+  *d = blend_pixel(*d, c);
+}
+
+
+static void aa_line(SDL_Surface *surf, float x0, float y0, float x1, float y1,
+                    RenColor color) {
+  float dx = x1 - x0, dy = y1 - y0;
+  float adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
+  float len = adx > ady ? adx : ady;
+  int n = (int) len;
+  if (n < 1) { n = 1; }
+  for (int i = 0; i <= n; i++) {
+    float t = (float) i / (float) n;
+    float x = x0 + dx * t, y = y0 + dy * t;
+    int ix = (int) floorf(x), iy = (int) floorf(y);
+    float fx = x - (float) ix, fy = y - (float) iy;
+    blend_px(surf, ix,     iy,     color, (1.0f - fx) * (1.0f - fy));
+    blend_px(surf, ix + 1, iy,     color, fx * (1.0f - fy));
+    blend_px(surf, ix,     iy + 1, color, (1.0f - fx) * fy);
+    blend_px(surf, ix + 1, iy + 1, color, fx * fy);
+  }
+}
+
+
+void ren_draw_line(float x0, float y0, float x1, float y1, float thickness,
+                   RenColor color) {
+  if (color.a == 0) { return; }
+  SDL_Surface *surf = SDL_GetWindowSurface(window);
+  if (!surf) { return; }
+  if (thickness < 1.0f) { thickness = 1.0f; }
+
+  float dx = x1 - x0, dy = y1 - y0;
+  float len = sqrtf(dx * dx + dy * dy);
+  if (len < 0.0001f) {
+    /* A zero-length line is a dot, which is a legitimate thing for a dotted
+     * fill to ask for. */
+    blend_px(surf, (int) x0, (int) y0, color, 1.0f);
+    return;
+  }
+  /* Thickness as parallel offsets half a pixel apart: enough passes that they
+   * overlap, so a thick stroke has no gaps down its middle. */
+  float px = -dy / len, py = dx / len;
+  int passes = (int) (thickness * 2.0f);
+  if (passes < 1) { passes = 1; }
+  for (int i = 0; i < passes; i++) {
+    float off = ((float) i / (float) (passes > 1 ? passes - 1 : 1) - 0.5f) * thickness;
+    if (passes == 1) { off = 0.0f; }
+    aa_line(surf, x0 + px * off, y0 + py * off, x1 + px * off, y1 + py * off, color);
+  }
+}
+
 
 void ren_draw_rect(RenRect rect, RenColor color) {
   if (color.a == 0) { return; }

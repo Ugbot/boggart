@@ -15,6 +15,12 @@ local style = require "core.style"
 local AgentView = require "core.agentview"
 local recipes = require "core.recipes"
 local SidebarView = require "core.sidebarview"
+local SettingsView = require "core.settingsview"
+local PanelView = require "core.panelview"
+local WorkflowView = require "core.workflowview"
+local LibraryView = require "core.libraryview"
+local SwarmView = require "core.swarmview"
+local uitools = require "core.uitools"
 
 local studio = {}
 
@@ -48,6 +54,11 @@ function studio.attach()
   studio.view = view
   core.root_view:get_primary_node():add_view(view)
   core.set_active_view(view)
+
+  -- The agent's drawing tools. Registered here rather than in lua/tools.lua
+  -- because they only mean anything when there is a window: offering
+  -- `draw_panel` to a headless run would be a tool that cannot work.
+  core.try(uitools.register, studio)
 
   studio.sidebar = SidebarView()
   core.root_view:get_primary_node():split("left", studio.sidebar, true)
@@ -207,6 +218,95 @@ function studio.project_paths()
     if f.type == "file" then out[#out + 1] = f.filename end
   end
   return out
+end
+
+-- One settings view, opened as a tab beside the conversation so it can be
+-- closed like anything else.
+function studio.open_settings()
+  local node = core.root_view:get_primary_node()
+  if studio.settings and node:get_node_for_view(studio.settings) then
+    node:set_active_view(studio.settings)
+    core.set_active_view(studio.settings)
+    return studio.settings
+  end
+  studio.settings = SettingsView()
+  node:add_view(studio.settings)
+  core.set_active_view(studio.settings)
+  return studio.settings
+end
+
+-- The swarm gets its own tab beside the conversation, like Settings: it is a
+-- second surface onto the same engine, not a mode the window switches into.
+function studio.open_swarm() return SwarmView.open() end
+
+-- The Library: the tools the agent wrote for itself, its skills, its memory and
+-- its MCP servers. A tab beside the conversation, like settings, because it is
+-- a place you look at rather than a command you have to know the name of.
+function studio.open_library()
+  local node = core.root_view:get_primary_node()
+  if studio.library and node:get_node_for_view(studio.library) then
+    node:set_active_view(studio.library)
+    core.set_active_view(studio.library)
+    return studio.library
+  end
+  studio.library = LibraryView()
+  node:add_view(studio.library)
+  core.set_active_view(studio.library)
+  return studio.library
+end
+
+-- One workflow builder, opened as a tab beside the conversation. Refreshed on
+-- reopen because the files can change under it -- by hand, or by the agent.
+function studio.open_workflows()
+  local node = core.root_view:get_primary_node()
+  if studio.workflows and node:get_node_for_view(studio.workflows) then
+    studio.workflows:refresh()
+    node:set_active_view(studio.workflows)
+    core.set_active_view(studio.workflows)
+    return studio.workflows
+  end
+  studio.workflows = WorkflowView()
+  node:add_view(studio.workflows)
+  core.set_active_view(studio.workflows)
+  return studio.workflows
+end
+
+-- ---------------------------------------------------------------------------
+-- Agent-written panels
+-- ---------------------------------------------------------------------------
+--
+-- Opened as tabs in the main area, so a panel the agent wrote sits alongside
+-- the conversation and the files rather than in some lesser category. It is a
+-- surface of the application like any other; that is the whole claim.
+
+studio.panels = {}
+
+function studio.open_panel(name)
+  local node = core.root_view:get_primary_node()
+  local existing = studio.panels[name]
+  if existing and node:get_node_for_view(existing) then
+    existing:reload()
+    node:set_active_view(existing)
+    core.set_active_view(existing)
+    return existing
+  end
+  local view = PanelView(name)
+  studio.panels[name] = view
+  node:add_view(view)
+  core.set_active_view(view)
+  return view
+end
+
+function studio.close_panel(name)
+  local view = studio.panels[name]
+  studio.panels[name] = nil
+  if not view then return false end
+  local node = core.root_view.root_node:get_node_for_view(view)
+  if node then
+    node:set_active_view(view)
+    node:close_active_view(core.root_view.root_node)
+  end
+  return true
 end
 
 function studio.stop_schedule()
@@ -656,10 +756,58 @@ command.add(nil, {
     command.perform("treeview:toggle")
   end,
 
-  -- One place to find configuration, so "Settings" is a button rather than
-  -- eight command names you have to already know.
+  ["studio:toggle-sidebar"] = function()
+    if studio.sidebar then studio.sidebar:toggle() end
+  end,
+
+  ["studio:open-panel"] = function()
+    local names = uitools.list()
+    if #names == 0 then
+      core.log("no panels yet -- ask the agent to draw one")
+      return
+    end
+    core.command_view:enter("Panel:", function(text, item)
+      local name = item or text
+      if name ~= "" then studio.open_panel(name) end
+    end, function(text) return common.fuzzy_match(names, text) end)
+  end,
+
+  ["studio:edit-panel"] = function()
+    local names = uitools.list()
+    if #names == 0 then core.log("no panels yet"); return end
+    core.command_view:enter("Edit panel:", function(text, item)
+      local name = item or text
+      if name ~= "" then
+        core.root_view:open_doc(core.open_doc(uitools.path(name)))
+      end
+    end, function(text) return common.fuzzy_match(names, text) end)
+  end,
+
+  -- The settings screen. A form you can look at, rather than a sequence of
+  -- modal prompts that cannot show you what is already set.
   ["agent:settings"] = function()
+    studio.open_settings()
+  end,
+
+  ["agent:workflows"] = function()
+    studio.open_workflows()
+  end,
+
+  ["agent:library"] = function()
+    studio.open_library()
+  end,
+
+  ["agent:swarm"] = function()
+    SwarmView.open()
+  end,
+
+  -- The palette version is still here: it is faster once you know what you
+  -- want, and it reaches things the form deliberately does not duplicate.
+  ["agent:settings-list"] = function()
     local items = {
+      { "Workflows",              "agent:workflows" },
+      { "Library (tools, memory)", "agent:library" },
+      { "Swarm (multi-agent)",    "agent:swarm" },
       { "Permission mode",        "agent:set-mode" },
       { "Per-tool permissions",   "agent:tool-permission" },
       { "Model",                  "agent:set-model" },
@@ -728,6 +876,10 @@ keymap.add {
   ["ctrl+shift+r"]    = "agent:review-selection",
   ["ctrl+shift+b"]    = "agent:run-command",
   ["ctrl+shift+g"]    = "agent:toggle-approval",
+  ["ctrl+b"]          = "studio:toggle-sidebar",
+  ["ctrl+shift+w"]    = "agent:workflows",
+  ["ctrl+shift+l"]    = "agent:library",
+  ["ctrl+shift+m"]    = "swarm:open",
 }
 
 return studio

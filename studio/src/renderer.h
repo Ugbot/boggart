@@ -27,6 +27,7 @@ int ren_get_font_width(RenFont *font, const char *text);
 int ren_get_font_height(RenFont *font);
 
 void ren_draw_rect(RenRect rect, RenColor color);
+void ren_draw_line(float x0, float y0, float x1, float y1, float thickness, RenColor color);
 void ren_draw_image(RenImage *image, RenRect *sub, int x, int y, RenColor color);
 int ren_draw_text(RenFont *font, const char *text, int x, int y, RenColor color);
 
