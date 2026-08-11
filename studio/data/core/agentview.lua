@@ -542,6 +542,10 @@ function AgentView:clamp_caret()
 end
 
 function AgentView:on_text_input(text)
+  -- Typing over a selection replaces it, which is what every text field does
+  -- and therefore what fingers expect; without it the new text lands beside
+  -- the highlighted text and the selection silently survives.
+  if self.sel_anchor then self:delete_composer_selection() end
   local l = self.lines[self.cy]
   self.lines[self.cy] = l:sub(1, self.cx - 1) .. text .. l:sub(self.cx)
   self.cx = self.cx + #text
@@ -638,6 +642,7 @@ function AgentView:on_key_pressed(key)
     return true
 
   elseif key == "backspace" then
+    if self.sel_anchor then self:delete_composer_selection(); return true end
     if self.cx > 1 then
       local l = self.lines[self.cy]
       local prev = self:prev_char(l, self.cx)
@@ -1115,6 +1120,33 @@ function AgentView:pos_at(x, y)
   return { e = best.e, r = best.r, c = col }
 end
 
+-- The composer position under a point: which line, and the byte offset that
+-- the display column corresponds to. Columns are cells and self.cx is a byte
+-- index, so the conversion goes through the same cell-splitting the layout
+-- uses rather than assuming one byte per column.
+function AgentView:composer_pos_at(x, y)
+  local rows = self.composer_rows
+  if not rows or #rows == 0 then return nil end
+  local best, best_dy
+  for _, r in ipairs(rows) do
+    local dy = (y < r.y) and (r.y - y) or ((y > r.y + r.h) and (y - r.y - r.h) or 0)
+    if not best_dy or dy < best_dy then best, best_dy = r, dy end
+  end
+  if not best then return nil end
+  local cells = math.floor((x - best.x) / self.char_w + 0.5)
+  if cells < 0 then cells = 0 end
+  local head = (split(best.line, cells))
+  return best.i, #head + 1
+end
+
+-- Is this point inside the composer box at all?
+function AgentView:in_composer(x, y)
+  local rows = self.composer_rows
+  if not rows or #rows == 0 then return false end
+  local first, last = rows[1], rows[#rows]
+  return y >= first.y - self.char_w and y <= last.y + last.h + self.char_w
+end
+
 function AgentView:clear_selection()
   if self.sel then self.sel = nil; core.redraw = true end
 end
@@ -1155,6 +1187,9 @@ function AgentView:on_mouse_moved(x, y, dx, dy)
   if self.selecting then
     local p = self:pos_at(x, y)
     if p then self.sel.b = p; core.redraw = true end
+  elseif self.composer_selecting then
+    local cy, cx = self:composer_pos_at(x, y)
+    if cy then self.cy, self.cx = cy, cx; core.redraw = true end
   end
 end
 
@@ -1169,6 +1204,34 @@ function AgentView:on_mouse_pressed(button, x, y, clicks)
     return true
   end
   core.set_active_view(self)
+
+  -- The composer is checked first: its rows overlap the region the transcript
+  -- hit-test would otherwise claim, and a click in the box means the box.
+  if self:in_composer(x, y) then
+    local cy, cx = self:composer_pos_at(x, y)
+    if cy then
+      self:clear_selection()          -- one selection at a time
+      if clicks and clicks >= 2 then
+        -- Word, which is the unit for editing a draft, rather than the whole
+        -- row the transcript uses for copying one out.
+        local line = self.lines[cy] or ""
+        local from, to = cx, cx
+        while from > 1 and line:sub(from - 1, from - 1):match("[%w_]") do
+          from = from - 1
+        end
+        while to <= #line and line:sub(to, to):match("[%w_]") do to = to + 1 end
+        self.sel_anchor = { cy = cy, cx = from }
+        self.cy, self.cx = cy, to
+        self.composer_selecting = false
+      else
+        self.sel_anchor = { cy = cy, cx = cx }
+        self.cy, self.cx = cy, cx
+        self.composer_selecting = true
+      end
+      core.redraw = true
+    end
+    return true
+  end
 
   local p = self:pos_at(x, y)
   if p then
@@ -1196,6 +1259,11 @@ end
 function AgentView:on_mouse_released(button, x, y)
   AgentView.super.on_mouse_released(self, button, x, y)
   self.selecting = false
+  self.composer_selecting = false
+  -- A drag that went nowhere is a click, and a click should not leave an empty
+  -- selection behind for copy to find.
+  local a = self.sel_anchor
+  if a and a.cy == self.cy and a.cx == self.cx then self.sel_anchor = nil end
 end
 
 function AgentView:get_scrollable_size()
@@ -1518,9 +1586,41 @@ function AgentView:draw()
   -- where you were.
   local top_line = math.max(1, math.min(self.cy - input_lines + 1,
     #self.lines - input_lines + 1))
+  -- The composer's rows, in the coordinates a pointer arrives in, so it can be
+  -- dragged through like any other text. Recorded here for the same reason the
+  -- transcript's are: hit-testing that recomputes the layout eventually
+  -- disagrees with the layout.
+  self.composer_rows = {}
+  local csel_lo, csel_hi
+  if self.sel_anchor then
+    local a = self.sel_anchor
+    csel_lo, csel_hi = a, { cy = self.cy, cx = self.cx }
+    if csel_lo.cy > csel_hi.cy
+       or (csel_lo.cy == csel_hi.cy and csel_lo.cx > csel_hi.cx) then
+      csel_lo, csel_hi = csel_hi, csel_lo
+    end
+  end
+
   local ty = iy + vpad * 2
   for i = top_line, top_line + input_lines - 1 do
     local line = self.lines[i] or ""
+    self.composer_rows[#self.composer_rows + 1] =
+      { i = i, x = x, y = ty, h = lh, line = line }
+
+    -- Highlight before the text, so the glyphs sit on top of it.
+    if csel_lo and i >= csel_lo.cy and i <= csel_hi.cy then
+      local from = (i == csel_lo.cy) and cols_of(line:sub(1, csel_lo.cx - 1)) or 0
+      local to = (i == csel_hi.cy) and cols_of(line:sub(1, csel_hi.cx - 1))
+                 or cols_of(line)
+      -- A selection that runs to the end of a line includes the newline, and
+      -- showing a sliver past the last glyph is how that reads.
+      if i < csel_hi.cy then to = to + 1 end
+      if to > from then
+        renderer.draw_rect(x + from * charw, ty, (to - from) * charw, lh,
+          style.selection)
+      end
+    end
+
     local shown = line
     if i == self.cy and not self.busy and focused then
       shown = line:sub(1, self.cx - 1) .. "|" .. line:sub(self.cx)
