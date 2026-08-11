@@ -146,10 +146,16 @@ function uisandbox.context(panel, x, y, w, h, mouse, font)
 
   -- ---- diagrams ----------------------------------------------------------
   --
-  -- Sketchy vector shapes, from rough-lua. A panel gets these as plain
-  -- functions rather than a generator object it has to hold: one generator per
-  -- panel is created here and kept in the panel, so the wobble is stable
-  -- between frames instead of re-rolling sixty times a second.
+  -- Sketchy vector shapes, from core/sketch.lua. A panel gets these as plain
+  -- functions rather than a generator object it has to hold.
+  --
+  -- Frame stability is the generator's own property, not this cache's: sketch
+  -- seeds each shape from the generator seed mixed with the shape's own
+  -- coordinates, so the same box drawn at the same place is the same box every
+  -- frame. The earlier version threaded one PRNG through the options table and
+  -- advanced it per call, which meant every diagram in the window re-rolled
+  -- sixty times a second -- stable-looking in a screenshot and visibly
+  -- vibrating in front of you.
   --
   -- These do NOT clip: rough emits geometry, and clipping it properly means
   -- clipping every segment. A panel that draws outside its box will draw

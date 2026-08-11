@@ -197,11 +197,18 @@ core.add_thread(function()
     end
     frame(2)
 
-    -- The sweep clicked the sidebar toggle, among everything else. Put it back:
-    -- the scenarios below check the rail's width, and a hidden rail would make
-    -- every one of those checks pass by being zero.
+    -- The sweep clicked the sidebar toggle, among everything else, and the
+    -- check above left a document in front of the conversation. Put both back:
+    -- the scenarios below check the rail's width, which a hidden rail would
+    -- satisfy by being zero, and they measure the panel, which only has a
+    -- current size while its node is actually showing it.
     studio.sidebar.visible = true
+    studio.sidebar.tab = "chat"
     v = studio.open_agent()
+    local node = core.root_view.root_node:get_node_for_view(v)
+    if node then node:set_active_view(v) end
+    core.set_active_view(v)
+    frame(3)
 
     -- ---- content nobody looks at until it breaks ---------------------------
     v.entries = {}

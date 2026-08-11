@@ -8,6 +8,7 @@
 --   coroutine.yield("proc", h)    -- blocked until a child process progresses
 --   (return)                      -- the agent finished
 local uv = require("uv")
+local events = require("events")
 
 local M = {}
 
@@ -20,18 +21,26 @@ function M.current() return current_id end
 function M.alive(id) return M.by_id[id] ~= nil end
 function M.count() return #M.actors end
 
+-- The actor lifecycle events are emitted here rather than in thread.lua
+-- because this is where the lifecycle actually is: every actor arrives through
+-- add() (the coordinator included, which thread.spawn never sees) and every
+-- way of leaving -- finished, crashed, killed -- goes through remove(). The
+-- payload is just the id, which is also the thread/session row id, so a
+-- handler that wants the agent's name or transcript can ask bog.store for it.
 function M.add(id, co)
   local a = { id = id, co = co, status = "runnable", req = nil }
   M.actors[#M.actors + 1] = a
   M.by_id[id] = a
+  events.emit("swarm:actor_started", { id = id })
   return a
 end
 
-local function remove(a)
+local function remove(a, reason)
   M.by_id[a.id] = nil
   for i, x in ipairs(M.actors) do
     if x == a then table.remove(M.actors, i); break end
   end
+  events.emit("swarm:actor_stopped", { id = a.id, reason = reason or "done" })
 end
 
 local function resume(a)
@@ -53,7 +62,7 @@ local function resume(a)
     else
       bog.log(string.format("agent %s crashed: %s", tostring(a.id), tostring(err)))
     end
-    remove(a)
+    remove(a, "crashed")
     return
   end
   if coroutine.status(a.co) == "dead" then
@@ -86,7 +95,7 @@ end
 function M.kill(id)
   local a = M.by_id[id]
   if not a then return false end
-  remove(a)
+  remove(a, "killed")
   return true
 end
 

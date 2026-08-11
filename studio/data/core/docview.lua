@@ -4,6 +4,9 @@ local config = require "core.config"
 local style = require "core.style"
 local keymap = require "core.keymap"
 local translate = require "core.doc.translate"
+local marks = require "core.marks"
+local widgets = require "core.widgets"
+local command = require "core.command"
 local View = require "core.view"
 
 
@@ -58,6 +61,9 @@ function DocView:new(doc)
   self.font = "code_font"
   self.last_x_offset = {}
   self.blink_timer = 0
+  -- Rebuilt every frame from the visible lines only, so it is bounded by the
+  -- height of the window rather than the length of the file.
+  self.mark_hits = {}
 end
 
 
@@ -218,6 +224,18 @@ function DocView:on_mouse_pressed(button, x, y, clicks)
   if caught then
     return
   end
+  -- A mark's controls take the click before the text does. They are drawn on
+  -- top of it, so they have to be hit-tested on top of it too, or you click
+  -- "revert" and get a caret.
+  local item = widgets.hit(self.mark_hits, x, y)
+  if item and button == "left" then
+    if item.action == "revert" then
+      self:revert_mark(item.mark)
+    else
+      self:select_mark(item.mark)
+    end
+    return
+  end
   if keymap.modkeys["shift"] then
     if clicks == 1 then
       local line1, col1 = select(3, self.doc:get_selection())
@@ -300,11 +318,62 @@ function DocView:draw_line_text(idx, x, y)
     local color = style.syntax[type]
     tx = renderer.draw_text(font, text, tx, ty, color)
   end
+  return tx
+end
+
+
+-- Virtual text, and whatever controls the mark carries, drawn past the end of
+-- the line.
+--
+-- All of this is pixels. It is placed with get_col_x_offset, which measures the
+-- document's own text, and it never feeds back into it: get_x_offset_col still
+-- walks only doc.lines, so there is no column out here for the caret to land
+-- on, no selection that can cover it, and no click that resolves into it. The
+-- caret stops at the end of the real line and the annotation begins after it.
+-- That is the entire reason this is drawn rather than inserted.
+function DocView:draw_line_marks(idx, at, x, y)
+  local m
+  for _, k in ipairs(at) do
+    if k.text or (k.data and k.data.revert) then m = k; break end
+  end
+  if not m then return end
+
+  local font, lh = self:get_font(), self:get_line_height()
+  -- The column after the last real character: the trailing newline is part of
+  -- the line's text but has no business being measured.
+  local bare = #(self.doc.lines[idx]:gsub("\n$", ""))
+  local tx = x + self:get_col_x_offset(idx, bare + 1) + style.padding.x
+
+  if m.text then
+    renderer.draw_text(font, m.text, tx, y + self:get_line_text_y_offset(), style.dim)
+    tx = tx + font:get_width(m.text) + style.padding.x * 0.5
+  end
+
+  if m.data and m.data.revert then
+    local w = widgets.width(font, "revert")
+    local hover = self.mark_hover
+    local rect = { x = tx, y = y, w = w, h = lh }
+    widgets.button(font, "revert", tx, y, {
+      w = w, h = lh, tone = style.warn,
+      hover = hover and widgets.inside(rect, hover.x, hover.y),
+    })
+    rect.item = { mark = m, action = "revert" }
+    self.mark_hits[#self.mark_hits + 1] = rect
+  end
 end
 
 
 function DocView:draw_line_body(idx, x, y)
   local line, col = self.doc:get_selection()
+
+  -- The mark's wash goes down before anything else, so the selection and the
+  -- current-line highlight still read on top of it. A decoration that hides
+  -- where the caret is has stopped being a decoration.
+  local at = self.mark_store and self.mark_store.by_line[idx]
+  if at then
+    renderer.draw_rect(x + self.scroll.x, y, self.size.x,
+      self:get_line_height(), marks.wash(at[1]))
+  end
 
   -- draw selection if it overlaps this line
   local line1, col1, line2, col2 = self.doc:get_selection(true)
@@ -327,6 +396,9 @@ function DocView:draw_line_body(idx, x, y)
   -- draw line's text
   self:draw_line_text(idx, x, y)
 
+  -- ...and the annotations after it
+  if at then self:draw_line_marks(idx, at, x, y) end
+
   -- draw caret if it overlaps this line
   if line == idx and core.active_view == self
   and self.blink_timer < blink_period / 2
@@ -344,6 +416,25 @@ function DocView:draw_line_gutter(idx, x, y)
   if idx >= line1 and idx <= line2 then
     color = style.line_number2
   end
+
+  -- The sign column lives in the padding the line numbers already leave empty,
+  -- so nothing else has to move to make room for it and a file with no marks
+  -- looks exactly as it did.
+  local at = self.mark_store and self.mark_store.by_line[idx]
+  if at then
+    local lh = self:get_line_height()
+    local w = math.max(2, math.floor(3 * SCALE))
+    local sx = x + math.floor(style.padding.x * 0.3)
+    renderer.draw_rect(sx, y + 1, w, lh - 2, marks.color(at[1].kind))
+    -- Clicking a sign selects the hunk it belongs to: the obvious question
+    -- when you see one is "what changed here", and a selection answers it
+    -- without the risk a one-click revert would carry.
+    self.mark_hits[#self.mark_hits + 1] = {
+      x = sx - style.padding.x * 0.3, y = y, w = w + style.padding.x * 0.6, h = lh,
+      item = { mark = at[1], action = "select" },
+    }
+  end
+
   local yoffset = self:get_line_text_y_offset()
   x = x + style.padding.x
   renderer.draw_text(self:get_font(), idx, x, y + yoffset, color)
@@ -358,6 +449,13 @@ function DocView:draw()
 
   local minline, maxline = self:get_visible_line_range()
   local lh = self:get_line_height()
+
+  -- Once a frame, not once a line: resolving the store is a couple of table
+  -- lookups, and from here on a mark costs one hash probe per visible line.
+  -- A ten-thousand-line file with ten thousand marks draws the same forty the
+  -- window can show and never touches the rest.
+  self.mark_store = marks.store(self.doc)
+  self.mark_hits = {}
 
   local _, y = self:get_line_screen_position(minline)
   local x = self.position.x

@@ -3,6 +3,7 @@ local Highlighter = require "core.doc.highlighter"
 local syntax = require "core.syntax"
 local config = require "core.config"
 local common = require "core.common"
+local marks = require "core.marks"
 
 
 local Doc = Object:extend()
@@ -86,6 +87,27 @@ function Doc:load(filename)
   end
   fp:close()
   self:reset_syntax()
+  marks.attach(self)
+end
+
+
+-- Reload from disk, keeping the caret where it was.
+--
+-- The agent writes through the filesystem, so a buffer showing that file is
+-- stale the moment the tool returns. This replaces the line table outright
+-- rather than removing everything and inserting it again -- which is what the
+-- autoreload plugin does -- because that pair of edits would drag every
+-- decoration on this document down to line 1 and leave it there. A reload is
+-- not an edit and must not look like one.
+function Doc:reload()
+  if not self.filename then return false end
+  local fp = io.open(self.filename, "rb")
+  if not fp then return false end
+  fp:close()
+  local sel = { self:get_selection() }
+  self:load(self.filename)
+  self:set_selection(table.unpack(sel))
+  return true
 end
 
 
@@ -280,6 +302,12 @@ function Doc:raw_insert(line, col, text, undo_stack, time)
   -- splice lines into line array
   splice(self.lines, line, 1, lines)
 
+  -- Decorations are anchored to line numbers, so text that moves lines has to
+  -- move them too, or the agent's account of a file drifts off the code it is
+  -- describing the first time you press return above it. Skipped outright when
+  -- the insert stays on one line, which is what nearly every keystroke is.
+  if #lines > 1 then marks.on_insert(self, line, col, #lines - 1) end
+
   -- push undo
   local line2, col2 = self:position_offset(line, col, #text)
   push_undo(undo_stack, time, "selection", self:get_selection())
@@ -300,6 +328,9 @@ function Doc:raw_remove(line1, col1, line2, col2, undo_stack, time)
   -- get line content before/after removed text
   local before = self.lines[line1]:sub(1, col1 - 1)
   local after = self.lines[line2]:sub(col2)
+
+  -- Before the splice, while the marks' line numbers still mean what they say.
+  if line2 > line1 then marks.on_remove(self, line1, col1, line2, col2) end
 
   -- splice line into line array
   splice(self.lines, line1, line2 - line1 + 1, { before .. after })

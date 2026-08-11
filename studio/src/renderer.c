@@ -295,10 +295,10 @@ static inline RenColor blend_pixel2(RenColor dst, RenColor src, RenColor color) 
  *
  * The editor core this grew from draws axis-aligned rectangles and glyphs,
  * which is everything a text editor needs and nothing a diagram does. A line at
- * an arbitrary angle is the one primitive that unlocks the rest: rough-lua --
- * and any other vector work -- reduces curves, ellipses, arrows and hatch fills
- * to short straight segments, so a line is not one feature among many, it is
- * the whole capability.
+ * an arbitrary angle is the one primitive that unlocks the rest: the sketch
+ * engine -- and any other vector work -- reduces curves, ellipses, arrows and
+ * hatch fills to short straight segments, so a line is not one feature among
+ * many, it is the whole capability.
  *
  * Sampled and bilinearly blended rather than Bresenham. A hard-edged diagonal
  * looks like a mistake next to anti-aliased glyphs, and the sketchy strokes

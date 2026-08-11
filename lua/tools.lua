@@ -4,6 +4,7 @@
 -- loaded fresh every time this module initializes (so reload re-scans them).
 local util = require("util")
 local json = require("json")
+local events = require("events")
 
 local M = {}
 M.registry = {}
@@ -53,6 +54,11 @@ local function tool_write(a)
   local ok, err = util.write_file(a.path, a.content)
   if not ok then return M.err(M.ERR.runtime, tostring(err)) end
   local n = select(2, a.content:gsub("\n", "\n")) + 1
+  -- Only the write/edit tools announce themselves. A generated tool that
+  -- reaches the filesystem another way (sys.exec "sed -i") is invisible here,
+  -- and pretending otherwise would be worse than the gap: this is "the agent
+  -- used its write tool", not "the disk changed".
+  events.emit("file:write", { path = a.path, bytes = #a.content, lines = n })
   return string.format("Wrote %s (%d bytes, %d lines)", a.path, #a.content, n)
 end
 
@@ -74,6 +80,7 @@ local function tool_edit(a)
   local updated = before .. a.new .. after
   local ok, werr = util.write_file(a.path, updated)
   if not ok then return M.err(M.ERR.runtime, tostring(werr)) end
+  events.emit("file:edit", { path = a.path, bytes = #updated })
 
   -- return post-edit context (ds4 6.4): cheap tokens to save a re-read
   local start_line = select(2, before:gsub("\n", "\n")) + 1
@@ -174,6 +181,10 @@ local function tool_env()
     -- composition: call any other registered tool, built-in or generated (§7)
     tools = { call = function(n, a) return M.run(n, a) end,
               names = function() return M.names() end },
+    -- Telling a human something, and announcing your own events. `on` is
+    -- deliberately absent: registration goes through the on_event tool so that
+    -- every handler is listed in one place with a description attached.
+    events = { notify = events.notify, emit = events.emit, list = events.list },
     -- pure Lua stdlib
     string = string, table = table, math = math, utf8 = utf8, os = SAFE_OS,
     ipairs = ipairs, pairs = pairs, next = next, select = select,
@@ -595,8 +606,12 @@ end
 function M.run(name, input)
   local d = M.registry[name]
   if not d then
+    -- No tool:before for a tool that does not exist: nothing is about to run,
+    -- and a handler that saw a "before" with no "after" would be right to
+    -- complain. Past this line the pair is guaranteed.
     return M.err(M.ERR.not_found, "unknown tool: %s", tostring(name))
   end
+  events.emit("tool:before", { name = name, input = input })
 
   -- Built-ins are harness code and trusted; skipping the hook keeps read/edit
   -- on their fast path. Only model-authored bodies carry a `body` string.
@@ -631,9 +646,15 @@ function M.run(name, input)
   if type(res) ~= "string" then res = tostring(res) end
   if #res > M.LIMITS.result_bytes then
     local shaped = util.shape_result(res, { max_bytes = 6000, head_lines = 100 })
-    return M.err(M.ERR.too_large,
+    res = M.err(M.ERR.too_large,
       "%d bytes exceeds the %d byte cap. Head follows; read the saved file for the rest.\n%s",
       #res, M.LIMITS.result_bytes, shaped)
+  end
+  -- The size of the result, never the result: a tool that legitimately returns
+  -- a megabyte would otherwise put it on the bus for every subscriber.
+  if events.any("tool:after") then
+    events.emit("tool:after", { name = name, bytes = #res,
+                                error = res:sub(1, 11) == "Tool error:" })
   end
   return res
 end
@@ -751,6 +772,7 @@ M.register("define_tool", {
   description = "Create a new tool at runtime by writing its Lua. The body receives a table `args` "
     .. "and must `return` a string. It runs against a capability environment: sys (exec/listdir/stat/"
     .. "mkdir_p/rmtree/home/shell), db, json, gold, tools.call(name, args) to invoke another tool, "
+    .. "events.notify(msg, level) to say something a human should see, "
     .. "and the pure Lua stdlib. Raw io/os/require/uv are deliberately absent -- compose the "
     .. "capabilities instead. This is how you grow your own vocabulary for a codebase.",
   input_schema = {
@@ -768,6 +790,106 @@ M.register("define_tool", {
   },
   run = tool_define,
 })
+-- ---------------------------------------------------------------------------
+-- on_event: define_tool's mirror image -- code the harness calls, rather than
+-- code the model calls.
+--
+-- Handlers registered this way are SESSION-ONLY, and that is a decision rather
+-- than an omission. Persisting them would be easy: the same data-only file
+-- format define_tool now uses (pattern + body string, compiled through one
+-- path) would work unchanged, and would avoid repeating the mistake where a
+-- persisted "tool" carried its own load() and got _G back after a restart.
+--
+-- The reason not to is *when the code runs*, not how it is stored. A persisted
+-- tool sits inert until a model decides to call it, in a conversation someone
+-- is watching, behind whatever approval gate the front end imposes on
+-- run_tool. A persisted handler runs on the next start, on every matching
+-- event, with nobody having asked for anything and no gate to put in its way --
+-- and an event is not a call, so there is nothing for the studio to prompt
+-- about. A bad tool costs one call; a bad handler on turn:start costs every
+-- future session in this project, including the ones you start to fix it.
+--
+-- Durable reactions therefore go through a file the user can see:
+-- ~/.boggart/lua/events/<name>.lua, which the agent may write with the `write`
+-- tool and which takes effect on the next reload. That keeps a review point in
+-- the loop without taking the capability away.
+local function tool_on_event(a)
+  local op = a.op or "on"
+
+  if op == "list" then
+    local rows = events.list()
+    if #rows == 0 then return "no event handlers registered" end
+    local out = { string.format("%-4s %-22s %-10s %6s %6s  %s",
+      "id", "event", "source", "calls", "errs", "description") }
+    for _, h in ipairs(rows) do
+      out[#out + 1] = string.format("%-4d %-22s %-10s %6d %6d  %s",
+        h.id, h.pattern, h.source or "?", h.calls, h.errors,
+        (h.desc or "") .. (h.once and " (once)" or ""))
+    end
+    return table.concat(out, "\n")
+  end
+
+  if op == "off" then
+    local id = tonumber(a.id)
+    if not id then return M.err(M.ERR.validation, "on_event op=off needs the handler 'id'") end
+    if not events.off(id) then return M.err(M.ERR.not_found, "no handler #%d", id) end
+    return string.format("Removed handler #%d.", id)
+  end
+
+  if op ~= "on" then return M.err(M.ERR.validation, "op must be on, off or list") end
+  if type(a.event) ~= "string" or a.event == "" then
+    return M.err(M.ERR.validation, "on_event needs an 'event' pattern, e.g. \"tool:*\"")
+  end
+  if type(a.lua) ~= "string" or a.lua == "" then
+    return M.err(M.ERR.validation, "on_event needs a Lua 'lua' body")
+  end
+  -- Same compilation rules as a tool body: text only, explicit _ENV, so a
+  -- handler has exactly the capability surface a generated tool has.
+  local chunk, err = load("return function(event, data)\n" .. a.lua .. "\nend",
+                          "@handler:" .. a.event, "t", tool_env())
+  if not chunk then
+    return M.err(M.ERR.validation, (tostring(err):gsub("^%[string [^%]]*%]:", "line ")))
+  end
+  local h = events.on(a.event, chunk(), {
+    once = a.once and true or nil,
+    desc = a.desc or ("agent handler for " .. a.event),
+    source = "agent",
+  })
+  return string.format(
+    "Registered handler #%d for %q (session-only: it disappears when this "
+    .. "process exits). It runs in its own coroutine, so throwing affects "
+    .. "nothing else -- but it must not block or yield (no bash, no sys.exec) "
+    .. "or it will be dropped. Write ~/.boggart/lua/events/<name>.lua to make a "
+    .. "handler durable.", h.id, a.event)
+end
+
+M.register("on_event", {
+  description = "React to something the harness does, instead of waiting to be called. Registers a "
+    .. "Lua handler for an event pattern with `*` wildcards (\"tool:*\", \"file:write\", \"*\"); the "
+    .. "body receives `event` (the name) and `data` (a small table) and runs in the same capability "
+    .. "environment as define_tool, plus events.notify(msg, level) to tell the user something. "
+    .. "Handlers are session-only; op=list shows them, op=off removes one. "
+    .. "Events: " .. (function()
+        local ns = {}
+        for k in pairs(events.EVENTS) do ns[#ns + 1] = k end
+        table.sort(ns)
+        return table.concat(ns, ", ")
+      end)(),
+  input_schema = {
+    type = "object",
+    properties = {
+      op = { type = "string", enum = { "on", "off", "list" },
+             description = "default 'on'" },
+      event = { type = "string", description = "event pattern, e.g. \"tool:*\"" },
+      lua = { type = "string", description = "Lua body; receives `event`, `data`. Must not block." },
+      desc = { type = "string", description = "what this handler is for (shown by op=list)" },
+      once = { type = "boolean", description = "fire at most once, then unsubscribe" },
+      id = { type = "integer", description = "handler id, for op=off" },
+    },
+  },
+  run = tool_on_event,
+})
+
 M.register("reload", {
   description = "Hot-reload the harness Lua after you have edited files under ~/.boggart/lua/. "
     .. "On a syntax error the previous code is kept and the error is returned.",
