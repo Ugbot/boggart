@@ -24,6 +24,8 @@ int luaopen_boggart_db(lua_State *L);
 int luaopen_boggart_swarm(lua_State *L);
 int luaopen_boggart_mcp(lua_State *L);
 int luaopen_boggart_auth(lua_State *L);
+lua_State *boggart_newstate(void);       /* src/lmem.c: counts real bytes */
+void boggart_open_mem(lua_State *L);
 int luaopen_ltui_lcurses(lua_State *L); /* vendored ltui curses binding */
 int luaopen_luv(lua_State *L);          /* vendored luv: libuv bindings for Lua */
 
@@ -163,10 +165,14 @@ static int msghandler(lua_State *L) {
 }
 
 int main(int argc, char **argv) {
-  lua_State *L = luaL_newstate();
+  /* Counting allocator rather than luaL_newstate: the generated-tool memory
+   * limit needs real byte counts, which the GC no longer reports for strings
+   * on Lua 5.5. See src/lmem.c. */
+  lua_State *L = boggart_newstate();
   if (!L) { fprintf(stderr, "boggart: cannot create Lua state\n"); return 1; }
   luaL_openlibs(L);
   register_boggart(L, argc, argv);
+  boggart_open_mem(L);
 
   size_t len = 0;
   const char *boot = boggart_embedded_get("boot", &len);

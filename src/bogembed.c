@@ -24,6 +24,7 @@ int luaopen_boggart_swarm(lua_State *L);
 int luaopen_boggart_mcp(lua_State *L);
 int luaopen_boggart_auth(lua_State *L);
 int luaopen_luv(lua_State *L);
+void boggart_open_mem(lua_State *L);
 
 /* boggart.embedded(name) -> source | nil */
 static int l_embedded(lua_State *L) {
@@ -83,6 +84,8 @@ void boggart_open_libs(lua_State *L) {
   lua_pushcfunction(L, luaopen_luv);
   lua_setfield(L, -2, "uv");
   lua_pop(L, 2);
+
+  boggart_open_mem(L); /* sys.membytes(), for the tool memory limit */
 }
 
 /* The `boggart` table plus the embedded-module searcher, then run boot.

@@ -7,6 +7,7 @@
  * lua_State rather than living in a subprocess. */
 void boggart_open_libs(lua_State *L);
 int  boggart_boot(lua_State *L, const char *mode, const char *version);
+lua_State *boggart_newstate(void);
 
 #ifdef _WIN32
   #include <windows.h>
@@ -128,7 +129,7 @@ int main(int argc, char **argv) {
   ren_init(window);
 
 
-  lua_State *L = luaL_newstate();
+  lua_State *L = boggart_newstate();
   luaL_openlibs(L);
   api_load_libs(L);
 

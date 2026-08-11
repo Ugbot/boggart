@@ -70,7 +70,11 @@ function Doc:load(filename)
   self:reset()
   self.filename = filename
   self.lines = {}
-  for line in fp:lines() do
+  for raw in fp:lines() do
+    -- Lua 5.5 makes the for-loop control variable read-only, so the CRLF trim
+    -- writes to a local copy instead of to the loop variable itself. (The
+    -- manual's own suggested remedy; 5.4 and earlier allowed the assignment.)
+    local line = raw
     if line:byte(-1) == 13 then
       line = line:sub(1, -2)
       self.crlf = true

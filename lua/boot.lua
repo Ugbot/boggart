@@ -18,7 +18,7 @@ local strict = require("strict")
 
 -- ---- app context ----------------------------------------------------------
 -- Declared as a real global (strict-friendly) so every module can reach it.
-global{ bog = {} }
+declare{ bog = {} }
 bog.version = boggart.version
 bog.userdir = sys.home() .. "/.boggart"
 bog.mode = boggart.mode
@@ -319,7 +319,7 @@ end
 
 -- Expose json and the gold stdlib as real globals so define_tool bodies can use
 -- them (the system prompt tells the model they may) without tripping strict.
-global{ json = bog.json, gold = require("gold") }
+declare{ json = bog.json, gold = require("gold") }
 
 -- Lock globals now that libs + bog are in place -- except when embedded in the
 -- editor, where lite sets its own globals (SCALE, PATHSEP, EXEDIR, VERSION...)

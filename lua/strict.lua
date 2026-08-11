@@ -15,8 +15,14 @@ function strict.__index(t, k)
   end
 end
 
--- Declare/assign globals explicitly:  global{ name = value, ... }
-function global(t)
+-- Declare/assign globals explicitly:  declare{ name = value, ... }
+--
+-- Named `declare` rather than `global`, which Lua 5.5 made a reserved word.
+-- LUA_COMPAT_GLOBAL would have kept the old spelling working, but the manual is
+-- explicit that every compatibility option will eventually be removed, and this
+-- is our own two-call-site API -- cheaper to rename now than to discover it
+-- when the option goes.
+function declare(t)
   for k, v in pairs(t) do
     strict.defined[k] = true
     rawset(_G, k, v)
@@ -46,7 +52,7 @@ end
 -- them pass, then lock the table.
 function strict.enable()
   for k in pairs(_G) do strict.defined[k] = true end
-  strict.defined.global = true
+  strict.defined.declare = true
   setmetatable(_G, strict)
 end
 

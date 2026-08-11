@@ -224,7 +224,9 @@ end
 -- checkout could inject executable code into anyone's agent, which is the
 -- untrusted-repository problem in §16.7. Keeping them in the user's own
 -- directory means a tool is only ever code this user's agent wrote.
-M.SCOPES = { session = true, project = true, global = true }
+-- Bracketed: `global` is a reserved word in Lua 5.5, so it cannot appear as a
+-- bare key in a table constructor. The scope is still named "global" to users.
+M.SCOPES = { session = true, project = true, ["global"] = true }
 
 -- Identify the project: the git root if there is one, else the working
 -- directory. The git root is the better key because it is stable no matter
@@ -508,6 +510,22 @@ M.LIMITS = {
   result_bytes = 1024 * 1024,
 }
 
+-- Real allocated bytes, in KB.
+--
+-- sys.membytes() (src/lmem.c) counts every allocation Lua makes, because
+-- collectgarbage("count") cannot be trusted for this: Lua 5.5 stopped
+-- accounting for string memory there. Measured on the upgrade, 2,000 retained
+-- 100 KB strings reported a 62 KB delta while 200,000 small tables reported a
+-- correct 14 MB -- so the limit had gone blind to exactly the likeliest way a
+-- generated tool blows memory, which is building an enormous string.
+--
+-- Falls back to the GC's view if the counting allocator is not installed, so
+-- an embedder that creates its own lua_State still gets *some* limit.
+local function used_kb()
+  if sys.membytes then return (select(1, sys.membytes())) / 1024 end
+  return collectgarbage("count")
+end
+
 -- Error taxonomy. The "Tool error:" prefix is load-bearing -- api.lua tests the
 -- first 11 characters to set is_error on the tool_result -- so the kind goes
 -- after it. The point (paper §15) is that the model can tell *what to do*:
@@ -535,7 +553,7 @@ local LIMIT_SENTINEL = "\0__bog_limit__"
 -- Run a generated body under the instruction/memory budget.
 local function run_bounded(d, args)
   local ticks, tripped, tripped_kind = 0, nil, M.ERR.timeout
-  local mem0 = collectgarbage("count")
+  local mem0 = used_kb()
   local step = M.LIMITS.check_every
 
   debug.sethook(function()
@@ -544,7 +562,7 @@ local function run_bounded(d, args)
       tripped = string.format("exceeded the instruction budget (%d)", M.LIMITS.instructions)
       error(LIMIT_SENTINEL, 0)
     end
-    if collectgarbage("count") - mem0 > M.LIMITS.memory_kb then
+    if used_kb() - mem0 > M.LIMITS.memory_kb then
       tripped_kind = M.ERR.resource
       tripped = string.format("allocated more than %d MB", M.LIMITS.memory_kb // 1024)
       error(LIMIT_SENTINEL, 0)

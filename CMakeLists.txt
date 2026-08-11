@@ -308,6 +308,7 @@ add_executable(boggart
   src/jwriter.c
   src/lauth.c
   src/bogembed.c
+  src/lmem.c
   ${EMBEDDED_C})
 
 target_include_directories(boggart PRIVATE src)
@@ -378,6 +379,7 @@ if(BOGGART_BUILD_APP AND SDL2_FOUND)
     src/jwriter.c
     src/lauth.c
     src/bogembed.c
+  src/lmem.c
     ${EMBEDDED_C})
 
   target_include_directories(boggart-studio PRIVATE
