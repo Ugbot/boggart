@@ -100,6 +100,17 @@ rawset(_G, "renderer", {
 if rawget(_G, "system") == nil then
   rawset(_G, "system", { fuzzy_match = function() return 0 end })
 end
+-- A Doc times its own undo merges and resolves its own filename, and the
+-- highlighter wants somewhere to put a coroutine. None of the three do anything
+-- interesting to the arithmetic under test; they only have to exist.
+-- The clock has to actually advance: Doc merges undo entries that happened
+-- within a fraction of a second of each other, so a clock stuck at zero merges
+-- the entire history into one command and "undo" empties the buffer.
+local clock = 0
+rawget(_G, "system").get_time = rawget(_G, "system").get_time
+  or function() clock = clock + 1; return clock end
+rawget(_G, "system").absolute_path = rawget(_G, "system").absolute_path
+  or function(p) return p end
 
 package.path = root .. "/studio/data/?.lua;" .. root .. "/studio/data/?/init.lua;"
   .. package.path
@@ -116,6 +127,7 @@ package.loaded["core"] = {
   push_clip_rect = function() end,
   pop_clip_rect = function() end,
   set_active_view = function() end,
+  add_thread = function() end,
   log = function() end,
   error = function() end,
 }
@@ -263,6 +275,182 @@ if loaded then
   v:close_stream()
   v:stream("next")
   ok(#v.entries == 3, "a closed stream does not absorb the next reply")
+end
+
+-- ---------------------------------------------------------------------------
+-- Decorations, and whether they stay where they were put
+-- ---------------------------------------------------------------------------
+--
+-- A mark that drifts off the line it describes is worse than no mark: it points
+-- confidently at the wrong code. The bookkeeping that stops that happening is
+-- pure integer arithmetic over a line table, so it is checked here rather than
+-- by squinting at a rendered frame, where an off-by-one looks like a design
+-- decision.
+local okm, marks = pcall(require, "core.marks")
+ok(okm, "marks loads" .. (okm and "" or ("  -- " .. tostring(marks))))
+
+local okdoc, Doc = pcall(require, "core.doc")
+ok(okdoc, "doc loads with the mark hooks in it"
+  .. (okdoc and "" or ("  -- " .. tostring(Doc))))
+
+if okm and okdoc then
+  -- ---- the store ---------------------------------------------------------
+  local T = "/tmp/marks-store.lua"
+  marks.clear(T)
+  local id = marks.set(T, 10, { kind = "added", text = "agent +1 -0" })
+  ok(marks.get(T, 10) and marks.get(T, 10)[1].id == id,
+    "a mark is found on the line it was set on")
+  ok(marks.get(T, 9) == nil, "...and nowhere else")
+  marks.set(T, 3, { kind = "error" })
+  marks.set(T, 7, { kind = "info" })
+  ok(marks.count(T) == 3, "three marks on one target (got " .. marks.count(T) .. ")")
+  local all = marks.all(T)
+  ok(all[1].line == 3 and all[2].line == 7 and all[3].line == 10,
+    "all() comes back in line order")
+  ok(marks.all(T) == all, "...and is cached until something changes")
+  ok(select(1, marks.next(T, 3)) == 7, "next walks forward from a line")
+  ok(select(1, marks.next(T, 10)) == 3, "...and wraps to the top")
+  ok(select(1, marks.prev(T, 7)) == 3, "prev walks back")
+  ok(select(1, marks.prev(T, 3)) == 10, "...and wraps to the bottom")
+  ok(marks.clear(T, "error") == 1 and marks.count(T) == 2, "clear by kind")
+  ok(marks.clear(T, id) == 1 and marks.count(T) == 1, "clear by id")
+  ok(marks.clear(T) == 1 and marks.count(T) == 0, "clear everything")
+
+  -- ---- tracking edits ----------------------------------------------------
+  local n = 0
+  local function docof(text)
+    n = n + 1
+    local d = Doc()
+    d.filename = "/tmp/marks-track-" .. n .. ".lua"
+    d:insert(1, 1, text)
+    return d
+  end
+
+  local d = docof("one\ntwo\nthree\nfour\nfive\n")
+  marks.set(d, 4, { kind = "changed" })          -- on "four"
+  d:insert(1, 1, "a\nb\nc\n")                    -- three lines above it
+  ok(marks.all(d)[1].line == 7,
+    "three lines inserted above move the mark down by three (line "
+    .. marks.all(d)[1].line .. ")")
+  ok(d.lines[7] == "four\n", "...which is still the line it was describing")
+
+  d:insert(7, 2, "XX")                           -- inside the marked line
+  ok(marks.all(d)[1].line == 7, "an edit within a line moves nothing")
+
+  d:insert(7, 1, "z\n")                          -- at the head of the marked line
+  ok(marks.all(d)[1].line == 8,
+    "text inserted at column one carries the line's mark down with the line")
+
+  d:remove(1, 1, 4, 1)                           -- three whole lines above
+  ok(marks.all(d)[1].line == 5,
+    "removing three lines above moves the mark up by three (line "
+    .. marks.all(d)[1].line .. ")")
+
+  local d2 = docof("one\ntwo\nthree\nfour\nfive\n")
+  marks.set(d2, 2, { kind = "added" })
+  marks.set(d2, 3, { kind = "added" })
+  marks.set(d2, 5, { kind = "added" })
+  d2:remove(2, 1, 4, 1)                          -- deletes lines 2 and 3
+  local lines2 = {}
+  for _, m in ipairs(marks.all(d2)) do lines2[#lines2 + 1] = m.line end
+  ok(#lines2 == 3 and lines2[1] == 2 and lines2[2] == 2 and lines2[3] == 3,
+    "marks inside a deleted span collapse onto the surviving line, and the "
+    .. "one below shifts up (got " .. table.concat(lines2, ",") .. ")")
+
+  -- Undo runs back through raw_insert, so it has to put the marks back too.
+  local d3 = docof("one\ntwo\nthree\nfour\n")
+  marks.set(d3, 3, { kind = "changed" })
+  d3:insert(1, 1, "x\ny\n")
+  ok(marks.all(d3)[1].line == 5, "an insert moves the mark")
+  d3:undo()
+  ok(marks.all(d3)[1].line == 3, "...and undoing it puts the mark back")
+
+  -- ---- from a diff -------------------------------------------------------
+  local F = "/tmp/marks-diff.lua"
+  local old, new = "a\nb\nc\nd\n", "a\nB1\nB2\nc\nd\n"
+  marks.clear(F)
+  local ids = marks.from_edit(F, old, new, { path = F })
+  ok(#ids == 2, "a one-for-two replacement marks two lines (got " .. #ids .. ")")
+  local head = marks.get(F, 2)[1]
+  ok(head.line == 2 and head.kind == "changed", "the hunk starts where it starts")
+  ok(head.text == "agent +2 -1",
+    "the head line carries the summary (got '" .. tostring(head.text) .. "')")
+  ok(marks.get(F, 3)[1].text == nil,
+    "...and the rest of the hunk does not repeat it")
+  ok(marks.from_edit(F, new, new) ~= nil and #marks.from_edit(F, new, new) == 0,
+    "an unchanged write marks nothing")
+
+  -- A pure deletion has no line of its own to sit on, so it marks the line
+  -- that closed over the gap.
+  local G = "/tmp/marks-del.lua"
+  marks.clear(G)
+  marks.from_edit(G, "a\nb\nc\n", "a\nc\n")
+  ok(marks.count(G) == 1 and marks.get(G, 2) and marks.get(G, 2)[1].kind == "removed",
+    "a deletion marks the line that closed the gap")
+
+  -- A second agent write has to move the first one's marks: nothing else can,
+  -- because that edit never passes through the buffer.
+  local H = "/tmp/marks-two.lua"
+  marks.clear(H)
+  marks.from_edit(H, "1\n2\n3\n4\n5\n6\n", "1\n2\n3\n4\nFIVE\n6\n")   -- line 5
+  marks.from_edit(H, "1\n2\n3\n4\nFIVE\n6\n", "1\nx\ny\n2\n3\n4\nFIVE\n6\n")
+  local ls = {}
+  for _, m in ipairs(marks.all(H)) do ls[#ls + 1] = m.line end
+  ok(ls[#ls] == 7, "an earlier hunk moves when a later write inserts above it "
+    .. "(marks at " .. table.concat(ls, ",") .. ")")
+
+  -- ---- reverting one hunk ------------------------------------------------
+  local d4 = docof(new)
+  marks.clear(d4)
+  marks.from_edit(d4, old, new, { path = d4.filename })
+  local m4 = marks.get(d4, 2)[1]
+  local reverted = marks.revert(d4, m4)
+  ok(reverted, "a hunk reverts")
+  ok(d4.lines[2] == "b\n" and d4.lines[3] == "c\n",
+    "...restoring exactly what was replaced (got '"
+    .. tostring(d4.lines[2]):gsub("\n", "\\n") .. "')")
+  ok(marks.count(d4) == 0, "...and takes its marks with it")
+
+  -- Refusing is the important half: the recorded text is what the agent wrote,
+  -- and if the buffer no longer says that, putting it back destroys somebody
+  -- else's edit rather than the agent's.
+  local d5 = docof(new)
+  marks.clear(d5)
+  marks.from_edit(d5, old, new)
+  d5:insert(2, 1, "mine ")
+  local okr, why = marks.revert(d5, marks.get(d5, 2)[1])
+  ok(not okr and type(why) == "string",
+    "revert refuses when the buffer has moved on (" .. tostring(why) .. ")")
+  ok(d5.lines[2] == "mine B1\n", "...and changes nothing when it refuses")
+
+  -- ---- a reload is not an edit -------------------------------------------
+  -- Doc:reload replaces the line table outright. If it ever goes back to
+  -- remove-everything-then-insert-everything, every mark in the file lands on
+  -- line 1 and this catches it.
+  local path = "/tmp/marks-reload.lua"
+  local fp = io.open(path, "wb")
+  if fp then
+    fp:write("one\ntwo\nthree\nfour\n")
+    fp:close()
+    local d6 = Doc(path)
+    marks.clear(d6)
+    marks.set(d6, 3, { kind = "changed" })
+    local fp2 = io.open(path, "wb")
+    fp2:write("one\ntwo\nTHREE\nfour\n")
+    fp2:close()
+    ok(d6:reload(), "a doc reloads from disk")
+    ok(d6.lines[3] == "THREE\n", "...picking up what changed")
+    ok(marks.count(d6) == 1 and marks.all(d6)[1].line == 3,
+      "...without disturbing the marks on it")
+  end
+
+  -- ---- colours -----------------------------------------------------------
+  -- The wash is memoised; two frames asking for the same kind must not hand
+  -- back two tables, or the frame loop is allocating for nothing.
+  ok(marks.wash({ kind = "added" }) == marks.wash("added"),
+    "the line wash for a kind is one shared table")
+  ok(marks.wash({ kind = "added", hl = { 1, 2, 3, 4 } })[1] == 1,
+    "...and an explicit hl wins over it")
 end
 
 io.write(string.format("\n%d passed, %d failed\n", passed, failed))

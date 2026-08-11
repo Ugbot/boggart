@@ -21,6 +21,7 @@ local config = require "core.config"
 local style = require "core.style"
 local View = require "core.view"
 local difflib = require "core.diff"
+local marks = require "core.marks"
 local command = require "core.command"
 local widgets = require "core.widgets"
 local tokenizer = require "core.tokenizer"
@@ -369,9 +370,16 @@ function AgentView:submit(text)
               end
             end
           end
+          -- What the file said before the tool touched it, so the marks can be
+          -- a real diff rather than a guess. Captured here and not from `rec`
+          -- because `rec` only exists when the call was gated: an approved-by-
+          -- policy write deserves the same annotation as one you clicked.
+          local was = (name == "write" or name == "edit") and input.path
+            and bog.util.read_file(input.path) or nil
+
           local out = bog.tools.run(name, input)
           if name == "write" or name == "edit" then
-            self.dirty_path = input.path
+            self.dirty_path, self.dirty_was = input.path, was
           end
           return out
         end,
@@ -428,12 +436,19 @@ function AgentView:tick()
   -- Reload a buffer the agent just wrote, so you are never reading a stale
   -- file while the agent works in it.
   if self.dirty_path then
-    local path = self.dirty_path
-    self.dirty_path = nil
+    local path, was = self.dirty_path, self.dirty_was
+    self.dirty_path, self.dirty_was = nil, nil
     for _, d in ipairs(core.docs) do
       if d.filename and d.filename:find(path, 1, true) and not d:is_dirty() then
         pcall(function() d:reload() end)
       end
+    end
+    -- Mark after the reload, never before: reloading replaces the buffer's
+    -- lines outright, and marks laid down first would be describing text that
+    -- had just been thrown away.
+    if was then
+      pcall(marks.from_edit, path, was, bog.util.read_file(path) or "",
+        { path = path, tool = "agent" })
     end
   end
 end

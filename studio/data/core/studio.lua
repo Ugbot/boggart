@@ -69,6 +69,12 @@ end
 function studio.open_agent()
   local existing = studio.agent_view()
   if existing then
+    -- Bring the tab forward as well as taking focus. set_active_view only moves
+    -- the keyboard, so with a file open in the same node the window went on
+    -- showing the file while everything typed went into the conversation -- and
+    -- the panel's size stayed stale, since it was never the drawn view.
+    local node = core.root_view.root_node:get_node_for_view(existing)
+    if node then node:set_active_view(existing) end
     core.set_active_view(existing)
     return existing
   end
@@ -186,7 +192,13 @@ function studio.status_items()
       local ratio = bog.api.COMPACT_RATIO or 0.8
       out[#out + 1] = (frac >= ratio and (style.warn or style.accent))
         or (frac >= ratio * 0.75 and style.text) or style.dim
-      out[#out + 1] = string.format("  ctx %s (%d%%)", human_tokens(used), frac * 100 + 0.5)
+      -- math.floor, not a bare "+ 0.5": %d rejects a float in Lua 5.3+, and
+      -- statusview.lua pcalls this function -- so the model, the token counts,
+      -- the context percentage, [approve?] and the mode badge all disappeared
+      -- together, with no error anywhere, for any conversation that had a
+      -- context to report.
+      out[#out + 1] = string.format("  ctx %s (%d%%)", human_tokens(used),
+        math.floor(frac * 100 + 0.5))
     end
   end
 
@@ -447,7 +459,7 @@ command.add(nil, {
     if v and v.busy then core.error("busy -- cancel the turn first"); return end
     local frac, used = bog.api.context_fraction(bog.session)
     if used == 0 then core.log("nothing to compact"); return end
-    core.log("compacting %d tokens (%d%%)...", used, frac * 100 + 0.5)
+    core.log("compacting %d tokens (%d%%)...", used, math.floor(frac * 100 + 0.5))
     -- Synchronous on purpose: this is a deliberate, user-initiated pause, and
     -- the alternative is a second concurrent turn against the same session.
     local ok, err = pcall(bog.api.compact, bog.session, {})
@@ -462,7 +474,7 @@ command.add(nil, {
   ["agent:show-context"] = function()
     local frac, used = bog.api.context_fraction(bog.session)
     core.log("context %d / %d tokens (%d%%), compacts at %d%%; %d compaction(s) so far",
-      used, bog.api.context_limit(bog.session), frac * 100 + 0.5,
+      used, bog.api.context_limit(bog.session), math.floor(frac * 100 + 0.5),
       (bog.api.COMPACT_RATIO or 0.8) * 100,
       (bog.session.usage and bog.session.usage.compactions) or 0)
   end,
@@ -548,6 +560,21 @@ command.add(nil, {
   end,
 
   -- ---- tools: the self-extension surface, made visible --------------------
+  -- What is currently reacting to events, and how often it has fired. The
+  -- point of an event system you cannot list is hard to defend.
+  ["agent:show-event-handlers"] = function()
+    local rows = (bog.events and bog.events.list()) or {}
+    if #rows == 0 then
+      core.log("no event handlers registered")
+      return
+    end
+    for _, h in ipairs(rows) do
+      core.log_quiet("#%d  %-20s %-10s %d calls  %s", h.id, h.pattern,
+        h.source or "?", h.calls, h.desc or "")
+    end
+    core.log("%d event handler(s) -- details in the log (ctrl+l)", #rows)
+  end,
+
   ["agent:show-tools"] = function()
     local report = bog.tools.report({})
     for line in (report .. "\n"):gmatch("(.-)\n") do
@@ -808,6 +835,7 @@ command.add(nil, {
       { "Workflows",              "agent:workflows" },
       { "Library (tools, memory)", "agent:library" },
       { "Swarm (multi-agent)",    "agent:swarm" },
+      { "Event handlers",         "agent:show-event-handlers" },
       { "Permission mode",        "agent:set-mode" },
       { "Per-tool permissions",   "agent:tool-permission" },
       { "Model",                  "agent:set-model" },

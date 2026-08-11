@@ -12,17 +12,11 @@ end
 
 
 local function reload_doc(doc)
-  local fp = io.open(doc.filename, "r")
-  local text = fp:read("*a")
-  fp:close()
-
-  local sel = { doc:get_selection() }
-  doc:remove(1, 1, math.huge, math.huge)
-  doc:insert(1, 1, text:gsub("\r", ""):gsub("\n$", ""))
-  doc:set_selection(table.unpack(sel))
-
+  -- Doc:reload replaces the line table outright. Removing the whole buffer and
+  -- inserting it again is two real edits, and it drags every decoration on the
+  -- document down to line 1 on its way past.
+  doc:reload()
   update_time(doc)
-  doc:clean()
   core.log_quiet("Auto-reloaded doc \"%s\"", doc.filename)
 end
 

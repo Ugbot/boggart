@@ -254,7 +254,19 @@ end
 function DocView:on_mouse_moved(x, y, ...)
   DocView.super.on_mouse_moved(self, x, y, ...)
 
+  -- Only repaint when the answer changed. The hit list is at most one entry
+  -- per visible line, so asking is cheap, but repainting on every pixel of
+  -- pointer movement is not.
+  local over = widgets.hit(self.mark_hits, x, y)
+  if over ~= self.mark_over then
+    self.mark_over = over
+    core.redraw = true
+  end
+  self.mark_hover = { x = x, y = y }
+
   if self:scrollbar_overlaps_point(x, y) or self.dragging_scrollbar then
+    self.cursor = "arrow"
+  elseif over then
     self.cursor = "arrow"
   else
     self.cursor = "ibeam"
@@ -476,6 +488,102 @@ function DocView:draw()
 
   self:draw_scrollbar()
 end
+
+
+-- ---------------------------------------------------------------------------
+-- Reviewing the agent's changes
+-- ---------------------------------------------------------------------------
+
+-- The span of the hunk a mark belongs to. Marks made one at a time have no
+-- group and are their own span.
+function DocView:mark_span(m)
+  if not m or not m.group then return m and m.line, m and m.line end
+  local first, last = m.line, m.line
+  for _, k in ipairs(marks.all(self.doc)) do
+    if k.group == m.group then
+      first, last = math.min(first, k.line), math.max(last, k.line)
+    end
+  end
+  return first, last
+end
+
+
+function DocView:select_mark(m)
+  local first, last = self:mark_span(m)
+  if not first then return end
+  last = math.min(last, #self.doc.lines)
+  self.doc:set_selection(first, 1, last, #self.doc.lines[last])
+  self:scroll_to_line(first, true)
+end
+
+
+function DocView:revert_mark(m)
+  local ok, err = marks.revert(self.doc, m)
+  if ok then
+    core.log("reverted the agent's change at line %d", m.line)
+  else
+    core.log("cannot revert: %s", err)
+  end
+  core.redraw = true
+end
+
+
+-- Walk to the next or previous annotation. `dir` is 1 or -1.
+function DocView:goto_mark(dir)
+  local line = self.doc:get_selection()
+  -- Spelled out rather than folded into an and/or: `next` returning nil would
+  -- otherwise fall through and search backwards instead.
+  local at
+  if dir > 0 then at = marks.next(self.doc, line)
+  else at = marks.prev(self.doc, line) end
+  if not at then
+    core.log("no agent changes in this file")
+    return
+  end
+  self.doc:set_selection(at, 1)
+  self:scroll_to_line(at, false, true)
+end
+
+
+-- These are registered here rather than in core/commands/doc.lua because they
+-- are the view's, not the document's: walking to the next annotation is a thing
+-- you do to a buffer you are looking at, and the drawing and the navigation
+-- should not be able to drift into two different files.
+command.add(DocView, {
+  ["marks:next-change"] = function() core.active_view:goto_mark(1) end,
+  ["marks:previous-change"] = function() core.active_view:goto_mark(-1) end,
+
+  ["marks:revert-change"] = function()
+    local dv = core.active_view
+    local line = dv.doc:get_selection()
+    -- Anywhere inside a hunk will do: find the mark under the caret, then the
+    -- head of its group, which is the one carrying the recorded text. Standing
+    -- on line four of a six-line change and being told there is nothing to
+    -- revert would be a lie.
+    local here = (marks.get(dv.doc, line) or {})[1]
+    local found
+    if here then
+      if here.data and here.data.revert then
+        found = here
+      elseif here.group then
+        for _, m in ipairs(marks.all(dv.doc)) do
+          if m.group == here.group and m.data and m.data.revert then found = m end
+        end
+      end
+    end
+    if not found then
+      core.log("no agent change to revert at line %d", line)
+      return
+    end
+    dv:revert_mark(found)
+  end,
+
+  ["marks:clear-changes"] = function()
+    local n = marks.clear(core.active_view.doc)
+    core.log("cleared %d agent mark%s", n, n == 1 and "" or "s")
+    core.redraw = true
+  end,
+})
 
 
 return DocView

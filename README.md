@@ -135,6 +135,73 @@ channel, OAuth, and exposing boggart *as* an MCP server are future work).
 
 Default model is `claude-opus-5` (adaptive thinking; no sampling params).
 
+## Events — autocommands for the agent
+
+Every other extension point in boggart runs one way round: the agent calls a
+tool, the agent draws a panel. `lua/events.lua` is the inversion, taken from
+Neovim's autocommands — Lua **registers interest** and the harness calls it:
+
+```lua
+local events = require("events")            -- or bog.events
+
+local h = events.on("tool:*", function(name, data)
+  events.notify(name .. " " .. data.name)   -- vim.notify, both worlds
+end, { desc = "trace tool calls", once = false })
+
+events.off(h)                               -- or events.off(h.id)
+events.list()                               -- every registration, in firing order
+events.emit("my:event", { ... })            -- your own events are fine too
+```
+
+Patterns are **globs, not Lua patterns**: `*` is the only metacharacter
+(`"tool:*"`, `"file:write"`, `"*"`). Handlers fire in registration order.
+
+| event | payload |
+| --- | --- |
+| `session:created` / `session:saved` / `session:resumed` | `{ id, count }` |
+| `turn:start` | `{ session, preview, chars }` — preview is the first 200 chars |
+| `turn:text` | `{ session, text }` — one streamed delta (hot) |
+| `turn:end` / `turn:error` | `{ session, stop }` / `{ session, message, kind }` |
+| `tool:before` / `tool:after` | `{ name, input }` / `{ name, error, bytes }` |
+| `tool:refused` | `{ name, reason }` — a permission gate stopped it |
+| `context:compacted` | `{ session, before, after }` (chars) |
+| `file:write` / `file:edit` | `{ path, bytes, lines }` |
+| `swarm:actor_started` / `swarm:actor_stopped` | `{ id }` / `{ id, reason }` |
+| `notify` | `{ msg, level }` |
+
+Payloads carry identifiers and sizes, never transcripts or file contents: an
+event nobody can afford to subscribe to is an event nobody subscribes to.
+`events.EVENTS` is the same table, in the binary.
+
+**Registering from your own Lua**: drop a file in `~/.boggart/lua/events/`
+(*not* `~/.boggart/lua/events.lua` — that path is the overlay copy of the module
+itself). Each file is called with the module as its only argument and is re-read
+on every `reload`:
+
+```lua
+-- ~/.boggart/lua/events/audit.lua
+local events = ...
+events.on("file:*", function(ev, d)
+  bog.store.kv_set("last_" .. ev, d.path)
+end, { desc = "remember the last file touched" })
+```
+
+**Registering from the agent**: the `on_event` tool is `define_tool`'s mirror
+image (`op = on | off | list`). Those handlers are **session-only** and
+deliberately so — a persisted tool waits to be called in a conversation someone
+is watching, while a persisted handler would run on every future start, on every
+matching event, with no approval gate to put in front of it. Durable reactions
+go through a file the user can see, which the agent may write with `write`.
+
+**Isolation**: each handler runs in its own coroutine. Throwing affects neither
+the emitter nor the other handlers (it is reported through `notify`, and five
+failures unsubscribe it); yielding — `sys.exec` under the swarm scheduler —
+gets the handler dropped rather than allowed to suspend the agent's turn. A
+handler that loops forever still wedges the agent: bounding that needs a debug
+hook, and `tools.lua` already uses the one hook slot for generated tool bodies.
+Emitting with nothing subscribed costs one comparison, so the hot events
+(`turn:text`) are free when nobody is listening.
+
 ## Layout
 
 ```
@@ -150,7 +217,8 @@ studio/         boggart-studio, the desktop app: an SDL window whose main
 lua/            the golden default harness, baked into the binary:
   boot.lua        overlay loader, wiring, hot-reload, sessions, REPL, dispatch
   api.lua         Anthropic client: shared SSE decoder + sync & async transports + turn loop
-  tools.lua       read/write/edit/bash/list + define_tool/reload + sql/kv + memory
+  tools.lua       read/write/edit/bash/list + define_tool/on_event/reload + sql/kv + memory
+  events.lua      autocommands: on/off/emit/notify, glob patterns, ~/.boggart/lua/events/
   store.lua       SQLite store: memory(FTS5), sessions/threads, journal, kv, meta
   memory.lua      durable memory (backed by store) + prompt index
   prompt.lua      system prompts (single-agent discipline + swarm coordinator)

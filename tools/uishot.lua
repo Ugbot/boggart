@@ -148,6 +148,12 @@ core.add_thread(function()
       "sidebar width is " .. tostring(studio.sidebar.size.x) .. " (collapsed)")
     check_hits("representative")
 
+    -- Focusing the conversation must also bring its tab forward. Taking only
+    -- the keyboard leaves you typing into a panel the window is not showing.
+    core.set_active_view(studio.open_agent())
+    check(core.root_view:get_primary_node().active_view == studio.agent_view(),
+      "open_agent() focused the panel without bringing its tab forward")
+
     -- Every button the panel offers, clicked. A command that errors takes the
     -- window down in front of a user; here it is a line of output. The command
     -- view has to be dismissed between clicks, or the second click lands in it.

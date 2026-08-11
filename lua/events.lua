@@ -234,8 +234,11 @@ function M.emit(name, data)
 
   state.depth = state.depth + 1
   local fired = 0
-  -- `hs` is the list as it stood at entry, so a handler that subscribes or
-  -- unsubscribes during dispatch changes the next emit, not this one.
+  -- `hs` is the list as it stood at entry, so a handler that *subscribes*
+  -- during dispatch is called from the next emit rather than this one. An
+  -- unsubscribe is honoured immediately (the `dead` check): after off()
+  -- returns, the handler does not run again, which is the guarantee anything
+  -- tearing itself down actually needs.
   for i = 1, n do
     local h = hs[i]
     if not h.dead then
