@@ -108,6 +108,99 @@ function AgentView:close_stream()
   if last then last.open = nil end
 end
 
+-- @-mentions: "explain @src/lauth.c" attaches the file.
+--
+-- Expanded here, at the keystroke, rather than inside submit(): submit() is
+-- also how studio sends a selection, and that payload is already a fenced
+-- block which may legitimately contain an @. Attaching inline costs a turn of
+-- context but saves a round trip through the read tool, which is the trade
+-- every other coding agent makes for the file you have explicitly named.
+local MENTION_MAX = 64 * 1024
+
+function AgentView:expand_mentions(text)
+  local seen, attach = {}, {}
+  for path in text:gmatch("@([%w%._%-/~]+)") do
+    if not seen[path] then
+      seen[path] = true
+      local real = path:gsub("^~", sys.home())
+      -- Relative paths need no base: lite chdirs to the project directory at
+      -- startup, so the process cwd is already the project root.
+      local body = bog.util.read_file(real)
+      if body then
+        local note = ""
+        if #body > MENTION_MAX then
+          body = body:sub(1, MENTION_MAX)
+          note = string.format("\n... (truncated at %d KB)", MENTION_MAX // 1024)
+        end
+        attach[#attach + 1] = string.format("--- %s ---\n%s%s", path, body, note)
+        self:push("system", string.format("attached %s (%d bytes)", path, #body))
+      else
+        -- Not silently: an @ that did not resolve is nearly always a typo, and
+        -- the model answering confidently about a file it never saw is worse
+        -- than being told the path was wrong.
+        self:push("error", "no such file: " .. path)
+      end
+    end
+  end
+  if #attach == 0 then return text end
+  return text .. "\n\n" .. table.concat(attach, "\n\n")
+end
+
+-- Repaint the panel from a stored transcript.
+--
+-- Resuming a session restores the messages the model will see; without this
+-- you get a panel that claims to have resumed and shows nothing, which is a
+-- worse experience than not resuming at all. Tool results are truncated
+-- because the point of scrollback is to remind you what happened, not to
+-- replay a 200 KB file read.
+local RESULT_PREVIEW = 400
+
+local function brief(v)
+  local s = type(v) == "table" and (v.command or v.path or v.pattern or v.file_path)
+            or tostring(v)
+  s = tostring(s or ""):gsub("%s+", " ")
+  if #s > 120 then s = s:sub(1, 120) .. "..." end
+  return s
+end
+
+function AgentView:repaint(messages)
+  self.entries = {}
+  for _, m in ipairs(messages or {}) do
+    local c = m.content
+    if type(c) == "string" then
+      self:push(m.role == "user" and "user" or "assistant", c)
+    elseif type(c) == "table" then
+      for _, b in ipairs(c) do
+        if type(b) ~= "table" then
+          -- nothing to render
+        elseif b.type == "text" then
+          if (b.text or ""):match("%S") then
+            self:push(m.role == "user" and "user" or "assistant", b.text)
+          end
+        elseif b.type == "tool_use" then
+          self:push("tool", (b.name or "?") .. " " .. brief(b.input), b.name)
+        elseif b.type == "tool_result" then
+          local text = b.content
+          if type(text) == "table" then
+            local parts = {}
+            for _, blk in ipairs(text) do
+              parts[#parts + 1] = type(blk) == "table" and (blk.text or "") or tostring(blk)
+            end
+            text = table.concat(parts, "\n")
+          end
+          text = tostring(text or "")
+          if #text > RESULT_PREVIEW then
+            text = text:sub(1, RESULT_PREVIEW)
+              .. string.format("\n... (%d more bytes)", #text - RESULT_PREVIEW)
+          end
+          if text:match("%S") then self:push("system", text) end
+        end
+      end
+    end
+  end
+  core.redraw = true
+end
+
 -- ---------------------------------------------------------------------------
 -- Approval
 -- ---------------------------------------------------------------------------
@@ -307,7 +400,8 @@ function AgentView:on_key_pressed(key)
   if key == "return" then
     local t = self:input_text()
     self:set_input("")
-    self:submit((t:gsub("^%s+", ""):gsub("%s+$", "")))
+    t = t:gsub("^%s+", ""):gsub("%s+$", "")
+    self:submit(self:expand_mentions(t))
     return true
 
   elseif key == "shift+return" then

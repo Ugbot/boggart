@@ -268,7 +268,7 @@ command.add(nil, {
       if not id then return end
       if bog.resume_session(id) then
         local v = studio.open_agent()
-        v.entries = {}
+        v:repaint(bog.session.messages)
         v:push("system", string.format("resumed session %d (%d messages, model %s)",
           id, #bog.session.messages, bog.session.model))
       end
