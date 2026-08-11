@@ -64,6 +64,24 @@ table.unpack = table.unpack or rawget(_G, "unpack")
 
 Guarded by `tests/ltui.lua`.
 
+## 4. `lua/ltui/program.lua` — a hard 400 ms busy-wait on Esc
+
+After a bare Esc, ltui waits up to 400 ms in 50 ms `napms` steps to decide
+whether it was really the start of an Alt-sequence. Upstream that only delays
+the app itself. In boggart the event pump is driven from `lua/sched.lua`'s hook,
+so that loop blocks **every agent and the HTTP pump** for its duration — a
+single keypress stalling the swarm.
+
+Made configurable, default unchanged; `lua/dash.lua` sets 20 ms, which is still
+far longer than a real Alt-sequence takes to arrive in one terminal read. The
+sleep step is now `min(50, esc_delay)` so a short budget is not rounded up to a
+single 50 ms nap.
+
+```lua
+-    local esc_delay = 400
++    local esc_delay = self._esc_delay or 400
+```
+
 ## Not patched, but worth knowing
 
 **ltui monkey-patches the stdlib.** `base/string.lua`, `base/table.lua` and

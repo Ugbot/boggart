@@ -50,7 +50,7 @@ Two references shaped this: antirez's **ds4** agent harness (the loop
 ```sh
 cmake -B build -G Ninja     # configure
 cmake --build build         # → ./boggart (one binary; libcurl is the only dynamic dep)
-ctest --test-dir build      # nine Lua suites, each against a throwaway HOME
+ctest --test-dir build      # eleven Lua suites, each against a throwaway HOME
 ```
 
 Requires CMake ≥ 3.20, Ninja, a C compiler, and libcurl (present in the macOS
@@ -140,7 +140,8 @@ Default model is `claude-opus-5` (adaptive thinking; no sampling params).
 src/            C core: boggart.c (main), lhttp.c (curl: blocking + async multi),
                 lsys.c (os), ldb.c (SQLite), lswarm.c (bus+journal),
                 lmcp.c (MCP client: stdio + Streamable HTTP), embedded.c (generated)
-src/vendor/     vendored Lua 5.4 + linenoise + sqlite (FTS5) + cJSON (for MCP)
+src/vendor/     vendored Lua 5.4 + sqlite (FTS5) + cJSON + libuv + luv
+                + ltui/PDCurses + isocline
 lua/            the golden default harness, baked into the binary:
   boot.lua        overlay loader, wiring, hot-reload, sessions, REPL, dispatch
   api.lua         Anthropic client: shared SSE decoder + sync & async transports + turn loop

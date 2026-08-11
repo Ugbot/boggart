@@ -667,6 +667,11 @@ function M._start(root)
   local ltui = M.ltui
   M.App = M.App or build_app(ltui)
   M.app = M.App:new({})
+  -- ltui busy-waits up to 400ms after a bare Esc, distinguishing it from an
+  -- Alt-sequence. That loop runs inside our scheduler hook, so for that whole
+  -- time no agent is resumed and no HTTP is pumped. 20ms is still ample to
+  -- catch a real Alt-sequence, which arrives in one terminal read.
+  M.app._esc_delay = 20
   if M.app:width() < M.MIN_COLS or M.app:height() < M.MIN_LINES then
     local w, h = M.app:width(), M.app:height()
     M.app:exit(); M.app = nil

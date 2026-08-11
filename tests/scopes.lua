@@ -127,6 +127,34 @@ for _, r in ipairs(bog.store.tool_stats(root)) do by3[r.name] = r end
 eq(by3["p_tool"].calls, before, "re-defining a tool keeps its call history")
 eq(T.run("p_tool", {}), "P2", "...but the new body takes effect")
 
+-- ---- staleness (§18): procedural memory that can notice it may be wrong ----
+-- A tool encoding "metadata lives in this file, in this shape" can quietly stop
+-- being true. The repository moving is the cheapest signal that it might have,
+-- which is what makes this memory verifiable rather than stale prose. It is a
+-- hint, not a verdict -- most commits invalidate nothing.
+eq(T.stale_note("p_tool", T.registry["p_tool"]), nil, "no note while HEAD is unchanged")
+ok(T.report({}):find(" ok ", 1, true) ~= nil, "report marks a current tool ok")
+
+local real_rev = T.current_rev
+bog.db:run("UPDATE tools SET git_rev='deadbee' WHERE scope='project'")
+T.current_rev = function() return "cafe123" end
+local note = T.stale_note("p_tool", T.registry["p_tool"])
+ok(note ~= nil, "a moved HEAD produces a note")
+ok(note and note:find("deadbee", 1, true) and note:find("cafe123", 1, true),
+   "the note names both revisions")
+ok(T.report({}):find("stale", 1, true) ~= nil, "report marks it stale")
+eq(T.stale_note("g_tool", T.registry["g_tool"]), nil,
+   "a global tool is never stale -- it is not tied to a repository")
+
+-- the hint rides on failures only: a working tool should not be second-guessed
+T.run("define_tool", { name = "boom", description = "d",
+  lua = "return 'Tool error: [runtime_error] nope'" })
+ok(T.run("boom", {}):find("may have moved", 1, true) ~= nil,
+   "a failing project tool carries the staleness hint")
+ok(not T.run("p_tool", {}):find("may have moved", 1, true),
+   "a succeeding tool does not")
+T.current_rev = real_rev
+
 -- ---- the report surfaces all of it ----
 local rep = T.report({})
 ok(rep:find("p_tool", 1, true) ~= nil, "report lists model-defined tools")

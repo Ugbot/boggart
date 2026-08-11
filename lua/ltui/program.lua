@@ -381,7 +381,10 @@ function program:_input_key()
     -- Alt-letter sequences. useful when we can't generate Alt-letter sequences
     -- directly. sometimes this pause may be longer than expected since the
     -- curses driver may also pause waiting for another key (ncurses-5.3)
-    local esc_delay = 400
+    -- boggart: configurable rather than a hard 400. In boggart the event pump
+    -- is driven from lua/sched.lua's hook, so this busy-wait blocks every
+    -- other agent and the HTTP pump for its duration. Default unchanged.
+    local esc_delay = self._esc_delay or 400
 
     -- get key map
     local key_map = self:_key_map()
@@ -404,9 +407,11 @@ function program:_input_key()
                     break
                 end
 
-                -- wait some time, 50ms
-                curses.napms(50)
-                t = t + 50
+                -- boggart: step in units of the delay when it is short, so a
+                -- 20ms budget is not rounded up to a 50ms sleep.
+                local step = math.min(50, esc_delay)
+                curses.napms(step)
+                t = t + step
             end
 
             -- nothing was typed... return Esc

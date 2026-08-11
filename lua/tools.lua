@@ -247,6 +247,38 @@ local function git_rev()
   return rev
 end
 
+-- Current HEAD, cached per process: this is consulted whenever a project tool
+-- fails, and shelling out to git on every failure would be silly.
+local rev_cache, rev_done = nil, false
+function M.current_rev()
+  if not rev_done then rev_done = true; rev_cache = git_rev() end
+  return rev_cache
+end
+
+-- Was this tool learned against a different revision of the repository?
+--
+-- This is what makes procedural memory *verifiable* rather than stale prose
+-- (paper §18). A tool that encodes "command metadata lives in this file, in
+-- this shape" can quietly stop being true, and the repository moving is the
+-- cheapest available signal that it might have. It is a hint, not a verdict --
+-- most commits do not invalidate most tools -- so it is only surfaced where it
+-- is actually useful: next to a failure, and in the report.
+function M.stale_note(name, d)
+  if not d or d.scope ~= "project" then return nil end
+  if not bog.db or not bog.store or not bog.store.tool_stats then return nil end
+  local cur = M.current_rev()
+  if not cur then return nil end
+  local okq, rows = pcall(bog.store.tool_stats, d.project or "")
+  if not okq then return nil end
+  for _, r in ipairs(rows) do
+    if r.name == name and r.scope == "project" and r.git_rev and r.git_rev ~= cur then
+      return string.format("this tool was written against %s and HEAD is now %s; "
+        .. "the code it assumes may have moved", r.git_rev, cur)
+    end
+  end
+  return nil
+end
+
 -- Render a standalone .lua file that reconstructs a tool def when loaded.
 -- A persisted tool file is pure *data*: description, schema, and the body as a
 -- string. It deliberately does not compile anything itself.
@@ -539,10 +571,18 @@ function M.run(name, input)
     -- Usage accounting (paper §24): calls, failures and cumulative time are
     -- what turn "did this tool pay for itself" from a rhetorical question into
     -- an answerable one.
+    local failed = type(res) == "string" and res:sub(1, 11) == "Tool error:"
     if bog.db and bog.store and bog.store.tool_used then
-      local failed = type(res) == "string" and res:sub(1, 11) == "Tool error:"
       pcall(bog.store.tool_used, name, d.scope or "global", d.project or "",
             (os.clock() - t0) * 1000, failed)
+    end
+    -- A failure is the moment the staleness hint is worth spending tokens on:
+    -- it tells the model to suspect the *procedure* rather than only its own
+    -- invocation, which is the difference between fixing the tool and giving up
+    -- on the abstraction.
+    if failed then
+      local okn, note = pcall(M.stale_note, name, d)
+      if okn and note then res = res .. "\n(note: " .. note .. ")" end
     end
   else
     local ok, r = pcall(d.run, input or {})
@@ -636,15 +676,22 @@ local function tool_tools(a)
     out[#out + 1] = "no model-defined tools yet"
   else
     out[#out + 1] = ""
-    out[#out + 1] = string.format("%-22s %-8s %6s %6s %9s  %s",
-      "name", "scope", "calls", "fails", "avg ms", "description")
+    local cur = M.current_rev()
+    out[#out + 1] = string.format("%-22s %-8s %6s %6s %9s %-5s  %s",
+      "name", "scope", "calls", "fails", "avg ms", "rev", "description")
     for _, n in ipairs(learned) do
       local d, st = M.registry[n], stats[n] or {}
       local calls = st.calls or 0
-      out[#out + 1] = string.format("%-22s %-8s %6d %6d %9s  %s",
+      -- "stale" only means the repository has moved since the tool was
+      -- written, which is a prompt to re-check it, not proof it is wrong.
+      local rev = "-"
+      if d.scope == "project" and st.git_rev then
+        rev = (cur and st.git_rev ~= cur) and "stale" or "ok"
+      end
+      out[#out + 1] = string.format("%-22s %-8s %6d %6d %9s %-5s  %s",
         n, d.scope or "?", calls, st.failures or 0,
         calls > 0 and string.format("%.1f", (st.total_ms or 0) / calls) or "-",
-        (d.description or ""):sub(1, 60))
+        rev, (d.description or ""):sub(1, 60))
     end
   end
   if a and a.name and M.registry[a.name] and M.registry[a.name].body then
