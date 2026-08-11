@@ -347,10 +347,65 @@ endif()
 # too -- add a command, bind a key, write a syntax mode for the file it is
 # looking at. That is the capability neither Goose nor Codex can have.
 #
-# Optional: needs SDL2. Configure with -DBOGGART_BUILD_APP=OFF to skip.
-option(BOGGART_BUILD_APP "Build the boggart-studio desktop app (needs SDL2)" ON)
+# Optional: configure with -DBOGGART_BUILD_APP=OFF to skip.
+option(BOGGART_BUILD_APP "Build the boggart-studio desktop app" ON)
 
-if(BOGGART_BUILD_APP)
+# ---- SDL2 -------------------------------------------------------------------
+# Built from source and linked statically, so boggart-studio is genuinely one
+# file. Same reasoning and the same mechanism as the Windows libcurl above:
+# FetchContent, pinned by release tarball + SHA256, everything optional off.
+#
+# The system package cannot do this job on macOS, and not for a packaging
+# reason. Homebrew's `sdl2` is `sdl2-compat`, a shim whose libSDL2 dlopens
+# SDL3 from an absolute Cellar path -- verified with DYLD_PRINT_LIBRARIES. So a
+# binary linked against it reaches into /opt/homebrew at run time even after
+# install_name_tool has been pointed at a bundled copy, and it is not SDL2 that
+# ends up running either. Building the real thing is the only way to know what
+# is in the binary.
+#
+# Cost: two or three minutes on a cold build, cached afterwards, and a version
+# pin someone has to bump. In exchange, the studio has no runtime dependency on
+# SDL at all -- no `brew install sdl2`, no SDL2.dll beside the exe, no
+# libsdl2-2.0-0 package -- on any platform.
+#
+# -DBOGGART_SDL_FROM_SOURCE=OFF falls back to whatever SDL2 the system has,
+# which is the right choice for a distribution package: a distro wants to own
+# and patch its own SDL, and it is not shipping our binary anyway.
+option(BOGGART_SDL_FROM_SOURCE
+  "Build SDL2 from source and link it statically (self-contained binary)" ON)
+
+if(BOGGART_BUILD_APP AND BOGGART_SDL_FROM_SOURCE)
+  set(BOGGART_SDL_VERSION 2.32.10)
+  set(BOGGART_SDL_SHA256 5f5993c530f084535c65a6879e9b26ad441169b3e25d789d83287040a9ca5165)
+
+  set(SDL_SHARED       OFF CACHE BOOL "" FORCE)
+  set(SDL_STATIC       ON  CACHE BOOL "" FORCE)
+  set(SDL_TEST         OFF CACHE BOOL "" FORCE)
+  set(SDL_TESTS        OFF CACHE BOOL "" FORCE)
+  set(SDL2_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
+  set(SDL2_DISABLE_UNINSTALL ON CACHE BOOL "" FORCE)
+  # The studio draws into a window surface and reads keyboard, mouse and
+  # window events. It has never opened an audio device, a joystick or a sensor,
+  # so those subsystems are dead weight in the binary and dead code paths in a
+  # threat model.
+  set(SDL_AUDIO        OFF CACHE BOOL "" FORCE)
+  set(SDL_HAPTIC       OFF CACHE BOOL "" FORCE)
+  set(SDL_JOYSTICK     OFF CACHE BOOL "" FORCE)
+  set(SDL_SENSOR       OFF CACHE BOOL "" FORCE)
+  set(SDL_POWER        OFF CACHE BOOL "" FORCE)
+
+  include(FetchContent)
+  FetchContent_Declare(sdl2
+    URL https://github.com/libsdl-org/SDL/releases/download/release-${BOGGART_SDL_VERSION}/SDL2-${BOGGART_SDL_VERSION}.tar.gz
+    URL_HASH SHA256=${BOGGART_SDL_SHA256})
+  FetchContent_MakeAvailable(sdl2)
+
+  # SDL2::SDL2-static carries its own interface include dirs and the platform
+  # libraries a static build needs (the macOS frameworks, dl/pthread/m on
+  # Linux, the Win32 import libraries), so nothing below has to know them.
+  set(SDL2_FOUND TRUE)
+  set(BOGGART_SDL_TARGET SDL2::SDL2-static)
+elseif(BOGGART_BUILD_APP)
   find_package(SDL2 QUIET)
   if(NOT SDL2_FOUND)
     find_package(PkgConfig QUIET)
@@ -408,7 +463,24 @@ if(BOGGART_BUILD_APP AND SDL2_FOUND)
   target_link_libraries(boggart-studio PRIVATE
     boggart_warnings
     lua_vendor sqlite_vendor cjson_vendor luv_lua uv_a isocline_vendor CURL::libcurl)
-  if(SDL2_LIBRARIES)
+  # Three spellings, because SDL2 arrives three ways: our own static build sets
+  # BOGGART_SDL_TARGET, a system sdl2-config.cmake gives the SDL2::SDL2 target,
+  # and pkg-config gives bare library names and directories.
+  if(BOGGART_SDL_TARGET)
+    target_link_libraries(boggart-studio PRIVATE ${BOGGART_SDL_TARGET})
+    # SDL2's static target does not declare every framework it uses. Its CMake
+    # adds them per subsystem, but SDL_cocoamodes.m (display modes -- not
+    # optional) and SDL_hidapi.c both reach into IOKit, and hidapi is compiled
+    # even with joystick and sensor off. Undeclared, not unused: the shared
+    # build gets away with it because the dylib records its own dependencies.
+    if(APPLE)
+      target_link_libraries(boggart-studio PRIVATE
+        "-framework IOKit" "-framework ForceFeedback" "-framework CoreHaptics"
+        "-framework GameController" "-framework AudioToolbox"
+        "-framework CoreAudio" "-framework AVFoundation" "-framework CoreMedia"
+        "-framework UniformTypeIdentifiers")
+    endif()
+  elseif(SDL2_LIBRARIES)
     target_link_libraries(boggart-studio PRIVATE ${SDL2_LIBRARIES})
     target_link_directories(boggart-studio PRIVATE ${SDL2_LIBRARY_DIRS})
   else()

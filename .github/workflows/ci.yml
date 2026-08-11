@@ -8,8 +8,9 @@ name: ci
 # green since src/lsys.c and src/lmcp.c finished moving onto src/sysproc.h;
 # fail-fast is off so one red platform does not hide the state of the others.
 #
-# SDL2 is installed on every platform so boggart-studio is actually built.
-# Without it CMakeLists.txt prints "SDL2 not found -- skipping boggart-studio"
+# boggart-studio is actually built on every platform here. It was not, for most
+# of this project's life: nothing installed SDL2, so CMakeLists.txt printed
+# "SDL2 not found -- skipping boggart-studio"
 # and carries on green, which meant the whole studio -- renderer, font
 # fallback, the SDL event loop -- compiled nowhere but a developer's Mac.
 # `ninja ui-check` and `ui-bench` still cannot run here: they need a window
@@ -54,38 +55,29 @@ jobs:
       - name: CMake and Ninja
         uses: lukka/get-cmake@latest
 
-      # Linux deps: libcurl is found with find_package(CURL REQUIRED), ncurses
-      # with find_package(Curses REQUIRED) + CURSES_NEED_NCURSES, and SDL2 with
-      # find_package(SDL2) against the sdl2-config.cmake that libsdl2-dev
-      # installs. libncurses-dev is the modern name and ships the wide
-      # (ncursesw) libraries too; libncursesw5-dev is now only a transitional
-      # alias.
+      # SDL2 is no longer installed anywhere: CMakeLists.txt fetches and builds
+      # it from source and links it statically, so what CI compiles is what a
+      # release ships. What Linux still needs is the X11 and Wayland *headers*
+      # SDL compiles its video backends against. Without them SDL configures
+      # cleanly, builds a dummy video driver, and produces a binary that cannot
+      # open a window -- a failure that appears at run time on a user's machine
+      # rather than here, which is the worst place for it.
+      #
+      # libcurl is found with find_package(CURL REQUIRED) and ncurses with
+      # find_package(Curses REQUIRED) + CURSES_NEED_NCURSES. libncurses-dev is
+      # the modern name and ships the wide (ncursesw) libraries too.
       - name: Install deps (linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libncurses-dev libsdl2-dev
+            libcurl4-openssl-dev libncurses-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
+            libxfixes-dev libxss-dev libxkbcommon-dev libwayland-dev \
+            wayland-protocols libegl1-mesa-dev
 
-      # Homebrew's `sdl2` is really sdl2-compat, a shim over SDL3. That is fine
-      # for compiling and running here; it is only a problem for redistributing
-      # a binary, which release.yml documents.
-      - name: Install deps (macos)
-        if: runner.os == 'macOS'
-        run: brew install sdl2
-
-      # The official SDL2 development package ships cmake/, so pointing
-      # SDL2_DIR at it is all find_package(SDL2) needs. There is no system SDL2
-      # on Windows and no reliable package-manager one.
-      - name: Install deps (windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ver = '2.32.10'
-          $url = "https://github.com/libsdl-org/SDL/releases/download/release-$ver/SDL2-devel-$ver-VC.zip"
-          Invoke-WebRequest -Uri $url -OutFile sdl2.zip
-          Expand-Archive sdl2.zip -DestinationPath $env:RUNNER_TEMP\sdl2
-          "SDL2_DIR=$env:RUNNER_TEMP\sdl2\SDL2-$ver\cmake" | Out-File -FilePath $env:GITHUB_ENV -Append
+      # macOS and Windows need nothing: SDL's backends there are system
+      # frameworks and Win32 APIs whose headers ship with the SDK.
 
       # Puts cl.exe, the CRT/SDK headers and the linker on PATH for every
       # later step. Without this, Ninja has no compiler on windows-latest --

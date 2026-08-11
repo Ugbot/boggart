@@ -20,7 +20,8 @@ name: release
 #   studio/data (sixty-odd Lua files and three fonts) is baked into
 #   boggart-studio by tools/bake_assets.cmake, so it has no tree to find.
 #
-#   SDL2 is built from source as a static library below and linked in. The
+#   SDL2 is built from source as a static library by CMakeLists.txt itself and
+#   linked in, so this workflow installs nothing to get it. The
 #   package-manager route cannot give us this: Homebrew's `sdl2` is really
 #   sdl2-compat, a shim that dlopen()s SDL3 from an absolute Cellar path, so a
 #   binary linked against it fails on any machine without Homebrew.
@@ -77,7 +78,7 @@ jobs:
         uses: lukka/get-cmake@latest
 
       # Linux still needs the C-side dependencies that are not vendored.
-      # SDL2 is not among them any more -- it is built from source below.
+      # SDL2 is not among them any more -- CMakeLists.txt fetches and builds it.
       - name: Install deps (linux)
         if: runner.os == 'Linux'
         run: |
@@ -95,42 +96,12 @@ jobs:
         with:
           arch: x64
 
-      # SDL2 as a static library, which is what makes boggart-studio one file.
-      # CMakeLists.txt needs no change for this: find_package(SDL2 QUIET) picks
-      # up the SDL2Config.cmake installed here through CMAKE_PREFIX_PATH, and a
-      # static-only install exports a static target through the same name.
-      #
-      # Ninja and the compiler are already on PATH for every platform by now --
-      # get-cmake above, and msvc-dev-cmd for Windows -- so one bash step builds
-      # it everywhere. Windows runners have bash via Git for Windows.
-      - name: Build SDL2 (static)
-        shell: bash
-        run: |
-          set -eu
-          ver=2.32.10
-          curl -sSLo sdl2.tar.gz \
-            "https://github.com/libsdl-org/SDL/releases/download/release-$ver/SDL2-$ver.tar.gz"
-          tar xzf sdl2.tar.gz
-          # A native path, not a bash one: CMake on Windows does not understand
-          # /d/a/boggart/... and would write the prefix somewhere unfindable.
-          case "${RUNNER_OS}" in
-            Windows) prefix=$(pwd -W)/sdl2-prefix ;;
-            *)       prefix=$PWD/sdl2-prefix ;;
-          esac
-          cmake -S "SDL2-$ver" -B sdl2-build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TEST=OFF \
-            -DCMAKE_INSTALL_PREFIX="$prefix"
-          cmake --build sdl2-build
-          cmake --install sdl2-build
-          echo "SDL2_PREFIX=$prefix" >> "$GITHUB_ENV"
-
       # ---- build -------------------------------------------------------------
       # Release, not the project's RelWithDebInfo default: this is the build
       # people download, so it should be the small one. ci.yml still exercises
       # the default.
       - name: Configure
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$SDL2_PREFIX"
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
         shell: bash
 
       - name: Build
