@@ -376,8 +376,16 @@ ok(okdoc, "doc loads with the mark hooks in it"
   .. (okdoc and "" or ("  -- " .. tostring(Doc))))
 
 if okm and okdoc then
+  -- Most of the paths below are only keys into the marks store, but the reload
+  -- case at the end genuinely opens its file, and there is no /tmp on Windows:
+  -- io.open would return nil, the `if fp then` would skip the block, and the
+  -- suite would go green having tested nothing. sys.tmpdir() is the platform's
+  -- own answer (uv_os_tmpdir), which is the same reason nothing here asks what
+  -- OS it is on.
+  local TMP = sys.tmpdir()
+
   -- ---- the store ---------------------------------------------------------
-  local T = "/tmp/marks-store.lua"
+  local T = TMP .. "/marks-store.lua"
   marks.clear(T)
   local id = marks.set(T, 10, { kind = "added", text = "agent +1 -0" })
   ok(marks.get(T, 10) and marks.get(T, 10)[1].id == id,
@@ -403,7 +411,7 @@ if okm and okdoc then
   local function docof(text)
     n = n + 1
     local d = Doc()
-    d.filename = "/tmp/marks-track-" .. n .. ".lua"
+    d.filename = TMP .. "/marks-track-" .. n .. ".lua"
     d:insert(1, 1, text)
     return d
   end
@@ -448,7 +456,7 @@ if okm and okdoc then
   ok(marks.all(d3)[1].line == 3, "...and undoing it puts the mark back")
 
   -- ---- from a diff -------------------------------------------------------
-  local F = "/tmp/marks-diff.lua"
+  local F = TMP .. "/marks-diff.lua"
   local old, new = "a\nb\nc\nd\n", "a\nB1\nB2\nc\nd\n"
   marks.clear(F)
   local ids = marks.from_edit(F, old, new, { path = F })
@@ -464,7 +472,7 @@ if okm and okdoc then
 
   -- A pure deletion has no line of its own to sit on, so it marks the line
   -- that closed over the gap.
-  local G = "/tmp/marks-del.lua"
+  local G = TMP .. "/marks-del.lua"
   marks.clear(G)
   marks.from_edit(G, "a\nb\nc\n", "a\nc\n")
   ok(marks.count(G) == 1 and marks.get(G, 2) and marks.get(G, 2)[1].kind == "removed",
@@ -472,7 +480,7 @@ if okm and okdoc then
 
   -- A second agent write has to move the first one's marks: nothing else can,
   -- because that edit never passes through the buffer.
-  local H = "/tmp/marks-two.lua"
+  local H = TMP .. "/marks-two.lua"
   marks.clear(H)
   marks.from_edit(H, "1\n2\n3\n4\n5\n6\n", "1\n2\n3\n4\nFIVE\n6\n")   -- line 5
   marks.from_edit(H, "1\n2\n3\n4\nFIVE\n6\n", "1\nx\ny\n2\n3\n4\nFIVE\n6\n")
@@ -509,7 +517,7 @@ if okm and okdoc then
   -- Doc:reload replaces the line table outright. If it ever goes back to
   -- remove-everything-then-insert-everything, every mark in the file lands on
   -- line 1 and this catches it.
-  local path = "/tmp/marks-reload.lua"
+  local path = TMP .. "/marks-reload.lua"
   local fp = io.open(path, "wb")
   if fp then
     fp:write("one\ntwo\nthree\nfour\n")

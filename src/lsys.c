@@ -4,6 +4,8 @@
  *   sys.mkdir_p(path)            -> true                  | nil, err
  *   sys.stat(path)               -> "file" | "dir" | nil
  *   sys.home()                   -> $HOME (or ".")
+ *   sys.paths()                  -> { data, source, home, legacy } | nil, err
+ *   sys.diskfree(path)           -> free_bytes, total_bytes | nil, err
  *   sys.exec                     -- installed by boot.lua from lua/proc.lua
  *   sys.readline(prompt)         -> line:string | nil (EOF/^D)
  *   sys.add_history(line)        -> (void)
@@ -14,6 +16,7 @@
  * the Lua standard library, so we do not re-bind them.
  */
 #include <sys/stat.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -25,6 +28,7 @@
 #include "isocline.h"
 
 #include "utf8width.h"
+#include "bogpaths.h"
 
 /* MSVC's <sys/stat.h> defines S_IFDIR/S_IFREG but not the S_IS* predicates,
  * so test the format bits directly. uv_stat_t fills st_mode portably. */
@@ -111,6 +115,172 @@ static int mkdir_p(const char *path) {
   return mkdir_one(tmp);
 }
 
+int boggart_mkdir_p(const char *path) { return mkdir_p(path); }
+
+/* ---- where boggart's data lives (see bogpaths.h) --------------------------
+ *
+ * The order below is the whole policy:
+ *
+ *   1. $BOGGART_HOME, verbatim. One environment variable moves everything --
+ *      store, credentials, overlay Lua, history -- which is what a second
+ *      install, a test, or a machine with a shared /home actually needs.
+ *
+ *   2. An existing ~/.boggart. Anyone who has run boggart before has one, and
+ *      relocating a user's sessions and memory behind their back to satisfy a
+ *      packaging convention is not a fix, it is data loss with good manners.
+ *      Only a *directory* counts: if ~/.boggart is a regular file the platform
+ *      rule applies, and on the platforms where that rule resolves back to
+ *      ~/.boggart the caller reports the file for what it is.
+ *
+ *   3. The platform location, for a genuinely new install:
+ *
+ *      Windows  %LOCALAPPDATA%\boggart. Not %APPDATA%: that roams, and a
+ *               multi-megabyte SQLite store with a WAL sidecar is precisely
+ *               what a roaming profile must not contain.
+ *
+ *      Linux    $XDG_DATA_HOME/boggart, default ~/.local/share/boggart. State
+ *               that survives and matters, which is data rather than cache or
+ *               config, and the desktop convention is well established.
+ *
+ *      macOS    ~/.boggart, and deliberately not ~/Library/Application Support.
+ *               Application Support is for data a GUI app owns and the user
+ *               never opens; this directory is the opposite of that. Its
+ *               contents are the agent's own editable source (lua/), the
+ *               tools it has written for itself, and a credential file --
+ *               things people grep, diff, back up, and put under git. A path
+ *               with a space in it that Finder hides is hostile to every one
+ *               of those. Terminal-first tools land in $HOME on macOS (~/.ssh,
+ *               ~/.aws, ~/.cargo, ~/.claude) because that is where their users
+ *               look, and boggart-studio is a front end onto the same data,
+ *               not a separate app with its own container. The cost is being
+ *               unconventional for the GUI; the benefit is one path on the
+ *               platform most of this is developed on, and nobody ever having
+ *               to type "Application Support" into a shell.
+ */
+static int env_dir(const char *name, char *out, size_t n, const char *leaf) {
+  const char *v = getenv(name);
+  if (!v || !*v) return -1;
+  int w = leaf ? snprintf(out, n, "%s/%s", v, leaf) : snprintf(out, n, "%s", v);
+  return (w > 0 && (size_t)w < n) ? 0 : -1;
+}
+
+static int home_dir(char *out, size_t n) {
+  size_t len = n;
+  return uv_os_homedir(out, &len) == 0 ? 0 : -1;
+}
+
+int boggart_legacy_dir(char *out, size_t n) {
+  char home[4096];
+  if (home_dir(home, sizeof(home)) != 0) return -1;
+  int w = snprintf(out, n, "%s/.boggart", home);
+  return (w > 0 && (size_t)w < n) ? 0 : -1;
+}
+
+static int is_dir(const char *path) {
+  uv_fs_t req;
+  int rc = uv_fs_stat(NULL, &req, path, NULL);
+  int yes = (rc == 0) && BOG_ISDIR(req.statbuf.st_mode);
+  uv_fs_req_cleanup(&req);
+  return yes;
+}
+
+int boggart_data_dir(char *out, size_t n, const char **source) {
+  const char *why = "";
+  if (env_dir("BOGGART_HOME", out, n, NULL) == 0) {
+    why = "BOGGART_HOME";
+  } else {
+    char home[4096];
+    if (home_dir(home, sizeof(home)) != 0) return -1;
+    char legacy[4096];
+    int have_legacy = snprintf(legacy, sizeof(legacy), "%s/.boggart", home) > 0;
+    if (have_legacy && is_dir(legacy)) {
+      snprintf(out, n, "%s", legacy);
+      why = "existing ~/.boggart";
+    }
+#ifdef _WIN32
+    else if (env_dir("LOCALAPPDATA", out, n, "boggart") == 0) {
+      why = "%LOCALAPPDATA%";
+    } else {
+      snprintf(out, n, "%s", legacy);
+      why = "no %LOCALAPPDATA%, so ~/.boggart";
+    }
+#elif defined(__APPLE__)
+    else {
+      snprintf(out, n, "%s", legacy);
+      why = "macOS default";
+    }
+#else
+    else if (env_dir("XDG_DATA_HOME", out, n, "boggart") == 0) {
+      why = "$XDG_DATA_HOME";
+    } else {
+      snprintf(out, n, "%s/.local/share/boggart", home);
+      why = "XDG default";
+    }
+#endif
+  }
+  /* Trailing separators would show up in every path built by concatenation
+   * ("...boggart//boggart.db"), which works but reads like a bug in `doctor`. */
+  size_t len = strlen(out);
+  while (len > 1 && is_sep(out[len - 1])) out[--len] = '\0';
+  if (source) *source = why;
+  return 0;
+}
+
+/* sys.paths() -> { data, source, home, legacy } | nil, err
+ *
+ * Lua asks; it does not compose this from sys.home() and a platform test. The
+ * failure return is the no-home case, and it is a sentence rather than a code
+ * because it is the one thing here a user might have to act on. */
+static int l_paths(lua_State *L) {
+  char data[4096];
+  const char *source = NULL;
+  if (boggart_data_dir(data, sizeof(data), &source) != 0) {
+    lua_pushnil(L);
+    lua_pushstring(L,
+      "cannot find a home directory: $HOME is unset and this account has no "
+      "entry in the password file. Set BOGGART_HOME to a directory boggart "
+      "may use, or set HOME.");
+    return 2;
+  }
+  lua_newtable(L);
+  lua_pushstring(L, data);   lua_setfield(L, -2, "data");
+  lua_pushstring(L, source); lua_setfield(L, -2, "source");
+  char buf[4096];
+  size_t len = sizeof(buf);
+  if (uv_os_homedir(buf, &len) == 0) {
+    lua_pushlstring(L, buf, len);
+    lua_setfield(L, -2, "home");
+  }
+  if (boggart_legacy_dir(buf, sizeof(buf)) == 0) {
+    lua_pushstring(L, buf);
+    lua_setfield(L, -2, "legacy");
+  }
+  return 1;
+}
+
+/* sys.diskfree(path) -> free_bytes, total_bytes | nil, err
+ * For `doctor`: a store that cannot grow is a failure mode with no error
+ * message of its own until the moment it bites. */
+static int l_diskfree(lua_State *L) {
+  const char *path = luaL_checkstring(L, 1);
+  uv_fs_t req;
+  int rc = uv_fs_statfs(NULL, &req, path, NULL);
+  if (rc != 0) {
+    uv_fs_req_cleanup(&req);
+    lua_pushnil(L);
+    lua_pushstring(L, uv_strerror(rc));
+    return 2;
+  }
+  uv_statfs_t *s = (uv_statfs_t *)req.ptr;
+  /* f_bavail, not f_bfree: the reserved blocks are not ours to spend. */
+  double freeb = (double)s->f_bsize * (double)s->f_bavail;
+  double total = (double)s->f_bsize * (double)s->f_blocks;
+  uv_fs_req_cleanup(&req);
+  lua_pushnumber(L, freeb);
+  lua_pushnumber(L, total);
+  return 2;
+}
+
 static int l_mkdir_p(lua_State *L) {
   const char *path = luaL_checkstring(L, 1);
   int rc = mkdir_p(path);
@@ -138,12 +308,18 @@ static int l_stat(lua_State *L) {
    * needs to notice a file changing (the studio reloads agent-written panels
    * when they do) would otherwise have to re-read and compare the contents. */
   double mtime = (double)req.statbuf.st_mtim.tv_sec;
+  /* Size and permission bits follow, for the same additive reason: `doctor`
+   * reports how big the store has grown and whether the credential file is
+   * still 0600, and neither is worth a second syscall from Lua. */
+  double size = (double)req.statbuf.st_size;
   uv_fs_req_cleanup(&req);
   if (BOG_ISDIR(mode)) lua_pushstring(L, "dir");
   else if (BOG_ISREG(mode)) lua_pushstring(L, "file");
   else lua_pushstring(L, "other");
   lua_pushnumber(L, mtime);
-  return 2;
+  lua_pushnumber(L, size);
+  lua_pushinteger(L, (lua_Integer)(mode & 07777));
+  return 4;
 }
 
 /* Recursive delete, depth-limited. Replaces the `rm -rf` shell-out that
@@ -447,6 +623,8 @@ static const luaL_Reg sys_lib[] = {
   {"mkdir_p", l_mkdir_p},
   {"stat", l_stat},
   {"home", l_home},
+  {"paths", l_paths},
+  {"diskfree", l_diskfree},
   {"readline", l_readline},
   {"add_history", l_add_history},
   {"history_file", l_history_file},

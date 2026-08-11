@@ -363,7 +363,7 @@ ok(mid_data_splits > 0,
 
 -- ---- cleanup ----------------------------------------------------------------
 os.getenv = real_getenv -- luacheck: ignore
-sys.exec("rm -rf " .. string.format("%q", bog.userdir), 10)
+sys.rmtree(bog.userdir) -- not a shell command: cmd.exe has no rm
 
 io.write(string.format("\n%d passed, %d failed\n", passed, failed))
 return failed == 0 and 0 or 1

@@ -52,8 +52,11 @@ core.add_thread(function()
   -- against the panel. Two buttons on the same pixels is not a cosmetic
   -- complaint: widgets.hit answers with whichever was registered first, so the
   -- one underneath is unclickable and looks merely mis-drawn.
-  local function check_hits(where)
-    local hits = v.hits or {}
+  -- `view` defaults to the conversation, which is what every caller below
+  -- meant before there was a second view with buttons in it.
+  local function check_hits(where, view)
+    view = view or v
+    local hits = view.hits or {}
     check(#hits > 0, where .. ": the panel registered no clickable rects at all")
     for i = 1, #hits do
       for j = i + 1, #hits do
@@ -66,7 +69,7 @@ core.add_thread(function()
       end
     end
     for _, r in ipairs(hits) do
-      check(r.y >= v.position.y and r.y + r.h <= v.position.y + v.size.y + 1,
+      check(r.y >= view.position.y and r.y + r.h <= view.position.y + view.size.y + 1,
         string.format("%s: '%s' is outside the panel vertically (y %.0f h %.0f)",
           where, tostring(r.item and r.item.label), r.y, r.h))
       local cmd = r.item and r.item.command
@@ -343,6 +346,90 @@ core.add_thread(function()
     check(#v.entries == 0, "the empty scenario is not empty")
     check_hits("empty")
 
+    -- ---- the welcome screen ------------------------------------------------
+    --
+    -- The surface a new install opens on, drawn at a sane width and at the
+    -- narrow one, and driven through the real event path.
+    --
+    -- What this deliberately does not touch: "Test connection", "Start
+    -- chatting" and "Not now". All three commit configuration -- an endpoint, a
+    -- model, and the marker that says the screen has been seen -- and ui-check
+    -- runs against the real home directory of whoever ran it. A UI test that
+    -- reconfigures your agent is not a test. The end-to-end path is exercised
+    -- instead by a probe under a temporary HOME.
+    local WelcomeView = require "core.welcomeview"
+    local wv = WelcomeView.open()
+    frame(4)
+    check(core.root_view:get_primary_node():get_node_for_view(wv) ~= nil,
+      "welcome: not a tab in the primary node")
+    check(wv.size.x > 100 and wv.size.y > 100,
+      "welcome: collapsed to " .. wv.size.x .. "x" .. wv.size.y)
+    check_hits("welcome", wv)
+
+    local function wclick(id)
+      for _, r in ipairs(wv.hits) do
+        if r.item.id == id then
+          core.on_event("mousemoved", r.x + r.w / 2, r.y + r.h / 2, 0, 0)
+          core.on_event("mousepressed", "left", r.x + r.w / 2, r.y + r.h / 2, 1)
+          core.on_event("mousereleased", "left", r.x + r.w / 2, r.y + r.h / 2)
+          frame(2)
+          return true
+        end
+      end
+      check(false, "welcome: no button called '" .. id .. "'")
+      return false
+    end
+
+    -- Both routes must offer a key or an endpoint, and a model.
+    wclick("Use an Anthropic API key")
+    check(#wv:fields() == 2, "welcome: the key route has "
+      .. #wv:fields() .. " fields, not 2")
+    shot("welcome")
+    check_hits("welcome-api", wv)
+
+    -- The field, through the keyboard rather than by calling the method: a
+    -- completely dead keyboard passed every direct-call test this app has had.
+    -- Compared against whatever this machine already had, never against
+    -- "false": the person running ui-check may well have a key.
+    local had_key = auth.has_key()
+    wclick("field1")
+    check(wv.focus == 1, "welcome: clicking the key field did not focus it")
+    core.on_event("textinput", "s")
+    core.on_event("textinput", "k")
+    check(wv.buffer == "sk", "welcome: the key field ignored the keyboard ("
+      .. string.format("%q", wv.buffer) .. ")")
+    core.on_event("keypressed", "backspace")
+    check(wv.buffer == "s", "welcome: backspace did nothing")
+    core.on_event("keypressed", "escape")
+    check(wv.focus == nil and wv.buffer == "",
+      "welcome: escape left the field editing")
+    check(auth.has_key() == had_key,
+      "welcome: an abandoned edit changed the stored credential -- it must not")
+
+    -- Narrow. The column is centred and elides rather than clipping, so the
+    -- test is that nothing is drawn outside the view horizontally.
+    system.set_window_size(420, 700)
+    frame(8)
+    shot("welcome-narrow")
+    for _, r in ipairs(wv.hits) do
+      check(r.x >= wv.position.x - 1 and r.x + r.w <= wv.position.x + wv.size.x + 1,
+        string.format("welcome-narrow: '%s' runs outside the view (x %.0f w %.0f of %.0f)",
+          tostring(r.item.id), r.x, r.w, wv.size.x))
+    end
+    system.set_window_size(1400, 900)
+    frame(6)
+
+    -- Put it away and get the conversation back, or every scenario after this
+    -- one measures a view that is no longer on screen.
+    local wnode = core.root_view.root_node:get_node_for_view(wv)
+    if wnode then
+      wnode:set_active_view(wv)
+      wnode:close_active_view(core.root_view.root_node)
+    end
+    v = studio.open_agent()
+    core.set_active_view(v)
+    frame(3)
+
     -- ---- a long transcript, and scrolling ----------------------------------
     v.entries = {}
     for i = 1, 400 do
@@ -438,7 +525,7 @@ core.add_thread(function()
     io.flush()
     os.exit(1)
   end
-  io.write(string.format("ok  conversation %dx%d, sidebar %d  wrote %s (+7 scenarios)\n",
+  io.write(string.format("ok  conversation %dx%d, sidebar %d  wrote %s (+9 scenarios)\n",
     v.size.x, v.size.y, studio.sidebar.size.x, OUT))
   io.flush()
   os.exit(0)

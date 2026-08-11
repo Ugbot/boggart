@@ -75,6 +75,7 @@ static void configure(lua_State *L, int argc, char **argv) {
   if (i < argc && argv[i][0] != '-') {
     if (strcmp(argv[i], "init") == 0) { mode = "init"; i++; }
     else if (strcmp(argv[i], "swarm") == 0) { mode = "swarm"; i++; }
+    else if (strcmp(argv[i], "doctor") == 0) { mode = "doctor"; i++; }
   }
   for (; i < argc; i++) {
     const char *a = argv[i];
@@ -164,7 +165,48 @@ static int msghandler(lua_State *L) {
   return 1;
 }
 
+/* --version and --help are answered here and nowhere else: they must work when
+ * the data directory is unwritable, the store is corrupt, or there is no home
+ * directory at all -- which is exactly when someone is running them. They
+ * therefore touch no disk and never reach boot.lua. */
+static int early_exit_flags(int argc, char **argv) {
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--") == 0) break;
+    if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-V") == 0) {
+      printf("boggart %s\n", BOGGART_VERSION);
+      return 1;
+    }
+    if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+      printf(
+        "boggart %s -- a self-modifying coding agent\n\n"
+        "usage:\n"
+        "  boggart                    interactive REPL\n"
+        "  boggart \"<prompt>\"         one-shot\n"
+        "  boggart --headless         read the prompt from stdin\n"
+        "  boggart doctor             check the install and say what is wrong\n"
+        "  boggart init               copy the built-in Lua into the data dir to edit\n"
+        "  boggart --reset [file]     drop overlay Lua (all, or one module)\n"
+        "  boggart swarm \"<task>\"     multi-agent mode\n\n"
+        "options:\n"
+        "  -p, --prompt <text>        one-shot prompt\n"
+        "      --model <id>           model for this run\n"
+        "      --resume [id]          resume a saved session\n"
+        "      --eval <file.lua>      run a Lua file in the harness\n"
+        "      --tui                  terminal dashboard\n"
+        "  -V, --version              print the version\n\n"
+        "environment:\n"
+        "  BOGGART_HOME               data directory (store, credentials, overlay Lua)\n"
+        "  ANTHROPIC_API_KEY          API key; overrides the stored credential\n"
+        "  ANTHROPIC_BASE_URL         endpoint, e.g. a local server\n",
+        BOGGART_VERSION);
+      return 1;
+    }
+  }
+  return 0;
+}
+
 int main(int argc, char **argv) {
+  if (early_exit_flags(argc, argv)) return 0;
   /* Counting allocator rather than luaL_newstate: the generated-tool memory
    * limit needs real byte counts, which the GC no longer reports for strings
    * on Lua 5.5. See src/lmem.c. */

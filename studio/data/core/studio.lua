@@ -63,6 +63,12 @@ function studio.attach()
   studio.sidebar = SidebarView()
   core.root_view:get_primary_node():split("left", studio.sidebar, true)
   core.set_active_view(view)
+
+  -- A new install opens on the welcome screen instead of an empty conversation
+  -- it has no credentials to run. The view decides for itself whether this is a
+  -- first run and does nothing on every launch after it; core.try because an
+  -- onboarding screen that fails must not cost you the application.
+  core.try(function() require("core.welcomeview").maybe_open() end)
   return view
 end
 
@@ -816,6 +822,11 @@ command.add(nil, {
     studio.open_settings()
   end,
 
+  -- The first-run screen, on purpose rather than because it is a first run.
+  ["agent:welcome"] = function()
+    require("core.welcomeview").open()
+  end,
+
   ["agent:workflows"] = function()
     studio.open_workflows()
   end,
@@ -832,6 +843,7 @@ command.add(nil, {
   -- want, and it reaches things the form deliberately does not duplicate.
   ["agent:settings-list"] = function()
     local items = {
+      { "Welcome (set up a model)", "agent:welcome" },
       { "Workflows",              "agent:workflows" },
       { "Library (tools, memory)", "agent:library" },
       { "Swarm (multi-agent)",    "agent:swarm" },

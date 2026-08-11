@@ -20,7 +20,18 @@ local strict = require("strict")
 -- Declared as a real global (strict-friendly) so every module can reach it.
 declare{ bog = {} }
 bog.version = boggart.version
-bog.userdir = sys.home() .. "/.boggart"
+-- Where everything lives is decided in C (src/lsys.c, and see src/bogpaths.h
+-- for why): $BOGGART_HOME, else an existing ~/.boggart, else the platform
+-- location. Lua asks and does not infer. The one failure is having no home
+-- directory at all, and it gets a sentence rather than a stack.
+do
+  local p, err = require("lifecycle").paths()
+  if not p then
+    io.stderr:write("boggart: ", err, "\n")
+    return 1
+  end
+  bog.userdir = p.data
+end
 bog.mode = boggart.mode
 bog.session = {
   model = boggart.model or "claude-opus-5",
@@ -86,13 +97,14 @@ end
 -- putting it in the reload set means an edited ~/.boggart/lua/events.lua takes
 -- effect like any other module. Registrations themselves survive the reload --
 -- they live on bog.__events, not in the module (see lua/events.lua).
-local CORE = { "events", "json", "util", "store", "memory", "mcphost", "prompt", "tools", "api" }
+local CORE = { "events", "json", "util", "lifecycle", "store", "memory", "mcphost", "prompt", "tools", "api" }
 
 local function wire()
   for _, m in ipairs(CORE) do package.loaded[m] = nil end
   bog.events = require("events")
   bog.json = require("json")
   bog.util = require("util")
+  bog.lifecycle = require("lifecycle")
   bog.store = require("store")
   bog.memory = require("memory")
   bog.mcphost = require("mcphost")
@@ -142,6 +154,15 @@ end
 
 -- ---- modes that don't need the API/harness --------------------------------
 local function do_init()
+  -- `init` is often the first command a new user runs, so it is also the first
+  -- thing that can discover an unwritable or occupied data directory. Same
+  -- diagnosis as a normal start rather than a silent mkdir failure followed by
+  -- a confusing write error per file.
+  local dok, derr = bog.try(require("lifecycle").ensure_dir, bog.userdir)
+  if not dok then
+    io.stderr:write("boggart: ", tostring(derr), "\n")
+    return 1
+  end
   local dir = bog.userdir .. "/lua"
   sys.mkdir_p(dir)
   local n = 0
@@ -189,6 +210,7 @@ boggart commands:
   /help            this help
   /tools [name]    list tools with scope + usage; name shows its source
   /auth            show or set stored credentials (key / url / model)
+  /doctor          check the install: paths, store, credentials, overlays
   /memory          list stored memories
   /sessions        list recent saved sessions
   /resume <id>     resume a saved session
@@ -207,6 +229,8 @@ local function handle_command(line)
   elseif cmd == "quit" or cmd == "exit" then return true
   elseif cmd == "tools" then
     io.write(bog.tools.report(rest ~= "" and { name = rest } or {}), "\n")
+  elseif cmd == "doctor" then
+    io.write((bog.lifecycle.doctor()))
   elseif cmd == "memory" then
     io.write(bog.memory.index_text(), "\n")
   elseif cmd == "sessions" then
@@ -320,11 +344,40 @@ if not ok then
   return 1
 end
 
--- Open the local SQLite store (memory, sessions, kv, metadata).
+-- `doctor` runs before the store is opened, and opens nothing itself. It is
+-- what you run *because* boggart will not start, so it must not need a healthy
+-- install -- and a diagnosis that repairs what it is diagnosing is not one.
+if bog.mode == "doctor" then return bog.lifecycle.main() end
+
+-- Open the local SQLite store (memory, sessions, kv, metadata), creating the
+-- directory, the database and the schema if this is a new machine. A damaged
+-- store is moved aside and recreated here, loudly; anything genuinely
+-- unfixable arrives as a diagnosed error carrying its own explanation.
 local sok, serr = bog.try(bog.store.open)
 if not sok then
-  io.stderr:write("boggart: failed to open local store:\n", serr, "\n")
+  if type(serr) == "table" and serr.boggart_error then
+    io.stderr:write("boggart: ", tostring(serr), "\n",
+      "Run `boggart doctor` for the full picture.\n")
+  else
+    io.stderr:write("boggart: failed to open local store:\n", tostring(serr), "\n")
+  end
   return 1
+end
+
+-- One name for "this start created the database", so the CLI's welcome and the
+-- studio's welcome screen agree about what a first run is. Without it the
+-- studio has to guess -- "no credentials and no marker" -- which is a different
+-- question with a different answer: someone who cleared their key is not a new
+-- install, and someone who set one before ever launching the GUI is.
+bog.first_run = (bog.store.state and bog.store.state.first_run) or false
+
+-- The welcome, on a genuinely new install only: store.state.first_run is true
+-- exactly when this start created the database. Not in eval (tests) or
+-- embedded (the studio draws its own), and on stderr so a piped one-shot run
+-- still emits only the model's answer on stdout.
+if bog.store.state and bog.store.state.first_run
+   and bog.mode ~= "eval" and bog.mode ~= "embedded" then
+  io.stderr:write(bog.lifecycle.welcome(), "\n")
 end
 
 -- Expose json and the gold stdlib as real globals so define_tool bodies can use

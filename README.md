@@ -20,20 +20,20 @@ out of and now owns outright.
 - **The C core knows nothing about the LLM.** `http.request` streams bytes to a
   Lua callback; subprocesses run on the libuv loop from `lua/proc.lua`; that's
   most of it. The Anthropic client, SSE parsing, and tool loop live in `lua/api.lua`.
-- **Overlay mutability.** Every module loads from `~/.boggart/lua/<name>.lua`
+- **Overlay mutability.** Every module loads from `<data dir>/lua/<name>.lua`
   if present, else from the copy baked into the binary. The agent edits its own
   Lua with the ordinary `write`/`edit` tools and calls `reload` to hot-swap it;
   a syntax error keeps the old code and hands back the error.
 - **Tools are data.** `define_tool` lets the model author a new tool (name,
   description, JSON schema, Lua body) that exists on the next turn and persists
-  to `~/.boggart/lua/tools/<name>.lua`.
+  to `<data dir>/lua/tools/<name>.lua`.
 - **A golden starting point.** The baked-in Lua *is* the pristine "golden" setup
   the agent forks from — `boggart init` materializes it for editing, `--reset`
   restores it. Its starting toolkit is the `gold` blessed stdlib (`gold.str`,
   `.tbl`, `.fs`, `.pp`, `.args`, `.test`, `.sh`), a global the agent and its
   tools compose instead of reinventing basics.
 - **One local database.** Everything durable lives in an embedded SQLite DB at
-  `~/.boggart/boggart.db` (the amalgamation is vendored with FTS5, so it stays a
+  `<data dir>/boggart.db` (the amalgamation is vendored with FTS5, so it stays a
   single exe): memory is a full-text-searchable table, conversations are saved
   as resumable sessions, plus a key/value table and harness metadata. Exposed to
   Lua as `db.*` and to the model as the `sql` and `kv` tools.
@@ -51,7 +51,7 @@ out of and now owns outright.
 ```sh
 cmake -B build -G Ninja     # configure
 cmake --build build         # → ./boggart (one binary; libcurl is the only dynamic dep)
-ctest --test-dir build      # eleven Lua suites, each against a throwaway HOME
+ctest --test-dir build      # fifteen Lua suites, each against a throwaway HOME
 ```
 
 Requires CMake ≥ 3.20, Ninja, a C compiler, and libcurl (present in the macOS
@@ -79,12 +79,49 @@ echo "task" | ./boggart --headless   # scriptable: prompt on stdin, reply on std
 ./boggart swarm           # interactive coordinator that fans out to sub-agents
 ./boggart swarm "task"    # one-shot multi-agent orchestration
 ./boggart swarm --resume  # redeliver unprocessed journalled messages and continue
-./boggart init            # copy the default Lua into ~/.boggart/lua/ to edit
+./boggart init            # copy the default Lua into the data dir to edit
 ./boggart --reset [file]  # revert an overlay file (or all) to the baked-in default
+./boggart doctor          # check the install and say, in plain words, what is wrong
+./boggart --help          # every flag, subcommand and environment variable
 ```
 
-REPL commands: `/help /tools /memory /sessions /resume <id> /reload /reset [file] /model <id> /new /quit`.
+REPL commands: `/help /tools /auth /doctor /memory /sessions /resume <id> /reload /reset [file] /model <id> /new /quit`.
 Swarm commands: `/help /threads /journal [n] /agents /model <id> /quit`.
+
+### Where boggart keeps its files
+
+One directory holds everything: the SQLite store (`boggart.db`), the credential
+file (`auth`, 0600), your overlay Lua (`lua/`) and the REPL history. It is
+chosen once, in C (`src/bogpaths.h`, `sys.paths()`), by this order:
+
+1. **`$BOGGART_HOME`**, verbatim — moves the store, the credentials and the
+   overlay together. A second install, a test, a shared home: one variable.
+2. **An existing `~/.boggart`**, if you already have one. Boggart never
+   relocates a directory you are already using.
+3. Otherwise the platform location, for a new install:
+   - **Linux** `$XDG_DATA_HOME/boggart`, defaulting to `~/.local/share/boggart`
+   - **Windows** `%LOCALAPPDATA%\boggart` (not `%APPDATA%` — a multi-megabyte
+     store with a WAL sidecar has no business roaming)
+   - **macOS** `~/.boggart`, deliberately not `~/Library/Application Support`:
+     this directory is the agent's own editable source and a credential file,
+     i.e. things people grep, diff and back up, and a Finder-hidden path with a
+     space in it is hostile to all three.
+
+Everything in it is created on demand, on every start — directories, database,
+schema. Missing pieces are the normal state of a new machine, not an error.
+A database that fails `PRAGMA integrity_check` is moved aside to a timestamped
+`boggart.db.corrupt-<stamp>` and recreated, loudly: sessions and memories in it
+are gone, and boggart says so rather than pretending it recovered them. Nothing
+is ever deleted. A store written by a *newer* boggart is refused, untouched,
+with an explanation.
+
+`boggart doctor` reports all of it — which directory and why, whether it is
+writable, database size/integrity/schema, whether a credential is set **and
+where it came from** (`ANTHROPIC_API_KEY` in the environment silently beats the
+stored file), the endpoint, MCP servers configured versus actually connecting,
+overlay files shadowing built-in modules, and free disk. It exits non-zero when
+something is genuinely broken, so `boggart doctor >/dev/null || ...` works in a
+script. `/doctor` prints the same report inside the REPL.
 
 ## Swarm mode — all agents are actors
 
@@ -218,8 +255,9 @@ lua/            the golden default harness, baked into the binary:
   boot.lua        overlay loader, wiring, hot-reload, sessions, REPL, dispatch
   api.lua         Anthropic client: shared SSE decoder + sync & async transports + turn loop
   tools.lua       read/write/edit/bash/list + define_tool/on_event/reload + sql/kv + memory
-  events.lua      autocommands: on/off/emit/notify, glob patterns, ~/.boggart/lua/events/
+  events.lua      autocommands: on/off/emit/notify, glob patterns, <data dir>/lua/events/
   store.lua       SQLite store: memory(FTS5), sessions/threads, journal, kv, meta
+  lifecycle.lua   install, first run, self-repair, `doctor` (also callable from the GUI)
   memory.lua      durable memory (backed by store) + prompt index
   prompt.lua      system prompts (single-agent discipline + swarm coordinator)
   util.lua json.lua strict.lua      helpers, JSON, undefined-global guard

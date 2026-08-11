@@ -486,6 +486,21 @@ if(BOGGART_BUILD_APP AND SDL2_FOUND)
   else()
     target_link_libraries(boggart-studio PRIVATE SDL2::SDL2)
   endif()
+  # Windows needs SDL2main, and needs it whichever way SDL2 arrived.
+  #
+  # studio/src/main.c includes SDL.h and defines main(). On Windows SDL_main.h
+  # answers that with `#define main SDL_main` (SDL_main.h:143, reached via
+  # SDL_MAIN_AVAILABLE on __WIN32__), so the entry point the CRT goes looking
+  # for is not in our objects at all -- SDL2main is the library that carries
+  # the main() and WinMain() that call it. Without this the link fails with an
+  # unresolved external, which is why it has never been caught: the studio was
+  # only ever built on macOS and Linux, where SDL2main is an empty stub.
+  #
+  # Linking it only on WIN32 rather than everywhere keeps the Unix link lines
+  # exactly as they were.
+  if(WIN32 AND TARGET SDL2::SDL2main)
+    target_link_libraries(boggart-studio PRIVATE SDL2::SDL2main)
+  endif()
   # The editor core came from rxi's lite and still warns; ours build clean.
   set_source_files_properties(${APP_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
   set_target_properties(boggart-studio PROPERTIES
@@ -542,11 +557,21 @@ endif()
 # Each suite runs against a throwaway HOME so it never touches ~/.boggart.
 # Windows spells that %USERPROFILE%, so set both -- sysproc.h's sysfs_home()
 # reads USERPROFILE there and HOME everywhere else.
+#
+# %LOCALAPPDATA% has to move with it. The path policy in src/lsys.c resolves a
+# new install to %LOCALAPPDATA%\boggart on Windows, ahead of the home
+# directory, so setting HOME and USERPROFILE alone leaves every suite sharing
+# one real directory in the runner's (or the developer's) profile: state
+# leaking from suite to suite, and a "first run" that is only ever first once.
+# Overriding the platform variable rather than BOGGART_HOME keeps the platform
+# rule itself under test -- it still resolves %LOCALAPPDATA%, that just now
+# points somewhere disposable.
 enable_testing()
 foreach(suite test integration swarm mcp ltui sysfs bus jwriter proc sandbox scopes errors studio events lifecycle)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
-    set(_home_env HOME=${_home} USERPROFILE=${_home})
+    set(_home_env HOME=${_home} USERPROFILE=${_home}
+                  LOCALAPPDATA=${_home}/AppData/Local)
   else()
     set(_home_env HOME=${_home})
   endif()

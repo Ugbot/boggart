@@ -19,7 +19,9 @@ name: ci
 on:
   push:
     branches: [main]
+    paths-ignore: ['**.md', 'docs/**']
   pull_request:
+    paths-ignore: ['**.md', 'docs/**']
   workflow_dispatch:
 
 concurrency:
@@ -33,6 +35,10 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    # A job that hangs -- a test waiting on stdin, a runner that loses the
+    # network mid-fetch -- otherwise burns six hours of the account's minutes
+    # before GitHub kills it. A cold build here is under fifteen.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -45,6 +51,19 @@ jobs:
             os: windows-latest
 
     steps:
+      # Before checkout, so it governs the checkout. Git for Windows defaults
+      # to core.autocrlf=true, which would hand the Windows job CRLF copies of
+      # every .lua file -- baked verbatim into embedded.c by
+      # tools/bake_embedded.cmake, since file(READ ... HEX) is byte-exact. Lua
+      # itself does not care, but it means the Windows binary is not built from
+      # the same bytes as the other two, and any test that compares source text
+      # would fail on one platform for a reason that has nothing to do with the
+      # code. The fonts are safe either way (git detects them as binary); this
+      # is about making all three platforms byte-identical.
+      - name: Check out with LF line endings (windows)
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@v5
 
       # ---- toolchain -------------------------------------------------------
@@ -61,7 +80,38 @@ jobs:
       # SDL compiles its video backends against. Without them SDL configures
       # cleanly, builds a dummy video driver, and produces a binary that cannot
       # open a window -- a failure that appears at run time on a user's machine
-      # rather than here, which is the worst place for it.
+      # rather than here, which is the worst place for it. The "Video drivers"
+      # step below asserts the result rather than trusting this list.
+      #
+      # Every name here was checked against SDL 2.32.10's own configure summary,
+      # in a container, one group at a time:
+      #
+      #   libx11-dev                     SDL_X11. On its own it is not enough:
+      #                                  SDL then hard-errors on the missing
+      #                                  Xext.h rather than quietly going on.
+      #   libxext-dev ... libxss-dev     the X11 sub-features (XDBE, XShape,
+      #                                  XCursor, XRandR, XInput2, XFixes,
+      #                                  XScrnSaver). Each one silently off
+      #                                  without its -dev package.
+      #   libxkbcommon-dev, libwayland-dev, wayland-protocols
+      #                                  SDL_WAYLAND. All three, or it is off.
+      #   libdecor-0-dev                 client-side window decorations on
+      #                                  Wayland. Without it the studio's window
+      #                                  has no titlebar and cannot be resized
+      #                                  on GNOME, which ships no server-side
+      #                                  decorations.
+      #   libgl-dev libegl-dev           SDL_OPENGL / GLX. Spelled this way and
+      #                                  not libegl1-mesa-dev because that is a
+      #                                  transitional package on 24.04 whose
+      #                                  dependency on libgl-dev is the only
+      #                                  reason OpenGL was being detected at
+      #                                  all -- an accident to depend on.
+      #
+      # python3 is not a build dependency: tests/mcp.lua drives a mock MCP
+      # server written in Python over stdio. The runner images happen to ship
+      # it, which is exactly the kind of accident that works until an image
+      # changes -- a Docker run without it fails only the mcp suite, which
+      # reads like an MCP bug rather than a missing interpreter.
       #
       # libcurl is found with find_package(CURL REQUIRED) and ncurses with
       # find_package(Curses REQUIRED) + CURSES_NEED_NCURSES. libncurses-dev is
@@ -71,10 +121,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libncurses-dev \
+            libcurl4-openssl-dev libncurses-dev python3 \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
-            libxfixes-dev libxss-dev libxkbcommon-dev libwayland-dev \
-            wayland-protocols libegl1-mesa-dev
+            libxfixes-dev libxss-dev libxkbcommon-dev \
+            libwayland-dev wayland-protocols libdecor-0-dev \
+            libgl-dev libegl-dev
 
       # macOS and Windows need nothing: SDL's backends there are system
       # frameworks and Win32 APIs whose headers ship with the SDK.
@@ -92,18 +143,91 @@ jobs:
         with:
           arch: x64
 
+      # ---- the dependency cache --------------------------------------------
+      # SDL2 (every job) and libcurl (Windows) are built from source: about
+      # four hundred translation units that are pinned by version and SHA256
+      # and therefore produce the same objects every time. Rebuilding them on
+      # every push is most of what this workflow costs.
+      #
+      # The three paths are not arbitrary, and the two log files are the whole
+      # trick -- this was measured, in Docker, by restoring a cache into a
+      # clean tree and counting what ninja rebuilt:
+      #
+      #   build/_deps       the fetched sources and their object files.
+      #   build/.ninja_log  without it ninja has no record of the command line
+      #                     that produced each object, calls it "not in the
+      #                     log" and rebuilds all of it.
+      #   build/.ninja_deps the header dependencies. Without *this* one every
+      #                     object is "deps are missing" and, again, all of it
+      #                     rebuilds -- a cache that restores perfectly and
+      #                     saves nothing at all.
+      #
+      # With all three: 0 of 202 SDL objects recompiled, 320 build steps down
+      # to 116. CMakeCache.txt is deliberately *not* cached, so every run still
+      # configures from scratch against whatever compiler the image now has.
+      #
+      # The key pins both versions and hashes CMakeLists.txt, since that is
+      # where their build options live. No restore-keys: a near-miss cache is
+      # worth less than a correct build, and the retry below handles the rest.
+      - name: Cache the SDL2/libcurl build
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/_deps
+            build/.ninja_log
+            build/.ninja_deps
+          key: deps-${{ matrix.os }}-sdl2.32.10-curl8.20.0-${{ hashFiles('CMakeLists.txt') }}
+
       # ---- build -----------------------------------------------------------
       # No -DCMAKE_BUILD_TYPE: the project defaults to RelWithDebInfo when it
       # is unset, and CI should exercise that default.
       #
       # On Windows this also fetches and builds libcurl 8.20.0 with the
-      # Schannel backend (see CMakeLists.txt); the first configure therefore
-      # needs network access and takes about a minute longer.
+      # Schannel backend (see CMakeLists.txt); on a cold cache the first
+      # configure therefore needs network access and takes about a minute
+      # longer.
+      #
+      # The restored cache records the absolute path it was built at, which is
+      # constant per runner OS -- but a half-written or otherwise unusable one
+      # fails *configure*, not the build, and that failure is indistinguishable
+      # from a broken CMakeLists.txt in the log. So: try once, and if it fails,
+      # throw the cache away and configure clean. A genuine error fails both.
       - name: Configure
+        id: configure
+        continue-on-error: true
         run: cmake -B build -G Ninja
+
+      - name: Configure again, without the cache
+        if: steps.configure.outcome == 'failure'
+        run: |
+          cmake -E rm -rf build
+          cmake -B build -G Ninja
 
       - name: Build
         run: cmake --build build
+
+      # The X11 trap, asserted rather than assumed. SDL_config.h is the file
+      # its own compile actually read, so this is the built artifact talking
+      # and not a repetition of the apt list above. If either driver is missing
+      # the studio still builds and still links -- it just cannot open a window
+      # on any normal desktop, and nothing else in this workflow would notice.
+      - name: Video drivers (linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -eu
+          h=$(find build/_deps/sdl2-build -name SDL_config.h -path '*include-config*' | head -1)
+          test -n "$h" || { echo "no SDL_config.h -- did SDL build from source?"; exit 1; }
+          for d in X11 WAYLAND; do
+            grep -q "^#define SDL_VIDEO_DRIVER_$d 1" "$h" || {
+              echo "SDL built without the $d video driver."
+              echo "The studio would ship with only the dummy/offscreen drivers"
+              echo "and could not open a window. Check the apt list above."
+              exit 1
+            }
+          done
+          grep -q '^#define SDL_VIDEO_DRIVER_X11_XRANDR 1' "$h" || {
+            echo "X11 is present but XRandR is not: no display-mode handling."; exit 1; }
+          echo "SDL video drivers: x11, wayland"
 
       - name: Test
         run: ctest --test-dir build --output-on-failure

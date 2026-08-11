@@ -56,6 +56,8 @@ local MAX_ERRORS = 5
 -- nobody can afford to subscribe to, so handlers get identifiers and sizes and
 -- fetch the rest themselves (bog.session, bog.store) if they really want it.
 M.EVENTS = {
+  ["store:created"]    = "{ path }  the local store did not exist and was created (first run)",
+  ["store:recovered"]  = "{ path, moved_to }  a damaged store was moved aside and recreated -- sessions and memory in it are gone",
   ["session:created"]  = "{ id }  a fresh session row exists",
   ["session:resumed"]  = "{ id, count }  count = messages restored",
   ["session:saved"]    = "{ id, count }  transcript persisted to the store",

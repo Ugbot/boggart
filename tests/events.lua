@@ -605,6 +605,31 @@ do
 end
 
 -- ==========================================================================
+-- Install lifecycle: a store created, and a damaged one recovered
+-- ==========================================================================
+-- Through store.open() itself, not a hand-rolled emit -- the events exist so a
+-- GUI can react to "your history just went away", and that only means anything
+-- if the real repair path is what fires them. The recovery prints a loud
+-- notice to stderr here; that is the behaviour under test, not noise.
+do
+  reset()
+  local keep_dir, keep_db = bog.userdir, bog.db
+  local dir = os.tmpname() .. "_boggart_events_install"
+  bog.userdir, bog.db = dir, nil
+  bog.store.open()
+  ok(seen["store:created"], "creating the store on a new machine emits store:created")
+  bog.db:close(); bog.db = nil
+
+  bog.util.write_file(dir .. "/boggart.db", "NOT A DATABASE")
+  bog.store.open()
+  ok(seen["store:recovered"], "a damaged store is recreated and emits store:recovered")
+  bog.db:close()
+
+  sys.rmtree(dir)
+  bog.userdir, bog.db = keep_dir, keep_db
+end
+
+-- ==========================================================================
 -- Coverage: everything events.EVENTS documents was emitted for real above
 -- ==========================================================================
 do
@@ -617,7 +642,7 @@ do
   end
   ok(#missing == 0, "every documented event is emitted by a real code path"
     .. (#missing > 0 and (" -- never saw: " .. table.concat(missing, ", ")) or ""))
-  eq(#names, 16, "the documented event list is the one this suite drove")
+  eq(#names, 18, "the documented event list is the one this suite drove")
 end
 
 -- ---- cleanup ---------------------------------------------------------------

@@ -1,8 +1,21 @@
 #include <SDL2/SDL.h>
 #include <stdbool.h>
 #include <ctype.h>
-#include <dirent.h>
-#include <unistd.h>
+/* Not <dirent.h>/<unistd.h>: MSVC has neither, so this file could not compile
+ * on Windows at all -- which nobody noticed, because the studio had never been
+ * built there. Upstream lite got away with it by using MinGW. libuv is already
+ * linked into this binary and covers both portably, which is the same idiom
+ * src/lsys.c uses for exactly this reason. */
+#include <uv.h>
+
+/* MSVC's <sys/stat.h> defines S_IFDIR/S_IFREG but not the S_IS* predicates,
+ * so test the format bits directly -- the same shim as src/lsys.c. */
+#ifndef S_ISREG
+  #define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
+#endif
+#ifndef S_ISDIR
+  #define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
+#endif
 #include <errno.h>
 #include <sys/stat.h>
 #include "api.h"
@@ -323,8 +336,8 @@ static int f_show_confirm_dialog(lua_State *L) {
 
 static int f_chdir(lua_State *L) {
   const char *path = luaL_checkstring(L, 1);
-  int err = chdir(path);
-  if (err) { luaL_error(L, "chdir() failed"); }
+  int err = uv_chdir(path);
+  if (err) { luaL_error(L, "chdir() failed: %s", uv_strerror(err)); }
   return 0;
 }
 
@@ -332,25 +345,26 @@ static int f_chdir(lua_State *L) {
 static int f_list_dir(lua_State *L) {
   const char *path = luaL_checkstring(L, 1);
 
-  DIR *dir = opendir(path);
-  if (!dir) {
+  uv_fs_t req;
+  int n = uv_fs_scandir(NULL, &req, path, 0, NULL);
+  if (n < 0) {
+    uv_fs_req_cleanup(&req);
     lua_pushnil(L);
-    lua_pushstring(L, strerror(errno));
+    lua_pushstring(L, uv_strerror(n));
     return 2;
   }
 
   lua_newtable(L);
   int i = 1;
-  struct dirent *entry;
-  while ( (entry = readdir(dir)) ) {
-    if (strcmp(entry->d_name, "." ) == 0) { continue; }
-    if (strcmp(entry->d_name, "..") == 0) { continue; }
-    lua_pushstring(L, entry->d_name);
+  uv_dirent_t entry;
+  /* uv_fs_scandir_next already filters "." and ".." on every platform. */
+  while (uv_fs_scandir_next(&req, &entry) != UV_EOF) {
+    lua_pushstring(L, entry.name);
     lua_rawseti(L, -2, i);
     i++;
   }
 
-  closedir(dir);
+  uv_fs_req_cleanup(&req);
   return 1;
 }
 

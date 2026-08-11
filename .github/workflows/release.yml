@@ -47,6 +47,7 @@ jobs:
   build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -67,6 +68,13 @@ jobs:
             os: windows-latest
 
     steps:
+      # Before checkout, so it governs the checkout: Git for Windows would
+      # otherwise convert every .lua file to CRLF, and tools/bake_embedded.cmake
+      # bakes bytes. See the same step in ci.yml.
+      - name: Check out with LF line endings (windows)
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@v5
 
       # The newest released CMake and Ninja on every platform, rather than
@@ -79,12 +87,25 @@ jobs:
 
       # Linux still needs the C-side dependencies that are not vendored.
       # SDL2 is not among them any more -- CMakeLists.txt fetches and builds it.
+      #
+      # It does, however, need the X11 and Wayland *headers*, and this list not
+      # having them was a real bug in the release: SDL configures cleanly
+      # without them, builds only its dummy and offscreen video drivers, and
+      # produces a boggart-studio that starts, initialises SDL, opens nothing
+      # and appears to hang. Verified by building this file's old package list
+      # in a container and enumerating SDL_GetVideoDriver: offscreen, dummy,
+      # evdev. Every name below is annotated in ci.yml, which asserts the
+      # outcome; the same assertion runs here.
       - name: Install deps (linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libncurses-dev
+            libcurl4-openssl-dev libncurses-dev python3 \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
+            libxfixes-dev libxss-dev libxkbcommon-dev \
+            libwayland-dev wayland-protocols libdecor-0-dev \
+            libgl-dev libegl-dev
 
       # Puts cl.exe, the CRT/SDK headers and the linker on PATH. Without it
       # Ninja has no compiler on windows-latest. x64 is explicit because the
@@ -96,16 +117,64 @@ jobs:
         with:
           arch: x64
 
+      # Same cache, same three paths, same reasoning as ci.yml -- including the
+      # two ninja log files, without which the cache restores and then rebuilds
+      # everything anyway. The key carries the build type because this workflow
+      # builds Release and ci.yml builds RelWithDebInfo, and one set of objects
+      # must not be handed to the other.
+      - name: Cache the SDL2/libcurl build
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/_deps
+            build/.ninja_log
+            build/.ninja_deps
+          key: rel-${{ matrix.os }}-sdl2.32.10-curl8.20.0-${{ hashFiles('CMakeLists.txt') }}
+
       # ---- build -------------------------------------------------------------
       # Release, not the project's RelWithDebInfo default: this is the build
       # people download, so it should be the small one. ci.yml still exercises
       # the default.
+      #
+      # No `shell:` here or below. The commands are the same three words on
+      # every platform, so they run in each runner's own default shell -- bash
+      # on Unix, PowerShell on Windows -- rather than pushing Windows through
+      # Git Bash, where MSYS rewrites anything that looks like a POSIX path in
+      # an argument. Nothing here needs a POSIX shell.
+      #
+      # If a restored cache is unusable it fails *configure*, so try once and
+      # then configure clean. A genuine error fails both attempts.
       - name: Configure
+        id: configure
+        continue-on-error: true
         run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-        shell: bash
+
+      - name: Configure again, without the cache
+        if: steps.configure.outcome == 'failure'
+        run: |
+          cmake -E rm -rf build
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: cmake --build build
+
+      # The one thing about this binary that no later step can see: whether SDL
+      # compiled a video driver that can open a window. It is asserted against
+      # SDL_config.h, which is the file SDL's own compile read.
+      - name: Video drivers (linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -eu
+          h=$(find build/_deps/sdl2-build -name SDL_config.h -path '*include-config*' | head -1)
+          test -n "$h" || { echo "no SDL_config.h -- did SDL build from source?"; exit 1; }
+          for d in X11 WAYLAND; do
+            grep -q "^#define SDL_VIDEO_DRIVER_$d 1" "$h" || {
+              echo "SDL built without the $d video driver: this release would"
+              echo "ship a studio that cannot open a window. Refusing to package."
+              exit 1
+            }
+          done
+          echo "SDL video drivers: x11, wayland"
 
       # A release that has not been tested is not worth publishing, and these
       # suites are headless -- ui-check and ui-bench need a window server and

@@ -36,6 +36,7 @@
 #include "uv.h"
 #include "lua.h"
 #include "lauxlib.h"
+#include "bogpaths.h"
 
 #define AUTH_MAX 4096
 
@@ -47,12 +48,17 @@ static char g_model[AUTH_MAX];
 static char g_path[4096];
 static int g_loaded = 0;
 
+/* The credential file sits in boggart's data directory, wherever the shared
+ * policy in bogpaths.h puts it -- so BOGGART_HOME moves the key along with the
+ * store instead of leaving it behind in the old location. With no home
+ * directory at all there is nowhere to put it; "." keeps the old behaviour of
+ * failing quietly at fopen() rather than crashing, and boot.lua refuses to
+ * start in that case long before this matters. */
 static void auth_path(void) {
   if (g_path[0]) return;
-  char home[4096];
-  size_t len = sizeof(home);
-  if (uv_os_homedir(home, &len) != 0) snprintf(home, sizeof(home), ".");
-  snprintf(g_path, sizeof(g_path), "%s/.boggart/auth", home);
+  char dir[4096];
+  if (boggart_data_dir(dir, sizeof(dir), NULL) != 0) snprintf(dir, sizeof(dir), ".");
+  snprintf(g_path, sizeof(g_path), "%s/auth", dir);
 }
 
 static void set_field(const char *k, const char *v) {
@@ -88,9 +94,9 @@ static void auth_save(void) {
   char *slash = strrchr(dir, '/');
   if (slash) {
     *slash = '\0';
-    uv_fs_t req;
-    uv_fs_mkdir(NULL, &req, dir, 0700, NULL);
-    uv_fs_req_cleanup(&req);
+    /* mkdir -p, not a single mkdir: ~/.local/share/boggart has two components
+     * that may both be missing on a new account. */
+    boggart_mkdir_p(dir);
   }
   FILE *f = fopen(g_path, "wb");
   if (!f) return;

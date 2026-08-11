@@ -197,9 +197,10 @@ do
   eq(bog.tools.run("kv", { op = "get", key = "k" }), "v", "kv tool get")
 end
 
--- cleanup
+-- cleanup. sys.rmtree rather than a shell command: cmd.exe has no such thing,
+-- so on Windows the old spelling failed silently and left the tree behind.
 if bog.db then bog.db:close() end
-sys.exec("rm -rf " .. string.format("%q", bog.userdir), 10)
+sys.rmtree(bog.userdir)
 
 io.write(string.format("\n%d passed, %d failed\n", passed, failed))
 return failed == 0 and 0 or 1

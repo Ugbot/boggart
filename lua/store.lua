@@ -3,7 +3,15 @@
 -- metadata. One database at ~/.boggart/boggart.db, opened once and reused
 -- across reloads (bog.db persists; only the code around it is hot-swapped).
 local json = require("json")
+local lifecycle = require("lifecycle")
 local M = {}
+
+-- Bumped whenever an *old* boggart could no longer read a database this one
+-- writes. The additive ensure_column() migrations below do not need a bump:
+-- they only add columns, and an older binary ignores columns it does not
+-- select. A bump is for the other direction -- a newer store meeting an older
+-- binary, which is refused in M.open() rather than half-migrated.
+M.SCHEMA_VERSION = 2
 
 local SCHEMA = [[
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -112,14 +120,96 @@ local function import_legacy(db)
   db:run("INSERT OR REPLACE INTO meta(key,value) VALUES('legacy_imported','1')")
 end
 
--- Open (idempotent): connects bog.db the first time, always ensures schema.
+-- The schema version recorded in a database, or nil if it has none (a store
+-- from before this key, or one created seconds ago). Takes a connection rather
+-- than using bog.db so `doctor` can ask the same question of a store it has
+-- opened separately, without adopting it.
+function M.schema_version(conn)
+  local ok, rows = pcall(conn.query, conn, "SELECT value FROM meta WHERE key='schema_version'")
+  if not ok or not rows or not rows[1] then return nil end
+  return tonumber(rows[1].value)
+end
+
+-- Is this file a working SQLite database? PRAGMA integrity_check rather than
+-- "did open() succeed": sqlite3_open() is lazy and happily returns a handle for
+-- a file of shell script, which then fails on the first statement -- which is
+-- exactly the traceback this replaces.
+local function integrity(conn)
+  -- Three ways this says no: the call raises, it returns nil plus the SQLite
+  -- error (a file that is not a database fails at prepare), or it returns a
+  -- verdict that is not "ok". The middle one is the common case and carries
+  -- the only message worth showing.
+  local ok, rows, qerr = pcall(conn.query, conn, "PRAGMA integrity_check")
+  if not ok then return false, tostring(rows) end
+  if not rows then return false, tostring(qerr or "integrity_check returned nothing") end
+  local verdict = rows[1] and (rows[1].integrity_check or rows[1][1])
+  if verdict == "ok" then return true end
+  return false, tostring(verdict)
+end
+
+-- Move a damaged store aside. Renamed, never removed: it is the user's data,
+-- it may still be salvageable with the sqlite3 CLI, and a program that deletes
+-- a file it has just declared unreadable is a program you cannot trust with the
+-- next one. The -wal and -shm sidecars travel with it, or SQLite would try to
+-- replay the old WAL into the new database.
+function M.quarantine(path)
+  local stamp = os.date("%Y%m%d-%H%M%S")
+  local dest = path .. ".corrupt-" .. stamp
+  local ok, err = os.rename(path, dest)
+  if not ok then return nil, err end
+  for _, sfx in ipairs({ "-wal", "-shm" }) do
+    if sys.stat(path .. sfx) == "file" then os.rename(path .. sfx, dest .. sfx) end
+  end
+  return dest
+end
+
+-- Open (idempotent): creates the directory and the database if they are not
+-- there, verifies the one that is, and always ensures the schema. Every part
+-- of that is the normal path on a new machine, so none of it is an error.
+--
+-- M.state records what this start actually did, for the first-run notice and
+-- for `doctor`: { path, first_run, recovered = <quarantined path> }.
 function M.open()
   if not bog.db then
     local path = bog.userdir .. "/boggart.db"
-    sys.mkdir_p(bog.userdir)
+    lifecycle.ensure_dir(bog.userdir)
+    local state = { path = path, first_run = sys.stat(path) ~= "file" }
     local c, err = db.open(path)
-    if not c then error("store: " .. tostring(err)) end
+    if not c then
+      lifecycle.fail("cannot open the local store at " .. path .. ": " .. tostring(err) .. ".",
+        "Check that " .. bog.userdir .. " is writable, or set BOGGART_HOME to a\n" ..
+        "directory boggart may use.")
+    end
+    if not state.first_run then
+      local sound, why = integrity(c)
+      if not sound then
+        c:close()
+        local dest, rerr = M.quarantine(path)
+        if not dest then
+          lifecycle.fail("the local store at " .. path .. " is damaged (" .. tostring(why) ..
+            ") and could not be moved aside: " .. tostring(rerr) .. ".",
+            "Move or rename that file yourself, then start boggart again.")
+        end
+        -- Loud, on stderr, every time it happens: this is real data loss and
+        -- pretending otherwise -- "recovered!" -- would be a lie.
+        io.stderr:write(
+          "\nboggart: the local store at ", path, " is damaged (", tostring(why), ").\n",
+          "boggart: it has been MOVED ASIDE to ", dest, " and a new, empty store created.\n",
+          "boggart: saved sessions and stored memories are NOT in the new store.\n",
+          "boggart: nothing was deleted. Run `boggart doctor` to see where things stand.\n\n")
+        -- Deliberately not state.first_run: the database is new but the user
+        -- is not, and greeting someone with "welcome to boggart" straight
+        -- after telling them their history is gone would be grotesque.
+        state.recovered = dest
+        c, err = db.open(path)
+        if not c then
+          lifecycle.fail("cannot create a new store at " .. path .. ": " .. tostring(err) .. ".",
+            "The old one was moved to " .. dest .. ".")
+        end
+      end
+    end
     bog.db = c
+    M.state = state
     -- WAL: readers never block the writer and the writer never blocks readers,
     -- which is what lets many actors read the journal while one appends to it.
     -- It also survives across processes (via the -shm file), so it is the mode
@@ -146,14 +236,43 @@ function M.open()
       pcall(sys.chmod, path .. suffix, 0x180) -- 0600
     end
   end
+  -- Refuse a store from the future *before* touching it. CREATE TABLE IF NOT
+  -- EXISTS and ALTER TABLE ADD COLUMN would each half-apply this build's idea
+  -- of the schema to a database that has moved past it, and the resulting mix
+  -- is worse than either version -- and is what the newer binary would then
+  -- have to cope with. Downgrading is a thing people do; corrupting their
+  -- store while they do it is not acceptable.
+  local found = M.schema_version(bog.db)
+  if found and found > M.SCHEMA_VERSION then
+    local path = M.state and M.state.path or (bog.userdir .. "/boggart.db")
+    bog.db:close()
+    bog.db = nil
+    lifecycle.fail(
+      "the store at " .. path .. " was written by a newer boggart (schema version " ..
+      found .. "; this build understands " .. M.SCHEMA_VERSION .. ").",
+      "Nothing has been changed. Upgrade boggart, or set BOGGART_HOME to a\n" ..
+      "different directory to start fresh.")
+  end
   assert(bog.db:exec(SCHEMA))
   -- migrate older DBs to the agent/thread columns
   ensure_column(bog.db, "sessions", "parent_id", "INTEGER")
   ensure_column(bog.db, "sessions", "status", "TEXT")
   ensure_column(bog.db, "sessions", "subscriptions", "TEXT")
   ensure_column(bog.db, "sessions", "spec", "TEXT")
-  bog.db:run("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','2')")
+  bog.db:run("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",
+    { tostring(M.SCHEMA_VERSION) })
   import_legacy(bog.db)
+  -- `announced` because open() is idempotent and may be called again in the
+  -- same process (the studio, a reload); the install happened only once.
+  if M.state and (M.state.first_run or M.state.recovered) and not M.state.announced then
+    M.state.announced = true
+    bog.db:run("INSERT OR IGNORE INTO meta(key,value) VALUES('installed_at',?)",
+      { tostring(os.time()) })
+    if bog.events then
+      bog.events.emit(M.state.recovered and "store:recovered" or "store:created",
+        { path = M.state.path, moved_to = M.state.recovered })
+    end
+  end
   return M
 end
 

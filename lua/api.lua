@@ -127,15 +127,27 @@ end
 -- say that rather than reporting a generic network error.
 local function transport_error(detail)
   detail = tostring(detail or "unknown")
-  local base = os.getenv("ANTHROPIC_BASE_URL")
+  -- auth.base_url(), not just the environment variable. The variable was the
+  -- only way to set an endpoint when this was written; the studio's settings
+  -- and welcome screens store one through auth instead, and auth.base_url()
+  -- already applies the environment-wins precedence. Reading only the variable
+  -- meant anyone who configured a local model through the GUI got the generic
+  -- "network error" instead of the branch below, which tells them their own
+  -- server is not answering -- the one message that would have helped.
+  local ok, base = pcall(auth.base_url)
+  base = ok and base or os.getenv("ANTHROPIC_BASE_URL")
+  if base == "" then base = nil end
+  local from_env = os.getenv("ANTHROPIC_BASE_URL") ~= nil
   local connect = detail:lower():find("connect", 1, true) ~= nil
   if base and connect then
     return M.ERR.endpoint, "Cannot reach " .. endpoint() .. " (" .. detail .. ").", {
       fatal = true,
-      hint = "ANTHROPIC_BASE_URL is set, so this is your own endpoint.\n"
+      hint = (from_env and "ANTHROPIC_BASE_URL is set, so this is your own endpoint.\n"
+                        or "A custom endpoint is configured, so this is your own server.\n")
         .. "Check the server is running and the port is right:\n"
         .. "  curl -s " .. (base:gsub("/+$", "")) .. "/v1/models\n"
-        .. "Unset ANTHROPIC_BASE_URL to use the Anthropic API instead.",
+        .. (from_env and "Unset ANTHROPIC_BASE_URL to use the Anthropic API instead."
+                      or "Clear it with `/auth url` to use the Anthropic API instead."),
     }
   end
   -- No base URL configured: this is the real network, so it may well be a blip.
