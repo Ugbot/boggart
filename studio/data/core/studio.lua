@@ -468,6 +468,23 @@ local function prompt(label, submit, default)
   core.command_view:enter(label, submit, function() return {} end, nil, default)
 end
 
+-- The clipboard verbs are predicated on the conversation being focused, so
+-- they take the stroke when it is ours and leave it alone when it is not.
+command.add(function() return core.active_view == studio.agent_view() end, {
+  ["agent:paste"] = function()
+    local v = studio.agent_view(); if v then v:on_key_pressed("ctrl+v") end
+  end,
+  ["agent:copy"] = function()
+    local v = studio.agent_view(); if v then v:on_key_pressed("ctrl+c") end
+  end,
+  ["agent:cut"] = function()
+    local v = studio.agent_view(); if v then v:on_key_pressed("ctrl+x") end
+  end,
+  ["agent:select-all"] = function()
+    local v = studio.agent_view(); if v then v:on_key_pressed("ctrl+a") end
+  end,
+})
+
 command.add(nil, {
   ["agent:toggle-panel"] = studio.toggle_agent,
   ["agent:open-panel"]   = studio.open_agent,
@@ -1063,6 +1080,14 @@ keymap.add {
   ["ctrl+b"]          = "studio:toggle-sidebar",
   ["ctrl+shift+w"]    = "agent:workflows",
   ["ctrl+shift+l"]    = "agent:library",
+  ["ctrl+v"]          = "agent:paste",
+  ["cmd+v"]           = "agent:paste",
+  ["ctrl+c"]          = "agent:copy",
+  ["cmd+c"]           = "agent:copy",
+  ["ctrl+x"]          = "agent:cut",
+  ["cmd+x"]           = "agent:cut",
+  ["ctrl+a"]          = "agent:select-all",
+  ["cmd+a"]           = "agent:select-all",
   ["ctrl+o"]          = "studio:open-file",
   ["ctrl+shift+o"]    = "studio:open-folder",
   ["ctrl+alt+o"]      = "studio:add-folder",
