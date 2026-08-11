@@ -55,6 +55,16 @@ function SidebarView:update()
     self:move_towards(self.size, "x", dest)
   end
   self:refresh()
+
+  -- The segmented control follows what is actually on screen. Opening a file
+  -- from the tree, from ctrl+p or from a tool all put you in code; the control
+  -- would otherwise still claim you were in the chat.
+  local active = core.active_view
+  if active then
+    if active.doc then self.tab = "code"
+    elseif active == (core.studio and core.studio.view) then self.tab = "chat" end
+  end
+
   SidebarView.super.update(self)
 end
 
@@ -112,8 +122,14 @@ function SidebarView:draw()
   y = y + bh + vpad
 
   if self.tab == "code" then
-    common.draw_text(font, style.dim, "Files are in the tree below.",
-      "left", x, y, w, lh)
+    local hov = self.mouse and widgets.inside(
+      { x = x, y = y, w = w, h = bh }, self.mouse.x, self.mouse.y)
+    add(widgets.button(font, "Open a file...", x, y,
+          { w = w, hover = hov, align = "left" }),
+        { label = "open", action = function() command.perform("core:find-file") end })
+    y = y + bh + vpad
+    common.draw_text(font, style.dim, "The tree is on the right.",
+      "left", x + pad / 2, y, w, lh)
     self.content_height = (y + lh + self.scroll.y) - self.position.y
     self:draw_scrollbar()
     return

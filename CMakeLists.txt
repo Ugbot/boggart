@@ -427,7 +427,7 @@ endif()
 # Windows spells that %USERPROFILE%, so set both -- sysproc.h's sysfs_home()
 # reads USERPROFILE there and HOME everywhere else.
 enable_testing()
-foreach(suite test integration swarm mcp ltui sysfs bus jwriter proc sandbox scopes errors)
+foreach(suite test integration swarm mcp ltui sysfs bus jwriter proc sandbox scopes errors studio)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home})

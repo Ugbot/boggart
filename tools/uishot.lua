@@ -1,12 +1,12 @@
 -- uishot.lua -- render the studio with representative content and photograph it.
 --
--- Run via tools/uishot.sh. This exists because the panel-attachment bug of
+-- Run with `ninja ui-check`. This exists because the panel-attachment bug of
 -- 2026-08-11 was invisible to every headless test: AgentView constructed
 -- correctly, laid out correctly, and answered every probe correctly, while
--- never appearing on screen at all -- once because lite does not set view.node
--- (so the "is the panel open?" check was nil every time) and once because a
--- `locked` split pins a node to its view's size, which for a fresh View is
--- zero. Neither is detectable without a rendered frame.
+-- never appearing on screen at all -- once because the editor core does not set
+-- view.node (so the "is the panel open?" check was nil every time) and once
+-- because a `locked` split pins a node to its view's size, which for a fresh
+-- View is zero. Neither is detectable without a rendered frame.
 --
 -- Output is a BMP because SDL2 writes one with no extra dependency. Convert it
 -- to PNG if you want to look at it somewhere fussy.
@@ -21,11 +21,18 @@ core.add_thread(function()
 
   local v = studio.open_agent()
   v.entries = {}
-  v:push("system", "boggart " .. (bog and bog.version or "?")
-    .. "   model " .. v:model())
   v:push("user", "add a retry helper to lua/api.lua and show me the diff")
   v:push("assistant", table.concat({
-    "I'll add a bounded retry with jittered backoff.",
+    "## Retry with backoff",
+    "",
+    "I'll add a **bounded** retry with *jittered* backoff to `lua/api.lua`.",
+    "The policy lives in `M.RETRY`, see [the spec](https://example.com/retry).",
+    "",
+    "- Retries only `429` and `5xx`",
+    "- Gives up after **four** attempts",
+    "- Jitter stops a fleet resynchronising",
+    "",
+    "---",
     "",
     "```lua",
     "-- Retry on 429/5xx only. Jitter keeps a fleet of agents from",
@@ -36,7 +43,9 @@ core.add_thread(function()
     "end",
     "```",
     "",
-    "Applying it to `lua/api.lua` now.",
+    "> Anything longer than eight seconds is worse than failing.",
+    "",
+    "Applying it now.",
   }, "\n"))
   v:push("tool", "read lua/api.lua", "read")
 
@@ -61,14 +70,19 @@ core.add_thread(function()
 
   check(studio.agent_view() == v, "agent_view() does not find the open panel")
   check(studio.open_agent() == v, "open_agent() built a second panel")
-  local node = core.root_view.root_node:get_node_for_view(v)
-  check(node ~= nil, "panel is not attached to the node tree")
+  check(core.root_view.root_node:get_node_for_view(v) ~= nil,
+    "panel is not attached to the node tree")
+  check(studio.sidebar ~= nil, "no sidebar")
+  check(core.root_view:get_primary_node():get_node_for_view(v) ~= nil,
+    "the conversation is not in the primary node")
 
   core.redraw = true
   for _ = 1, 4 do coroutine.yield(0.15) end   -- let the frame reach the framebuffer
 
   check(v.size.x > 100, "panel width is " .. tostring(v.size.x) .. " (collapsed)")
   check(v.size.y > 100, "panel height is " .. tostring(v.size.y) .. " (collapsed)")
+  check(studio.sidebar.size.x > 50,
+    "sidebar width is " .. tostring(studio.sidebar.size.x) .. " (collapsed)")
 
   local ok, err = system.save_screenshot(OUT)
   check(ok, "save_screenshot failed: " .. tostring(err))
@@ -79,7 +93,8 @@ core.add_thread(function()
     io.flush()
     os.exit(1)
   end
-  io.write(string.format("ok  panel %dx%d  wrote %s\n", v.size.x, v.size.y, OUT))
+  io.write(string.format("ok  conversation %dx%d, sidebar %d  wrote %s\n",
+    v.size.x, v.size.y, studio.sidebar.size.x, OUT))
   io.flush()
   os.exit(0)
 end)

@@ -35,6 +35,9 @@ style.error   = { common.color "#F77483" }   -- removed lines, failures
 style.keyword = { common.color "#E58AC9" }   -- tool calls, matching syntax
 style.warn    = { common.color "#FFA94D" }
 
+style.inline_code = { common.color "#F79B83" }  -- `code` in prose
+style.link        = { common.color "#93DDFA" }
+
 style.syntax = {}
 style.syntax["normal"] = { common.color "#e1e1e6" }
 style.syntax["symbol"] = { common.color "#e1e1e6" }

@@ -84,7 +84,9 @@ function studio.show_surface(which)
         return
       end
     end
-    core.log("no files open yet -- pick one from the tree, or ctrl+p")
+    -- Nothing open yet. "Code" should land you in a file, not in an empty
+    -- room with a hint about which keys to press.
+    command.perform("core:find-file")
   else
     if has_tree then tree.visible = false end
     core.set_active_view(studio.open_agent())

@@ -620,14 +620,101 @@ local function fit(tokens, cols)
   return rows
 end
 
-local function wrap_words(text, cols)
-  local out, cur = {}, ""
-  for word in text:gmatch("%S+%s*") do
-    if #cur + #word > cols and cur ~= "" then out[#out + 1] = cur; cur = word
-    else cur = cur .. word end
+-- ---- inline markdown -------------------------------------------------------
+--
+-- Models write markdown, so the panel reads markdown. Deliberately a scanner
+-- rather than a parser: it finds the earliest of a handful of spans, emits it,
+-- and continues. No nesting, no reference links, no tables. The failure mode of
+-- a scanner is that unusual markup renders as its own source, which is exactly
+-- what you want here -- the text is still there and still legible. The failure
+-- mode of a half-finished parser is swallowed text.
+--
+-- Bold is drawn by stamping the glyphs twice a pixel apart. There is one
+-- monospace font in this application and no bold cut of it, and faux-bold is
+-- more honest than pretending emphasis does not exist.
+local SPANS = {
+  { pat = "`([^`]+)`",                    kind = "code"   },
+  { pat = "%*%*([^*]+)%*%*",              kind = "bold"   },
+  { pat = "__([^_]+)__",                  kind = "bold"   },
+  { pat = "%[([^%]]+)%]%(([^)]+)%)",      kind = "link"   },
+  { pat = "%*([^*]+)%*",                  kind = "italic" },
+}
+
+local function inline(text, base)
+  local toks, i = {}, 1
+  while i <= #text do
+    local best
+    for _, sp in ipairs(SPANS) do
+      local s1, e1, cap = text:find(sp.pat, i)
+      if s1 and (not best or s1 < best.s) then
+        best = { s = s1, e = e1, cap = cap, kind = sp.kind }
+      end
+    end
+    if not best then
+      toks[#toks + 1] = { base, text:sub(i) }
+      break
+    end
+    if best.s > i then toks[#toks + 1] = { base, text:sub(i, best.s - 1) } end
+    if best.kind == "code" then
+      toks[#toks + 1] = { style.inline_code or style.error, best.cap }
+    elseif best.kind == "bold" then
+      toks[#toks + 1] = { base, best.cap, bold = true }
+    elseif best.kind == "italic" then
+      toks[#toks + 1] = { style.dim, best.cap }
+    else
+      toks[#toks + 1] = { style.link or style.accent, best.cap, link = true }
+    end
+    i = best.e + 1
   end
-  out[#out + 1] = cur
-  return out
+  return toks
+end
+
+-- Word-wrap a coloured token row. Breaks at spaces where it can and inside a
+-- token only when a single word is wider than the column.
+local function wrap_tokens(tokens, cols)
+  local rows, cur, used = {}, {}, 0
+  local function flush()
+    if #cur > 0 then rows[#rows + 1] = cur; cur, used = {}, 0 end
+  end
+  for _, t in ipairs(tokens) do
+    -- Whitespace-only tokens still occupy a column. Dropping them is what ate
+    -- the space between an inline span and the word after it -- "**bounded**
+    -- retry" rendered as "boundedretry", because the span ended the token and
+    -- the next token began with the space that got skipped.
+    if t[2] ~= "" and t[2]:match("^%s*$") then
+      cur[#cur + 1] = { t[1], t[2] }
+      used = used + #t[2]
+    end
+    for lead, chunk in t[2]:gmatch("(%s*)(%S+)") do
+      -- Copied out of the loop variable: Lua 5.5 makes the control variable
+      -- read-only, and this loop consumes it.
+      local word = lead .. chunk
+      local wlen = #word
+      if used + wlen > cols and used > 0 then
+        flush()
+        word = word:gsub("^%s+", "")   -- no leading space at the start of a row
+        wlen = #word
+      end
+      while wlen > cols do   -- a single word longer than the column
+        cur[#cur + 1] = { t[1], word:sub(1, cols), bold = t.bold, link = t.link }
+        rows[#rows + 1] = cur; cur, used = {}, 0
+        word = word:sub(cols + 1); wlen = #word
+      end
+      cur[#cur + 1] = { t[1], word, bold = t.bold, link = t.link }
+      used = used + wlen
+    end
+    -- ...and the trailing whitespace, which gmatch never yields either. That
+    -- is the space *before* the next span: "add a **bounded**" would otherwise
+    -- come out as "add abounded".
+    local tail = t[2]:match("%s+$")
+    if tail and t[2]:match("%S") then
+      cur[#cur + 1] = { t[1], tail }
+      used = used + #tail
+    end
+  end
+  flush()
+  if #rows == 0 then rows[1] = { { style.text, "" } } end
+  return rows
 end
 
 -- Rows for one entry, cached against (cols, text length). Streaming only ever
@@ -674,14 +761,40 @@ function AgentView:layout(e, cols)
         row.code = true
         rows[#rows + 1] = row
       end
+    elseif line:match("^%s*[-*_][-*_ ]*$") and #line:gsub("%s", "") >= 3 then
+      -- A horizontal rule, drawn as one.
+      rows[#rows + 1] = { rule = true }
     else
-      -- Prose. The cheapest markdown that earns its pixels: headings stand
-      -- out, quotes recede, everything else is text.
-      local col = base
-      if line:match("^#+%s") then col = style.accent
-      elseif line:match("^%s*>%s") then col = style.dim end
-      local text = (first and r.prefix or "") .. line
-      for _, w in ipairs(wrap_words(text, cols)) do rows[#rows + 1] = { { col, w } } end
+      -- Block markup first: it decides the colour and the prefix. Then the
+      -- rest of the line goes through the inline scanner.
+      local col, bold, prefix = base, false, nil
+      local body = line
+      local hashes, htext = line:match("^(#+)%s+(.*)$")
+      local quote = line:match("^%s*>%s?(.*)$")
+      local ind, bullet = line:match("^(%s*)[-*+]%s+()")
+      local num = line:match("^%s*%d+%.%s")
+
+      if hashes then
+        body, col, bold = htext, style.accent, true
+      elseif quote then
+        body, col = quote, style.dim
+        prefix = { style.divider, "| " }
+      elseif bullet then
+        body = line:sub(bullet)
+        prefix = { style.accent, ind .. "- " }
+      elseif num then
+        -- Numbered lists keep their own marker; it is already meaningful.
+        body = line
+      end
+
+      local toks = inline(body, col)
+      if bold then for _, t in ipairs(toks) do t.bold = true end end
+      if prefix then table.insert(toks, 1, prefix) end
+      if first and r.prefix ~= "" then
+        table.insert(toks, 1, { col, r.prefix })
+      end
+      for _, row in ipairs(wrap_tokens(toks, cols)) do rows[#rows + 1] = row end
+      if hashes and #hashes <= 2 then rows[#rows + 1] = { rule = true, thin = true } end
     end
     first = false
   end
@@ -877,9 +990,24 @@ function AgentView:draw()
           if row.code then
             renderer.draw_rect(x - pad / 2, y, w + pad, lh, style.background2)
           end
+          if row.rule then
+            renderer.draw_rect(ex, y + lh / 2, row.thin and (w / 3) or w,
+              math.max(1, SCALE), style.divider)
+          end
           local tx = ex
           for _, t in ipairs(row) do
-            tx = renderer.draw_text(font, t[2], tx, y + voff, t[1])
+            local nx = renderer.draw_text(font, t[2], tx, y + voff, t[1])
+            -- Faux-bold: the same glyphs a pixel to the right. Cheap, and the
+            -- only way to show emphasis with one font cut.
+            if t.bold then
+              renderer.draw_text(font, t[2], tx + math.max(1, SCALE * 0.5),
+                y + voff, t[1])
+            end
+            if t.link then
+              renderer.draw_rect(tx, y + voff + font:get_height(),
+                nx - tx, math.max(1, SCALE), t[1])
+            end
+            tx = nx
           end
         end
         y = y + lh
