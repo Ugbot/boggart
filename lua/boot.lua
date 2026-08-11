@@ -321,7 +321,11 @@ end
 -- them (the system prompt tells the model they may) without tripping strict.
 global{ json = bog.json, gold = require("gold") }
 
-strict.enable() -- lock globals now that libs + bog are in place
+-- Lock globals now that libs + bog are in place -- except when embedded in the
+-- editor, where lite sets its own globals (SCALE, PATHSEP, EXEDIR, VERSION...)
+-- after we return, and has its own strict guard for them. Enabling ours here
+-- would reject lite's assignments and take the editor down at startup.
+if bog.mode ~= "embedded" then strict.enable() end
 
 -- Connect any declared MCP servers (~/.boggart/lua/mcp_servers.lua). Skipped in
 -- eval mode so tests don't spawn subprocesses.
@@ -336,7 +340,13 @@ end
 
 if bog.mode ~= "eval" then bog.try(bog.mcphost.load) end
 
-if bog.mode == "swarm" then
+if bog.mode == "embedded" then
+  -- Embedded in boggart-studio: the harness is wired and the store is open;
+  -- the editor drives it from here. No REPL, no dispatch, no reading stdin.
+  -- lua/studio.lua is the UI side and is loaded by the editor, not by us.
+  return 0
+
+elseif bog.mode == "swarm" then
   -- Load the actor layer lazily (swarm-only; keeps the default wiring minimal).
   bog.sched = require("sched")
   bog.skills = require("skills")

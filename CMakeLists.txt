@@ -307,6 +307,7 @@ add_executable(boggart
   src/lmcp.c
   src/jwriter.c
   src/lauth.c
+  src/bogembed.c
   ${EMBEDDED_C})
 
 target_include_directories(boggart PRIVATE src)
@@ -331,6 +332,79 @@ if(APPLE)
   add_custom_command(TARGET boggart POST_BUILD
     COMMAND codesign -f -s - $<TARGET_FILE:boggart>
     COMMENT "Ad-hoc signing boggart")
+endif()
+
+# ---- boggart-studio: the desktop app ---------------------------------------
+# rxi's lite (MIT) as the editor shell, with boggart embedded as the agent
+# engine. One process and one lua_State: lite's SDL loop owns the program and
+# pumps boggart's scheduler once per frame, which is the same inversion the
+# swarm dashboard already uses (lua/dash.lua) and for the same reason -- the
+# thing that owns the frame must never be the thing that blocks.
+#
+# Sharing the interpreter is the point rather than an economy: the agent can
+# already rewrite its own harness, and in one state it can rewrite the editor
+# too -- add a command, bind a key, write a syntax mode for the file it is
+# looking at. That is the capability neither Goose nor Codex can have.
+#
+# Optional: needs SDL2. Configure with -DBOGGART_BUILD_APP=OFF to skip.
+option(BOGGART_BUILD_APP "Build the boggart-studio desktop app (needs SDL2)" ON)
+
+if(BOGGART_BUILD_APP)
+  find_package(SDL2 QUIET)
+  if(NOT SDL2_FOUND)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+      pkg_check_modules(SDL2 QUIET sdl2)
+    endif()
+  endif()
+endif()
+
+if(BOGGART_BUILD_APP AND SDL2_FOUND)
+  # lite's own C, plus stb_truetype's implementation unit. Deliberately NOT
+  # app/src/lib/lua52: the app shares one interpreter with boggart, and that
+  # interpreter is the vendored 5.4. lite needs exactly one change for it.
+  file(GLOB APP_SOURCES CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/app/src/*.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/app/src/api/*.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/app/src/lib/stb/*.c)
+
+  add_executable(boggart-studio
+    ${APP_SOURCES}
+    src/lhttp.c
+    src/lsys.c
+    src/ldb.c
+    src/lswarm.c
+    src/lmcp.c
+    src/jwriter.c
+    src/lauth.c
+    src/bogembed.c
+    ${EMBEDDED_C})
+
+  target_include_directories(boggart-studio PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/app/src
+    ${SDL2_INCLUDE_DIRS})
+  target_compile_definitions(boggart-studio PRIVATE BOGGART_STUDIO=1)
+  target_link_libraries(boggart-studio PRIVATE
+    boggart_warnings
+    lua_vendor sqlite_vendor cjson_vendor luv_lua uv_a isocline_vendor CURL::libcurl)
+  if(SDL2_LIBRARIES)
+    target_link_libraries(boggart-studio PRIVATE ${SDL2_LIBRARIES})
+    target_link_directories(boggart-studio PRIVATE ${SDL2_LIBRARY_DIRS})
+  else()
+    target_link_libraries(boggart-studio PRIVATE SDL2::SDL2)
+  endif()
+  # lite is upstream code and warns; our own files still build clean.
+  set_source_files_properties(${APP_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
+  set_target_properties(boggart-studio PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  if(APPLE)
+    add_custom_command(TARGET boggart-studio POST_BUILD
+      COMMAND codesign -f -s - $<TARGET_FILE:boggart-studio>
+      COMMENT "Ad-hoc signing boggart-studio")
+  endif()
+elseif(BOGGART_BUILD_APP)
+  message(STATUS "SDL2 not found -- skipping boggart-studio (the CLI still builds)")
 endif()
 
 # ---- tests -----------------------------------------------------------------

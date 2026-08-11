@@ -1,0 +1,6 @@
+-- User module. boggart-studio ships this empty: it is the documented place for
+-- your own keybindings and settings, it is loaded last (so it overrides both
+-- lite's defaults and studio's), and it is reloadable at runtime.
+--
+--   local keymap = require "core.keymap"
+--   keymap.add { ["ctrl+j"] = "agent:toggle-panel" }
