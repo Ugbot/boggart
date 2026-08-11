@@ -3,6 +3,7 @@
 
 #include <SDL2/SDL.h>
 #include <stdint.h>
+#include <stddef.h>
 
 typedef struct RenImage RenImage;
 typedef struct RenFont RenFont;
@@ -20,6 +21,10 @@ RenImage* ren_new_image(int width, int height);
 void ren_free_image(RenImage *image);
 
 RenFont* ren_load_font(const char *filename, float size);
+/* Same, from bytes already in memory -- a font baked into the binary by
+ * tools/bake_assets.cmake. The bytes are copied, so the caller keeps ownership
+ * and .rodata is never written to. */
+RenFont* ren_load_font_mem(const void *data, size_t len, float size);
 void ren_free_font(RenFont *font);
 /* The system fonts discovered to draw what the bundled ones cannot, in the
  * order they are consulted. Diagnostic: it is how a user finds out why their

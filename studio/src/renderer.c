@@ -419,6 +419,23 @@ static GlyphSet* get_glyphset(RenFont *font, int codepoint) {
 }
 
 
+/* The shared tail of ren_load_font and ren_load_font_mem: everything from
+ * "we have the bytes" onwards. `font->data` is owned by the RenFont either
+ * way -- the memory entry point copies, so a baked-in asset in read-only
+ * .rodata and a file read off disk are freed the same way. */
+static RenFont* font_from_data(RenFont *font, float size);
+
+
+RenFont* ren_load_font_mem(const void *data, size_t len, float size) {
+  if (!data || len == 0) { return NULL; }
+  RenFont *font = check_alloc(calloc(1, sizeof(RenFont)));
+  font->size = size;
+  font->data = check_alloc(malloc(len));
+  memcpy(font->data, data, len);
+  return font_from_data(font, size);
+}
+
+
 RenFont* ren_load_font(const char *filename, float size) {
   RenFont *font = NULL;
   FILE *fp = NULL;
@@ -429,7 +446,7 @@ RenFont* ren_load_font(const char *filename, float size) {
 
   /* load font into buffer */
   fp = fopen(filename, "rb");
-  if (!fp) { return NULL; }
+  if (!fp) { free(font); return NULL; }
   /* get size */
   fseek(fp, 0, SEEK_END); int buf_size = ftell(fp); fseek(fp, 0, SEEK_SET);
   /* load */
@@ -438,6 +455,11 @@ RenFont* ren_load_font(const char *filename, float size) {
   fclose(fp);
   fp = NULL;
 
+  return font_from_data(font, size);
+}
+
+
+static RenFont* font_from_data(RenFont *font, float size) {
   /* init stbfont */
   int ok = stbtt_InitFont(&font->stbfont, font->data, 0);
   if (!ok) { goto fail; }
@@ -488,8 +510,7 @@ RenFont* ren_load_font(const char *filename, float size) {
   return font;
 
 fail:
-  if (fp) { fclose(fp); }
-  if (font) { free(font->data); }
+  free(font->data);
   free(font);
   return NULL;
 }

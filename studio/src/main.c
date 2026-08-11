@@ -2,6 +2,7 @@
 #include <SDL2/SDL.h>
 #include "api/api.h"
 #include "renderer.h"
+#include "assets.h"
 
 /* boggart, embedded. See src/bogembed.c for why the agent shares this exact
  * lua_State rather than living in a subprocess. */
@@ -167,6 +168,10 @@ int main(int argc, char **argv) {
   lua_setglobal(L, "EXEFILE");
 
 
+  /* The baked-in studio/data. Installed before the bootstrap so require()
+   * can find core/ even when there is no data/ directory anywhere. */
+  studio_assets_open(L);
+
   (void) luaL_dostring(L,
     "local core\n"
     "xpcall(function()\n"
@@ -183,6 +188,11 @@ int main(int argc, char **argv) {
     "  package.path = EXEDIR .. '/studio/data/?/init.lua;' .. package.path\n"
     "  DATADIR = EXEDIR .. '/data'\n"
     "  if not io.open(DATADIR .. '/core/init.lua') then DATADIR = EXEDIR .. '/studio/data' end\n"
+    /* Neither layout exists, so this is a single-file install: fall through
+     * to the baked assets. renderer.font.load reads the marker; anything
+     * else that pokes at DATADIR (core/init.lua lists a plugins dir) just
+     * finds nothing there, which is what it already handles. */
+    "  if not io.open(DATADIR .. '/core/init.lua') then DATADIR = '@assets' end\n"
     /* Bring up boggart before the editor: core.init() builds views, and the
      * agent view wants `bog` to already exist. boot in embedded mode wires the
      * harness and opens the store, then returns instead of dispatching a REPL. */

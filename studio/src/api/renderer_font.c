@@ -1,15 +1,33 @@
 #include "api.h"
 #include "renderer.h"
 #include "rencache.h"
+#include "assets.h"
+#include <string.h>
 
 
+/* A path under the baked-in assets, or a real file.
+ *
+ * style.lua asks for DATADIR .. "/fonts/font.ttf" and does not care which it
+ * gets. When there is no data/ directory on disk the bootstrap sets DATADIR to
+ * "@assets", so the prefix -- rather than a guess at which trailing path
+ * components look like an asset key -- is what decides. A checkout with a real
+ * data/ directory still reads the file, so editing a font needs no rebuild. */
 static int f_load(lua_State *L) {
   const char *filename  = luaL_checkstring(L, 1);
   float size = luaL_checknumber(L, 2);
   RenFont **self = lua_newuserdata(L, sizeof(*self));
   luaL_setmetatable(L, API_TYPE_FONT);
-  *self = ren_load_font(filename, size);
-  if (!*self) { luaL_error(L, "failed to load font"); }
+
+  static const char pfx[] = STUDIO_ASSET_PREFIX "/";
+  if (!strncmp(filename, pfx, sizeof pfx - 1)) {
+    size_t len = 0;
+    const void *data = studio_asset_get(filename + sizeof pfx - 1, &len);
+    if (!data) { luaL_error(L, "no baked font '%s'", filename); }
+    *self = ren_load_font_mem(data, len, size);
+  } else {
+    *self = ren_load_font(filename, size);
+  }
+  if (!*self) { luaL_error(L, "failed to load font '%s'", filename); }
   return 1;
 }
 

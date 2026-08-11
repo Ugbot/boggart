@@ -14,18 +14,21 @@ name: release
 # Release, or by hand from the Actions tab, which builds and uploads the
 # archives without releasing anything.
 #
-# WHAT IS AND IS NOT SELF-CONTAINED. boggart (the CLI) statically links
-# everything it needs except the platform's own libc, libcurl and ncurses, so
-# it runs anywhere of the same vintage. boggart-studio additionally needs SDL2
-# at runtime:
-#   Windows  self-contained -- SDL2.dll ships in the archive next to the exe.
-#   Linux    needs libsdl2-2.0-0 from the distro (apt install libsdl2-2.0-0).
-#   macOS    needs `brew install sdl2`.
-# Bundling SDL2 into the macOS archive is deliberately not attempted: Homebrew's
-# `sdl2` is really sdl2-compat, a shim that dlopen()s SDL3 from an absolute
-# Cellar path, so copying the dylib next to the binary produces something that
-# still fails on a machine without Homebrew. Making that self-contained needs
-# SDL2 built from source, which is a bigger change than this file.
+# ONE FILE. Each archive holds two executables and nothing else -- no data
+# directory, no SDL2.dll, no "install SDL2 first". Two things make that true:
+#
+#   studio/data (sixty-odd Lua files and three fonts) is baked into
+#   boggart-studio by tools/bake_assets.cmake, so it has no tree to find.
+#
+#   SDL2 is built from source as a static library below and linked in. The
+#   package-manager route cannot give us this: Homebrew's `sdl2` is really
+#   sdl2-compat, a shim that dlopen()s SDL3 from an absolute Cellar path, so a
+#   binary linked against it fails on any machine without Homebrew.
+#
+# What is still dynamic is the platform's own: libc everywhere, plus libcurl
+# and ncurses on Linux and macOS (both are /usr/lib on macOS and present on any
+# Linux that can run a terminal). A fully static Linux build would need musl and
+# a static curl, which is a bigger job than this file.
 
 on:
   push:
@@ -73,42 +76,14 @@ jobs:
       - name: CMake and Ninja
         uses: lukka/get-cmake@latest
 
-      # ---- SDL2 --------------------------------------------------------------
-      # CMakeLists.txt calls find_package(SDL2 QUIET), and SDL2 ships its own
-      # sdl2-config.cmake, so every platform below just has to put that config
-      # file somewhere CMake looks. (CMake's own FindSDL module is documented as
-      # being for SDL 1 only -- it says to use find_package(SDL2) for SDL2,
-      # which is what this project already does.)
-      #
-      # If SDL2 is missing the project still configures and builds; it just
-      # skips boggart-studio and prints "SDL2 not found". That would silently
-      # ship an archive with one binary in it, so the package step below fails
-      # loudly if boggart-studio is absent.
-      - name: SDL2 (linux)
+      # Linux still needs the C-side dependencies that are not vendored.
+      # SDL2 is not among them any more -- it is built from source below.
+      - name: Install deps (linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libncurses-dev libsdl2-dev
-
-      - name: SDL2 (macos)
-        if: runner.os == 'macOS'
-        run: brew install sdl2
-
-      # The official SDL2 development package. It contains cmake/, so pointing
-      # SDL2_DIR at that directory is all find_package(SDL2) needs, and
-      # lib/x64/SDL2.dll is what the archive ships.
-      - name: SDL2 (windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ver = '2.32.10'
-          $url = "https://github.com/libsdl-org/SDL/releases/download/release-$ver/SDL2-devel-$ver-VC.zip"
-          Invoke-WebRequest -Uri $url -OutFile sdl2.zip
-          Expand-Archive sdl2.zip -DestinationPath $env:RUNNER_TEMP\sdl2
-          $root = "$env:RUNNER_TEMP\sdl2\SDL2-$ver"
-          "SDL2_DIR=$root\cmake"   | Out-File -FilePath $env:GITHUB_ENV -Append
-          "SDL2_DLL=$root\lib\x64\SDL2.dll" | Out-File -FilePath $env:GITHUB_ENV -Append
+            libcurl4-openssl-dev libncurses-dev
 
       # Puts cl.exe, the CRT/SDK headers and the linker on PATH. Without it
       # Ninja has no compiler on windows-latest. x64 is explicit because the
@@ -120,12 +95,43 @@ jobs:
         with:
           arch: x64
 
+      # SDL2 as a static library, which is what makes boggart-studio one file.
+      # CMakeLists.txt needs no change for this: find_package(SDL2 QUIET) picks
+      # up the SDL2Config.cmake installed here through CMAKE_PREFIX_PATH, and a
+      # static-only install exports a static target through the same name.
+      #
+      # Ninja and the compiler are already on PATH for every platform by now --
+      # get-cmake above, and msvc-dev-cmd for Windows -- so one bash step builds
+      # it everywhere. Windows runners have bash via Git for Windows.
+      - name: Build SDL2 (static)
+        shell: bash
+        run: |
+          set -eu
+          ver=2.32.10
+          curl -sSLo sdl2.tar.gz \
+            "https://github.com/libsdl-org/SDL/releases/download/release-$ver/SDL2-$ver.tar.gz"
+          tar xzf sdl2.tar.gz
+          # A native path, not a bash one: CMake on Windows does not understand
+          # /d/a/boggart/... and would write the prefix somewhere unfindable.
+          case "${RUNNER_OS}" in
+            Windows) prefix=$(pwd -W)/sdl2-prefix ;;
+            *)       prefix=$PWD/sdl2-prefix ;;
+          esac
+          cmake -S "SDL2-$ver" -B sdl2-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TEST=OFF \
+            -DCMAKE_INSTALL_PREFIX="$prefix"
+          cmake --build sdl2-build
+          cmake --install sdl2-build
+          echo "SDL2_PREFIX=$prefix" >> "$GITHUB_ENV"
+
       # ---- build -------------------------------------------------------------
       # Release, not the project's RelWithDebInfo default: this is the build
       # people download, so it should be the small one. ci.yml still exercises
       # the default.
       - name: Configure
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$SDL2_PREFIX"
+        shell: bash
 
       - name: Build
         run: cmake --build build
@@ -137,12 +143,9 @@ jobs:
         run: ctest --test-dir build --output-on-failure
 
       # ---- package -----------------------------------------------------------
-      # Layout matters. studio/src/main.c resolves DATADIR from the directory
-      # the executable is in: it looks for <exedir>/data/core/init.lua and only
-      # then <exedir>/studio/data. So the Lua tree ships as `data/` beside the
-      # binaries, and the studio finds it wherever the archive is unpacked.
-      # Without this the download starts and immediately dies with
-      # "module 'core' not found".
+      # Just the two executables. studio/data is baked into boggart-studio, so
+      # there is no tree to ship and nothing that can be left behind when
+      # someone moves the binary out of the folder they unpacked.
       #
       # CMakeLists.txt writes both binaries to the source root, not into
       # build/, which is why they are collected from there.
@@ -155,7 +158,6 @@ jobs:
           name="boggart-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}-${{ matrix.target }}"
           mkdir -p "dist/$name"
           cp boggart boggart-studio "dist/$name/"
-          cp -R studio/data "dist/$name/data"
           cp README.md "dist/$name/" 2>/dev/null || true
           tar -C dist -czf "$name.tar.gz" "$name"
           echo "ARCHIVE=$name.tar.gz" >> "$GITHUB_ENV"
@@ -170,12 +172,7 @@ jobs:
           $name = "boggart-$tag-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
           Copy-Item boggart.exe, boggart-studio.exe "dist/$name/"
-          Copy-Item -Recurse studio/data "dist/$name/data"
           Copy-Item README.md "dist/$name/" -ErrorAction SilentlyContinue
-          # SDL2.dll is the studio's only non-system runtime dependency on
-          # Windows; libcurl is static with the Schannel backend and PDCurses is
-          # vendored, so with this the archive is self-contained.
-          Copy-Item $env:SDL2_DLL "dist/$name/"
           Compress-Archive -Path "dist/$name" -DestinationPath "$name.zip"
           "ARCHIVE=$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
 
@@ -204,7 +201,14 @@ jobs:
           io.write("packaged boggart ok, version ", bog.version, "\n")
           LUA
           HOME=$(mktemp -d) "$p/boggart" --eval "$d/smoke.lua"
-          test -f "$p/data/core/init.lua" || { echo "the studio's data/ tree is missing"; exit 1; }
+          # The studio has to run with nothing beside it. Copied alone into an
+          # empty directory, because running it from the unpacked archive would
+          # still find a data/ tree if one had crept back in.
+          solo=$(mktemp -d); cp "$p/boggart-studio" "$solo/"
+          test -z "$(ls -A "$solo" | grep -v boggart-studio)" || { echo "not a single file"; exit 1; }
+          ldd "$solo/boggart-studio" 2>/dev/null | grep -i sdl && { echo "SDL2 is still dynamic"; exit 1; }
+          otool -L "$solo/boggart-studio" 2>/dev/null | grep -i sdl && { echo "SDL2 is still dynamic"; exit 1; }
+          echo "boggart-studio is one file"; true
 
       - name: Smoke-test the package (windows)
         if: runner.os == 'Windows'
@@ -228,8 +232,9 @@ jobs:
           )
           & "$p\boggart.exe" --eval $lua
           if ($LASTEXITCODE -ne 0) { throw "packaged boggart.exe did not run" }
-          if (-not (Test-Path "$p\data\core\init.lua")) { throw "the studio's data/ tree is missing" }
-          if (-not (Test-Path "$p\SDL2.dll"))          { throw "SDL2.dll is missing from the archive" }
+          # One file: the archive must contain the two exes and nothing else.
+          if (Test-Path "$p\SDL2.dll") { throw "SDL2.dll should not be needed any more" }
+          if (Test-Path "$p\data")     { throw "data/ should be baked into the exe" }
 
       - uses: actions/upload-artifact@v4
         with:

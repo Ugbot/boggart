@@ -369,8 +369,26 @@ if(BOGGART_BUILD_APP AND SDL2_FOUND)
     ${CMAKE_CURRENT_SOURCE_DIR}/studio/src/api/*.c
     ${CMAKE_CURRENT_SOURCE_DIR}/studio/src/lib/stb/*.c)
 
+  # ---- generated embedded studio assets ------------------------------------
+  # studio/data -- sixty-odd Lua files and three fonts -- baked into the binary
+  # the same way lua/ already is, so boggart-studio is one file rather than a
+  # file plus a directory that has to travel with it. studio/src/assets.c reads
+  # the table; an on-disk data/ still wins, so a checkout runs its working copy.
+  set(STUDIO_ASSETS_C ${CMAKE_CURRENT_BINARY_DIR}/studio_assets.c)
+  file(GLOB_RECURSE STUDIO_DATA CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/studio/data/*)
+  add_custom_command(
+    OUTPUT ${STUDIO_ASSETS_C}
+    COMMAND ${CMAKE_COMMAND}
+            -DDATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/studio/data
+            -DOUT=${STUDIO_ASSETS_C}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/bake_assets.cmake
+    DEPENDS ${STUDIO_DATA} ${CMAKE_CURRENT_SOURCE_DIR}/tools/bake_assets.cmake
+    COMMENT "Baking studio/data into studio_assets.c")
+
   add_executable(boggart-studio
     ${APP_SOURCES}
+    ${STUDIO_ASSETS_C}
     src/lhttp.c
     src/lsys.c
     src/ldb.c
