@@ -193,6 +193,88 @@ if loaded then
   local one = rows_of("café", 40)
   ok(#one == 1, "a four-character accented word does not wrap at 40 columns")
 
+  -- ---- display width -----------------------------------------------------
+  -- The panel measures in grid cells, which is a third thing after bytes and
+  -- characters: a CJK ideograph is one character, three bytes and two cells.
+  -- These are the tables in src/utf8width.h, reached through sys.width, and
+  -- they are checked here because the arithmetic is pure and a rendered frame
+  -- proves an off-by-one only to someone who already suspects it.
+  local widths = {
+    { "abc",                3, "ascii"            },
+    { "café",               4, "precomposed é"    },
+    { "e\u{0301}",          1, "e + combining acute is one cell" },
+    { "日本語",             6, "CJK is two cells each" },
+    { "한국어",             6, "Hangul syllables"  },
+    { "Привет",             6, "Cyrillic is one cell each" },
+    { "Ελληνικά",           8, "Greek"             },
+    { "שלום",               4, "Hebrew"            },
+    { "العربية",            7, "Arabic"            },
+    { "Ａ",                 2, "fullwidth Latin"   },
+    { "→─",                 2, "arrows and box drawing are one cell" },
+    { "\u{1F600}",          2, "emoji is two cells" },
+    { "\u{1F469}\u{200D}\u{1F4BB}", 4, "a ZWJ sequence measures as its parts" },
+    { "",                   0, "the empty string"  },
+  }
+  for _, c in ipairs(widths) do
+    ok(sys.width(c[1]) == c[2], string.format(
+      "width: %s is %d cells (got %d)", c[3], c[2], sys.width(c[1])))
+  end
+
+  -- The cut is on a character boundary, and a two-cell character straddling
+  -- the limit is left out whole rather than halved -- which is why the columns
+  -- taken are a separate return from the prefix.
+  local jp = "日本語abc"
+  local p3, u3 = sys.wtake(jp, 3)
+  ok(p3 == "日" and u3 == 2,
+    "wtake leaves out a wide character that does not fit (got '" .. p3
+    .. "' using " .. u3 .. ")")
+  local p6, u6 = sys.wtake(jp, 6)
+  ok(p6 == "日本語" and u6 == 6, "...and takes it when it does")
+  ok(sys.wtake(jp, 0) == "" and sys.wtake(jp, 99) == jp,
+    "wtake handles both ends")
+  for n = 0, 12 do
+    -- Parenthesised: wtake returns two values, and utf8.len's second argument
+    -- is a starting index, so an unwrapped call passes the column count as a
+    -- position and fails on the zero.
+    ok(utf8.len((sys.wtake(jp, n))) ~= nil,
+      "wtake(" .. n .. ") is valid UTF-8")
+  end
+
+  -- ---- wrapping by width, not by character -------------------------------
+  -- The bug this replaces: a paragraph of Japanese wrapped at 40 *characters*
+  -- drew 80 cells wide and ran off the right of the panel, with nothing to
+  -- scroll to it and no clue that anything had been lost.
+  local jp_para = string.rep("日本語のテキストです。", 12)
+  local jrows = rows_of(jp_para, 40)
+  local jwidest, jjoined = 0, {}
+  for _, r in ipairs(jrows) do
+    local s = text_of(r)
+    jwidest = math.max(jwidest, sys.width(s))
+    jjoined[#jjoined + 1] = s
+    if utf8.len(s) == nil then jwidest = 9999 end
+  end
+  ok(jwidest <= 40,
+    "a Japanese paragraph wraps to the column in cells (widest " .. jwidest .. ")")
+  ok(table.concat(jjoined) == jp_para, "...and loses nothing doing it")
+
+  -- Mixed scripts on one row have to add up the same way.
+  local mixed = "the file 設定.lua has ошибки"
+  ok(sys.width(mixed) == #("the file ") + 4 + #(".lua has ") + 6,
+    "a mixed line measures as the sum of its parts")
+
+  -- A column too narrow for the character in it. This used to be an infinite
+  -- loop rather than a cosmetic problem: the wrapper asked for one cell, got
+  -- an empty string back because the next glyph needed two, and never made
+  -- progress. It has to terminate and it has to emit the character.
+  local narrow = rows_of("日本語日本語", 1)
+  ok(#narrow >= 6, "a two-cell glyph in a one-cell column still gets emitted ("
+    .. #narrow .. " rows)")
+  local nall = {}
+  for _, r in ipairs(narrow) do nall[#nall + 1] = text_of(r) end
+  ok(table.concat(nall) == "日本語日本語",
+    "...with every character present exactly once")
+  ok(#rows_of("a日b", 2) >= 2, "a one-cell and a two-cell glyph share a column")
+
   -- ---- inline markdown ---------------------------------------------------
   -- The space around a span. This is the regression that shipped.
   local md = text_of(rows_of("add a **bounded** retry now", 60)[1])

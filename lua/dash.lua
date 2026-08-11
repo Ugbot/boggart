@@ -53,26 +53,32 @@ end
 -- True when byte b is a UTF-8 continuation byte (10xxxxxx).
 local function is_cont(b) return b and b >= 0x80 and b < 0xC0 end
 
--- Truncate to w bytes with a ".." marker, never cutting a UTF-8 sequence in
--- half. Byte-based, which is exact for the ASCII this mostly renders; wide
--- glyphs can still under-fill a row.
+-- Widths here are terminal cells, not bytes and not characters.
+--
+-- This used to measure in bytes, which is exact for ASCII and wrong for
+-- everything else in two directions at once: a three-byte CJK ideograph
+-- counted as three cells when it occupies two, and an accented Latin letter
+-- counted as two when it occupies one. Both under- or over-filled the row and
+-- pushed the columns out of line. sys.width/sys.wtake carry the Unicode
+-- East Asian Width table from C, so the terminal dashboard and the GUI now
+-- measure the same way -- which matters, since a swarm can be watched through
+-- either.
 function M.clip(s, w)
   s = tostring(s or "")
   w = math.floor(w or 0)
   if w <= 0 then return "" end
-  if #s <= w then return s end
-  if w <= 2 then return s:sub(1, w) end
-  local cut = w - 2
-  while cut > 0 and is_cont(s:byte(cut + 1)) do cut = cut - 1 end
-  return s:sub(1, cut) .. ".."
+  if sys.width(s) <= w then return s end
+  if w <= 2 then return (sys.wtake(s, w)) end
+  return (sys.wtake(s, w - 2)) .. ".."
 end
 
--- Right-pad to exactly w bytes (used so a highlighted row fills its line).
+-- Right-pad to exactly w cells (used so a highlighted row fills its line).
 function M.pad(s, w)
   s = tostring(s or "")
   w = math.floor(w or 0)
-  if #s >= w then return s end
-  return s .. string.rep(" ", w - #s)
+  local n = sys.width(s)
+  if n >= w then return s end
+  return s .. string.rep(" ", w - n)
 end
 
 -- Split on newlines, keeping empty lines.
@@ -89,7 +95,7 @@ function M.lines_of(s)
   return out
 end
 
--- Hard-wrap text to w bytes per line, on UTF-8 boundaries.
+-- Hard-wrap text to w cells per line, on UTF-8 boundaries.
 function M.wrap(s, w)
   w = math.floor(w or 0)
   if w < 1 then return { "" } end
@@ -98,12 +104,19 @@ function M.wrap(s, w)
     if line == "" then
       out[#out + 1] = ""
     else
-      local i = 1
-      while i <= #line do
-        local cut = math.min(#line, i + w - 1)
-        while cut > i and is_cont(line:byte(cut + 1)) do cut = cut - 1 end
-        out[#out + 1] = line:sub(i, cut)
-        i = cut + 1
+      local rest = line
+      while #rest > 0 do
+        local head = sys.wtake(rest, w)
+        if head == "" then
+          -- A two-cell glyph asked to fit in a one-cell column. Emitting it
+          -- overflows by one; emitting nothing loops forever. Overflow is the
+          -- lesser problem, and a one-column pane is already lost.
+          local i = 2
+          while i <= #rest and is_cont(rest:byte(i)) do i = i + 1 end
+          head = rest:sub(1, i - 1)
+        end
+        out[#out + 1] = head
+        rest = rest:sub(#head + 1)
       end
     end
   end

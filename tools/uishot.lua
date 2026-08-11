@@ -224,10 +224,13 @@ core.add_thread(function()
     v:push("assistant", "NOSPACES:" .. string.rep("abcdef0123456789", 18))
     v:push("assistant", "accents: café naïve résumé Ünicode, then "
       .. string.rep("naïve ", 24))
-    -- The bundled fonts have no CJK or emoji coverage, so these draw as blanks.
-    -- They are here so that the *layout* around them stays sane: before the
-    -- wrapper counted characters, a CJK line was sliced mid-codepoint and the
-    -- rows either side of the break came out visibly corrupt.
+    -- CJK now draws, from a system font found at runtime; emoji still do not,
+    -- because the only font on a stock macOS that has them is a colour one and
+    -- stb_truetype cannot rasterise those. Both are here for the same reason
+    -- as before: the *layout* around them has to stay sane. Before the wrapper
+    -- counted characters a CJK line was sliced mid-codepoint and the rows
+    -- either side came out visibly corrupt; before it counted cells the line
+    -- was laid out at half the width it drew at and ran off the panel.
     v:push("assistant", "CJK: 日本語のテキストはここにあります。これは長い行です。")
     v:push("assistant", "emoji: 🎉🚀🐛✅ done")
     v:push("assistant", "wide code:\n```lua\nlocal x = " .. string.rep("y", 140)
@@ -248,6 +251,89 @@ core.add_thread(function()
           end
         end
       end
+    end
+
+    -- ---- the world's scripts ------------------------------------------------
+    --
+    -- A frame is the only place some of this can be checked at all. Coverage
+    -- comes from whatever fonts the machine running this happens to have, so
+    -- the assertions below are about arithmetic that must hold everywhere --
+    -- rows fitting the column in cells, drawn pixels matching measured cells --
+    -- while the BMP is there for the part only a person can judge: whether the
+    -- scripts share a baseline, and whether anything is a box that should not
+    -- be.
+    --
+    -- What this cannot check, because the app does not do it: Arabic and
+    -- Hebrew are drawn in logical order with unjoined letters, and Devanagari
+    -- is drawn without conjuncts or reordering. Correct shaping and bidi need
+    -- HarfBuzz and FriBidi. The widths are right; the glyphs are not.
+    v.entries = {}
+    v.pending = nil
+    v:set_input("編集中のテキスト café 日本語")
+    v:push("user", "日本語のテキストを表示できますか？")
+    v:push("assistant", table.concat({
+      "Japanese   日本語のテキスト、ひらがな、カタカナ",
+      "Chinese    中文简体字和繁體字測試",
+      "Korean     한국어 텍스트 입니다",
+      "Cyrillic   Привет, мир!   Greek: Ελληνικά κείμενο",
+      "Hebrew     שלום עולם      Arabic: مرحبا بالعالم",
+      "Devanagari नमस्ते दुनिया      Thai: สวัสดีชาวโลก",
+      "Latin      café naïve Ünïcödé   combining: e\u{0301} a\u{0300}",
+      "Symbols    → ← ↑ ↓ ─ │ ┌ ┐ ∀ ∃ ∑ € ™ ½",
+      "Emoji      \u{1F600} \u{1F469}\u{200D}\u{1F4BB} \u{1F680}",
+      "Mixed      the file 設定.lua has 3 errors — see ссылка",
+      "",
+      "```lua",
+      "local msg = \"日本語\"   -- a comment with 中文",
+      "```",
+      "",
+      "Wrapping: " .. string.rep("日本語のテキストです。", 14),
+    }, "\n"))
+    shot("unicode")
+    check_hits("unicode")
+
+    -- Every row fits the column measured in cells. This is the check that was
+    -- failing silently: with the wrapper counting codepoints these rows were
+    -- inside 96 characters and up to 192 cells, so the tail of every CJK line
+    -- was drawn past the right edge of the panel.
+    for _, e in ipairs(v.entries) do
+      if e.role ~= "diff" then
+        for i, row in ipairs(v:layout(e, 96)) do
+          local cells = 0
+          for _, t in ipairs(row) do
+            check(utf8.len(t[2]) ~= nil, string.format(
+              "unicode row %d of a %s entry is not valid UTF-8", i, e.role))
+            cells = cells + sys.width(t[2])
+          end
+          check(cells <= 96, string.format(
+            "unicode row %d of a %s entry is %d cells wide, not 96",
+            i, e.role, cells))
+        end
+      end
+    end
+
+    -- Measured cells and drawn pixels have to be the same thing, or the caret
+    -- lands beside the character it claims to be on. They agree only because
+    -- the renderer snaps a monospace font's advances to the grid that
+    -- sys.width describes; without that a CJK glyph advances about 1.7 cells
+    -- and every line of Japanese drifts left of its own layout.
+    local cf = require("core.style").code_font
+    local cell = cf:get_width("0")
+    for _, s in ipairs { "abc", "café", "日本語", "한국어", "→─", "Привет",
+                         "\u{1F600}", "the file 設定.lua" } do
+      check(cf:get_width(s) == sys.width(s) * cell, string.format(
+        "%q draws %d px but measures %d cells of %d",
+        s, cf:get_width(s), sys.width(s), cell))
+    end
+
+    -- A capability, reported rather than assumed. An empty chain is a legal
+    -- answer -- it means this machine has nothing beyond the bundled fonts --
+    -- so this asserts the call works, not that it found anything.
+    local fb = renderer.font.fallbacks()
+    check(type(fb) == "table", "renderer.font.fallbacks() did not return a table")
+    io.write(string.format("  font fallbacks: %d discovered\n", #fb))
+    for _, f in ipairs(fb) do
+      if f.loaded then io.write("    used: ", f.path, "\n") end
     end
 
     -- ---- an empty conversation ---------------------------------------------

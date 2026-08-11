@@ -7,6 +7,8 @@
  *   sys.exec                     -- installed by boot.lua from lua/proc.lua
  *   sys.readline(prompt)         -> line:string | nil (EOF/^D)
  *   sys.add_history(line)        -> (void)
+ *   sys.width(s)                 -> display columns (wcwidth, not bytes)
+ *   sys.wtake(s, cols)           -> prefix fitting in cols, columns used
  *
  * File read/write, os.getenv, os.tmpname, io.popen etc. are already provided by
  * the Lua standard library, so we do not re-bind them.
@@ -21,6 +23,8 @@
 #include "lua.h"
 #include "lauxlib.h"
 #include "isocline.h"
+
+#include "utf8width.h"
 
 /* MSVC's <sys/stat.h> defines S_IFDIR/S_IFREG but not the S_IS* predicates,
  * so test the format bits directly. uv_stat_t fills st_mode portably. */
@@ -399,6 +403,45 @@ static int l_add_history(lua_State *L) {
   return 0;
 }
 
+/* sys.width(s) -> columns
+ *
+ * How many monospace cells `s` occupies. Not #s, which is bytes, and not
+ * utf8.len(s), which is characters: a Japanese ideograph is one character,
+ * three bytes and two columns, and Lua can compute the first two of those and
+ * not the third. The tables are Unicode's and live in utf8width.h, which is
+ * why this is here rather than in the harness -- both the studio's renderer
+ * and lua/dash.lua's line arithmetic have to agree, and a table transcribed
+ * into Lua would be a second copy to keep in step.
+ *
+ * See utf8width.h for what this does not answer: no grapheme clustering, so a
+ * ZWJ emoji sequence measures as its parts. */
+static int l_width(lua_State *L) {
+  size_t len = 0;
+  const char *s = luaL_checklstring(L, 1, &len);
+  lua_pushinteger(L, bog_str_width(s, len));
+  return 1;
+}
+
+/* sys.wtake(s, cols) -> prefix, columns_used
+ *
+ * The longest prefix of `s` that fits in `cols` columns, cut on a character
+ * boundary. Two returns because they are not the same number: a double-width
+ * character straddling the limit is left out whole, so the prefix can be a
+ * column short, and a caller padding a row to a fixed width needs to know by
+ * how much. Slicing this in Lua means measuring character by character; doing
+ * it here is one pass and no garbage. */
+static int l_wtake(lua_State *L) {
+  size_t len = 0;
+  const char *s = luaL_checklstring(L, 1, &len);
+  lua_Integer cols = luaL_checkinteger(L, 2);
+  if (cols < 0) { cols = 0; }
+  int used = 0;
+  size_t n = bog_str_take(s, len, (int) cols, &used);
+  lua_pushlstring(L, s, n);
+  lua_pushinteger(L, used);
+  return 2;
+}
+
 static const luaL_Reg sys_lib[] = {
   {"listdir", l_listdir},
   {"mkdir_p", l_mkdir_p},
@@ -416,6 +459,8 @@ static const luaL_Reg sys_lib[] = {
   {"caps", l_caps},
   {"kill_tree", l_kill_tree},
   {"uv_version", l_uv_version},
+  {"width", l_width},
+  {"wtake", l_wtake},
   {NULL, NULL},
 };
 

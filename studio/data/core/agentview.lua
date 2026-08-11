@@ -647,46 +647,62 @@ end
 -- already recognises, then run the same tokenizer a DocView runs.
 --
 -- Everything here draws in style.code_font, which is monospace, so widths are
--- character counts. That is what makes wrapping a token row cheap.
+-- counted in grid cells. That is what makes wrapping a token row cheap.
 --
--- A character is not a byte, and this used to count bytes. Two things came of
--- that: "café" measured five columns wide, and -- much worse -- a word too long
--- for the column was cut with string.sub at a byte offset, which lands in the
--- middle of a codepoint. The renderer then got a fragment beginning with a
--- continuation byte, which it cannot decode: on screen a wrapped run of "é"
--- grew a stray "À" at each break and an orphan blank at each row start, and in
--- C the decoder produced a negative codepoint and indexed the glyphset array
--- below zero. Counting and slicing on codepoint boundaries costs one pass and
--- removes the whole class.
+-- Three measures have been tried here and only the third is right. Bytes came
+-- first: "café" measured five cells wide, and a word too long for the column
+-- was cut with string.sub at a byte offset, which lands in the middle of a
+-- codepoint -- the renderer got a fragment starting with a continuation byte,
+-- so a wrapped run of "é" grew a stray "À" at each break, and in C the decoder
+-- produced a negative codepoint and indexed the glyphset array below zero.
 --
--- What remains: a double-width CJK glyph still counts as one column. Getting
--- that right needs wcwidth, and the bundled fonts have no CJK coverage to draw
--- in the first place, so it stays a known remainder rather than a half-fix.
+-- Codepoints came second and fixed all of that, but a Japanese ideograph is
+-- one codepoint and two cells. A paragraph of Japanese wrapped at 96 codepoints
+-- drew 192 cells wide and ran off the right of the panel with no way to scroll
+-- to it.
+--
+-- Cells are the third, and are what a monospace grid actually has. sys.width
+-- and sys.wtake are C, over the Unicode tables in src/utf8width.h, so this
+-- agrees with the renderer's own advances by construction rather than by two
+-- pieces of code being kept in step by hand.
+--
+-- What is still not right, and is not fixable here: no grapheme clustering, so
+-- a ZWJ emoji sequence measures as its parts and wraps as if it were several
+-- characters; and no bidi, so Hebrew and Arabic wrap correctly by width while
+-- being drawn in logical rather than visual order.
 
--- The number of characters in s. Every byte that is not a UTF-8 continuation
--- byte starts one, which gsub counts at C speed.
-local function cols_of(s)
-  local _, n = s:gsub("[^\128-\191]", "")
-  return n
+-- Display cells occupied by s, which is not #s (bytes) and not utf8.len(s)
+-- (characters).
+local function cols_of(s) return sys.width(s) end
+
+-- Split s at n cells: the part that fits, the rest, and the cells that part
+-- took.
+--
+-- The head comes back empty when the next character is two cells wide and only
+-- one cell is left, and callers have to treat that as "start a new row" rather
+-- than as "no progress" -- a loop that waits for a wide glyph to fit in one
+-- cell does not end. See first_char for the case where there is no new row to
+-- start either.
+local function split(s, n)
+  local head, w = sys.wtake(s, n)
+  return head, s:sub(#head + 1), w
 end
 
--- The byte index one past the n-th character of s (#s + 1 if s is shorter).
-local function byte_at(s, n)
-  local i, len = 1, #s
-  while n > 0 and i <= len do
+-- The first character of s whatever it costs. The escape hatch for a two-cell
+-- glyph in a one-cell column: it overflows by a cell, which is visible, and
+-- the alternative is a hang, which is not.
+local function first_char(s)
+  local i = 2
+  while i <= #s do
+    local b = s:byte(i)
+    if b < 0x80 or b >= 0xc0 then break end
     i = i + 1
-    while i <= len do
-      local b = s:byte(i)
-      if b < 0x80 or b >= 0xc0 then break end
-      i = i + 1
-    end
-    n = n - 1
   end
-  return i
+  return s:sub(1, i - 1)
 end
 
-local function ctake(s, n) return s:sub(1, byte_at(s, n) - 1) end
-local function cdrop(s, n) return s:sub(byte_at(s, n)) end
+-- Everything past the first n cells of s.
+local function cdrop(s, n) return select(2, split(s, n)) end
 
 local EXT = {
   lua = "lua", c = "c", h = "h", cpp = "cpp", cc = "cpp", ["c++"] = "cpp",
@@ -706,8 +722,8 @@ local function syntax_for(lang)
   return nil
 end
 
--- Break a coloured token row to fit `cols` characters, splitting between
--- tokens where possible and inside one only when a single token is too wide.
+-- Break a coloured token row to fit `cols` cells, splitting between tokens
+-- where possible and inside one only when a single token is too wide.
 local function fit(tokens, cols)
   local rows, cur, used = {}, {}, 0
   for _, t in ipairs(tokens) do
@@ -719,8 +735,23 @@ local function fit(tokens, cols)
       if n <= room then
         cur[#cur + 1] = { col, text }; used = used + n; text = ""
       else
-        cur[#cur + 1] = { col, ctake(text, room) }; text = cdrop(text, room)
-        used = cols
+        local head, tail, w = split(text, room)
+        if head == "" and used > 0 then
+          -- A wide glyph with one cell left. The row is done; the next one
+          -- has the whole column to offer it.
+          rows[#rows + 1] = cur; cur, used = {}, 0
+        else
+          -- `used` becomes what was actually taken, not `cols`. Assuming the
+          -- row filled exactly is what let a wide glyph left out of one row be
+          -- accounted for as though it had been drawn in it.
+          if head == "" then
+            head = first_char(text)
+            tail = text:sub(#head + 1)
+            w = cols_of(head)
+          end
+          cur[#cur + 1] = { col, head }
+          text, used = tail, used + w
+        end
       end
     end
   end
@@ -804,9 +835,13 @@ local function wrap_tokens(tokens, cols)
         wlen = cols_of(word)
       end
       while wlen > cols do   -- a single word longer than the column
-        cur[#cur + 1] = { t[1], ctake(word, cols), bold = t.bold, link = t.link }
+        local head, tail = split(word, cols)
+        -- Only when the column is one cell wide and the character is two.
+        -- Without it this loop takes nothing and runs forever.
+        if head == "" then head = first_char(word); tail = word:sub(#head + 1) end
+        cur[#cur + 1] = { t[1], head, bold = t.bold, link = t.link }
         rows[#rows + 1] = cur; cur, used = {}, 0
-        word = cdrop(word, cols); wlen = cols_of(word)
+        word = tail; wlen = cols_of(word)
       end
       cur[#cur + 1] = { t[1], word, bold = t.bold, link = t.link }
       used = used + wlen

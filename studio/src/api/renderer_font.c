@@ -44,12 +44,35 @@ static int f_get_height(lua_State *L) {
 }
 
 
+/* renderer.font.fallbacks() -> { { path = ..., loaded = bool }, ... }
+ *
+ * A capability, answered by C, in the shape sys.caps() established: Lua asks
+ * what this machine can draw rather than inferring it from the platform name.
+ * An empty table is a real answer -- it means nothing outside the bundled
+ * fonts will render -- and not an error. */
+static int f_fallbacks(lua_State *L) {
+  int n = ren_fallback_count();
+  lua_createtable(L, n, 0);
+  for (int i = 0; i < n; i++) {
+    int loaded = 0;
+    const char *path = ren_fallback_path(i, &loaded);
+    if (!path) { break; }
+    lua_createtable(L, 0, 2);
+    lua_pushstring(L, path);      lua_setfield(L, -2, "path");
+    lua_pushboolean(L, loaded);   lua_setfield(L, -2, "loaded");
+    lua_rawseti(L, -2, i + 1);
+  }
+  return 1;
+}
+
+
 static const luaL_Reg lib[] = {
   { "__gc",          f_gc            },
   { "load",          f_load          },
   { "set_tab_width", f_set_tab_width },
   { "get_width",     f_get_width     },
   { "get_height",    f_get_height    },
+  { "fallbacks",     f_fallbacks     },
   { NULL, NULL }
 };
 
