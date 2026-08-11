@@ -199,6 +199,25 @@ static int l_rmtree(lua_State *L) {
   return 1;
 }
 
+/* sys.chmod(path, mode) -> true | nil, err
+ * Mode is an integer, e.g. 0x180 (0600). Used to keep the store -- which can
+ * hold an API key -- readable only by its owner. A no-op on Windows, where
+ * uv_fs_chmod maps onto the read-only attribute and the ACL is what matters. */
+static int l_chmod(lua_State *L) {
+  const char *path = luaL_checkstring(L, 1);
+  int mode = (int)luaL_checkinteger(L, 2);
+  uv_fs_t req;
+  int rc = uv_fs_chmod(NULL, &req, path, mode, NULL);
+  uv_fs_req_cleanup(&req);
+  if (rc != 0) {
+    lua_pushnil(L);
+    lua_pushstring(L, uv_strerror(rc));
+    return 2;
+  }
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
 /* sys.cwd() -> path. Used to identify the project a tool belongs to. */
 static int l_cwd(lua_State *L) {
   char buf[4096];
@@ -387,6 +406,7 @@ static const luaL_Reg sys_lib[] = {
   {"pid", l_pid},
   {"tmpdir", l_tmpdir},
   {"cwd", l_cwd},
+  {"chmod", l_chmod},
   {"caps", l_caps},
   {"kill_tree", l_kill_tree},
   {"uv_version", l_uv_version},

@@ -30,7 +30,12 @@ sys.mkdir_p(bog.userdir .. "/lua/tools")
 ok(bog.reload(), "harness reload against temp userdir")
 
 -- ---- offline auth: never consult the real env or `ant` ---------------------
--- api.auth_headers() reads ANTHROPIC_API_KEY via os.getenv and shells out to
+-- Credentials live in C (src/lauth.c) and are not readable from Lua, so a
+-- stubbed os.getenv no longer reaches them. Set one for real; HOME is a temp
+-- dir here so nothing escapes the test.
+auth.set("api_key", "sk-ant-offline-test-key")
+
+-- (historical) api.auth_headers() read ANTHROPIC_API_KEY via os.getenv and shelled out to
 -- `ant` when it is missing. Stub os.getenv so the test is hermetic either way.
 local real_getenv = os.getenv
 os.getenv = function(name) -- luacheck: ignore

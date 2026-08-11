@@ -12,6 +12,8 @@
 local json = require("json")
 local M = {}
 
+local cached_headers = nil
+
 -- Where to send the request.
 --
 -- ANTHROPIC_BASE_URL is the same variable the official SDKs honour, so
@@ -23,8 +25,11 @@ local M = {}
 --
 -- runs the whole harness against a model on this machine, which is also how
 -- you exercise the agent loop with no network and no per-token cost.
+-- base_url and model are configuration and live in the C-side credential store
+-- (src/lauth.c) alongside the key, which Lua cannot read. auth.base_url()
+-- already applies the environment-wins precedence.
 local function endpoint()
-  local base = os.getenv("ANTHROPIC_BASE_URL")
+  local base = auth.base_url()
   if not base or base == "" then return "https://api.anthropic.com/v1/messages" end
   base = base:gsub("/+$", "")
   -- Accept either a bare origin or a full messages URL, so callers do not have
@@ -34,14 +39,149 @@ local function endpoint()
 end
 M.endpoint = endpoint
 
-local cached_headers = nil
+-- ---- failure classification -------------------------------------------------
+--
+-- Three kinds of thing go wrong here and they want opposite treatment:
+--
+--   configuration  no credentials, unreachable endpoint, unknown model. Not a
+--                  bug, and a stack traceback is actively unhelpful -- the user
+--                  needs to be told what to set. Never retried.
+--   transient      429, 5xx, a dropped connection. Retried with backoff before
+--                  the user ever hears about it.
+--   request        400s we caused. Surfaced with the server's own explanation,
+--                  which is usually specific and useful.
+--
+-- Errors are tables with __tostring so every existing `tostring(err)` site
+-- renders the human message, while callers that want to branch can look at
+-- .kind. `fatal` marks the ones where retrying or continuing is pointless --
+-- the swarm scheduler stops on those rather than failing every agent in turn
+-- with the same message.
+M.ERR = {
+  auth        = "auth",
+  endpoint    = "endpoint",
+  model       = "model",
+  bad_request = "bad_request",
+  rate_limit  = "rate_limit",
+  overloaded  = "overloaded",
+  server      = "server",
+  stream      = "stream",
+}
+
+local ERRMT = {
+  __tostring = function(e)
+    if e.hint and e.hint ~= "" then return e.message .. "\n\n" .. e.hint end
+    return e.message
+  end,
+}
+
+local function fail(kind, message, opts)
+  opts = opts or {}
+  error(setmetatable({
+    boggart_error = true, kind = kind, message = message,
+    hint = opts.hint, retryable = opts.retryable or false,
+    fatal = opts.fatal or false, status = opts.status,
+  }, ERRMT), 0)
+end
+M.fail = fail
+
+function M.is_error(e) return type(e) == "table" and e.boggart_error == true end
+
+-- Drop the cached auth headers. Needed after /auth changes a credential, or a
+-- key set mid-session would not take effect until restart.
+function M.forget_auth() cached_headers = nil end
+
+-- Turn an HTTP status into one of the kinds above, with the server's body as
+-- the detail (it usually says exactly what is wrong).
+local function classify_status(status, body)
+  body = tostring(body or "")
+  local detail = body:sub(1, 400):gsub("%s+$", "")
+  if status == 401 or status == 403 then
+    return M.ERR.auth, "The API rejected our credentials (HTTP " .. status .. ").", {
+      fatal = true,
+      hint = "Check ANTHROPIC_API_KEY, or re-run `ant auth login`.\n" ..
+             "Detail: " .. detail,
+    }
+  elseif status == 404 then
+    return M.ERR.model, "The endpoint returned 404 for " .. M.endpoint() .. ".", {
+      fatal = true,
+      hint = "Usually a wrong model name or base URL.\n" ..
+             "Check --model, and that ANTHROPIC_BASE_URL points at a server\n" ..
+             "exposing /v1/messages.\nDetail: " .. detail,
+    }
+  elseif status == 429 then
+    return M.ERR.rate_limit, "Rate limited (HTTP 429).", { retryable = true, hint = detail }
+  elseif status == 529 or status == 503 then
+    return M.ERR.overloaded, "The API is overloaded (HTTP " .. status .. ").",
+           { retryable = true, hint = detail }
+  elseif status >= 500 then
+    return M.ERR.server, "Server error (HTTP " .. status .. ").",
+           { retryable = true, hint = detail }
+  end
+  return M.ERR.bad_request, "The API rejected the request (HTTP " .. status .. ").",
+         { hint = detail }
+end
+
+-- A transport failure: no HTTP status at all. "Couldn't connect" against a
+-- configured base URL is nearly always a local server that is not running, so
+-- say that rather than reporting a generic network error.
+local function transport_error(detail)
+  detail = tostring(detail or "unknown")
+  local base = os.getenv("ANTHROPIC_BASE_URL")
+  local connect = detail:lower():find("connect", 1, true) ~= nil
+  if base and connect then
+    return M.ERR.endpoint, "Cannot reach " .. endpoint() .. " (" .. detail .. ").", {
+      fatal = true,
+      hint = "ANTHROPIC_BASE_URL is set, so this is your own endpoint.\n"
+        .. "Check the server is running and the port is right:\n"
+        .. "  curl -s " .. (base:gsub("/+$", "")) .. "/v1/models\n"
+        .. "Unset ANTHROPIC_BASE_URL to use the Anthropic API instead.",
+    }
+  end
+  -- No base URL configured: this is the real network, so it may well be a blip.
+  return M.ERR.endpoint, "Network error talking to the API (" .. detail .. ").",
+         { retryable = not connect, hint = connect
+             and "Check your network connection." or nil }
+end
+
+M.classify_status = classify_status
+M.transport_error = transport_error
+
+-- Retry policy. Deliberately short and few: a coding agent waiting two minutes
+-- on a wedged endpoint is worse than being told promptly.
+M.RETRY = { attempts = 4, base_ms = 500, max_ms = 8000 }
+
+-- Wait without stalling everyone else. On the sync path a plain sleep is
+-- correct. Under the scheduler we arm a uv timer and yield "proc" until it
+-- fires, so other agents keep running through the backoff.
+local function backoff_wait(ms, async)
+  local uv = require("uv")
+  if not async or not coroutine.isyieldable() then uv.sleep(ms); return end
+  local t = uv.new_timer()
+  local done = false
+  uv.timer_start(t, ms, 0, function() done = true end)
+  while not done do coroutine.yield("proc", t) end
+  pcall(uv.close, t)
+end
+
+local function retry_delay(attempt)
+  local ms = math.min(M.RETRY.max_ms, M.RETRY.base_ms * (2 ^ (attempt - 1)))
+  -- Jitter so several swarm agents rate-limited at once do not retry in lockstep.
+  return math.floor(ms * (0.75 + math.random() * 0.5))
+end
+
 local function auth_headers()
   if cached_headers then return cached_headers end
   local h = { "anthropic-version: 2023-06-01", "content-type: application/json" }
-  local key = os.getenv("ANTHROPIC_API_KEY")
-  if key and #key > 0 then
-    h[#h + 1] = "x-api-key: " .. key
-  elseif os.getenv("ANTHROPIC_BASE_URL") then
+  -- Note what is NOT here: the key. auth.has_key() answers the only question
+  -- this code has, and lhttp.c attaches the header itself from the C-side
+  -- store when a request sets `auth = true`. The secret never enters the Lua
+  -- state, so it cannot leak through a table the model can read, a log line,
+  -- or a generated tool.
+  if auth.has_key() then
+    -- Nothing to add here: the request itself carries `auth = true` and
+    -- lhttp.c appends the header. This branch exists only to say "we do have
+    -- a credential, do not fall through to the CLI".
+  elseif auth.base_url() then
     -- A self-hosted endpoint generally wants no credential at all. Falling
     -- through to the `ant` CLI here would fail for the wrong reason and hide
     -- what is actually a working local setup.
@@ -64,7 +204,20 @@ local function auth_headers()
       h[#h + 1] = "authorization: Bearer " .. tok
       h[#h + 1] = "anthropic-beta: oauth-2025-04-20"
     else
-      error("no ANTHROPIC_API_KEY set and `ant auth print-credentials` produced no token")
+      -- Configuration, not a fault. Say what to do, and mention every route
+      -- including the local one -- a user who has ds4 running mostly wants to
+      -- be told that pointing at it is an option.
+      fail(M.ERR.auth, "No API credentials found.", {
+        fatal = true,
+        hint = "Set one of these once and boggart will remember it:\n"
+          .. "  /auth key sk-...                 store an Anthropic API key\n"
+          .. "  /auth url http://127.0.0.1:8000  store a local endpoint (e.g. ds4-server)\n"
+          .. "\nOr for this shell only:\n"
+          .. "  export ANTHROPIC_API_KEY=sk-...\n"
+          .. "  export ANTHROPIC_BASE_URL=http://127.0.0.1:8000\n"
+          .. "  ant auth login                   sign in with the Anthropic CLI\n"
+          .. "\nStored settings live in ~/.boggart/boggart.db (chmod 0600, not encrypted).",
+      })
     end
   end
   cached_headers = h
@@ -160,28 +313,46 @@ end
 -- ---- blocking transport (default mode) -------------------------------------
 local function stream_once(body_tbl, on_text)
   local body = json.encode(body_tbl)
-  local dec = new_decoder(on_text)
-  local status, resp = http.request{
-    url = endpoint(), method = "POST", headers = auth_headers(),
-    body = body, on_chunk = dec.feed, timeout = 600,
-  }
-  dec.feed("\n")
-  local msg, stop, serr = dec.finish()
-  if serr then error(serr) end
-  if status == nil then error("http transport error: " .. tostring(resp)) end
-  if status == 401 then cached_headers = nil end
-  if status ~= 200 then error("api http " .. status .. ": " .. tostring(resp)) end
-  return msg, stop
+  for attempt = 1, M.RETRY.attempts do
+    -- A fresh decoder per attempt: a retry must not inherit half a stream.
+    local dec = new_decoder(attempt == 1 and on_text or on_text)
+    local status, resp = http.request{
+      url = endpoint(), method = "POST", headers = auth_headers(),
+      auth = true, body = body, on_chunk = dec.feed, timeout = 600,
+    }
+    dec.feed("\n")
+    local msg, stop, serr = dec.finish()
+
+    if status == 200 and not serr then return msg, stop end
+    if status == 401 or status == 403 then cached_headers = nil end
+
+    local kind, message, opts
+    if status == nil then
+      kind, message, opts = transport_error(resp)
+    elseif serr then
+      kind, message, opts = M.ERR.stream, serr, { retryable = true }
+    else
+      kind, message, opts = classify_status(status, resp)
+    end
+
+    if not opts.retryable or attempt == M.RETRY.attempts then
+      fail(kind, message, opts)
+    end
+    local delay = retry_delay(attempt)
+    bog.log(string.format("%s -- retrying in %dms (%d/%d)",
+      message, delay, attempt, M.RETRY.attempts - 1))
+    backoff_wait(delay, false)
+  end
 end
 M.stream_once = stream_once
 
 -- ---- async transport (swarm mode; must run inside a scheduler coroutine) ----
-local function stream_async(body_tbl, on_text)
-  local body = json.encode(body_tbl)
+local function stream_async_once(body, on_text)
   local dec = new_decoder(on_text)
   local raw = {}
   local req = http.begin{
-    url = endpoint(), method = "POST", headers = auth_headers(), body = body, timeout = 600,
+    url = endpoint(), method = "POST", headers = auth_headers(), auth = true,
+    body = body, timeout = 600,
   }
   local status, err
   while true do
@@ -195,11 +366,31 @@ local function stream_async(body_tbl, on_text)
   req:close()
   dec.feed("\n")
   local msg, stop, serr = dec.finish()
-  if serr then error(serr) end
-  if err then error("http transport error: " .. tostring(err)) end
-  if status == 401 then cached_headers = nil end
-  if status ~= 200 then error("api http " .. tostring(status) .. ": " .. table.concat(raw)) end
-  return msg, stop
+  return msg, stop, serr, status, err, table.concat(raw)
+end
+
+-- Same policy as the sync path. The backoff yields rather than sleeping, so a
+-- rate-limited agent does not stop the others from working.
+local function stream_async(body_tbl, on_text)
+  local body = json.encode(body_tbl)
+  for attempt = 1, M.RETRY.attempts do
+    local msg, stop, serr, status, terr, raw = stream_async_once(body, on_text)
+    if status == 200 and not serr then return msg, stop end
+    if status == 401 or status == 403 then cached_headers = nil end
+
+    local kind, message, opts
+    if terr then kind, message, opts = transport_error(terr)
+    elseif serr then kind, message, opts = M.ERR.stream, serr, { retryable = true }
+    else kind, message, opts = classify_status(status, raw) end
+
+    if not opts.retryable or attempt == M.RETRY.attempts then
+      fail(kind, message, opts)
+    end
+    local delay = retry_delay(attempt)
+    bog.log(string.format("%s -- retrying in %dms (%d/%d)",
+      message, delay, attempt, M.RETRY.attempts - 1))
+    backoff_wait(delay, true)
+  end
 end
 M.stream_async = stream_async
 

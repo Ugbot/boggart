@@ -139,6 +139,12 @@ function M.open()
     -- Don't fail instantly if another connection holds the write lock; wait.
     c:run("PRAGMA busy_timeout=5000")
     c:run("PRAGMA foreign_keys=ON")
+    -- The store can hold an API key, so it is owner-only. The -wal and -shm
+    -- sidecars carry the same data before a checkpoint, so they get the same
+    -- treatment; they may not exist yet, hence the pcall.
+    for _, suffix in ipairs({ "", "-wal", "-shm" }) do
+      pcall(sys.chmod, path .. suffix, 0x180) -- 0600
+    end
   end
   assert(bog.db:exec(SCHEMA))
   -- migrate older DBs to the agent/thread columns
@@ -302,6 +308,13 @@ end
 function M.thread_set_status(id, status)
   return bog.db:run("UPDATE sessions SET status=?, updated=? WHERE id=?", { status, now(), id })
 end
+
+-- ---- credentials -----------------------------------------------------------
+-- Deliberately NOT here. Credentials live in src/lauth.c, in their own 0600
+-- file, precisely so they are not in this database -- the `sql` tool can read
+-- every table in it, and a model dumping kv contents into its context is the
+-- leak that actually happens. See src/lauth.c for what that does and does not
+-- protect against.
 
 -- ---- tool provenance + usage (paper §17, §24) ------------------------------
 function M.tool_record(name, scope, project, meta)

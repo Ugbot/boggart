@@ -25,7 +25,18 @@ function M.run_turn(coord, text)
   if live then bog.dash.stop() end
   -- --------------------------------------------------------------------------
   io.write("\n")
-  if not ok then io.write(COL.err, "swarm error: ", tostring(err), COL.reset, "\n") end
+  if not ok then
+    if type(err) == "table" and err.boggart_error then
+      io.write(COL.err, tostring(err), COL.reset, "\n")
+    else
+      io.write(COL.err, "swarm error: ", tostring(err), COL.reset, "\n")
+    end
+  elseif bog.sched.fatal then
+    -- The scheduler stopped the run because a condition would have failed every
+    -- agent the same way. It logged one line per agent; print the actionable
+    -- explanation once, here, where the user is looking.
+    io.write(COL.err, tostring(bog.sched.fatal), COL.reset, "\n")
+  end
   bog.store.thread_save(coord.id, { messages = coord.session.messages, status = "idle" })
 end
 

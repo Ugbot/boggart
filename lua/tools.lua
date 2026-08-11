@@ -146,8 +146,26 @@ end
 -- once in C because there is no second route; and the model can see exactly
 -- what it has to compose with. It also becomes a real security boundary the day
 -- project-scoped tools are loaded out of a repository someone else wrote.
+-- getenv is genuinely useful (HOME, PATH, EDITOR) but it is also a one-line
+-- route to a credential, and "read the key and call the API directly" is a
+-- plausible thing for a model to write while composing a tool. Names that look
+-- like secrets are refused.
+--
+-- Not airtight, and not pretended to be: a tool can still call sys.exec("env").
+-- The distinction being drawn is between a casual one-liner and a deliberate
+-- shell-out -- the same distinction the whole capability boundary draws.
+local SECRETISH = { "KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH" }
+local function safe_getenv(name)
+  if type(name) ~= "string" then return nil end
+  local up = name:upper()
+  for _, pat in ipairs(SECRETISH) do
+    if up:find(pat, 1, true) then return nil end
+  end
+  return os.getenv(name)
+end
+
 local SAFE_OS = { time = os.time, date = os.date, clock = os.clock,
-                  getenv = os.getenv, difftime = os.difftime }
+                  getenv = safe_getenv, difftime = os.difftime }
 
 local function tool_env()
   local env = {

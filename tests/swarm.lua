@@ -32,7 +32,10 @@ bog.tools_swarm.register()
 
 -- make auth headers resolve offline
 local real_getenv = os.getenv
-os.getenv = function(k) if k == "ANTHROPIC_API_KEY" then return "test-key" end return real_getenv(k) end
+-- Credentials live in C now (src/lauth.c), so stubbing Lua's os.getenv no
+-- longer satisfies them -- which is the point of moving them there. Set one
+-- through the real mechanism; HOME is a temp dir, so this is isolated.
+auth.set("api_key", "test-key")
 
 -- ---- stub async HTTP -------------------------------------------------------
 local canned = {}     -- queue of SSE bodies for http.begin

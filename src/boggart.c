@@ -23,6 +23,7 @@ int luaopen_boggart_sys(lua_State *L);
 int luaopen_boggart_db(lua_State *L);
 int luaopen_boggart_swarm(lua_State *L);
 int luaopen_boggart_mcp(lua_State *L);
+int luaopen_boggart_auth(lua_State *L);
 int luaopen_ltui_lcurses(lua_State *L); /* vendored ltui curses binding */
 int luaopen_luv(lua_State *L);          /* vendored luv: libuv bindings for Lua */
 
@@ -126,6 +127,8 @@ static void register_boggart(lua_State *L, int argc, char **argv) {
   lua_setglobal(L, "swarm");
   luaL_requiref(L, "mcp", luaopen_boggart_mcp, 0);
   lua_setglobal(L, "mcp");
+  luaL_requiref(L, "auth", luaopen_boggart_auth, 0);
+  lua_setglobal(L, "auth");
 
   /* ltui's curses binding, as package.preload["ltui.lcurses"] rather than an
    * eager require: opening it allocates metatables and calls setlocale, which

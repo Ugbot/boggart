@@ -38,7 +38,20 @@ local function resume(a)
   local ok, kind, arg = coroutine.resume(a.co)
   current_id = nil
   if not ok then
-    bog.log(string.format("agent %s crashed: %s", tostring(a.id), tostring(kind)))
+    local err = kind -- on failure the second return value is the error
+    if type(err) == "table" and err.boggart_error then
+      -- A diagnosed condition rather than a crash. Say so in those terms, and
+      -- if it is fatal (no credentials, unreachable endpoint) stop the whole
+      -- run: every other agent is about to fail identically, and N copies of
+      -- the same explanation helps nobody.
+      bog.log(string.format("agent %s: %s", tostring(a.id), err.message))
+      if err.fatal and not M.fatal then
+        M.fatal = err
+        for _, other in ipairs(M.actors) do other.status = "stopping" end
+      end
+    else
+      bog.log(string.format("agent %s crashed: %s", tostring(a.id), tostring(err)))
+    end
     remove(a)
     return
   end
@@ -56,8 +69,10 @@ end
 function M.run(opts)
   opts = opts or {}
   local idle = 0
+  M.fatal = nil
   while #M.actors > 0 do
     if opts.should_stop and opts.should_stop() then break end
+    if M.fatal then break end
 
     -- Two things can be in flight: HTTP (curl_multi, via http.pump) and
     -- anything on the libuv loop -- subprocesses from lua/proc.lua, MCP stdio

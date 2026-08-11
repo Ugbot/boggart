@@ -5,7 +5,8 @@
  *   http.request{
  *     url      = "https://...",         -- required
  *     method   = "POST",                 -- default "GET"
- *     headers  = { "x-api-key: ...", ... }, -- array of header lines
+ *     headers  = { "content-type: ...", ... }, -- array of header lines
+ *     auth     = true,                        -- attach the C-side credential
  *     body     = "…",                    -- request body (optional)
  *     on_chunk = function(s) ... end,    -- optional: called per received chunk (SSE)
  *     timeout  = 600,                     -- seconds, optional
@@ -19,6 +20,11 @@
 #include <curl/curl.h>
 #include <string.h>
 #include <stdlib.h>
+
+/* Credentials live in lauth.c and are attached here, so the key never enters
+ * the Lua state: a request asks for auth with `auth = true` and the header is
+ * built in C from the C-side store. */
+const char *boggart_auth_header(void);
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -86,6 +92,14 @@ static int l_http_request(lua_State *L) {
     }
   }
   lua_pop(L, 1); /* headers table */
+
+  /* auth = true: attach the credential in C. Lua never holds the value. */
+  lua_getfield(L, 1, "auth");
+  if (lua_toboolean(L, -1)) {
+    const char *ah = boggart_auth_header();
+    if (ah) hdrs = curl_slist_append(hdrs, ah);
+  }
+  lua_pop(L, 1);
 
   http_ctx ctx;
   ctx.L = L;
@@ -244,6 +258,12 @@ static int l_http_begin(lua_State *L) {
       if (h) r->hdrs = curl_slist_append(r->hdrs, h);
       lua_pop(L, 1);
     }
+  }
+  lua_pop(L, 1);
+  lua_getfield(L, 1, "auth");
+  if (lua_toboolean(L, -1)) {
+    const char *ah = boggart_auth_header();
+    if (ah) r->hdrs = curl_slist_append(r->hdrs, ah);
   }
   lua_pop(L, 1);
   if (r->hdrs) curl_easy_setopt(r->easy, CURLOPT_HTTPHEADER, r->hdrs);

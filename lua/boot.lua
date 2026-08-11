@@ -68,6 +68,12 @@ end
 function bog.try(fn, ...)
   local err
   local ok, res = xpcall(fn, function(msg)
+    -- A diagnosed condition (no credentials, unreachable endpoint) is not a
+    -- bug, and a traceback into embedded:api:74 tells the user nothing they
+    -- can act on. Pass those through untouched so the caller can print the
+    -- explanation on its own; keep the traceback for everything else, where
+    -- it is the whole point.
+    if type(msg) == "table" and msg.boggart_error then err = msg; return msg end
     err = tostring(msg) .. "\n" .. debug.traceback(nil, 2)
     return err
   end, ...)
@@ -172,6 +178,7 @@ local function print_help()
 boggart commands:
   /help            this help
   /tools [name]    list tools with scope + usage; name shows its source
+  /auth            show or set stored credentials (key / url / model)
   /memory          list stored memories
   /sessions        list recent saved sessions
   /resume <id>     resume a saved session
@@ -211,6 +218,37 @@ local function handle_command(line)
     boggart.reset_target = rest ~= "" and rest or ""
     do_reset()
     bog.reload()
+  elseif cmd == "auth" then
+    local what, val = rest:match("^(%S*)%s*(.*)$")
+    local MAP = { key = "api_key", url = "base_url", model = "model" }
+    if what == "" or what == "show" then
+      -- Credentials live in C (src/lauth.c); the key is write-only from here,
+      -- so this shows a mask the C side produces rather than the value.
+      local masked, src = auth.masked()
+      io.write("credentials (", auth.path(), ", chmod 0600):\n")
+      io.write(string.format("  key    %s%s\n", masked,
+        src == "environment" and "  (from ANTHROPIC_API_KEY)" or ""))
+      io.write(string.format("  url    %s\n", auth.base_url() or "(unset)"))
+      io.write(string.format("  model  %s\n", auth.model() or "(unset)"))
+      io.write("environment overrides anything stored here.\n")
+      io.write("  /auth key <k> | /auth url <u> | /auth model <m> | /auth clear [what]\n")
+    elseif what == "clear" then
+      if val ~= "" and MAP[val] then auth.clear(MAP[val]); io.write("cleared ", val, "\n")
+      else auth.clear(); io.write("cleared all stored credentials\n") end
+      bog.api.forget_auth()
+    elseif MAP[what] then
+      if val == "" then io.write("usage: /auth ", what, " <value>\n")
+      else
+        auth.set(MAP[what], val)
+        -- Headers are cached after the first request, so a credential set
+        -- mid-session would otherwise not take effect until restart.
+        bog.api.forget_auth()
+        io.write("stored ", what, " = ", what == "key" and select(1, auth.masked()) or val, "\n")
+        if what == "model" then bog.session.model = val end
+      end
+    else
+      io.write("usage: /auth [show] | /auth key <k> | /auth url <u> | /auth model <m> | /auth clear\n")
+    end
   elseif cmd == "model" then
     if rest ~= "" then bog.session.model = rest end
     io.write("model = ", bog.session.model, "\n")
@@ -230,7 +268,15 @@ local function run_one_turn(text)
     bog.api.run_turn(text, function(t) io.write(t); io.flush() end)
   end)
   io.write("\n")
-  if not ok then io.write(COL.err, "error: ", err, COL.reset, "\n") end
+  if not ok then
+    if type(err) == "table" and err.boggart_error then
+      -- Already a complete, actionable explanation. Printing "error:" in front
+      -- of "No API credentials found." just adds noise.
+      io.write(COL.err, tostring(err), COL.reset, "\n")
+    else
+      io.write(COL.err, "error: ", tostring(err), COL.reset, "\n")
+    end
+  end
   bog.save_session() -- persist transcript for /resume and crash recovery
 end
 
@@ -279,6 +325,15 @@ strict.enable() -- lock globals now that libs + bog are in place
 
 -- Connect any declared MCP servers (~/.boggart/lua/mcp_servers.lua). Skipped in
 -- eval mode so tests don't spawn subprocesses.
+-- A model stored via /auth applies once the store is open. Precedence matches
+-- the credentials: an explicit --model beats it, so an override needs no undo.
+-- A model stored via /auth applies unless --model overrode it, so a one-off
+-- override needs no undo. Same precedence as the credentials themselves.
+if not boggart.model then
+  local m = auth.model()
+  if m and m ~= "" then bog.session.model = m end
+end
+
 if bog.mode ~= "eval" then bog.try(bog.mcphost.load) end
 
 if bog.mode == "swarm" then
