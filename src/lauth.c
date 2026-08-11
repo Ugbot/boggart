@@ -42,9 +42,89 @@
 
 /* The three settings. Only api_key is secret; the other two are configuration
  * and are readable from Lua so the endpoint and model can be resolved there. */
-static char g_api_key[AUTH_MAX];
 static char g_base_url[AUTH_MAX];
 static char g_model[AUTH_MAX];
+
+/* Credentials, one per provider.
+ *
+ * One key was enough while there was one endpoint. There is more than one now
+ * -- DeepSeek publishes an Anthropic-compatible endpoint, so boggart reaches
+ * it with no new client but a different credential -- and a single slot meant
+ * configuring the second provider destroyed the first one's key.
+ *
+ * Deliberately a table keyed by name rather than a field per vendor: adding a
+ * provider should be a base URL and a name, which is data, not an edit to this
+ * file. The provider is DERIVED FROM THE ENDPOINT rather than stored, because
+ * a stored provider can disagree with the URL the request is actually going
+ * to, and that disagreement is invisible at exactly the moment it matters. */
+#define AUTH_MAX_PROVIDERS 8
+#define AUTH_NAME_MAX 32
+static struct { char name[AUTH_NAME_MAX]; char value[AUTH_MAX]; }
+  g_keys[AUTH_MAX_PROVIDERS];
+
+/* The provider a URL belongs to: the registrable part of the host, lowercased.
+ * api.deepseek.com -> "deepseek", api.anthropic.com -> "anthropic",
+ * 127.0.0.1:8000 -> "local". No vendor is named here; a new one costs nothing.
+ */
+static void provider_of(const char *base, char *out, size_t n) {
+  snprintf(out, n, "%s", "anthropic");
+  if (!base || !*base) return;                 /* the built-in default */
+
+  const char *h = strstr(base, "://");
+  h = h ? h + 3 : base;
+  size_t len = strcspn(h, ":/");               /* host, without port or path */
+  if (len == 0) return;
+
+  char host[256];
+  if (len >= sizeof(host)) len = sizeof(host) - 1;
+  memcpy(host, h, len);
+  host[len] = '\0';
+  for (char *p = host; *p; p++) {
+    if (*p >= 'A' && *p <= 'Z') *p = (char) (*p - 'A' + 'a');
+  }
+
+  /* An address rather than a name is somebody's own server. */
+  if (strcmp(host, "localhost") == 0 || (host[0] >= '0' && host[0] <= '9')
+      || strchr(host, ':')) {
+    snprintf(out, n, "%s", "local");
+    return;
+  }
+
+  /* Second-to-last label: api.deepseek.com and deepseek.com agree. */
+  const char *last = NULL, *prev = NULL;
+  for (char *p = host; ; ) {
+    char *dot = strchr(p, '.');
+    prev = last; last = p;
+    if (!dot) break;
+    *dot = '\0';
+    p = dot + 1;
+  }
+  const char *label = prev ? prev : last;
+  if (label && *label) snprintf(out, n, "%s", label);
+}
+
+static char *key_slot(const char *provider, int create) {
+  for (int i = 0; i < AUTH_MAX_PROVIDERS; i++) {
+    if (strcmp(g_keys[i].name, provider) == 0) return g_keys[i].value;
+  }
+  if (!create) return NULL;
+  for (int i = 0; i < AUTH_MAX_PROVIDERS; i++) {
+    if (g_keys[i].name[0] == '\0') {
+      snprintf(g_keys[i].name, AUTH_NAME_MAX, "%s", provider);
+      return g_keys[i].value;
+    }
+  }
+  return NULL;
+}
+
+/* The provider currently configured, environment included. */
+const char *boggart_auth_provider(void) {
+  static char p[AUTH_NAME_MAX];
+  const char *base = getenv("ANTHROPIC_BASE_URL");
+  if (!base || !*base) base = g_base_url;
+  provider_of(base, p, sizeof(p));
+  return p;
+}
 static char g_path[4096];
 static int g_loaded = 0;
 
@@ -62,7 +142,13 @@ static void auth_path(void) {
 }
 
 static void set_field(const char *k, const char *v) {
-  if (strcmp(k, "api_key") == 0) snprintf(g_api_key, AUTH_MAX, "%s", v);
+  if (strcmp(k, "api_key") == 0) {
+    char *slot = key_slot(boggart_auth_provider(), 1);
+    if (slot) snprintf(slot, AUTH_MAX, "%s", v);
+  } else if (strncmp(k, "key.", 4) == 0 && k[4]) {
+    char *slot = key_slot(k + 4, 1);
+    if (slot) snprintf(slot, AUTH_MAX, "%s", v);
+  }
   else if (strcmp(k, "base_url") == 0) snprintf(g_base_url, AUTH_MAX, "%s", v);
   else if (strcmp(k, "model") == 0) snprintf(g_model, AUTH_MAX, "%s", v);
 }
@@ -100,7 +186,11 @@ static void auth_save(void) {
   }
   FILE *f = fopen(g_path, "wb");
   if (!f) return;
-  if (g_api_key[0])  fprintf(f, "api_key=%s\n", g_api_key);
+  for (int i = 0; i < AUTH_MAX_PROVIDERS; i++) {
+    if (g_keys[i].name[0] && g_keys[i].value[0]) {
+      fprintf(f, "key.%s=%s\n", g_keys[i].name, g_keys[i].value);
+    }
+  }
   if (g_base_url[0]) fprintf(f, "base_url=%s\n", g_base_url);
   if (g_model[0])    fprintf(f, "model=%s\n", g_model);
   fclose(f);
@@ -117,10 +207,29 @@ static void auth_save(void) {
  * there is no key. The buffer is static and overwritten on each call; libcurl
  * copies header strings, so that is safe here and keeps the value from being
  * duplicated around the heap. */
+/* <PROVIDER>_API_KEY, e.g. ANTHROPIC_API_KEY or DEEPSEEK_API_KEY.
+ *
+ * Scoped to the provider it names, which it was not before: the Anthropic
+ * variable used to override the key for EVERY request, so exporting it and
+ * pointing the endpoint at another vendor sent an Anthropic credential to that
+ * vendor -- by configuration alone, with nothing on screen to say so. A
+ * variable named for one company is a statement about that company. */
+static const char *env_key_for(const char *provider) {
+  char var[AUTH_NAME_MAX + 16];
+  snprintf(var, sizeof(var), "%s_API_KEY", provider);
+  for (char *p = var; *p; p++) {
+    if (*p >= 'a' && *p <= 'z') *p = (char) (*p - 'a' + 'A');
+  }
+  const char *v = getenv(var);
+  return (v && *v) ? v : NULL;
+}
+
 const char *boggart_auth_header(void) {
   auth_load();
-  const char *env = getenv("ANTHROPIC_API_KEY");
-  const char *key = (env && *env) ? env : (g_api_key[0] ? g_api_key : NULL);
+  const char *provider = boggart_auth_provider();
+  const char *env = env_key_for(provider);
+  const char *stored = key_slot(provider, 0);
+  const char *key = env ? env : ((stored && stored[0]) ? stored : NULL);
   if (!key) return NULL;
   static char hdr[AUTH_MAX + 32];
   snprintf(hdr, sizeof(hdr), "x-api-key: %s", key);
@@ -149,7 +258,13 @@ static int l_set(lua_State *L) {
 static int l_clear(lua_State *L) {
   const char *k = luaL_optstring(L, 1, NULL);
   auth_load();
-  if (!k) { g_api_key[0] = g_base_url[0] = g_model[0] = '\0'; }
+  if (!k) {
+    /* Everything, every provider. */
+    for (int i = 0; i < AUTH_MAX_PROVIDERS; i++) {
+      g_keys[i].name[0] = g_keys[i].value[0] = '\0';
+    }
+    g_base_url[0] = g_model[0] = '\0';
+  }
   else set_field(k, "");
   auth_save();
   lua_pushboolean(L, 1);
@@ -161,25 +276,57 @@ static int l_clear(lua_State *L) {
  * need the key itself. */
 static int l_has_key(lua_State *L) {
   auth_load();
-  const char *env = getenv("ANTHROPIC_API_KEY");
-  lua_pushboolean(L, (env && *env) || g_api_key[0]);
+  /* For the provider the endpoint points at, not "any key anywhere": having an
+   * Anthropic key configured says nothing about whether a request to DeepSeek
+   * will be authenticated. */
+  const char *provider = boggart_auth_provider();
+  const char *stored = key_slot(provider, 0);
+  lua_pushboolean(L, env_key_for(provider) != NULL || (stored && stored[0]));
   return 1;
 }
 
 /* auth.masked() -> string. For display only; never the value. */
 static int l_masked(lua_State *L) {
   auth_load();
-  const char *env = getenv("ANTHROPIC_API_KEY");
-  const char *key = (env && *env) ? env : g_api_key;
+  /* auth.masked([provider]) -> mask, source, provider. Defaults to the
+   * provider in force, so a settings screen showing "the key" shows the one
+   * that would actually be sent. */
+  const char *provider = luaL_optstring(L, 1, boggart_auth_provider());
+  const char *env = env_key_for(provider);
+  const char *stored = key_slot(provider, 0);
+  const char *key = env ? env : (stored ? stored : "");
   size_t n = strlen(key);
-  if (n == 0) { lua_pushstring(L, "(unset)"); return 1; }
+  if (n == 0) {
+    lua_pushstring(L, "(unset)");
+    lua_pushnil(L);
+    lua_pushstring(L, provider);
+    return 3;
+  }
   char out[64];
   if (n <= 12) snprintf(out, sizeof(out), "************");
   else snprintf(out, sizeof(out), "%.6s******%s", key, key + n - 4);
   lua_pushstring(L, out);
-  if (env && *env) { lua_pushstring(L, "environment"); return 2; }
-  lua_pushstring(L, "stored");
-  return 2;
+  /* Name the variable, not just "environment": knowing WHICH one is winning is
+   * the whole value of the answer when it is the wrong one. */
+  if (env) {
+    char var[AUTH_NAME_MAX + 16];
+    snprintf(var, sizeof(var), "%s_API_KEY", provider);
+    for (char *p = var; *p; p++) {
+      if (*p >= 'a' && *p <= 'z') *p = (char) (*p - 'a' + 'A');
+    }
+    lua_pushstring(L, var);
+  } else {
+    lua_pushstring(L, "stored");
+  }
+  lua_pushstring(L, provider);
+  return 3;
+}
+
+/* auth.provider() -> the provider name the current endpoint resolves to. */
+static int l_provider(lua_State *L) {
+  auth_load();
+  lua_pushstring(L, boggart_auth_provider());
+  return 1;
 }
 
 /* base_url and model are configuration, not secrets: readable. Environment
@@ -214,6 +361,7 @@ static const luaL_Reg auth_lib[] = {
   {"base_url", l_base_url},
   {"model", l_model},
   {"path", l_path},
+  {"provider", l_provider},
   {NULL, NULL},
 };
 

@@ -601,8 +601,8 @@ command.add(nil, {
       return
     end
     for _, e in ipairs(live) do
-      core.log_quiet("%s (%d tools): %s", e.server, #e.tools,
-        table.concat(e.tools, ", "))
+      core.log_quiet("%s [%s] (%d tools): %s", e.server,
+        bog.mcphost.generation(e.server), #e.tools, table.concat(e.tools, ", "))
     end
     core.log("%d MCP server(s) connected -- details in the log (ctrl+l)", #live)
   end,

@@ -442,12 +442,129 @@ M.CONTEXT = {
   ["claude-opus-5"] = 200000,
   ["claude-sonnet-5"] = 200000,
   ["claude-haiku-4-5-20251001"] = 200000,
+  -- DeepSeek v4. 100k is what a v4 server reports for itself in /v1/models;
+  -- their Anthropic-compatible endpoint does not publish a window, so this is
+  -- an observation rather than a documented figure. sess.context_limit
+  -- overrides it, and `boggart doctor` prints whichever is in force.
+  ["deepseek-v4-flash"] = 100000,
+  ["deepseek-v4-pro"] = 100000,
 }
+
+-- Providers that speak the Messages API.
+--
+-- Not an abstraction layer and deliberately not the beginning of one: DeepSeek
+-- publishes an Anthropic-compatible endpoint that takes x-api-key, tools with
+-- input_schema, tool_use/tool_result blocks and the same streaming events, so
+-- supporting it is a base URL and two model names rather than a second client.
+-- Their Responses API would have needed a real provider abstraction; this does
+-- not, and writing one anyway would be inventing a seam nothing is pulling on.
+--
+-- What they ignore rather than reject: anthropic-version and anthropic-beta
+-- headers, top_k, cache_control, and image content. boggart sends the version
+-- header (ignored, harmless), no top_k, no cache_control and no images, so
+-- nothing in the request is silently dropped. `thinking` blocks work; the
+-- budget_tokens field inside them does not.
+-- The built-in defaults. What actually gets used lives in the store, seeded
+-- from this on first run -- see M.providers() below.
+M.PROVIDER_DEFAULTS = {
+  anthropic = {
+    label = "Anthropic",
+    base_url = nil,                       -- the built-in default endpoint
+    models = { "claude-opus-5", "claude-sonnet-5" },
+    key_hint = "sk-ant-...",
+  },
+  deepseek = {
+    label = "DeepSeek",
+    base_url = "https://api.deepseek.com/anthropic",
+    models = { "deepseek-v4-flash", "deepseek-v4-pro" },
+    key_hint = "sk-...",
+  },
+  ["local"] = {
+    label = "A local server",
+    base_url = "http://127.0.0.1:8000",
+    models = {},                          -- ask the server; it knows
+    key_hint = "usually anything non-empty",
+  },
+}
+
+-- Providers and their models, from the store.
+--
+-- Model names change faster than binaries do. deepseek-v4-pro did not exist
+-- when this file was first written and will not be the newest thing for long,
+-- and a table compiled into the executable means the answer to "what can I run"
+-- is whatever was true on build day. So the list lives in SQLite, seeded from
+-- the defaults above the first time it is missing, and editable afterwards --
+-- by hand, by `/model`, or by the agent, which can already write to the store.
+--
+-- Credentials deliberately do NOT move with it. Config is not secret and wants
+-- to be readable, diffable and editable; a key wants to be in a 0600 file that
+-- the `sql` tool cannot read. They are different kinds of thing and they stay
+-- in different places.
+local providers_cache = nil
+
+function M.providers()
+  if providers_cache then return providers_cache end
+  local raw = bog.store and bog.store.kv_get and bog.store.kv_get("config.providers")
+  if raw then
+    local ok, t = pcall(json.decode, raw)
+    if ok and type(t) == "table" and next(t) then
+      providers_cache = t
+      return t
+    end
+  end
+  providers_cache = M.PROVIDER_DEFAULTS
+  -- Seed, so the row exists to be edited rather than having to be invented.
+  if bog.store and bog.store.kv_set then
+    pcall(bog.store.kv_set, "config.providers", json.encode(M.PROVIDER_DEFAULTS))
+  end
+  return providers_cache
+end
+
+function M.set_providers(t)
+  assert(type(t) == "table", "providers must be a table")
+  bog.store.kv_set("config.providers", json.encode(t))
+  providers_cache = nil
+  return true
+end
+
+-- Context windows, same argument: a number that was right on build day is a
+-- number that silently compacts too early later. M.CONTEXT is the fallback;
+-- config.context in the store overrides it per model; a session that has been
+-- *shown* a bigger window (see run_on) overrides both.
+function M.context_config()
+  local raw = bog.store and bog.store.kv_get and bog.store.kv_get("config.context")
+  if not raw then return nil end
+  local ok, t = pcall(json.decode, raw)
+  return ok and type(t) == "table" and t or nil
+end
+
+-- Point boggart at a provider: endpoint and model in one action, because
+-- setting one without the other is the mistake people actually make (an
+-- Anthropic model name against a DeepSeek endpoint quietly gets you whatever
+-- their name mapping decides, which is not an error and not what you asked
+-- for).
+function M.use_provider(name, model)
+  local p = M.providers()[name]
+  if not p then return nil, "no such provider: " .. tostring(name) end
+  if p.base_url then auth.set("base_url", p.base_url) else auth.clear("base_url") end
+  local pick = model or p.models[1]
+  if pick then
+    auth.set("model", pick)
+    if bog.session then bog.session.model = pick end
+  end
+  M.forget_auth()
+  return p, pick
+end
 M.COMPACT_RATIO = 0.8   -- compact at 80% of the window, as goose does
 
 function M.context_limit(sess)
   sess = sess or bog.session
-  return sess.context_limit or M.CONTEXT[sess.model] or M.CONTEXT.default
+  local cfg = M.context_config()
+  return sess.context_limit
+    or (cfg and cfg[sess.model])
+    or M.CONTEXT[sess.model]
+    or (cfg and cfg.default)
+    or M.CONTEXT.default
 end
 
 -- How full the context is, in tokens, and where the number came from.
@@ -626,6 +743,27 @@ function M.run_on(sess, user_text, on_text, opts)
       sess.usage.last_input = (msg.usage.input_tokens or 0)
         + (msg.usage.cache_read_input_tokens or 0)
         + (msg.usage.cache_creation_input_tokens or 0)
+
+      -- A request that succeeded is proof the window is at least that big.
+      --
+      -- The table below is guesswork for anything but the models we know, and
+      -- remote models increasingly have windows far larger than the 200k
+      -- default -- in which case boggart would compact at 160k on a model that
+      -- had another 800k to spare, throwing away context for nothing. The
+      -- server just answered a request of this size, so the limit cannot be
+      -- lower than it. Raise the assumption to fit the evidence, with headroom.
+      --
+      -- Only ever upwards, and only from a served request: a wrong guess makes
+      -- boggart compact too eagerly, which is wasteful; guessing upwards
+      -- without evidence would make it overflow, which fails the turn.
+      local seen = sess.usage.last_input
+      if seen > 0 and seen >= M.context_limit(sess) then
+        sess.context_limit = math.floor(seen * 1.25)
+        bog.log(string.format(
+          "context window for %s is at least %d tokens (a request that size "
+          .. "was served); assuming %d", tostring(sess.model), seen,
+          sess.context_limit))
+      end
       msg.usage = nil
     end
     sess.messages[#sess.messages + 1] = msg

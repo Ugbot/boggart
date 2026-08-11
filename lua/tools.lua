@@ -990,6 +990,7 @@ M.register("mcp", {
     local out = {}
     for _, s in ipairs(bog.mcphost.list()) do
       out[#out + 1] = s.server .. ": " .. table.concat(s.tools, ", ")
+        .. "  [" .. bog.mcphost.generation(s.server) .. "]"
     end
     return #out > 0 and table.concat(out, "\n") or "(no MCP servers connected)"
   end,

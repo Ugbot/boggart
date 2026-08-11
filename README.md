@@ -237,11 +237,52 @@ This keeps each agent's tool surface (and context) small.
 Connect servers at startup by declaring them in `~/.boggart/lua/mcp_servers.lua`
 (a Lua module returning `{ {name=, command=, args=}, {name=, transport="http",
 url=, headers=}, ... }`), or at runtime with the `mcp_add` tool; `mcp` lists
-connected servers. v1 is tools-only (resources/prompts, the server→client SSE
-channel, OAuth, and exposing boggart *as* an MCP server are future work).
+connected servers. v1 is tools-only (resources/prompts, OAuth, and exposing
+boggart *as* an MCP server are future work).
+
+### Two protocol generations, negotiated per server
+
+MCP `2026-07-28` deleted the handshake. There is no `initialize`, no
+`notifications/initialized` and no session: the protocol is stateless, so every
+request restates the protocol version, the client's capabilities and its
+identity in `params._meta`, and on HTTP mirrors its method and name into
+required `Mcp-Method` / `Mcp-Name` headers. boggart speaks **both** that and the
+older handshake generation (`2025-11-25` and earlier), and works out which per
+connection rather than being told:
+
+    connect -> server/discover ---- result ------> modern: pick a version from
+                    |                              supportedVersions, go stateless
+                    +--- spec error (-3202x) ----> modern too: retry its version,
+                    |                              do NOT fall back
+                    +--- any other error, or ----> legacy: initialize handshake
+                         no answer at all
+
+`server/discover` is the probe because modern servers MUST implement it and its
+answer doubles as the version list. The fallback is deliberately not keyed to
+one error code: legacy servers answer an unknown pre-`initialize` method with
+whatever they like (`-32601` and `-32602` are both common) or with nothing.
+`conn:info()` reports what was negotiated (`{era="modern"|"legacy", protocol=…}`),
+and `bog.mcphost.list()` carries it per server, so `boggart doctor` and the
+studio can show which generation each one is speaking.
+
+Results in the new generation are polymorphic: `resultType` is `"complete"` or
+`"input_required"`. An older server sends none, which clients must read as
+`"complete"`. **boggart does not implement MRTR** (multi round-trip requests —
+the server asking for an elicitation, a sampling turn or the roots list before
+it can answer). It declares no client capabilities, so a conforming server has
+no legal input request to make of it; if one arrives anyway the call fails with
+a tool error naming what was asked for. It is never passed off as the answer —
+an `input_required` result carries content blocks that read like a real reply,
+and handing those to the model would be a fabrication. The `x-mcp-header`
+extension (mirroring nominated tool *parameters* into `Mcp-Param-*` headers) is
+also not implemented: the annotation lives in the tool's input schema, which the
+Lua registration layer holds and never passes to the C client.
 
 Verified against real third-party software, not only the mock server in
-`tests/mcp.lua`: connected to Chrome DevTools MCP (`npx chrome-devtools-mcp`),
+`tests/mcp.lua` (which plays either generation, over stdio or HTTP, and traces
+every message it receives so the tests can assert on the wire rather than on the
+client's own account of itself): connected to Chrome DevTools MCP
+(`npx chrome-devtools-mcp`, which negotiates down to legacy `2025-11-25`),
 which registered 29 tools as `mcp__devtools__*`; loaded a page, read the element
 uid out of the accessibility snapshot, clicked a button and confirmed the page
 changed as a result; then asked the model to use `mcp__devtools__list_pages`,

@@ -4,7 +4,7 @@
 -- normal skill allowlists (a skill can grant a whole server via mcp__<name>__*
 -- or individual tools). The client lives in C; this is only registration.
 local json = require("json")
-local M = { conns = {}, tools = {} }
+local M = { conns = {}, tools = {}, info = {} }
 
 -- Flatten an MCP tools/call result (a {content=[...], isError?} object, as JSON
 -- text) into a plain string for the tool_result.
@@ -73,6 +73,13 @@ function M.add(spec)
   local conn, err = mcp.connect(spec)
   if not conn then return nil, err end
   M.conns[spec.name] = conn
+  -- Which protocol generation the client negotiated with this server. The C
+  -- side decided it during connect (server/discover, then the initialize
+  -- handshake if that got nowhere); recording it here is what lets `doctor`
+  -- and the studio say "modern" or "legacy" per server instead of leaving the
+  -- difference invisible until something behaves oddly.
+  local okinfo, info = pcall(json.decode, conn:info())
+  M.info[spec.name] = okinfo and type(info) == "table" and info or {}
 
   local tools, terr = list_all_tools(conn)
   if not tools then return nil, terr end
@@ -109,16 +116,31 @@ function M.load()
   if not ok or type(servers) ~= "table" then return end
   for _, spec in ipairs(servers) do
     local names, err = M.add(spec)
-    if names then bog.log(string.format("mcp: connected '%s' (%d tools)", spec.name, #names))
+    if names then bog.log(string.format("mcp: connected '%s' (%d tools, %s)",
+      spec.name, #names, M.generation(spec.name)))
     else bog.log(string.format("mcp: '%s' failed: %s", tostring(spec.name), tostring(err))) end
   end
 end
 
+-- One line per connected server. `era` is "modern" (the stateless 2026-07-28
+-- protocol) or "legacy" (the initialize handshake); `protocol` is the exact
+-- version in force. Both are additive -- existing callers read .server/.tools.
 function M.list()
   local out = {}
-  for name, names in pairs(M.tools) do out[#out + 1] = { server = name, tools = names } end
+  for name, names in pairs(M.tools) do
+    local info = M.info[name] or {}
+    out[#out + 1] = { server = name, tools = names,
+                      era = info.era, protocol = info.protocol }
+  end
   table.sort(out, function(a, b) return a.server < b.server end)
   return out
+end
+
+-- "modern 2026-07-28" / "legacy 2025-11-25" / "" for a server we never reached.
+function M.generation(name)
+  local info = M.info[name]
+  if not info or not info.era then return "" end
+  return info.era .. " " .. tostring(info.protocol or "?")
 end
 
 return M

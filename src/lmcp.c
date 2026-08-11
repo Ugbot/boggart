@@ -12,6 +12,19 @@
  * JSON-RPC id, buffering out-of-order responses so concurrent in-flight calls
  * over one connection stay correct.
  *
+ * Two protocol generations, negotiated per connection rather than configured:
+ *   - legacy (2025-11-25 and earlier): an `initialize` + `notifications/
+ *     initialized` handshake states the version once, and the connection (an
+ *     Mcp-Session-Id on HTTP) carries that state afterwards;
+ *   - modern (2026-07-28): no handshake at all. The protocol is stateless, so
+ *     every request restates the version, the client's capabilities and its
+ *     identity in params._meta, and on HTTP mirrors method and name into the
+ *     required Mcp-Method / Mcp-Name headers. No session id exists.
+ * connect() probes with `server/discover` -- which modern servers MUST
+ * implement -- and falls back to the handshake on any answer that is neither a
+ * modern result nor a modern error. See probe_discover() for why the fallback
+ * cannot be keyed to a single error code.
+ *
  * Reads are event-driven, never blocking: uv_read_start feeds a per-connection
  * buffer, complete lines are framed and parked on a pending-response list, and
  * a caller picks its response off that list by id. Nothing in a libuv callback
@@ -33,7 +46,8 @@
  *     handle:status()          -> "running" | "done", result | "error", msg
  *     handle:take()            -> result_json_string ("" until done)
  *     handle:close()
- *   conn:info()                -> server_info_json_string
+ *   conn:info()                -> json: {era, protocol, transport, serverInfo?,
+ *                                       capabilities?, instructions?}
  *   conn:close()
  */
 #include <signal.h>
@@ -52,13 +66,40 @@
 
 #define API_TYPE_MCP "boggart.mcp"
 #define API_TYPE_CALL "boggart.mcpcall"
-#define MCP_PROTO "2025-11-25"
+#define MCP_PROTO_LEGACY "2025-11-25" /* newest handshake-based revision */
+#define MCP_PROTO_MODERN "2026-07-28" /* newest stateless revision */
 #define MCP_TIMEOUT 60 /* seconds per request */
+/* The version probe gets its own, much shorter deadline: a legacy server is
+ * allowed to answer an unknown pre-initialize method with nothing at all, and
+ * silence is one of the three outcomes the probe has to distinguish. 10s is
+ * long enough for a server that is slow to start reading stdin (npx spawning
+ * node, say) and short enough that a mute one does not stall connect for a
+ * minute before the handshake it was always going to need. */
+#define MCP_PROBE_TIMEOUT 10
 #define MCP_SLICE_MS 50 /* blocking-wait slice (main thread) */
 #define MCP_YIELD_MS 2  /* loop wait before yielding to the scheduler */
 #define MCP_MAX_PENDING 128 /* cap on undelivered responses per connection */
 
+/* The reserved _meta keys the modern revision carries on every message. */
+#define META_PROTOCOL "io.modelcontextprotocol/protocolVersion"
+#define META_CLIENT_INFO "io.modelcontextprotocol/clientInfo"
+#define META_CLIENT_CAPS "io.modelcontextprotocol/clientCapabilities"
+#define META_SERVER_INFO "io.modelcontextprotocol/serverInfo"
+
+/* MCP error codes this client reasons about. -32020/-32021/-32022 come from
+ * the range the spec reserves for itself, so receiving any of them is proof
+ * the peer speaks a modern revision even when the request failed. */
+#define MCP_E_HEADER_MISMATCH -32020
+#define MCP_E_MISSING_CAP -32021
+#define MCP_E_BAD_VERSION -32022
+
 enum { T_STDIO, T_HTTP };
+enum { ERA_LEGACY, ERA_MODERN };
+
+/* Modern revisions this client speaks, newest first. Version strings are ISO
+ * dates, so "newest" is just their descending order. */
+static const char *MODERN_VERSIONS[] = { MCP_PROTO_MODERN };
+#define N_MODERN_VERSIONS ((int)(sizeof(MODERN_VERSIONS) / sizeof(MODERN_VERSIONS[0])))
 
 /* Transient error text handed to Lua; copied by lua_pushstring immediately.
  * Two buffers alternately, so wrapping one message inside another
@@ -169,11 +210,16 @@ typedef struct {
   int next_id;
   int dead;
   mcpio *io; /* both transports: owns the pending-response list */
+  /* protocol generation, decided once at connect and constant afterwards */
+  int era;            /* ERA_LEGACY | ERA_MODERN */
+  char *proto;        /* the negotiated protocol version */
+  char *server_info;  /* JSON: from initialize, or a modern result's _meta */
+  char *caps;         /* JSON: the server's capabilities, as it stated them */
+  char *instructions; /* server usage notes, if it offered any */
   /* http */
   char *url;
   struct curl_slist *user_headers;
-  char *session; /* Mcp-Session-Id */
-  char *server_info; /* JSON string from initialize result */
+  char *session; /* Mcp-Session-Id -- legacy only: modern MCP has no session */
 } mcpconn;
 
 /* An in-flight (or finished) request. Mirrors the httpreq handle in lhttp.c so
@@ -226,6 +272,60 @@ static cJSON *build_request(const char *method, int id, cJSON *params /*owned*/)
 
 static int is_response(cJSON *m) {
   return cJSON_GetObjectItem(m, "result") != NULL || cJSON_GetObjectItem(m, "error") != NULL;
+}
+
+static cJSON *client_info(void) {
+  cJSON *ci = cJSON_CreateObject();
+  cJSON_AddStringToObject(ci, "name", "boggart");
+  cJSON_AddStringToObject(ci, "version", "0.1.0");
+  return ci;
+}
+
+/* Client capabilities, in both generations: deliberately empty.
+ *
+ * boggart implements no roots, no sampling and no elicitation, and saying so
+ * is load-bearing rather than merely honest. A modern server MUST NOT ask for
+ * a capability the client did not declare -- it has to fail the request with
+ * MissingRequiredClientCapability instead -- so an empty object is what keeps
+ * a server from handing us an input request we have no way to satisfy. */
+static cJSON *client_caps(void) { return cJSON_CreateObject(); }
+
+/* Attach the per-request metadata a modern request must carry.
+ *
+ * There is no handshake to state the version, the capabilities or the client's
+ * identity once, so every request restates them. This is called from the one
+ * place every outgoing request passes through (start_call), because "every
+ * request" is a property that a new call site would otherwise be free to
+ * forget: a request missing _meta is malformed and the server MUST reject it. */
+static cJSON *with_meta(mcpconn *c, cJSON *params) {
+  if (!params) params = cJSON_CreateObject();
+  cJSON *meta = cJSON_CreateObject();
+  cJSON_AddStringToObject(meta, META_PROTOCOL, c->proto ? c->proto : MCP_PROTO_MODERN);
+  cJSON_AddItemToObject(meta, META_CLIENT_INFO, client_info());
+  cJSON_AddItemToObject(meta, META_CLIENT_CAPS, client_caps());
+  cJSON_DeleteItemFromObject(params, "_meta"); /* ours wins over any caller's */
+  cJSON_AddItemToObject(params, "_meta", meta);
+  return params;
+}
+
+static void set_str(char **slot, const char *v) {
+  free(*slot);
+  *slot = v ? strdup(v) : NULL;
+}
+
+/* Remember whatever a result told us about the server, in either generation.
+ * Modern servers put serverInfo in the result's _meta rather than in a
+ * handshake, so this runs on ordinary results too, not only at connect. */
+static void capture_server_info(mcpconn *c, cJSON *result) {
+  if (!result) return;
+  cJSON *meta = cJSON_GetObjectItem(result, "_meta");
+  cJSON *si = meta ? cJSON_GetObjectItem(meta, META_SERVER_INFO) : NULL;
+  if (!si) si = cJSON_GetObjectItem(result, "serverInfo"); /* legacy handshake */
+  if (si && !c->server_info) c->server_info = cJSON_PrintUnformatted(si);
+  cJSON *caps = cJSON_GetObjectItem(result, "capabilities");
+  if (caps && !c->caps) c->caps = cJSON_PrintUnformatted(caps);
+  cJSON *ins = cJSON_GetObjectItem(result, "instructions");
+  if (cJSON_IsString(ins) && !c->instructions) set_str(&c->instructions, ins->valuestring);
 }
 
 static void push_pending(mcpio *io, int id, cJSON *msg /*owned*/) {
@@ -361,6 +461,10 @@ static size_t gb_write(char *ptr, size_t sz, size_t nm, void *ud) {
 static size_t hdr_cb(char *ptr, size_t sz, size_t nm, void *ud) {
   mcpconn *c = ud; size_t n = sz * nm;
   const char *key = "mcp-session-id:";
+  /* Sessions were removed in 2026-07-28. A dual-era server may still emit the
+   * header out of habit; storing it would only get it echoed back on requests
+   * that are supposed to be stateless. */
+  if (c->era == ERA_MODERN) return n;
   size_t klen = strlen(key);
   if (n >= klen) {
     /* case-insensitive prefix match */
@@ -379,6 +483,80 @@ static size_t hdr_cb(char *ptr, size_t sz, size_t nm, void *ud) {
     }
   }
   return n;
+}
+
+/* ---- modern HTTP request metadata -----------------------------------------
+ * 2026-07-28 mirrors two body fields into headers so that load balancers and
+ * gateways can route without parsing the body: Mcp-Method (the method) and
+ * Mcp-Name (params.name, or params.uri for resources/read). Both are REQUIRED,
+ * and the server MUST reject a request whose header and body disagree.
+ *
+ * Not implemented: the x-mcp-header extension, which lets a server nominate
+ * tool *parameters* to be mirrored into Mcp-Param-<Name> headers. Clients MUST
+ * support it, and boggart does not: the annotation lives in the tool's
+ * inputSchema, which the Lua registration layer holds and never hands to this
+ * C client, so the client cannot see which arguments to mirror. Servers that
+ * use it will answer HeaderMismatch (-32020), which surfaces as a plain tool
+ * error rather than as silent misrouting. */
+static const char *B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/* HTTP field values are visible ASCII with no leading or trailing space.
+ * Anything else -- and anything that would be mistaken for the sentinel below
+ * -- has to travel Base64-encoded. */
+static int header_safe(const char *s) {
+  size_t n = strlen(s);
+  if (n == 0) return 1;
+  if (s[0] == ' ' || s[0] == '\t' || s[n - 1] == ' ' || s[n - 1] == '\t') return 0;
+  if (n >= 11 && strncmp(s, "=?base64?", 9) == 0 && strcmp(s + n - 2, "?=") == 0) return 0;
+  for (size_t i = 0; i < n; i++) {
+    unsigned char ch = (unsigned char)s[i];
+    if (ch < 0x20 || ch > 0x7e) return 0;
+  }
+  return 1;
+}
+
+/* The header value for a name, encoded as =?base64?...?= when it cannot be
+ * carried literally. Caller frees. */
+static char *header_value(const char *s) {
+  if (header_safe(s)) return strdup(s);
+  size_t n = strlen(s);
+  size_t enc = ((n + 2) / 3) * 4;
+  char *out = malloc(9 + enc + 2 + 1);
+  if (!out) return NULL;
+  memcpy(out, "=?base64?", 9);
+  char *p = out + 9;
+  for (size_t i = 0; i < n; i += 3) {
+    unsigned v = (unsigned char)s[i] << 16;
+    if (i + 1 < n) v |= (unsigned char)s[i + 1] << 8;
+    if (i + 2 < n) v |= (unsigned char)s[i + 2];
+    *p++ = B64[(v >> 18) & 63];
+    *p++ = B64[(v >> 12) & 63];
+    *p++ = (i + 1 < n) ? B64[(v >> 6) & 63] : '=';
+    *p++ = (i + 2 < n) ? B64[v & 63] : '=';
+  }
+  memcpy(p, "?=", 3);
+  return out;
+}
+
+/* The value Mcp-Name must carry for this request, or NULL when the method has
+ * no name to mirror. */
+static const char *mcp_name_of(cJSON *params) {
+  if (!params) return NULL;
+  cJSON *n = cJSON_GetObjectItem(params, "name");
+  if (cJSON_IsString(n)) return n->valuestring;
+  cJSON *u = cJSON_GetObjectItem(params, "uri");
+  if (cJSON_IsString(u)) return u->valuestring;
+  return NULL;
+}
+
+static struct curl_slist *append_hdr(struct curl_slist *h, const char *key, const char *val) {
+  size_t n = strlen(key) + strlen(val) + 4;
+  char *s = malloc(n);
+  if (!s) return h;
+  snprintf(s, n, "%s: %s", key, val);
+  h = curl_slist_append(h, s);
+  free(s);
+  return h;
 }
 
 /* Parse a JSON-RPC message out of an HTTP body that is either a bare JSON
@@ -408,22 +586,31 @@ static cJSON *parse_http_body(const char *body, int id) {
 }
 
 static cJSON *http_transact(mcpconn *c, const char *method, int id, cJSON *params, const char **err) {
+  /* Read the mirrored fields before build_request takes ownership of params. */
+  char *name_hdr = NULL;
+  if (c->era == ERA_MODERN) {
+    const char *nm = mcp_name_of(params);
+    if (nm) name_hdr = header_value(nm);
+  }
   cJSON *req = build_request(method, id, params);
   char *body = cJSON_PrintUnformatted(req);
   cJSON_Delete(req);
 
   CURL *e = curl_easy_init();
-  if (!e) { free(body); *err = "curl_easy_init failed"; return NULL; }
+  if (!e) { free(body); free(name_hdr); *err = "curl_easy_init failed"; return NULL; }
   struct curl_slist *h = NULL;
   h = curl_slist_append(h, "content-type: application/json");
   h = curl_slist_append(h, "accept: application/json, text/event-stream");
-  h = curl_slist_append(h, "mcp-protocol-version: " MCP_PROTO);
-  if (c->session) {
-    size_t shn = strlen(c->session) + 20;
-    char *sh = malloc(shn);
-    snprintf(sh, shn, "mcp-session-id: %s", c->session);
-    h = curl_slist_append(h, sh); free(sh);
+  /* Must match the version in the body's _meta, or a modern server answers
+   * HeaderMismatch; legacy servers want the negotiated version here too. */
+  h = append_hdr(h, "mcp-protocol-version", c->proto ? c->proto : MCP_PROTO_LEGACY);
+  if (c->era == ERA_MODERN) {
+    h = append_hdr(h, "mcp-method", method);
+    if (name_hdr) h = append_hdr(h, "mcp-name", name_hdr);
+  } else if (c->session) {
+    h = append_hdr(h, "mcp-session-id", c->session);
   }
+  free(name_hdr);
   for (struct curl_slist *u = c->user_headers; u; u = u->next) h = curl_slist_append(h, u->data);
 
   growbuf g = { 0 };
@@ -464,6 +651,7 @@ static int start_call(mcpconn *c, const char *method, cJSON *params, const char 
     return -1;
   }
   int id = c->next_id++;
+  if (c->era == ERA_MODERN) params = with_meta(c, params);
   if (c->transport == T_STDIO) {
     cJSON *req = build_request(method, id, params);
     int rc = stdio_send(c, req);
@@ -477,15 +665,93 @@ static int start_call(mcpconn *c, const char *method, cJSON *params, const char 
   return id;
 }
 
+/* Comma-joined array of strings, truncated to fit. For error text only. */
+static void join_strings(cJSON *arr, char *buf, size_t n) {
+  size_t used = 0;
+  buf[0] = 0;
+  cJSON *v;
+  cJSON_ArrayForEach(v, arr) {
+    if (!cJSON_IsString(v)) continue;
+    int w = snprintf(buf + used, n - used, "%s%s", used ? ", " : "", v->valuestring);
+    if (w < 0 || (size_t)w >= n - used) { used = n - 1; break; }
+    used += (size_t)w;
+  }
+}
+
+/* Human-readable text for a JSON-RPC error object. UnsupportedProtocolVersion
+ * carries the versions the server does support, and that list is the whole
+ * diagnosis, so it goes into the message rather than being dropped. */
+static const char *rpc_error_text(cJSON *errobj) {
+  cJSON *msg = cJSON_GetObjectItem(errobj, "message");
+  cJSON *code = cJSON_GetObjectItem(errobj, "code");
+  const char *m = cJSON_IsString(msg) ? msg->valuestring : "unknown";
+  cJSON *data = cJSON_GetObjectItem(errobj, "data");
+  cJSON *sup = data ? cJSON_GetObjectItem(data, "supported") : NULL;
+  if (cJSON_IsNumber(code) && code->valueint == MCP_E_BAD_VERSION && cJSON_IsArray(sup)) {
+    char list[256];
+    join_strings(sup, list, sizeof(list));
+    return seterr("mcp error: %s (server supports: %s)", m, list);
+  }
+  return seterr("mcp error: %s", m);
+}
+
+/* Whether a result may be handed to the caller as the answer, or the reason it
+ * may not.
+ *
+ * 2026-07-28 made every result polymorphic: `resultType` says whether what came
+ * back is the answer ("complete") or a request for more input from the client
+ * ("input_required", the MRTR pattern -- the server wants an elicitation, a
+ * sampling turn or the roots list before it can finish). An older server sends
+ * no resultType at all, and clients MUST read that absence as "complete".
+ *
+ * The trap this exists to close: an input_required result still looks like a
+ * plausible object, and passing it up as though it were the tool's output would
+ * hand the model an interim protocol artefact and call it an answer.
+ *
+ * boggart does not implement MRTR. It declares no client capabilities, so a
+ * conforming server has no legal input request to make of it, and the honest
+ * response to one is a tool error naming what was asked for -- not silence, and
+ * not a fabricated answer. */
+static const char *bad_result_type(mcpconn *c, cJSON *result) {
+  if (!result || c->era != ERA_MODERN) return NULL;
+  cJSON *rt = cJSON_GetObjectItem(result, "resultType");
+  if (!cJSON_IsString(rt)) return NULL; /* absent == complete */
+  if (strcmp(rt->valuestring, "complete") == 0) return NULL;
+  if (strcmp(rt->valuestring, "input_required") == 0) {
+    char asked[256];
+    size_t used = 0;
+    asked[0] = 0;
+    cJSON *reqs = cJSON_GetObjectItem(result, "inputRequests");
+    cJSON *r;
+    cJSON_ArrayForEach(r, reqs) {
+      cJSON *m = cJSON_GetObjectItem(r, "method");
+      if (!cJSON_IsString(m)) continue;
+      int w = snprintf(asked + used, sizeof(asked) - used, "%s%s", used ? ", " : "", m->valuestring);
+      if (w < 0 || (size_t)w >= sizeof(asked) - used) break;
+      used += (size_t)w;
+    }
+    return seterr("mcp: the server asked for more input (%s) before it can answer; "
+                  "boggart does not implement MRTR, so nothing was completed",
+                  used ? asked : "no requests given");
+  }
+  /* An unrecognized resultType MUST be treated as invalid, not guessed at. */
+  return seterr("mcp: unrecognized resultType '%s'", rt->valuestring);
+}
+
 static void call_finish(mcpcall *h, cJSON *resp /*owned*/) {
   cJSON *errobj = cJSON_GetObjectItem(resp, "error");
   if (errobj) {
-    cJSON *msg = cJSON_GetObjectItem(errobj, "message");
-    char buf[512];
-    snprintf(buf, sizeof(buf), "mcp error: %s", cJSON_IsString(msg) ? msg->valuestring : "unknown");
-    h->err = strdup(buf);
+    h->err = strdup(rpc_error_text(errobj));
   } else {
     cJSON *result = cJSON_GetObjectItem(resp, "result");
+    capture_server_info(h->c, result);
+    const char *bad = bad_result_type(h->c, result);
+    if (bad) {
+      h->err = strdup(bad);
+      cJSON_Delete(resp);
+      h->done = 1;
+      return;
+    }
     cJSON *pick = result;
     if (h->want_tools && result) {
       cJSON *t = cJSON_GetObjectItem(result, "tools");
@@ -521,28 +787,20 @@ static void call_poll(mcpcall *h, int wait_ms) {
   }
 }
 
-/* Blocking completion, for callers that cannot yield (connect handshake).
- * Returns the detached "result" (caller owns) or NULL with *err set. */
-static cJSON *transact_sync(mcpconn *c, const char *method, cJSON *params, const char **err) {
+/* Blocking round trip, for callers that cannot yield (the connect path).
+ * Returns the whole JSON-RPC response -- error responses included, because the
+ * version probe decides what kind of server it is talking to from the error
+ * *code* -- or NULL with *err set when nothing came back at all. */
+static cJSON *transact_raw(mcpconn *c, const char *method, cJSON *params,
+                           int timeout_s, const char **err) {
   int id = start_call(c, method, params, err);
   if (id < 0) return NULL;
-  uint64_t deadline = now_ms() + (uint64_t)MCP_TIMEOUT * 1000;
+  uint64_t deadline = now_ms() + (uint64_t)timeout_s * 1000;
   for (;;) {
     cJSON *resp = take_pending(c->io, id);
     if (!resp) mcp_pump(MCP_SLICE_MS);
     if (!resp) resp = take_pending(c->io, id);
-    if (resp) {
-      cJSON *errobj = cJSON_GetObjectItem(resp, "error");
-      if (errobj) {
-        cJSON *msg = cJSON_GetObjectItem(errobj, "message");
-        *err = seterr("mcp error: %s", cJSON_IsString(msg) ? msg->valuestring : "unknown");
-        cJSON_Delete(resp);
-        return NULL;
-      }
-      cJSON *result = cJSON_DetachItemFromObject(resp, "result");
-      cJSON_Delete(resp);
-      return result ? result : cJSON_CreateObject();
-    }
+    if (resp) return resp;
     if (!c->io || c->io->eof || c->io->io_err) {
       c->dead = 1; *err = "no response (server exited)"; return NULL;
     }
@@ -550,7 +808,24 @@ static cJSON *transact_sync(mcpconn *c, const char *method, cJSON *params, const
   }
 }
 
-/* Fire-and-forget notification (no id, no response awaited). */
+/* transact_raw, reduced to the success case: the detached "result" (caller
+ * owns) or NULL with *err set. */
+static cJSON *transact_sync(mcpconn *c, const char *method, cJSON *params, const char **err) {
+  cJSON *resp = transact_raw(c, method, params, MCP_TIMEOUT, err);
+  if (!resp) return NULL;
+  cJSON *errobj = cJSON_GetObjectItem(resp, "error");
+  if (errobj) {
+    *err = rpc_error_text(errobj);
+    cJSON_Delete(resp);
+    return NULL;
+  }
+  cJSON *result = cJSON_DetachItemFromObject(resp, "result");
+  cJSON_Delete(resp);
+  return result ? result : cJSON_CreateObject();
+}
+
+/* Fire-and-forget notification (no id, no response awaited). Legacy only: the
+ * modern revision defines no client-to-server notification we send. */
 static void notify(mcpconn *c, const char *method) {
   cJSON *req = build_request(method, -1, NULL);
   if (c->transport == T_STDIO) {
@@ -565,13 +840,8 @@ static void notify(mcpconn *c, const char *method) {
   if (h) {
     struct curl_slist *hl = NULL;
     hl = curl_slist_append(hl, "content-type: application/json");
-    hl = curl_slist_append(hl, "mcp-protocol-version: " MCP_PROTO);
-    if (c->session) {
-      size_t shn = strlen(c->session) + 20;
-      char *sh = malloc(shn);
-      snprintf(sh, shn, "mcp-session-id: %s", c->session);
-      hl = curl_slist_append(hl, sh); free(sh);
-    }
+    hl = append_hdr(hl, "mcp-protocol-version", c->proto ? c->proto : MCP_PROTO_LEGACY);
+    if (c->session) hl = append_hdr(hl, "mcp-session-id", c->session);
     for (struct curl_slist *u = c->user_headers; u; u = u->next) hl = curl_slist_append(hl, u->data);
     growbuf g = { 0 };
     curl_easy_setopt(h, CURLOPT_URL, c->url);
@@ -590,23 +860,146 @@ static void notify(mcpconn *c, const char *method) {
   free(s);
 }
 
-/* ---- initialize handshake ------------------------------------------------- */
+/* ---- version negotiation --------------------------------------------------
+ * Legacy: initialize, then notifications/initialized. The version the server
+ * answers with is the one in force from then on -- it may be older than the one
+ * we asked for -- so it is what later requests (and the HTTP protocol header)
+ * must quote. */
 static int do_initialize(mcpconn *c, const char **err) {
+  c->era = ERA_LEGACY;
+  set_str(&c->proto, MCP_PROTO_LEGACY);
+
   cJSON *params = cJSON_CreateObject();
-  cJSON_AddStringToObject(params, "protocolVersion", MCP_PROTO);
-  cJSON_AddItemToObject(params, "capabilities", cJSON_CreateObject());
-  cJSON *ci = cJSON_CreateObject();
-  cJSON_AddStringToObject(ci, "name", "boggart");
-  cJSON_AddStringToObject(ci, "version", "0.1.0");
-  cJSON_AddItemToObject(params, "clientInfo", ci);
+  cJSON_AddStringToObject(params, "protocolVersion", MCP_PROTO_LEGACY);
+  cJSON_AddItemToObject(params, "capabilities", client_caps());
+  cJSON_AddItemToObject(params, "clientInfo", client_info());
 
   cJSON *result = transact_sync(c, "initialize", params, err);
   if (!result) return -1;
-  cJSON *si = cJSON_GetObjectItem(result, "serverInfo");
-  if (si) c->server_info = cJSON_PrintUnformatted(si);
+  cJSON *pv = cJSON_GetObjectItem(result, "protocolVersion");
+  if (cJSON_IsString(pv)) set_str(&c->proto, pv->valuestring);
+  capture_server_info(c, result);
   cJSON_Delete(result);
   notify(c, "notifications/initialized");
   return 0;
+}
+
+/* The newest revision we and the server both speak, or NULL. */
+static const char *pick_modern_version(cJSON *list) {
+  if (!cJSON_IsArray(list)) return NULL;
+  for (int i = 0; i < N_MODERN_VERSIONS; i++) {
+    cJSON *v;
+    cJSON_ArrayForEach(v, list) {
+      if (cJSON_IsString(v) && strcmp(v->valuestring, MODERN_VERSIONS[i]) == 0)
+        return MODERN_VERSIONS[i];
+    }
+  }
+  return NULL;
+}
+
+/* Whether the list offers a revision older than the oldest modern one, i.e.
+ * one that would be reached through the initialize handshake. Version strings
+ * are ISO dates, so the comparison is a strcmp. */
+static int has_legacy_version(cJSON *list) {
+  if (!cJSON_IsArray(list)) return 0;
+  cJSON *v;
+  cJSON_ArrayForEach(v, list) {
+    if (cJSON_IsString(v) && strcmp(v->valuestring, MODERN_VERSIONS[N_MODERN_VERSIONS - 1]) < 0)
+      return 1;
+  }
+  return 0;
+}
+
+enum { PROBE_MODERN, PROBE_LEGACY, PROBE_FAIL };
+
+/* Decide which generation this server speaks, by asking it something only a
+ * modern server understands.
+ *
+ * `server/discover` is the probe because modern servers MUST implement it, it
+ * needs no state, and its answer doubles as the version list. Three outcomes,
+ * per the spec's backward-compatibility rules:
+ *   - a result            -> modern; select a version from supportedVersions;
+ *   - an error from the
+ *     spec's own -320xx
+ *     range              -> still modern (a modern server would not otherwise
+ *                            emit one), so do NOT fall back to initialize --
+ *                            retry the version it named instead;
+ *   - anything else, or
+ *     no answer at all   -> legacy; run the handshake.
+ * The fallback deliberately is not keyed to one error code: legacy servers
+ * answer an unknown pre-initialize method with whatever they feel like
+ * (-32601 and -32602 are both common) or with nothing.
+ *
+ * The probe request itself is sent as a modern one -- era is set to modern
+ * first, so start_call attaches _meta -- and unwound if the answer says legacy.
+ * The version we announce while probing is our newest; if the server dislikes
+ * it, it says so in an UnsupportedProtocolVersionError and we take its list. */
+static int probe_discover(mcpconn *c, const char **err) {
+  c->era = ERA_MODERN;
+  set_str(&c->proto, MODERN_VERSIONS[0]);
+
+  const char *terr = NULL;
+  cJSON *resp = transact_raw(c, "server/discover", NULL, MCP_PROBE_TIMEOUT, &terr);
+  if (!resp) {
+    if (c->io && (c->io->eof || c->io->io_err)) { *err = terr; return PROBE_FAIL; }
+    return PROBE_LEGACY; /* silence, or a transport that never answered */
+  }
+
+  cJSON *errobj = cJSON_GetObjectItem(resp, "error");
+  if (errobj) {
+    cJSON *code = cJSON_GetObjectItem(errobj, "code");
+    int n = cJSON_IsNumber(code) ? code->valueint : 0;
+    if (n == MCP_E_BAD_VERSION) {
+      cJSON *data = cJSON_GetObjectItem(errobj, "data");
+      cJSON *sup = data ? cJSON_GetObjectItem(data, "supported") : NULL;
+      const char *pick = pick_modern_version(sup);
+      if (pick) { set_str(&c->proto, pick); cJSON_Delete(resp); return PROBE_MODERN; }
+      if (has_legacy_version(sup)) { cJSON_Delete(resp); return PROBE_LEGACY; }
+      char list[256];
+      join_strings(sup, list, sizeof(list));
+      *err = seterr("server speaks no protocol version boggart supports "
+                    "(it offers: %s; boggart speaks %s and %s or earlier)",
+                    list[0] ? list : "nothing it would name",
+                    MCP_PROTO_MODERN, MCP_PROTO_LEGACY);
+      cJSON_Delete(resp);
+      return PROBE_FAIL;
+    }
+    /* Other reserved codes still identify a modern server; whatever it is
+     * unhappy about will resurface on the real requests, with its own message. */
+    int modern = (n == MCP_E_HEADER_MISMATCH || n == MCP_E_MISSING_CAP);
+    cJSON_Delete(resp);
+    return modern ? PROBE_MODERN : PROBE_LEGACY;
+  }
+
+  cJSON *result = cJSON_GetObjectItem(resp, "result");
+  cJSON *sup = result ? cJSON_GetObjectItem(result, "supportedVersions") : NULL;
+  const char *pick = pick_modern_version(sup);
+  if (!pick && cJSON_IsArray(sup)) {
+    if (has_legacy_version(sup)) { cJSON_Delete(resp); return PROBE_LEGACY; }
+    char list[256];
+    join_strings(sup, list, sizeof(list));
+    *err = seterr("server speaks no protocol version boggart supports "
+                  "(it offers: %s; boggart speaks %s and %s or earlier)",
+                  list[0] ? list : "nothing it would name",
+                  MCP_PROTO_MODERN, MCP_PROTO_LEGACY);
+    cJSON_Delete(resp);
+    return PROBE_FAIL;
+  }
+  /* A result with no supportedVersions is non-conforming; it answered a modern
+   * method, so take it at its word and keep the version we announced. */
+  if (pick) set_str(&c->proto, pick);
+  capture_server_info(c, result);
+  cJSON_Delete(resp);
+  return PROBE_MODERN;
+}
+
+/* Settle the protocol generation for this connection. */
+static int negotiate(mcpconn *c, const char **err) {
+  switch (probe_discover(c, err)) {
+    case PROBE_MODERN: return 0;
+    case PROBE_FAIL: return -1;
+    default: return do_initialize(c, err); /* PROBE_LEGACY */
+  }
 }
 
 /* ---- connection setup ----------------------------------------------------- */
@@ -840,6 +1233,9 @@ static void conn_teardown(mcpconn *c) {
   free(c->url); c->url = NULL;
   free(c->session); c->session = NULL;
   free(c->server_info); c->server_info = NULL;
+  free(c->proto); c->proto = NULL;
+  free(c->caps); c->caps = NULL;
+  free(c->instructions); c->instructions = NULL;
 }
 
 /* ---- Lua entry points ----------------------------------------------------- */
@@ -874,9 +1270,9 @@ static int l_connect(lua_State *L) {
   }
 
   err = NULL;
-  if (do_initialize(c, &err) != 0) {
+  if (negotiate(c, &err) != 0) {
     char msg[512];
-    snprintf(msg, sizeof(msg), "%s", err ? err : "MCP initialize failed");
+    snprintf(msg, sizeof(msg), "%s", err ? err : "MCP negotiation failed");
     c->dead = 1;
     conn_teardown(c);
     lua_pushnil(L);
@@ -1048,9 +1444,29 @@ static int l_call_close(lua_State *L) {
   return 0;
 }
 
+/* What this connection turned out to be: which generation was negotiated, the
+ * exact version in force, and whatever the server said about itself. `boggart
+ * doctor` and the studio's server list show the era, because "which MCP is this
+ * server speaking" is otherwise invisible until something misbehaves. */
 static int l_info(lua_State *L) {
   mcpconn *c = check_conn(L);
-  lua_pushstring(L, c->server_info ? c->server_info : "{}");
+  cJSON *o = cJSON_CreateObject();
+  cJSON_AddStringToObject(o, "era", c->era == ERA_MODERN ? "modern" : "legacy");
+  cJSON_AddStringToObject(o, "protocol", c->proto ? c->proto : "");
+  cJSON_AddStringToObject(o, "transport", c->transport == T_HTTP ? "http" : "stdio");
+  if (c->server_info) {
+    cJSON *si = cJSON_Parse(c->server_info);
+    if (si) cJSON_AddItemToObject(o, "serverInfo", si);
+  }
+  if (c->caps) {
+    cJSON *caps = cJSON_Parse(c->caps);
+    if (caps) cJSON_AddItemToObject(o, "capabilities", caps);
+  }
+  if (c->instructions) cJSON_AddStringToObject(o, "instructions", c->instructions);
+  char *s = cJSON_PrintUnformatted(o);
+  cJSON_Delete(o);
+  lua_pushstring(L, s ? s : "{}");
+  free(s);
   return 1;
 }
 

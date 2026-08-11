@@ -309,17 +309,33 @@ function M.doctor()
     warn("The credential file " .. apath .. string.format(" is mode %04o.", amode) ..
       " It should be 0600; run `chmod 600 " .. apath .. "`.")
   end
-  local masked, source = auth.masked()
-  local envkey = os.getenv("ANTHROPIC_API_KEY")
+  -- Credentials are per provider now, and so is this: reporting "the key"
+  -- when there are several would answer a question nobody asked. The provider
+  -- is derived from the endpoint, so this is the key that would actually be
+  -- sent by the next request.
+  local masked, source, provider = auth.masked()
+  kv("provider", tostring(provider) .. "  (from the endpoint)")
   if masked == "(unset)" then
-    kv("api key", "not set")
-  elseif source == "environment" then
-    kv("api key", masked .. "  from ANTHROPIC_API_KEY in the environment")
+    kv("api key", "not set for " .. tostring(provider))
+  elseif source and source ~= "stored" then
+    kv("api key", masked .. "  from " .. source .. " in the environment")
     -- The confusion this exists to end: the environment silently wins, so a
     -- key set with /auth appears to be ignored.
     line("               this OVERRIDES anything stored in the file above")
   else
     kv("api key", masked .. "  from " .. apath)
+  end
+  -- Keys for other providers, named but never shown: "I set that key, where
+  -- did it go" is otherwise unanswerable once more than one exists.
+  local others = {}
+  for _, name in ipairs({ "anthropic", "deepseek", "local", "custom" }) do
+    if name ~= provider then
+      local m2 = auth.masked(name)
+      if m2 ~= "(unset)" then others[#others + 1] = name end
+    end
+  end
+  if #others > 0 then
+    kv("other keys", table.concat(others, ", ") .. "  (not in use here)")
   end
   local base = auth.base_url()
   local envbase = os.getenv("ANTHROPIC_BASE_URL")
@@ -332,8 +348,9 @@ function M.doctor()
       "  Set one with `/auth key sk-ant-...`, or export ANTHROPIC_API_KEY,\n" ..
       "  or point it at a local server with `/auth url http://127.0.0.1:8000`.")
   end
-  if envkey and envkey ~= "" and akind == "file" then
-    warn("ANTHROPIC_API_KEY is set, so the key stored in " .. apath .. " is not being used.")
+  if source and source ~= "stored" and akind == "file" then
+    warn(source .. " is set, so the key stored in " .. apath
+      .. " is not being used for " .. tostring(provider) .. ".")
   end
 
   -- mcp ----------------------------------------------------------------------
@@ -347,8 +364,8 @@ function M.doctor()
       local name = type(spec) == "table" and tostring(spec.name) or "(malformed entry)"
       local connected = bog.mcphost and bog.mcphost.conns[name]
       if connected then
-        line(string.format("  %-12s connected, %d tools", name,
-          #((bog.mcphost.tools or {})[name] or {})))
+        line(string.format("  %-12s connected, %d tools  [%s]", name,
+          #((bog.mcphost.tools or {})[name] or {}), bog.mcphost.generation(name)))
       else
         -- Actually connect: "configured" and "working" are different facts and
         -- the second one is why anybody runs this. It does spawn the server.
