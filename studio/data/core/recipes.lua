@@ -15,6 +15,39 @@ local core = require "core"
 
 local recipes = {}
 
+-- What a recipe is, in the words the UI uses when it has to explain itself.
+-- Kept here so the empty state, the palette and the README cannot drift into
+-- three different descriptions of the same thing.
+recipes.WHAT_IT_IS =
+  "A recipe is a prompt you keep. Write it once with {{blanks}}, and every " ..
+  "time you run it boggart asks for the blanks and sends the filled-in prompt " ..
+  "to the agent."
+
+-- The distinction people actually need, because boggart has four things that
+-- sound alike:
+--   recipe    a saved prompt with blanks. Text. The model does the thinking.
+--   workflow  several prompts in order, each able to use a different model,
+--             feeding its answer to the next.
+--   tool      Lua the agent wrote and can call. Code, validated, with
+--             provenance. Deterministic; no model in the loop once written.
+--   skill     a named bundle of instructions plus the tools an agent is
+--             allowed to use.
+recipes.VERSUS =
+  "A recipe is text; a tool is code. Use a recipe when you want the model to " ..
+  "think about something the same way each time, and define_tool when you " ..
+  "want the same answer every time. A workflow is several recipes in order."
+
+-- Shipped so the idea is legible on sight rather than from documentation:
+-- someone with no recipes gets one that obviously works and can be edited.
+recipes.EXAMPLE_NAME = "review-a-file"
+recipes.EXAMPLE = [[
+Review @{{file}} for {{concern}}.
+
+Point at specific lines. Say what would go wrong and when, not just what is
+untidy. If you find nothing worth changing, say so plainly rather than
+inventing something.
+]]
+
 function recipes.dir()
   return bog.userdir .. "/recipes"
 end
@@ -45,6 +78,14 @@ function recipes.fill(text, values)
   return (tostring(text or ""):gsub("{{%s*([%w_%-%.]+)%s*}}", function(p)
     return values[p] or ("{{" .. p .. "}}")
   end))
+end
+
+-- Write the example, once, if the user has none. Called when the recipe list
+-- is first shown empty: an example you can read and run beats a sentence
+-- describing one.
+function recipes.seed_example()
+  if #recipes.list() > 0 then return nil end
+  return recipes.save(recipes.EXAMPLE_NAME, recipes.EXAMPLE)
 end
 
 function recipes.list()

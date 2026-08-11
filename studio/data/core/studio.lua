@@ -19,6 +19,7 @@ local SettingsView = require "core.settingsview"
 local PanelView = require "core.panelview"
 local WorkflowView = require "core.workflowview"
 local LibraryView = require "core.libraryview"
+local PickerView = require "core.pickerview"
 local SwarmView = require "core.swarmview"
 local uitools = require "core.uitools"
 
@@ -327,6 +328,57 @@ function studio.close_panel(name)
   return true
 end
 
+-- Say something where the user is actually looking.
+--
+-- core.log flashes a line in the status bar for a few seconds and files it in
+-- the log view; core.log_quiet shows nothing at all. For a command someone
+-- typed into the palette that is reasonable. For a button they just clicked in
+-- the conversation it is not: the reply appears twenty inches away in six-point
+-- text, next to the token counters, and is gone before they look down. Which
+-- is why "the button does nothing" was a fair description of a button that was
+-- working exactly as written.
+--
+-- Anything reachable from the toolbar answers in the transcript instead.
+function studio.say(fmt, ...)
+  local text = select("#", ...) > 0 and string.format(fmt, ...) or fmt
+  local v = studio.agent_view()
+  if v then v:push("system", text) end
+  core.log_quiet("%s", text)
+  return text
+end
+
+-- One picker at a time, as a tab beside the conversation.
+function studio.pick(mode, on_pick)
+  local node = core.root_view:get_primary_node()
+  local start = (core.project_roots and core.project_roots[#core.project_roots])
+    or sys.cwd()
+  studio.picker = PickerView(mode, start, on_pick)
+  node:add_view(studio.picker)
+  core.set_active_view(studio.picker)
+  return studio.picker
+end
+
+-- Add a folder to the project. The scanner picks it up on its next pass, so
+-- the tree and ctrl+p find it without anything having to be told twice.
+function studio.add_folder(path)
+  core.project_roots = core.project_roots or {}
+  for _, r in ipairs(core.project_roots) do
+    if r == path then studio.say("%s is already in the project.", path); return false end
+  end
+  if sys.stat(path) ~= "dir" then
+    core.error("%s is not a directory", tostring(path))
+    return false
+  end
+  core.project_roots[#core.project_roots + 1] = path
+  studio.say("Added %s to the project.", path)
+  -- The agent works in the process's cwd, so a folder added to the *window*
+  -- is not automatically a folder the agent will write to. Saying so is
+  -- better than letting someone discover it from a refused edit.
+  core.log_quiet("note: the agent still works from %s; use @paths to point it "
+    .. "at files in an added folder", sys.cwd())
+  return true
+end
+
 function studio.stop_schedule()
   if not studio.schedule then return false end
   studio.schedule.stop = true
@@ -449,7 +501,7 @@ command.add(nil, {
     for name, p in pairs(v.tool_policy) do
       core.log_quiet("  %s = %s", name, p); any = true
     end
-    core.log("mode %s%s (details in the log)", v:mode_label(),
+    studio.say("Permission mode: %s%s", v:mode_label(),
       any and ", with per-tool overrides" or "")
   end,
   ["agent:approve"] = function()
@@ -464,7 +516,7 @@ command.add(nil, {
     local v = studio.agent_view()
     if v and v.busy then core.error("busy -- cancel the turn first"); return end
     local frac, used = bog.api.context_fraction(bog.session)
-    if used == 0 then core.log("nothing to compact"); return end
+    if used == 0 then studio.say("Nothing to compact yet."); return end
     core.log("compacting %d tokens (%d%%)...", used, math.floor(frac * 100 + 0.5))
     -- Synchronous on purpose: this is a deliberate, user-initiated pause, and
     -- the alternative is a second concurrent turn against the same session.
@@ -479,7 +531,7 @@ command.add(nil, {
 
   ["agent:show-context"] = function()
     local frac, used = bog.api.context_fraction(bog.session)
-    core.log("context %d / %d tokens (%d%%), compacts at %d%%; %d compaction(s) so far",
+    studio.say("context %d / %d tokens (%d%%), compacts at %d%%; %d compaction(s) so far",
       used, bog.api.context_limit(bog.session), math.floor(frac * 100 + 0.5),
       (bog.api.COMPACT_RATIO or 0.8) * 100,
       (bog.session.usage and bog.session.usage.compactions) or 0)
@@ -489,10 +541,10 @@ command.add(nil, {
   ["agent:show-usage"] = function()
     local u = bog.session and bog.session.usage
     if not u or not u.turns or u.turns == 0 then
-      core.log("no usage recorded in this session yet")
+      studio.say("No usage recorded in this session yet.")
       return
     end
-    core.log("%d turns | %d input (+%d cached) | %d output | last request %d tokens",
+    studio.say("%d turns | %d input (+%d cached) | %d output | last request %d tokens",
       u.turns, u.input or 0, u.cached or 0, u.output or 0, u.last_input or 0)
   end,
 
@@ -571,14 +623,14 @@ command.add(nil, {
   ["agent:show-event-handlers"] = function()
     local rows = (bog.events and bog.events.list()) or {}
     if #rows == 0 then
-      core.log("no event handlers registered")
+      studio.say("No event handlers registered.")
       return
     end
     for _, h in ipairs(rows) do
       core.log_quiet("#%d  %-20s %-10s %d calls  %s", h.id, h.pattern,
         h.source or "?", h.calls, h.desc or "")
     end
-    core.log("%d event handler(s) -- details in the log (ctrl+l)", #rows)
+    studio.say("%d event handler(s) -- details in the log (ctrl+l)", #rows)
   end,
 
   ["agent:show-tools"] = function()
@@ -586,7 +638,7 @@ command.add(nil, {
     for line in (report .. "\n"):gmatch("(.-)\n") do
       if line ~= "" then core.log_quiet("%s", line) end
     end
-    core.log("tool report written to the log (ctrl+l)")
+    studio.say("Tool report written to the log (ctrl+l).")
   end,
 
   -- ---- MCP servers --------------------------------------------------------
@@ -597,14 +649,15 @@ command.add(nil, {
   ["agent:list-mcp-servers"] = function()
     local live = bog.mcphost and bog.mcphost.list() or {}
     if #live == 0 then
-      core.log("no MCP servers connected -- 'agent: add mcp server' to add one")
+      studio.say("No MCP servers connected. 'agent: add mcp server' adds one; "
+        .. "they are declared in ~/.boggart/lua/mcp_servers.lua.")
       return
     end
     for _, e in ipairs(live) do
       core.log_quiet("%s [%s] (%d tools): %s", e.server,
         bog.mcphost.generation(e.server), #e.tools, table.concat(e.tools, ", "))
     end
-    core.log("%d MCP server(s) connected -- details in the log (ctrl+l)", #live)
+    studio.say("%d MCP server(s) connected -- details in the log (ctrl+l)", #live)
   end,
 
   ["agent:add-mcp-server"] = function()
@@ -693,7 +746,16 @@ command.add(nil, {
   ["agent:run-recipe"] = function()
     local names = recipes.list()
     if #names == 0 then
-      core.log("no recipes yet -- 'agent: save recipe' stores the current draft")
+      -- An empty list is where someone learns what this is, so it explains
+      -- itself and then hands them a working one rather than a definition.
+      studio.say(recipes.WHAT_IT_IS)
+      studio.say(recipes.VERSUS)
+      local path = recipes.seed_example()
+      if path then
+        studio.say("Wrote an example recipe, '%s'. Run it again to try it, "
+          .. "or edit it with 'agent: edit recipe'.", recipes.EXAMPLE_NAME)
+        core.log_quiet("  %s", path)
+      end
       return
     end
     core.command_view:enter("Recipe:", function(text, item)
@@ -728,7 +790,12 @@ command.add(nil, {
 
   ["agent:edit-recipe"] = function()
     local names = recipes.list()
-    if #names == 0 then core.log("no recipes yet"); return end
+    if #names == 0 then
+      core.log("%s", recipes.WHAT_IT_IS)
+      local path = recipes.seed_example()
+      if path then core.log("Wrote an example to edit: %s", path) end
+      return
+    end
     core.command_view:enter("Edit recipe:", function(text, item)
       local name = item or text
       if recipes.load(name) then
@@ -745,7 +812,7 @@ command.add(nil, {
   -- version: repeat a recipe on an interval, visibly, in front of you.
   ["agent:schedule-recipe"] = function()
     local names = recipes.list()
-    if #names == 0 then core.log("no recipes to schedule"); return end
+    if #names == 0 then studio.say("No recipes to schedule yet."); return end
     core.command_view:enter("Schedule recipe:", function(text, item)
       local name = item or text
       local body = recipes.load(name)
@@ -785,6 +852,37 @@ command.add(nil, {
   end,
 
   -- ---- things the buttons call --------------------------------------------
+  -- ---- opening things ------------------------------------------------------
+  -- A picker, because there was no way to reach anything that was not passed
+  -- on the command line. See core/pickerview.lua for why it is drawn rather
+  -- than delegated to the system dialog.
+  ["studio:open-file"] = function()
+    studio.pick("file", function(path)
+      if path then core.root_view:open_doc(core.open_doc(path)) end
+    end)
+  end,
+
+  ["studio:open-folder"] = function()
+    studio.pick("folder", function(path)
+      if path then studio.add_folder(path) end
+    end)
+  end,
+
+  ["studio:remove-folder"] = function()
+    local roots = core.project_roots or {}
+    if #roots == 0 then core.log("no added folders to remove"); return end
+    core.command_view:enter("Stop watching which folder:", function(text, item)
+      local pick = item or text
+      for i, r in ipairs(roots) do
+        if r == pick then
+          table.remove(roots, i)
+          core.log("removed %s (its files leave the tree on the next scan)", r)
+          return
+        end
+      end
+    end, function(text) return common.fuzzy_match(roots, text) end)
+  end,
+
   ["studio:toggle-files"] = function()
     command.perform("treeview:toggle")
   end,
@@ -919,6 +1017,8 @@ keymap.add {
   ["ctrl+b"]          = "studio:toggle-sidebar",
   ["ctrl+shift+w"]    = "agent:workflows",
   ["ctrl+shift+l"]    = "agent:library",
+  ["ctrl+o"]          = "studio:open-file",
+  ["ctrl+shift+o"]    = "studio:open-folder",
   ["ctrl+shift+m"]    = "swarm:open",
 }
 

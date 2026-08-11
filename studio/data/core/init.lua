@@ -60,9 +60,23 @@ local function project_scan_thread()
   end
 
   while true do
-    -- get project files and replace previous table if the new table is
-    -- different
+    -- Every root, not just the one the process started in.
+    --
+    -- The project used to be exactly the directory boggart was launched from,
+    -- with no way to add another -- so working across two checkouts meant two
+    -- windows. Roots are relative "." plus any absolute paths added at runtime;
+    -- entries from an added root carry their absolute path, which is what makes
+    -- them openable and what tells them apart in the tree.
     local t = get_files(".")
+    for _, root in ipairs(core.project_roots or {}) do
+      local ok = pcall(get_files, root, t)
+      if not ok then
+        -- A root that has gone away (unplugged, unmounted, deleted) must not
+        -- take the scanner down with it; it simply contributes nothing until
+        -- it comes back.
+        core.log_quiet("project root is unreadable: %s", root)
+      end
+    end
     if diff_files(core.project_files, t) then
       core.project_files = t
       core.redraw = true
@@ -101,6 +115,7 @@ function core.init()
   core.docs = {}
   core.threads = setmetatable({}, { __mode = "k" })
   core.project_files = {}
+  core.project_roots = {}
   core.redraw = true
 
   core.root_view = RootView()

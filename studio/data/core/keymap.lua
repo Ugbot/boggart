@@ -5,6 +5,11 @@ keymap.modkeys = {}
 keymap.map = {}
 keymap.reverse_map = {}
 
+-- Command was missing entirely. SDL reports it as "left gui"/"right gui", and
+-- an unknown modifier is simply dropped -- so on macOS every Cmd chord arrived
+-- as its bare letter: Cmd+C was "c", Cmd+V was "v", and nothing bound to them
+-- ran. On a Mac that is not a missing shortcut, it is the whole muscle memory
+-- of the platform doing nothing.
 local modkey_map = {
   ["left ctrl"]   = "ctrl",
   ["right ctrl"]  = "ctrl",
@@ -12,9 +17,11 @@ local modkey_map = {
   ["right shift"] = "shift",
   ["left alt"]    = "alt",
   ["right alt"]   = "altgr",
+  ["left gui"]    = "cmd",
+  ["right gui"]   = "cmd",
 }
 
-local modkeys = { "ctrl", "alt", "altgr", "shift" }
+local modkeys = { "cmd", "ctrl", "alt", "altgr", "shift" }
 
 local function key_to_stroke(k)
   local stroke = ""
@@ -48,7 +55,8 @@ end
 
 
 function keymap.get_binding(cmd)
-  return keymap.reverse_map[cmd]
+  
+return keymap.reverse_map[cmd]
 end
 
 
@@ -201,5 +209,31 @@ keymap.add {
   ["shift+pageup"] = "doc:select-to-previous-page",
   ["shift+pagedown"] = "doc:select-to-next-page",
 }
+
+
+-- macOS expects Command for the editing verbs. Rather than rewrite every
+-- binding, mirror the ones muscle memory reaches for -- and only those, so a
+-- Cmd chord that means something else here is not silently claimed. The
+-- platform question goes to the capability layer, which is where this codebase
+-- asks it; nothing sniffs an OS name directly.
+if sys and sys.caps and sys.caps().name == "macos" then
+  local mirror = {
+    ["ctrl+c"] = "cmd+c", ["ctrl+v"] = "cmd+v", ["ctrl+x"] = "cmd+x",
+    ["ctrl+a"] = "cmd+a", ["ctrl+z"] = "cmd+z", ["ctrl+y"] = "cmd+y",
+    ["ctrl+f"] = "cmd+f", ["ctrl+p"] = "cmd+p", ["ctrl+s"] = "cmd+s",
+    ["ctrl+w"] = "cmd+w", ["ctrl+n"] = "cmd+n", ["ctrl+return"] = "cmd+return",
+    ["ctrl+shift+p"] = "cmd+shift+p", ["ctrl+o"] = "cmd+o",
+  }
+  local add = {}
+  for from, to in pairs(mirror) do
+    local cmds = keymap.map[from]
+    if cmds then
+      local copy = {}
+      for i, c in ipairs(cmds) do copy[i] = c end
+      add[to] = copy
+    end
+  end
+  keymap.add(add)
+end
 
 return keymap

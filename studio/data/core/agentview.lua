@@ -397,6 +397,34 @@ function AgentView:submit(text)
 end
 
 -- One path for "send this", whether it came from the return key or the button.
+-- The composer's own selection, from a shift-held anchor to the caret.
+function AgentView:composer_selection()
+  local a = self.sel_anchor
+  if not a then return nil end
+  local ay, ax, by, bx = a.cy, a.cx, self.cy, self.cx
+  if ay > by or (ay == by and ax > bx) then ay, ax, by, bx = by, bx, ay, ax end
+  if ay == by then return (self.lines[ay] or ""):sub(ax, bx - 1) end
+  local parts = { (self.lines[ay] or ""):sub(ax) }
+  for i = ay + 1, by - 1 do parts[#parts + 1] = self.lines[i] or "" end
+  parts[#parts + 1] = (self.lines[by] or ""):sub(1, bx - 1)
+  return table.concat(parts, "\n")
+end
+
+function AgentView:delete_composer_selection()
+  local a = self.sel_anchor
+  if not a then return false end
+  local ay, ax, by, bx = a.cy, a.cx, self.cy, self.cx
+  if ay > by or (ay == by and ax > bx) then ay, ax, by, bx = by, bx, ay, ax end
+  local head = (self.lines[ay] or ""):sub(1, ax - 1)
+  local tail = (self.lines[by] or ""):sub(bx)
+  for _ = ay + 1, by do table.remove(self.lines, ay + 1) end
+  self.lines[ay] = head .. tail
+  self.cy, self.cx = ay, ax
+  self.sel_anchor = nil
+  core.redraw = true
+  return true
+end
+
 function AgentView:send()
   if self.busy then return end
   local t = self:input_text():gsub("^%s+", ""):gsub("%s+$", "")
@@ -527,6 +555,72 @@ function AgentView:on_key_pressed(key)
     if key == "a" or key == "y" or key == "return" then self:decide("approve"); return true end
     if key == "r" or key == "n" or key == "escape" then self:decide("reject"); return true end
     if key == "shift+a" then self:decide("always"); return true end
+    return true
+  end
+
+  -- ---- clipboard ---------------------------------------------------------
+  --
+  -- Copy takes the transcript selection when there is one and the composer's
+  -- otherwise, which is what the eye expects: whatever is highlighted.
+  if key == "ctrl+c" or key == "cmd+c" then
+    local text = self:selected_text() or self:composer_selection()
+    if text and text ~= "" then system.set_clipboard(text) end
+    return true
+
+  elseif key == "ctrl+x" or key == "cmd+x" then
+    local text = self:composer_selection()
+    if text and text ~= "" then
+      system.set_clipboard(text)
+      self:delete_composer_selection()
+    end
+    return true
+
+  elseif key == "ctrl+v" or key == "cmd+v" then
+    local text = system.get_clipboard()
+    if text and text ~= "" then
+      self:delete_composer_selection()
+      -- Paste is multi-line more often than not -- a stack trace, a diff, a
+      -- log. Splitting it into the composer's lines keeps the caret arithmetic
+      -- and the height calculation honest; a newline left inside one line
+      -- would render as a glyph and never wrap.
+      local lines = {}
+      for piece in (text:gsub("\r\n", "\n") .. "\n"):gmatch("(.-)\n") do
+        lines[#lines + 1] = piece
+      end
+      if #lines > 0 and lines[#lines] == "" then table.remove(lines) end
+      if #lines == 0 then return true end
+      local cur = self.lines[self.cy] or ""
+      local head, tail = cur:sub(1, self.cx - 1), cur:sub(self.cx)
+      if #lines == 1 then
+        self.lines[self.cy] = head .. lines[1] .. tail
+        self.cx = #head + #lines[1] + 1
+      else
+        self.lines[self.cy] = head .. lines[1]
+        for i = 2, #lines do
+          table.insert(self.lines, self.cy + i - 1, lines[i])
+        end
+        self.cy = self.cy + #lines - 1
+        self.lines[self.cy] = self.lines[self.cy] .. tail
+        self.cx = #lines[#lines] + 1
+      end
+      self.sel_anchor = nil
+      core.redraw = true
+    end
+    return true
+
+  elseif key == "ctrl+a" or key == "cmd+a" then
+    -- One selection at a time. Two highlighted regions means copy has to guess
+    -- which you meant, and it will guess wrong half the time.
+    self:clear_selection()
+    self.sel_anchor = { cy = 1, cx = 1 }
+    self.cy = #self.lines
+    self.cx = #(self.lines[self.cy] or "") + 1
+    core.redraw = true
+    return true
+
+  elseif key == "escape" and (self.sel or self.sel_anchor) then
+    self:clear_selection()
+    self.sel_anchor = nil
     return true
   end
 
@@ -707,6 +801,27 @@ end
 
 -- Everything past the first n cells of s.
 local function cdrop(s, n) return select(2, split(s, n)) end
+
+-- A laid-out row's plain text, and the pieces selection needs from it. Rows
+-- are lists of coloured tokens; the text is their concatenation, and every
+-- measurement is in display cells because that is the unit the layout wrapped
+-- in and the unit a column on screen corresponds to.
+local function row_text(row)
+  local parts = {}
+  for _, t in ipairs(row or {}) do parts[#parts + 1] = t[2] end
+  return table.concat(parts)
+end
+
+local function cell_len(str) return cols_of(str) end
+
+-- s, from cell `from` up to cell `to` (or the end).
+local function cell_slice(str, from, to)
+  local rest = (from and from > 0) and cdrop(str, from) or str
+  if not to then return rest end
+  local take = to - (from or 0)
+  if take <= 0 then return "" end
+  return (split(rest, take))
+end
 
 local EXT = {
   lua = "lua", c = "c", h = "h", cpp = "cpp", cc = "cpp", ["c++"] = "cpp",
@@ -965,6 +1080,70 @@ end
 -- Recomputing them on click instead would mean duplicating the layout, and two
 -- copies of a layout drift apart the first time one is edited.
 
+-- ---- selecting text in the transcript --------------------------------------
+--
+-- The panel could not be selected from at all: a transcript you cannot copy an
+-- error message out of is a transcript you end up retyping.
+--
+-- A position is (entry index, row within that entry, column), not a pixel or a
+-- screen row. Screen rows move when the view scrolls or the window resizes, and
+-- a selection anchored to one would slide off the text it was made on. Columns
+-- are display cells, the same unit the layout wraps in, so a CJK character
+-- counts as the two it occupies.
+--
+-- draw() records the rectangle of every row it puts on screen; hit-testing and
+-- highlighting both read that, so what you can select is exactly what you can
+-- see, and neither can drift from the layout.
+
+local function pos_le(a, b)
+  if a.e ~= b.e then return a.e < b.e end
+  if a.r ~= b.r then return a.r < b.r end
+  return a.c <= b.c
+end
+
+-- The row under a point, and the column within it.
+function AgentView:pos_at(x, y)
+  local best, best_dy
+  for _, r in ipairs(self.rows_drawn or {}) do
+    local dy = (y < r.y) and (r.y - y) or ((y > r.y + r.h) and (y - r.y - r.h) or 0)
+    if not best_dy or dy < best_dy then best, best_dy = r, dy end
+  end
+  if not best then return nil end
+  local col = math.floor((x - best.x) / self.char_w + 0.5)
+  if col < 0 then col = 0 end
+  if col > best.cells then col = best.cells end
+  return { e = best.e, r = best.r, c = col }
+end
+
+function AgentView:clear_selection()
+  if self.sel then self.sel = nil; core.redraw = true end
+end
+
+-- The selected text, in reading order.
+function AgentView:selected_text()
+  if not self.sel or not self.sel.b then return nil end
+  local a, b = self.sel.a, self.sel.b
+  if not pos_le(a, b) then a, b = b, a end
+  local parts = {}
+  for ei = a.e, b.e do
+    local e = self.entries[ei]
+    if e then
+      local rows = e._layout and e._layout.rows
+      if rows then
+        local r1 = (ei == a.e) and a.r or 1
+        local r2 = (ei == b.e) and b.r or #rows
+        for ri = r1, math.min(r2, #rows) do
+          local text = row_text(rows[ri])
+          local from = (ei == a.e and ri == a.r) and a.c or 0
+          local to = (ei == b.e and ri == b.r) and b.c or nil
+          parts[#parts + 1] = cell_slice(text, from, to)
+        end
+      end
+    end
+  end
+  return table.concat(parts, "\n")
+end
+
 function AgentView:on_mouse_moved(x, y, dx, dy)
   AgentView.super.on_mouse_moved(self, x, y, dx, dy)
   local was = self.hover_id
@@ -973,6 +1152,10 @@ function AgentView:on_mouse_moved(x, y, dx, dy)
   self.hover_id = item and item.label or nil
   if self.hover_id ~= was then core.redraw = true end
   self.cursor = item and "arrow" or "ibeam"
+  if self.selecting then
+    local p = self:pos_at(x, y)
+    if p then self.sel.b = p; core.redraw = true end
+  end
 end
 
 function AgentView:on_mouse_pressed(button, x, y, clicks)
@@ -985,9 +1168,34 @@ function AgentView:on_mouse_pressed(button, x, y, clicks)
     end
     return true
   end
-  -- Clicking anywhere else focuses the panel, so typing goes to the composer.
   core.set_active_view(self)
+
+  local p = self:pos_at(x, y)
+  if p then
+    self.sel_anchor = nil   -- selecting the transcript drops the composer's
+    if clicks and clicks >= 2 then
+      -- Double click takes the whole row, which is the unit people want out of
+      -- a transcript far more often than a word: a path, a command, an error.
+      local e = self.entries[p.e]
+      local rows = e and e._layout and e._layout.rows
+      local cells = rows and rows[p.r] and cell_len(row_text(rows[p.r])) or 0
+      self.sel = { a = { e = p.e, r = p.r, c = 0 },
+                   b = { e = p.e, r = p.r, c = cells } }
+      self.selecting = false
+    else
+      self.sel = { a = p, b = p }
+      self.selecting = true
+    end
+    core.redraw = true
+  else
+    self:clear_selection()
+  end
   return true
+end
+
+function AgentView:on_mouse_released(button, x, y)
+  AgentView.super.on_mouse_released(self, button, x, y)
+  self.selecting = false
 end
 
 function AgentView:get_scrollable_size()
@@ -1016,6 +1224,7 @@ function AgentView:toolbar_items()
     { label = "Chats",    command = "agent:resume-session" },
     { label = "Recipes",  command = "agent:run-recipe" },
     { label = "Files",    command = "studio:toggle-files" },
+    { label = "Open",     command = "studio:open-folder" },
     { label = "Tools",    command = "agent:show-tools" },
     { label = "MCP",      command = "agent:list-mcp-servers" },
     { label = "Settings", command = "agent:settings" },
@@ -1116,7 +1325,16 @@ function AgentView:draw()
   core.push_clip_rect(self.position.x, body_top, self.size.x,
     math.max(0, body_bottom - body_top))
 
-  for _, e in ipairs(self.entries) do
+  -- Selection bounds, ordered once per frame rather than per row.
+  local sel_lo, sel_hi
+  if self.sel and self.sel.b then
+    sel_lo, sel_hi = self.sel.a, self.sel.b
+    if not pos_le(sel_lo, sel_hi) then sel_lo, sel_hi = sel_hi, sel_lo end
+  end
+  self.rows_drawn = {}
+  self.char_w = charw
+
+  for ei, e in ipairs(self.entries) do
     if e.role == "diff" and e.diff then
       if visible(y) then
         common.draw_text(font, style.dim, difflib.summary(e.diff, e.path or ""),
@@ -1168,10 +1386,32 @@ function AgentView:draw()
             eh + vpad, style.selection)
         end
 
-        for _, row in ipairs(rows) do
+        for ri, row in ipairs(rows) do
           if visible(y) then
             if row.code then
               renderer.draw_rect(x - pad / 2, y, w + pad, lh, style.background2)
+            end
+            -- What is on screen, in the coordinates selection works in.
+            -- Recorded rather than recomputed, so hit-testing cannot disagree
+            -- with the layout it is testing against.
+            local rtext = row_text(row)
+            local cells = cell_len(rtext)
+            self.rows_drawn[#self.rows_drawn + 1] = {
+              e = ei, r = ri, x = ex, y = y, h = lh, cells = cells,
+            }
+            if sel_lo then
+              -- The part of this row inside the selection, as two columns.
+              local from, to = 0, cells
+              local before = (ei < sel_lo.e) or (ei == sel_lo.e and ri < sel_lo.r)
+              local after = (ei > sel_hi.e) or (ei == sel_hi.e and ri > sel_hi.r)
+              if not before and not after then
+                if ei == sel_lo.e and ri == sel_lo.r then from = sel_lo.c end
+                if ei == sel_hi.e and ri == sel_hi.r then to = sel_hi.c end
+                if to > from then
+                  renderer.draw_rect(ex + from * charw, y,
+                    (to - from) * charw, lh, style.selection)
+                end
+              end
             end
             if row.rule then
               renderer.draw_rect(ex, y + lh / 2, row.thin and (w / 3) or w,

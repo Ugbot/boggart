@@ -523,6 +523,16 @@ core.add_thread(function()
     v.scroll.to.y, v.scroll.y = max / 2, max / 2
     shot("long")
 
+    -- Put the pointer back over the panel first.
+    --
+    -- The wheel is routed by RootView to whatever node is under
+    -- root_view.mouse, and a real pointer resting anywhere over the window
+    -- updates that on the frames drawn in between -- so this burst could be
+    -- delivered to the sidebar instead, and the check failed depending on
+    -- where the mouse physically was. That is a defect in the test, not a
+    -- flake to be tolerated.
+    core.on_event("mousemoved", v.position.x + v.size.x / 2,
+      v.position.y + v.size.y / 2, 0, 0)
     for _ = 1, 8 do core.on_event("mousewheel", 1000) end
     frame(4)
     check(v.scroll.to.y == 0, "scrolling back up does not reach the top ("
