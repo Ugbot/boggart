@@ -619,3 +619,108 @@ turns and waitpoints on the bus boggart already has. It is the composition layer
 that boggart is *better* positioned to build than Trigger.dev or n8n — because in
 boggart the step language, the sandbox, and the effect-replay log are the same
 boundary, and the agent can already write to it.
+
+---
+
+## Appendix — Why Lua, not a Lisp or a Scheme
+
+A self-modifying agent that rewrites its own code at runtime *screams* Lisp:
+homoiconicity, macros, live redefinition, the image. So the fair question is
+whether boggart picked the wrong runtime on day one. The answer is no — but the
+reason is specific, and it only becomes clear once you separate **the runtime**
+(the VM the agent's code lives and mutates in) from **the surface syntax** (what
+that code looks like). The Lisp instinct is right about the *surface* and wrong
+about the *runtime*, and boggart needs the runtime to be right.
+
+### What "runtime flexibility" has to mean *here*
+
+boggart does not need maximal malleability; it needs a particular five-way
+intersection, and every one of these is load-bearing elsewhere in this document:
+
+1. **A language-level, per-unit capability sandbox** — because self-modification
+   is only safe if a generated unit of code can be handed an exact set of
+   capabilities and *nothing else* (§3). This is the single most important
+   property, and the one the effect-replay log reuses (§5, §6).
+2. **Embeddable in a small C core**, so the whole thing ships as one
+   self-contained ~1.8MB binary — the distribution story (§5's build-vs-borrow
+   hinges on keeping it).
+3. **Text source, not an image** — the agent's own code is diffable, greppable,
+   version-controlled overlay files, not an opaque heap dump.
+4. **Replay durability, not snapshot durability** — so continuation-capture and
+   image-persistence, the flashiest Lisp runtime tricks, are things boggart
+   routes *around* by design (§5, §6).
+5. **Model fluency** — the agent writes this code; subtle metaprogramming is
+   where LLMs are weakest.
+
+Rank the Lisp/Scheme family against that intersection and it sorts cleanly:
+
+| Runtime | Embeds in a small C core | Per-unit in-language sandbox | Resource limits (time/mem) | Source is text, not image | Metaprogramming | Model fluency |
+|---|---|---|---|---|---|---|
+| **Lua** | ✅ *its reason to exist* | ✅ `load(chunk,name,"t",env)` sets `_ENV` | ◐ debug-hook (boggart uses it) | ✅ overlay `.lua` | ◐ metatables + code-as-string | ✅ high |
+| **Guile (Scheme)** | ✅ GNU's C extension lang | ✅ `(ice-9 sandbox)` safe bindings | ✅ time + allocation limits | ✅ | ✅ full macros | ◐ |
+| **Racket** | ❌ heavy runtime | ✅ `make-evaluator` restricted namespace | ✅ memory/eval/fs/net guards | ✅ | ✅ full macros | ◐ |
+| **R7RS Scheme** | ◐ impl-dependent | ◐ `eval` + environment specifiers (bindings only) | ❌ not in the spec | ✅ | ✅ | ◐ |
+| **Common Lisp** | ❌ ECL heavy; SBCL not embed-friendly | ❌ no standard restricted eval; reader `#.` is live-eval | ❌ | ❌ the **image** is the idiom | ✅ *maximal* | ◐ low (macros/CLOS/conditions) |
+
+### Reading the table
+
+- **Common Lisp is the most powerful language and the worst *fit*.** It has the
+  crown-jewel property Lua lacks — `defun`/`defmethod`/`defclass` redefine
+  through symbol cells and generic functions so every caller sees the new code
+  live, with no stale-closure discipline — plus maximal macros and the
+  condition/restart system. But it fails the two properties boggart's safety and
+  distribution rest on: there is **no standard way to sandbox untrusted code
+  in-process** (the reader alone does read-eval via `#.`, packages aren't a
+  security boundary), and its signature flexibility is the **image**, which is
+  the exact opposite of "source is diffable text." CL hands you more power at
+  precisely the two axes where boggart needs *containment*, not power.
+- **Scheme sandboxes better than CL, by design.** R7RS `eval` takes an
+  environment specifier, so you can restrict *which bindings* exist — closer in
+  spirit to Lua's `_ENV` than anything in CL. But standard Scheme stops at
+  bindings: no resource limits, and "Scheme" is a spec with many runtimes rather
+  than one embeddable VM.
+- **Racket is the strongest "if not Lua."** `racket/sandbox` gives you *both*
+  full macros *and* a real security sandbox with memory, time, filesystem and
+  network limits — the combination CL cannot offer. If footprint were free,
+  Racket would be a serious answer. But it is a heavyweight runtime, not a
+  library you embed in a tiny C core, so it fails property 2 outright and takes
+  the single-binary story with it.
+- **Guile is the honest closest rival.** It is GNU's *embed-in-C extension
+  language* — Lua's own niche — and `(ice-9 sandbox)` provides safe-binding sets
+  with time and allocation limits: a genuine language-level sandbox with resource
+  bounds. On paper it hits four of the five. Lua wins on the margins that
+  compound: a smaller/faster VM with no GC-library dependency, and a sandbox
+  that is *just a table you hand the chunk as its `_ENV`* — more legible and more
+  minimal than Guile's module machinery — plus materially higher model fluency.
+
+### The move that dissolves the question: Fennel
+
+The Lisp instinct is really about *surface* — s-expressions, macros,
+code-as-data. That is separable from the runtime, and on the Lua VM it is
+already available: **[Fennel](https://fennel-lang.org) is a Lisp that compiles to
+Lua**, runs on the same VM, compiles into the *same* `_ENV` capability sandbox,
+and ships in the same single binary. So "should it have been a Lisp?" has a
+disarming answer — you can have the Lisp surface, with a full macro system, at
+zero architectural cost, *without* giving up the per-unit sandbox, the C
+embedding, the text source, or the model-fluency of the underlying Lua. Choosing
+the Lua runtime never foreclosed the Lisp ergonomics; it kept them optional.
+
+### Verdict
+
+The "we should have chosen a Lisp" instinct conflates the runtime with the
+syntax. The right *runtime* for a **safely** self-modifying, embeddable,
+text-sourced agent is a small VM with per-unit environment sandboxing — which is
+Lua, with Guile the only real family alternative and Lua ahead of it on size,
+legibility, and model fluency. Common Lisp would have handed boggart *more*
+metaprogramming and *less* of the one property the whole design rests on
+(containable self-modification); Racket has both but cannot embed small; plain
+Scheme is a specification, not a runtime. And the Lisp that boggart's instinct is
+actually reaching for — homoiconic, macro-capable — is available as **Fennel on
+the Lua VM** whenever it is wanted. Lua was not the compromise choice. It was the
+choice whose strengths are boggart's requirements, and it left the Lisp door
+open besides.
+
+Sources: Lua 5.4/5.5 reference (`load`, `_ENV`, the `debug` library);
+R7RS (`eval` + environment specifiers); Racket `racket/sandbox`
+(`make-evaluator`, memory/eval limits, security guards); Guile `(ice-9 sandbox)`
+(safe bindings, time/allocation limits); Fennel language reference.
