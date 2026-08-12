@@ -23,6 +23,7 @@ int luaopen_boggart_db(lua_State *L);
 int luaopen_boggart_swarm(lua_State *L);
 int luaopen_boggart_mcp(lua_State *L);
 int luaopen_boggart_auth(lua_State *L);
+int luaopen_boggart_worker(lua_State *L);
 int luaopen_luv(lua_State *L);
 void boggart_open_mem(lua_State *L);
 
@@ -76,6 +77,10 @@ void boggart_open_libs(lua_State *L) {
   luaL_requiref(L, "swarm", luaopen_boggart_swarm, 0); lua_setglobal(L, "swarm");
   luaL_requiref(L, "mcp", luaopen_boggart_mcp, 0);     lua_setglobal(L, "mcp");
   luaL_requiref(L, "auth", luaopen_boggart_auth, 0);   lua_setglobal(L, "auth");
+  /* Real OS worker threads (src/lworker.c). Registered here too so a worker
+   * state -- which is assembled through this very function -- carries the
+   * table its thread then overwrites with the worker-side half. */
+  luaL_requiref(L, "worker", luaopen_boggart_worker, 0); lua_setglobal(L, "worker");
 
   /* luv lazily: opening it creates a uv_loop_t, and the app only needs one
    * once an agent actually runs. */

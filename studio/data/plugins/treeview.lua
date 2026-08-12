@@ -36,9 +36,12 @@ function TreeView:get_cached(item)
     t.abs_filename = system.absolute_path(item.filename)
     t.name = t.filename:match("[^\\/]+$")
     t.depth = get_depth(t.filename)
-    t.type = item.type
     self.cache[t.filename] = t
   end
+  -- Not cached: a name can change what it is. Deleting a file and creating a
+  -- directory with the same name used to leave the tree drawing a file icon for
+  -- a directory that no longer opens, and it took a restart to fix.
+  t.type = item.type
   return t
 end
 
@@ -54,11 +57,16 @@ end
 
 
 function TreeView:check_cache()
-  -- invalidate cache's skip values if project_files has changed
-  if core.project_files ~= self.last_project_files then
+  -- Invalidate the cached collapsed-subtree skips when the shape of the list
+  -- changes. The list used to be a fresh table on every scan, so its identity
+  -- was the signal; it is now patched in place, so the scanner counts structural
+  -- edits instead and identity would never change again.
+  local version = core.project_files_version
+  if version ~= self.last_version or core.project_files ~= self.last_project_files then
     for _, v in pairs(self.cache) do
       v.skip = nil
     end
+    self.last_version = version
     self.last_project_files = core.project_files
   end
 end

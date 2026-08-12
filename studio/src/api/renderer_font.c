@@ -5,6 +5,50 @@
 #include <string.h>
 
 
+/* An optional third argument to renderer.font.load, naming what the renderer
+ * has always had to guess:
+ *
+ *   { antialiasing = "none" | "grayscale" | "subpixel",
+ *     hinting      = "none" | "slight" | "full",
+ *     bold = true, italic = true, underline = true, strikethrough = true }
+ *
+ * Strings rather than numbers because these end up in a settings file that a
+ * person reads, and "slight" survives a renumbering that 1 does not. Anything
+ * absent keeps the default, so an old call site is unaffected; anything
+ * misspelt is an error rather than a silent fallback, because a font that
+ * quietly ignores `hinting = "slght"` is a bug you find months later by
+ * squinting. */
+static int enum_field(lua_State *L, int idx, const char *key,
+                      const char *const *names, int def) {
+  if (lua_isnoneornil(L, idx)) { return def; }
+  lua_getfield(L, idx, key);
+  if (lua_isnoneornil(L, -1)) { lua_pop(L, 1); return def; }
+  const char *s = luaL_checkstring(L, -1);
+  for (int i = 0; names[i]; i++) {
+    if (!strcmp(s, names[i])) { lua_pop(L, 1); return i; }
+  }
+  return luaL_error(L, "bad %s '%s' for a font", key, s);
+}
+
+
+static unsigned style_flags(lua_State *L, int idx) {
+  static const struct { const char *key; unsigned bit; } bits[] = {
+    { "bold",          REN_STYLE_BOLD          },
+    { "italic",        REN_STYLE_ITALIC        },
+    { "underline",     REN_STYLE_UNDERLINE     },
+    { "strikethrough", REN_STYLE_STRIKETHROUGH },
+  };
+  unsigned style = 0;
+  if (lua_isnoneornil(L, idx)) { return 0; }
+  for (size_t i = 0; i < sizeof bits / sizeof *bits; i++) {
+    lua_getfield(L, idx, bits[i].key);
+    if (lua_toboolean(L, -1)) { style |= bits[i].bit; }
+    lua_pop(L, 1);
+  }
+  return style;
+}
+
+
 /* A path under the baked-in assets, or a real file.
  *
  * style.lua asks for DATADIR .. "/fonts/font.ttf" and does not care which it
@@ -13,8 +57,18 @@
  * components look like an asset key -- is what decides. A checkout with a real
  * data/ directory still reads the file, so editing a font needs no rebuild. */
 static int f_load(lua_State *L) {
+  static const char *const AA[] = { "none", "grayscale", "subpixel", NULL };
+  static const char *const HINT[] = { "none", "slight", "full", NULL };
+
   const char *filename  = luaL_checkstring(L, 1);
   float size = luaL_checknumber(L, 2);
+  if (!lua_isnoneornil(L, 3)) { luaL_checktype(L, 3, LUA_TTABLE); }
+  RenFontOptions opt = {
+    .antialiasing = enum_field(L, 3, "antialiasing", AA, REN_AA_GRAYSCALE),
+    .hinting      = enum_field(L, 3, "hinting", HINT, REN_HINT_SLIGHT),
+    .style        = style_flags(L, 3),
+  };
+
   RenFont **self = lua_newuserdata(L, sizeof(*self));
   luaL_setmetatable(L, API_TYPE_FONT);
 
@@ -23,9 +77,9 @@ static int f_load(lua_State *L) {
     size_t len = 0;
     const void *data = studio_asset_get(filename + sizeof pfx - 1, &len);
     if (!data) { luaL_error(L, "no baked font '%s'", filename); }
-    *self = ren_load_font_mem(data, len, size);
+    *self = ren_load_font_mem(data, len, size, &opt);
   } else {
-    *self = ren_load_font(filename, size);
+    *self = ren_load_font(filename, size, &opt);
   }
   if (!*self) { luaL_error(L, "failed to load font '%s'", filename); }
   return 1;

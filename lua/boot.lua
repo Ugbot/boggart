@@ -344,6 +344,20 @@ if not ok then
   return 1
 end
 
+-- A worker thread's interpreter (src/lworker.c): the full harness is wired --
+-- same modules, same vocabulary -- but the store is NOT opened. Opening it
+-- here would have every worker racing the same migration path at spawn, and
+-- more importantly a worker must never share the main thread's SQLite
+-- connection; a worker that wants the store calls bog.store.open() itself,
+-- which opens its own connection (legal: WAL + SQLITE_THREADSAFE=2, one
+-- connection per thread -- the same discipline as src/jwriter.c). No MCP
+-- servers either: those subprocesses belong to the main loop.
+if bog.mode == "worker" then
+  declare{ json = bog.json, gold = require("gold") }
+  strict.enable()
+  return 0
+end
+
 -- `doctor` runs before the store is opened, and opens nothing itself. It is
 -- what you run *because* boggart will not start, so it must not need a healthy
 -- install -- and a diagnosis that repairs what it is diagnosing is not one.

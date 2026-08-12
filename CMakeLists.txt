@@ -307,6 +307,7 @@ add_executable(boggart
   src/lmcp.c
   src/jwriter.c
   src/lauth.c
+  src/lworker.c
   src/bogembed.c
   src/lmem.c
   ${EMBEDDED_C})
@@ -415,14 +416,58 @@ elseif(BOGGART_BUILD_APP)
   endif()
 endif()
 
+# ---- FreeType ---------------------------------------------------------------
+# The text rasteriser. Same mechanism and the same reasoning as the SDL2 block
+# above: FetchContent, pinned by release tarball + SHA256, every optional
+# dependency switched off, linked statically, so `otool -L boggart-studio`
+# still lists nothing but system libraries.
+#
+# It replaces stb_truetype, which was a single vendored header and cost
+# nothing. What that header cannot do is hint: it scales the outline and
+# rasterises wherever it lands, so small text is uniformly soft. That is the
+# whole legibility gap, and it is not closable downstream of the rasteriser.
+# See the comment at the top of studio/src/renderer.c.
+#
+# Cost, measured on an M-series mac: 680 KB of binary (5.14 MB -> 5.82 MB) and
+# five seconds of single-threaded compile, cached after -- next to SDL2's two
+# to three minutes it is not the expensive fetch here.
+#
+# Everything optional is off -- no zlib, bzip2, libpng, HarfBuzz or Brotli --
+# which means no transitive fetches and no system packages. It costs us:
+# compressed WOFF2 fonts (Brotli), PNG-backed colour-emoji strikes (libpng),
+# and HarfBuzz-assisted autohinting of Indic scripts. None of those are things
+# this renderer draws -- fontfallback.c refuses colour fonts on separate
+# grounds, and there is no shaping engine here for HarfBuzz to help.
+#
+# Guarded on SDL2_FOUND as well as BOGGART_BUILD_APP so that a machine without
+# SDL2, which builds the CLI and skips the studio, does not download a
+# rasteriser it will not link.
 if(BOGGART_BUILD_APP AND SDL2_FOUND)
-  # lite's own C, plus stb_truetype's implementation unit. Deliberately NOT
-  # The studio shares one interpreter with boggart, and that
-  # interpreter is the vendored 5.4. lite needs exactly one change for it.
+  set(BOGGART_FREETYPE_VERSION 2.14.3)
+  set(BOGGART_FREETYPE_SHA256 e61b31ab26358b946e767ed7eb7f4bb2e507da1cfefeb7a8861ace7fd5c899a1)
+
+  set(BUILD_SHARED_LIBS   OFF  CACHE BOOL "" FORCE)
+  set(FT_DISABLE_ZLIB     TRUE CACHE BOOL "" FORCE)
+  set(FT_DISABLE_BZIP2    TRUE CACHE BOOL "" FORCE)
+  set(FT_DISABLE_PNG      TRUE CACHE BOOL "" FORCE)
+  set(FT_DISABLE_HARFBUZZ TRUE CACHE BOOL "" FORCE)
+  set(FT_DISABLE_BROTLI   TRUE CACHE BOOL "" FORCE)
+  set(SKIP_INSTALL_ALL    TRUE CACHE BOOL "" FORCE)
+
+  include(FetchContent)
+  FetchContent_Declare(freetype
+    URL https://download.savannah.gnu.org/releases/freetype/freetype-${BOGGART_FREETYPE_VERSION}.tar.gz
+    URL_HASH SHA256=${BOGGART_FREETYPE_SHA256})
+  FetchContent_MakeAvailable(freetype)
+endif()
+
+if(BOGGART_BUILD_APP AND SDL2_FOUND)
+  # lite's own C. Deliberately NOT lite's vendored Lua: the studio shares one
+  # interpreter with boggart, and that interpreter is the vendored 5.4. lite
+  # needs exactly one change for it.
   file(GLOB APP_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/studio/src/*.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/studio/src/api/*.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/studio/src/lib/stb/*.c)
+    ${CMAKE_CURRENT_SOURCE_DIR}/studio/src/api/*.c)
 
   # ---- generated embedded studio assets ------------------------------------
   # studio/data -- sixty-odd Lua files and three fonts -- baked into the binary
@@ -451,6 +496,7 @@ if(BOGGART_BUILD_APP AND SDL2_FOUND)
     src/lmcp.c
     src/jwriter.c
     src/lauth.c
+    src/lworker.c
     src/bogembed.c
   src/lmem.c
     ${EMBEDDED_C})
@@ -462,7 +508,8 @@ if(BOGGART_BUILD_APP AND SDL2_FOUND)
   target_compile_definitions(boggart-studio PRIVATE BOGGART_STUDIO=1)
   target_link_libraries(boggart-studio PRIVATE
     boggart_warnings
-    lua_vendor sqlite_vendor cjson_vendor luv_lua uv_a isocline_vendor CURL::libcurl)
+    lua_vendor sqlite_vendor cjson_vendor luv_lua uv_a isocline_vendor
+    CURL::libcurl freetype)
   # Three spellings, because SDL2 arrives three ways: our own static build sets
   # BOGGART_SDL_TARGET, a system sdl2-config.cmake gives the SDL2::SDL2 target,
   # and pkg-config gives bare library names and directories.
@@ -567,7 +614,7 @@ endif()
 # rule itself under test -- it still resolves %LOCALAPPDATA%, that just now
 # points somewhere disposable.
 enable_testing()
-foreach(suite test integration swarm mcp ltui sysfs bus jwriter proc sandbox scopes errors studio events lifecycle)
+foreach(suite test integration swarm mcp ltui sysfs bus jwriter worker proc sandbox scopes errors studio events lifecycle)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home}

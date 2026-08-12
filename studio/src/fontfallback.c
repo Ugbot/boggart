@@ -17,22 +17,31 @@
  * discover_from_env().
  *
  * HOW IT DEGRADES. Every step is allowed to fail. A candidate that is not
- * installed is skipped, a file that will not open is skipped, a font
- * stb_truetype cannot rasterise is skipped, and a machine that yields nothing
- * at all gets an empty chain and renders exactly what it rendered before this
+ * installed is skipped, a file that will not open is skipped, a font the
+ * renderer cannot rasterise is skipped, and a machine that yields nothing at
+ * all gets an empty chain and renders exactly what it rendered before this
  * file existed. Nothing here can stop the editor starting.
  *
  * WHAT IT DELIBERATELY REFUSES. Colour emoji fonts. Apple Color Emoji, Noto
  * Color Emoji and Segoe UI Emoji store bitmaps or layered vectors in sbix,
- * CBDT or COLR tables, and stb_truetype reads none of those -- it reads `glyf`
- * outlines. Accepting one would be worse than refusing it: the cmap says the
- * codepoint is covered, so the fallback search would stop there, and the
- * emoji would come out as a blank with a correct advance and no way to tell
- * why. So probe_sfnt() rejects them by table, and on a machine whose only
+ * CBDT or COLR tables. Accepting one would be worse than refusing it: the cmap
+ * says the codepoint is covered, so the fallback search would stop there, and
+ * the emoji would come out as a blank with a correct advance and no way to
+ * tell why. So probe_sfnt() rejects them by table, and on a machine whose only
  * emoji font is a colour one -- which is every stock macOS -- emoji do not
  * draw. That is a stated limit, not an oversight. A monochrome symbols font
  * (Apple Symbols, Noto Sans Symbols2, Segoe UI Symbol) does get picked up,
  * which covers arrows, box drawing, maths and dingbats.
+ *
+ * That rule outlived the reason it was written for. It was stb_truetype that
+ * could not read those tables at all; FreeType can, and returns BGRA bitmaps.
+ * Two things still stand in the way, and either alone is enough: sbix and CBDT
+ * store their strikes as PNG, which needs a FreeType built against libpng --
+ * ours is not, on purpose (see CMakeLists.txt) -- and the glyph atlas here is
+ * one coverage per pixel multiplied by the caller's colour, so a colour glyph
+ * would arrive as a silhouette even if it decoded. Colour emoji is a real
+ * feature and this is where it would start; it is not a comment that needs
+ * deleting.
  */
 #include <stdio.h>
 #include <string.h>
@@ -104,15 +113,16 @@ static int probe_sfnt(const char *path) {
     for (int t = 0; t < ntab; t++) {
       unsigned char rec[16];
       if (fread(rec, 1, 16, fp) != 16) { goto done; }
-      /* Any colour-glyph table disqualifies the whole file: stb_truetype
-       * cannot draw one, and a font we accept must be one we can draw. */
+      /* Any colour-glyph table disqualifies the whole file: this renderer
+       * cannot draw one (see the header comment), and a font we accept must
+       * be one we can draw. */
       if (!memcmp(rec, "sbix", 4) || !memcmp(rec, "CBDT", 4)
           || !memcmp(rec, "COLR", 4) || !memcmp(rec, "SVG ", 4)) {
         ok = 0;
         goto done;
       }
-      /* 'glyf' is TrueType outlines, 'CFF ' is PostScript ones. stb_truetype
-       * reads both. */
+      /* 'glyf' is TrueType outlines, 'CFF ' is PostScript ones. FreeType has
+       * a driver for both, and hints both. */
       if (!memcmp(rec, "glyf", 4) || !memcmp(rec, "CFF ", 4)) { has_outlines = 1; }
     }
     if (has_outlines) { ok = 1; }

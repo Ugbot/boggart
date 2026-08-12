@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include "api.h"
+#include "dirmonitor.h"
 #include "rencache.h"
 #ifdef _WIN32
   #include <windows.h>
@@ -515,5 +516,9 @@ static const luaL_Reg lib[] = {
 
 int luaopen_system(lua_State *L) {
   luaL_newlib(L, lib);
+  /* The watcher arrives with the rest of the platform surface rather than as a
+   * separate module: the project scanner is the only caller, and it already
+   * reaches for system.list_dir and system.get_file_info beside it. */
+  dirmonitor_open(L);
   return 1;
 }

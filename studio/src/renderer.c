@@ -1,14 +1,39 @@
 #include <stdio.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include <assert.h>
 #include <math.h>
 #include <string.h>
-#include "lib/stb/stb_truetype.h"
+#include <ft2build.h>
+#include FT_FREETYPE_H
+#include FT_LCD_FILTER_H
+#include FT_OUTLINE_H
 #include "renderer.h"
 #include "fontfallback.h"
 #include "utf8width.h"
 
-/* Glyph caching, and why it is a two-level table.
+/* Why FreeType and not stb_truetype, which this used to be.
+ *
+ * stb_truetype has no hinting. None: it scales the outline and rasterises it
+ * wherever it lands, so a 13px stem that wants to be one pixel wide comes out
+ * as two columns of 50% grey and the whole page reads soft. That is the entire
+ * legibility gap against every other editor on the machine, and no amount of
+ * work on the blend or the atlas closes it -- the information was thrown away
+ * at rasterisation.
+ *
+ * FreeType's autohinter is the fix, and specifically its *light* mode, which
+ * only ever moves points vertically. That matters more here than it does in a
+ * general text engine: horizontal grid fitting changes advance widths, and this
+ * renderer's whole contract with the layout above it is that a monospace
+ * advance is exactly one or two cells (see the snapping in pack_block). Light
+ * hinting sharpens the horizontals -- baselines, x-height, crossbars, which is
+ * where small text lives or dies -- and leaves the metrics alone.
+ *
+ * The cost is a vendored dependency of about a megabyte in the binary. It buys
+ * hinting, real bitmap-strike and CFF support, correct metrics, and native
+ * TrueType-collection handling that used to need a special case here. */
+
+/* Glyph caching, and why it is a three-level table.
  *
  * This was `GlyphSet *sets[256]` indexed by `(codepoint >> 8) % 256`, which
  * is exactly the codepoints U+0000..U+FFFF and nothing else. Every codepoint
@@ -28,6 +53,21 @@
 #define GLYPH_PLANES 17          /* U+0000..U+10FFFF */
 #define BLOCKS_PER_PLANE 256
 
+/* Subpixel positioning: how many horizontal phases of each glyph we keep.
+ *
+ * A glyph drawn at pen x = 100.0 and the same glyph at x = 100.66 are not the
+ * same picture, and rounding the pen to an integer -- which is what this did
+ * before -- throws away up to half a pixel of position on every character. In
+ * a proportional run that error is not just blur, it is *uneven spacing*: the
+ * gaps between letters wobble between two values because each advance was
+ * floored independently. Three phases (0, 1/3, 2/3 of a pixel) is what lite-xl
+ * settled on and it is enough; the residual is a sixth of a pixel.
+ *
+ * It costs nothing for the code font. Monospace advances are snapped to a whole
+ * number of cells, so the pen never leaves the integers, phase 0 is the only
+ * one ever asked for, and the other two atlases are never built. */
+#define SUBPIXEL_BITMAPS 3
+
 /* Primary plus every fallback face, where a .ttc contributes one face per
  * subfont. Bounded because the chain is consulted linearly and a face past
  * the twentieth is not adding coverage. */
@@ -38,37 +78,61 @@ struct RenImage {
   int width, height;
 };
 
+/* Where one glyph sits in its atlas, and what it does to the pen. Was
+ * stbtt_bakedchar; the fields are the same because the drawing code was
+ * already written against them. */
+typedef struct {
+  unsigned short x0, y0, x1, y1;
+  float xoff, yoff, xadvance;
+} Glyph;
+
 typedef struct {
   RenImage *image;
-  stbtt_bakedchar glyphs[256];
+  /* An LCD atlas holds three coverages per pixel in r/g/b rather than one
+   * alpha, so it needs a different blend. Recorded per atlas rather than per
+   * font because a bitmap-strike glyph inside a subpixel font still comes out
+   * grayscale. */
+  int lcd;
+  Glyph glyphs[256];
 } GlyphSet;
 
+typedef struct { GlyphSet *phase[SUBPIXEL_BITMAPS]; } Block;
+
 /* One font file (or one subfont of a collection) at this RenFont's size.
- * `info` points into memory owned elsewhere: font->data for the primary,
- * fontfallback.c's process-wide cache for the rest. */
+ * The face reads directly out of memory owned elsewhere: font->data for the
+ * primary, fontfallback.c's process-wide cache for the rest. FreeType does not
+ * copy that memory, so it has to outlive the face -- see ren_free_font. */
 typedef struct {
-  stbtt_fontinfo info;
-  float scale;
+  FT_Face face;
 } Face;
 
 struct RenFont {
   void *data;
-  stbtt_fontinfo stbfont;
-  GlyphSet **planes[GLYPH_PLANES];
+  size_t datalen;
+  Block *planes[GLYPH_PLANES];
   Face faces[MAX_FACES];
   int nfaces;        /* faces materialised so far; faces[0] is ours */
   int next_file;     /* next entry of the fallback chain left to expand */
   uint32_t covered;  /* union of the accepted faces' coverage signatures */
   float size;
   int height;
+  int baseline;
+  int underline;     /* thickness in pixels, at least 1 */
   /* Monospace fonts get their advances snapped to the cell grid -- see
-   * bake_glyphset. Zero when the font is proportional. */
+   * pack_block. Zero when the font is proportional. */
   int cell;
+  /* What Lua last asked a tab to advance by, 0 until it asks. Remembered
+   * rather than only written into the atlas, because a subpixel phase baked
+   * after the call would otherwise get the font's own tab advance back. */
+  int tab_advance;
+  unsigned char antialias, hinting;
+  unsigned style;
 };
 
 
 static SDL_Window *window;
 static struct { int left, top, right, bottom; } clip;
+static FT_Library library;
 
 
 static void* check_alloc(void *ptr) {
@@ -77,6 +141,15 @@ static void* check_alloc(void *ptr) {
     exit(EXIT_FAILURE);
   }
   return ptr;
+}
+
+
+/* FreeType is initialised on first use rather than in ren_init, because fonts
+ * are loaded from Lua and a headless probe can reach renderer.font.load before
+ * a window exists. */
+static int ft_ready(void) {
+  if (!library && FT_Init_FreeType(&library) != 0) { library = NULL; }
+  return library != NULL;
 }
 
 
@@ -142,6 +215,53 @@ void ren_free_image(RenImage *image) {
 }
 
 
+/* ---- FreeType load and render options -------------------------------------
+ *
+ * The split is FreeType's: the *load* flags decide how the outline is fitted
+ * to the grid, the *render* mode decides how it is sampled. Hinting therefore
+ * belongs to the first and antialiasing to the second, and they are chosen
+ * separately because a font can sensibly want either without the other. */
+static int load_flags(const RenFont *font) {
+  int target = FT_LOAD_TARGET_NORMAL;
+  if (font->antialias == REN_AA_NONE) {
+    target = FT_LOAD_TARGET_MONO;
+  } else if (font->hinting == REN_HINT_SLIGHT) {
+    target = FT_LOAD_TARGET_LIGHT;
+  }
+  /* FORCE_AUTOHINT rather than the font's own bytecode. The autohinter is
+   * consistent across every font we might fall back to, including the ones
+   * whose shipped bytecode was written for a rasteriser that no longer
+   * exists; a fallback chain that renders each face by a different set of
+   * rules is exactly the inconsistency this is trying to remove. */
+  int hint = (font->hinting == REN_HINT_NONE)
+    ? FT_LOAD_NO_HINTING : FT_LOAD_FORCE_AUTOHINT;
+  return target | hint;
+}
+
+
+static int render_mode(const RenFont *font) {
+  if (font->antialias == REN_AA_NONE) { return FT_RENDER_MODE_MONO; }
+  if (font->antialias == REN_AA_SUBPIXEL) {
+    /* The five-tap FIR that spreads each stripe's energy into its neighbours.
+     * Without it a subpixel-rendered stem is a coloured bar rather than a
+     * black one; the filter is what trades the fringes back for resolution.
+     * Weights are FreeType's own light default. A build without
+     * FT_CONFIG_OPTION_SUBPIXEL_RENDERING answers "unimplemented" and uses
+     * Harmony mode instead, which needs no filter -- either is fine, so the
+     * return value is deliberately ignored. */
+    unsigned char weights[] = { 0x10, 0x40, 0x70, 0x40, 0x10 };
+    if (font->hinting == REN_HINT_NONE) {
+      FT_Library_SetLcdFilter(library, FT_LCD_FILTER_NONE);
+    } else {
+      FT_Library_SetLcdFilterWeights(library, weights);
+    }
+    return FT_RENDER_MODE_LCD;
+  }
+  return font->hinting == REN_HINT_NONE
+    ? FT_RENDER_MODE_NORMAL : FT_RENDER_MODE_LIGHT;
+}
+
+
 /* One codepoint per script or block we might have to draw, used as a coverage
  * signature. A subfont whose signature adds no bit the chain already has is a
  * different weight of a face we have -- and .ttc collections are mostly
@@ -163,12 +283,29 @@ static const int FACE_PROBE[] = {
 };
 #define FACE_PROBE_N ((int) (sizeof FACE_PROBE / sizeof *FACE_PROBE))
 
-static uint32_t face_signature(const stbtt_fontinfo *info) {
+static uint32_t face_signature(FT_Face face) {
   uint32_t sig = 0;
   for (int i = 0; i < FACE_PROBE_N; i++) {
-    if (stbtt_FindGlyphIndex(info, FACE_PROBE[i])) { sig |= 1u << i; }
+    if (FT_Get_Char_Index(face, (FT_ULong) FACE_PROBE[i])) { sig |= 1u << i; }
   }
   return sig;
+}
+
+
+/* Size a face so that its em box is `size` pixels tall.
+ *
+ * Em, not cap height and not line height, and the same rule for every face in
+ * the chain -- that is what makes a 27px Hiragino ideograph and a 27px Latin
+ * letter agree about how big they are. FT_Set_Char_Size at 72 dpi is the only
+ * way to say that in fractional pixels; FT_Set_Pixel_Sizes takes an integer
+ * and would quietly turn our 13.5 into 13. The integer call is still the
+ * fallback, because a bitmap-strike face has no continuous sizes and rejects
+ * the first form. */
+static int face_set_size(FT_Face face, float size) {
+  FT_F26Dot6 sz = (FT_F26Dot6) (size * 64.0f + 0.5f);
+  if (FT_Set_Char_Size(face, 0, sz, 72, 72) == 0) { return 1; }
+  if (FT_Set_Pixel_Sizes(face, 0, (FT_UInt) (size + 0.5f)) == 0) { return 1; }
+  return 0;
 }
 
 
@@ -196,18 +333,31 @@ static Face* face_at(RenFont *font, int i) {
     unsigned char *data = fontfallback_data(entry, &sz);
     if (!data) { continue; }
 
-    int nsub = stbtt_GetNumberOfFonts(data);
-    if (nsub < 1) { nsub = 1; }
-    for (int s = 0; s < nsub && font->nfaces < MAX_FACES; s++) {
-      int off = stbtt_GetFontOffsetForIndex(data, s);
-      if (off < 0) { continue; }
-      Face *f = &font->faces[font->nfaces];
-      if (!stbtt_InitFont(&f->info, data, off)) { continue; }
-      uint32_t sig = face_signature(&f->info);
-      if ((sig & ~font->covered) == 0) { continue; }
+    /* Face index -1 asks FreeType for the collection's shape without building
+     * anything; num_faces is 1 for a plain file. */
+    FT_Face probe = NULL;
+    FT_Long nsub = 1;
+    if (FT_New_Memory_Face(library, data, (FT_Long) sz, -1, &probe) == 0) {
+      nsub = probe->num_faces > 0 ? probe->num_faces : 1;
+      FT_Done_Face(probe);
+    }
+
+    for (FT_Long s = 0; s < nsub && font->nfaces < MAX_FACES; s++) {
+      FT_Face f = NULL;
+      if (FT_New_Memory_Face(library, data, (FT_Long) sz, s, &f) != 0) { continue; }
+      /* A face with no Unicode cmap cannot answer "do you have U+65E5", which
+       * is the only question the chain asks it. */
+      if (!f->charmap && FT_Select_Charmap(f, FT_ENCODING_UNICODE) != 0) {
+        FT_Done_Face(f);
+        continue;
+      }
+      uint32_t sig = face_signature(f);
+      if ((sig & ~font->covered) == 0 || !face_set_size(f, font->size)) {
+        FT_Done_Face(f);
+        continue;
+      }
       font->covered |= sig;
-      f->scale = stbtt_ScaleForMappingEmToPixels(&f->info, font->size);
-      font->nfaces++;
+      font->faces[font->nfaces++].face = f;
       entry->usable = 1;
     }
   }
@@ -217,7 +367,7 @@ static Face* face_at(RenFont *font, int i) {
 
 /* Which face draws this codepoint, and as which glyph.
  *
- * stbtt_FindGlyphIndex returning 0 means "this font has no glyph for that
+ * FT_Get_Char_Index returning 0 means "this font has no glyph for that
  * character" -- it is the .notdef index, not an error -- and that is the whole
  * test a fallback chain needs. First face that answers wins, so the chain's
  * order in fontfallback.c is the coverage policy.
@@ -230,110 +380,265 @@ static int find_glyph(RenFont *font, unsigned cp, Face **out) {
   for (int i = 0; i < MAX_FACES; i++) {
     Face *f = face_at(font, i);
     if (!f) { break; }
-    int g = stbtt_FindGlyphIndex(&f->info, (int) cp);
-    if (g) { *out = f; return g; }
+    FT_UInt g = FT_Get_Char_Index(f->face, (FT_ULong) cp);
+    if (g) { *out = f; return (int) g; }
   }
   *out = &font->faces[0];
   return 0;
 }
 
 
-/* Bake one 256-codepoint block into `set`, returning 0 if the atlas was too
- * small and the caller should retry with a bigger one.
+/* ---- baking a block -------------------------------------------------------
  *
- * This replaces stbtt_BakeFontBitmap, which cannot do the one thing this
- * needs: it takes a single font and bakes a contiguous codepoint range from
- * it, and a fallback chain has to choose a font per codepoint. The packing is
- * stb's -- a shelf allocator, a row at a time -- because it is the right
- * amount of packing for a 256-glyph atlas and there was no reason to invent a
- * different one.
+ * A glyph as FreeType hands it over, before it has been given a home in an
+ * atlas. Kept for the whole block because the atlas is sized by trial: the
+ * shelf packer is told 128x128, and if the block does not fit it is told 256
+ * and so on. Rendering is by far the expensive half of that loop -- an
+ * autohinted CJK ideograph is not cheap and there are 256 of them -- so it
+ * happens once and only the arithmetic is repeated. */
+typedef struct {
+  unsigned char *bits;   /* w*h, or w*h*3 when lcd; NULL for a blank */
+  int w, h;
+  int left, top;         /* FreeType's bitmap_left / bitmap_top */
+  float advance;
+  int lcd;
+} RawGlyph;
+
+
+/* The advance, measured with hinting off.
  *
- * Baseline alignment across faces is the subtle part. Each face's outline is
- * scaled with its own em-to-pixel scale, so a 13.5px Hiragino ideograph and a
- * 13.5px Latin letter agree on em size rather than on cap height, and both
- * yoffs are then shifted by *our* font's ascent -- the primary's, once, for
- * every glyph. Sharing one baseline is what stops mixed text from stepping up
- * and down as it changes script. */
-static int bake_glyphset(RenFont *font, GlyphSet *set, int block,
-                         int pw, int ph) {
-  uint8_t *pixels = (uint8_t*) set->image->pixels;
-  memset(pixels, 0, (size_t) pw * (size_t) ph);
-  memset(set->glyphs, 0, sizeof set->glyphs);
+ * Separate from the render pass and deliberately so. A grid-fitted advance is
+ * rounded to a whole pixel by the hinter, and for a monospace face that means
+ * the reported cell width depends on which glyph you asked about -- which is
+ * how a "monospace" font stops being one. Positioning and styling do not touch
+ * the advance either, so this is also the only load the three subpixel phases
+ * need to share. */
+static float glyph_advance(RenFont *font, FT_Face face, FT_UInt gid) {
+  int flags = (load_flags(font) | FT_LOAD_NO_HINTING) & ~FT_LOAD_FORCE_AUTOHINT;
+  if (FT_Load_Glyph(face, gid, flags) != 0) { return 0.0f; }
+  return face->glyph->advance.x / 64.0f;
+}
 
-  int ascent, descent, linegap;
-  stbtt_GetFontVMetrics(&font->stbfont, &ascent, &descent, &linegap);
-  float own_scale = stbtt_ScaleForMappingEmToPixels(&font->stbfont, font->size);
-  int baseline = (int) (ascent * own_scale + 0.5f);
 
+/* Render one glyph at one subpixel phase into `g`. Returns 0 if there is
+ * nothing to draw, which covers both failure and the ordinary case of a space.
+ *
+ * The phase shift happens after FT_Load_Glyph, so it moves an outline that has
+ * already been hinted. That is only sound because the hinting is vertical
+ * (see load_flags): a horizontal nudge cannot undo alignment that was never
+ * horizontal. It would be wrong under full hinting, which is one more reason
+ * slight is the default. */
+static int render_glyph(RenFont *font, FT_Face face, FT_UInt gid, int phase,
+                        RawGlyph *g) {
+  memset(g, 0, sizeof *g);
+  if (FT_Load_Glyph(face, gid, load_flags(font)) != 0) { return 0; }
+
+  FT_GlyphSlot slot = face->glyph;
+  if (slot->format == FT_GLYPH_FORMAT_OUTLINE) {
+    if (phase) {
+      FT_Outline_Translate(&slot->outline, phase * (64 / SUBPIXEL_BITMAPS), 0);
+    }
+    /* Synthesised bold and italic: fatten in x only so the baseline and
+     * x-height stay where the regular weight put them, and shear by 1/4 which
+     * is the usual 14 degrees. Neither is as good as a real bold or italic
+     * face and both are better than drawing the same shape twice. */
+    if (font->style & REN_STYLE_BOLD) {
+      FT_Outline_EmboldenXY(&slot->outline, 1 << 5, 0);
+    }
+    if (font->style & REN_STYLE_ITALIC) {
+      FT_Matrix m = { 1 << 16, 1 << 14, 0, 1 << 16 };
+      FT_Outline_Transform(&slot->outline, &m);
+    }
+  }
+  if (FT_Render_Glyph(slot, render_mode(font)) != 0) { return 0; }
+
+  FT_Bitmap *bm = &slot->bitmap;
+  if (!bm->width || !bm->rows || !bm->buffer) { return 0; }
+
+  int channels = 1;
+  int w = (int) bm->width;
+  if (bm->pixel_mode == FT_PIXEL_MODE_LCD) {
+    channels = 3;
+    w = (int) bm->width / 3;
+  } else if (bm->pixel_mode != FT_PIXEL_MODE_GRAY
+             && bm->pixel_mode != FT_PIXEL_MODE_MONO) {
+    /* FT_PIXEL_MODE_BGRA is a colour glyph. fontfallback.c refuses colour
+     * fonts before they get this far; a colour glyph inside an otherwise
+     * monochrome face would land here, and a silhouette is worse than the
+     * missing-glyph box, so treat it as absent. */
+    return 0;
+  }
+  if (w <= 0) { return 0; }
+
+  int h = (int) bm->rows;
+  g->bits = check_alloc(calloc((size_t) w * (size_t) h, (size_t) channels));
+  g->w = w;
+  g->h = h;
+  g->lcd = (channels == 3);
+  g->left = slot->bitmap_left;
+  g->top = slot->bitmap_top;
+
+  for (int row = 0; row < h; row++) {
+    const unsigned char *src = bm->buffer + (ptrdiff_t) row * bm->pitch;
+    unsigned char *dst = g->bits + (size_t) row * (size_t) w * (size_t) channels;
+    if (bm->pixel_mode == FT_PIXEL_MODE_MONO) {
+      for (int x = 0; x < w; x++) {
+        dst[x] = (unsigned char) (((src[x / 8] >> (7 - (x % 8))) & 1) * 0xff);
+      }
+    } else if (bm->pixel_mode == FT_PIXEL_MODE_GRAY && bm->num_grays != 256
+               && bm->num_grays > 1) {
+      /* A 2- or 4-level strike, which some bitmap faces ship. */
+      for (int x = 0; x < w; x++) {
+        dst[x] = (unsigned char) (src[x] * 255 / (bm->num_grays - 1));
+      }
+    } else {
+      memcpy(dst, src, (size_t) w * (size_t) channels);
+    }
+  }
+  return 1;
+}
+
+
+/* Nothing on this machine has this character. Draw the box.
+ *
+ * The alternative was in front of me on screen: emoji laid out two cells wide
+ * and drawn as nothing at all, because monospace.ttf's .notdef is an empty
+ * outline. Blank is the one thing a missing glyph must not be -- it reads as
+ * "the text is not there" rather than "this font cannot draw the text", and
+ * those call for completely different reactions from whoever is looking.
+ * Synthesised rather than borrowed from a fallback's U+FFFD so it is always
+ * available, including on a machine with no fallbacks at all. */
+static void synth_missing(RenFont *font, unsigned cp, RawGlyph *g) {
+  memset(g, 0, sizeof *g);
+  int cells = bog_cp_width(cp);
+  int w = (font->cell > 0 ? font->cell * cells : (int) (font->size * 0.55f)) - 2;
+  int h = (int) (font->size * 0.72f);
+  if (w < 3) { w = 3; }
+  if (h < 3) { h = 3; }
+
+  g->bits = check_alloc(calloc((size_t) w * (size_t) h, 1));
+  g->w = w;
+  g->h = h;
+  g->left = 1;
+  g->top = h;    /* sits on the baseline, like a capital letter */
+  for (int c = 0; c < w; c++) { g->bits[c] = 0xa0; g->bits[c + (h - 1) * w] = 0xa0; }
+  for (int r = 0; r < h; r++) { g->bits[r * w] = 0xa0; g->bits[w - 1 + r * w] = 0xa0; }
+}
+
+
+/* Shelf-pack the block's glyphs into a pw x ph atlas, filling in each Glyph's
+ * rectangle. Returns 0 if they do not fit and the caller should try bigger.
+ * The packing is stb_truetype's -- a row at a time, no rotation, no
+ * repacking -- because it is the right amount of packing for a 256-glyph atlas
+ * and there was no reason to invent a different one. */
+static int pack_block(GlyphSet *set, const RawGlyph *raw, int pw, int ph) {
   int x = 1, y = 1, bottom_y = 1;
+  for (int i = 0; i < 256; i++) {
+    int w = raw[i].w, h = raw[i].h;
+    if (x + w + 1 >= pw) { y = bottom_y; x = 1; }
+    if (y + h + 1 >= ph) { return 0; }
+    Glyph *g = &set->glyphs[i];
+    g->x0 = (unsigned short) x;
+    g->y0 = (unsigned short) y;
+    g->x1 = (unsigned short) (x + w);
+    g->y1 = (unsigned short) (y + h);
+    x = x + w + 1;
+    if (y + h + 1 > bottom_y) { bottom_y = y + h + 1; }
+  }
+  return 1;
+}
 
+
+static GlyphSet* load_glyphset(RenFont *font, int block, int phase) {
+  GlyphSet *set = check_alloc(calloc(1, sizeof(GlyphSet)));
+  RawGlyph raw[256];
+
+  /* ---- render ------------------------------------------------------------
+   *
+   * Baseline alignment across faces is the subtle part. Each face is sized so
+   * its em box is font->size pixels (face_set_size), and every glyph's
+   * vertical offset is then measured from *our* font's baseline -- the
+   * primary's, once, for every glyph. Sharing one baseline is what stops mixed
+   * text from stepping up and down as it changes script. */
   for (int i = 0; i < 256; i++) {
     unsigned cp = (unsigned) block * 256u + (unsigned) i;
     Face *face = NULL;
-    int glyph = find_glyph(font, cp, &face);
+    int gid = find_glyph(font, cp, &face);
 
-    int adv, lsb;
-    stbtt_GetGlyphHMetrics(&face->info, glyph, &adv, &lsb);
+    float advance = glyph_advance(font, face->face, (FT_UInt) gid);
+    int missing = (gid == 0 && bog_cp_width(cp) > 0);
 
-    /* Nothing on this machine has this character. Draw the box.
-     *
-     * The alternative was in front of me on screen: emoji laid out two cells
-     * wide and drawn as nothing at all, because monospace.ttf's .notdef is an
-     * empty outline. Blank is the one thing a missing glyph must not be -- it
-     * reads as "the text is not there" rather than "this font cannot draw the
-     * text", and those call for completely different reactions from whoever is
-     * looking. Synthesised rather than borrowed from a fallback's U+FFFD so it
-     * is always available, including on a machine with no fallbacks at all.
-     *
-     * A codepoint of zero width is skipped: an unassigned combining slot is
-     * genuinely invisible and boxing it would be noise. */
-    int missing = (glyph == 0 && bog_cp_width(cp) > 0);
-
-    int x0, y0, x1, y1;
-    int gw, gh;
     if (missing) {
-      int cells = bog_cp_width(cp);
-      gw = (font->cell > 0 ? font->cell * cells : (int) (font->size * 0.55f)) - 2;
-      gh = (int) (font->size * 0.72f);
-      if (gw < 3) { gw = 3; }
-      if (gh < 3) { gh = 3; }
-      x0 = 1;
-      y0 = -gh;   /* sits on the baseline, like a capital letter */
+      synth_missing(font, cp, &raw[i]);
+      raw[i].advance = advance;
+      if (font->cell <= 0 && advance < (float) (raw[i].w + 2)) {
+        /* A proportional font's .notdef often advances zero, which would stack
+         * every unknown character on the same pixel. */
+        raw[i].advance = (float) (raw[i].w + 2);
+      }
     } else {
-      stbtt_GetGlyphBitmapBox(&face->info, glyph, face->scale, face->scale,
-                              &x0, &y0, &x1, &y1);
-      gw = x1 - x0;
-      gh = y1 - y0;
-      if (gw < 0) { gw = 0; }
-      if (gh < 0) { gh = 0; }
+      if (!render_glyph(font, face->face, (FT_UInt) gid, phase, &raw[i])) {
+        memset(&raw[i], 0, sizeof raw[i]);
+      }
+      raw[i].advance = advance;
     }
 
-    if (x + gw + 1 >= pw) { y = bottom_y; x = 1; }
-    if (y + gh + 1 >= ph) { return 0; }
-
-    if (missing) {
-      uint8_t *dst = pixels + x + y * pw;
-      for (int c = 0; c < gw; c++) { dst[c] = 0xa0; dst[c + (gh - 1) * pw] = 0xa0; }
-      for (int r = 0; r < gh; r++) { dst[r * pw] = 0xa0; dst[gw - 1 + r * pw] = 0xa0; }
-    } else if (gw > 0 && gh > 0) {
-      stbtt_MakeGlyphBitmap(&face->info, pixels + x + y * pw, gw, gh, pw,
-                            face->scale, face->scale, glyph);
+    /* Tab and newline are laid out by the code above the renderer and must not
+     * also be drawn. A tab in particular has a real glyph in some faces. */
+    if (cp == '\t' || cp == '\n') {
+      free(raw[i].bits);
+      raw[i].bits = NULL;
+      raw[i].w = raw[i].h = 0;
     }
-    if (missing && font->cell <= 0) {
-      /* A proportional font's .notdef often advances zero, which would stack
-       * every unknown character on the same pixel. */
-      int want = (int) ((gw + 2) / face->scale);
-      if (adv < want) { adv = want; }
+  }
+
+  /* ---- place -------------------------------------------------------------- */
+  int width = 128, height = 128;
+  while (!pack_block(set, raw, width, height)) {
+    /* CJK blocks are 256 ideographs at full em, so they land here two or three
+     * times before they fit. Only the arithmetic repeats; see RawGlyph. */
+    width *= 2;
+    height *= 2;
+  }
+  set->image = ren_new_image(width, height);
+  set->lcd = (font->antialias == REN_AA_SUBPIXEL);
+  memset(set->image->pixels, 0, (size_t) width * (size_t) height * sizeof(RenColor));
+
+  /* ---- blit and finish the metrics ---------------------------------------- */
+  for (int i = 0; i < 256; i++) {
+    unsigned cp = (unsigned) block * 256u + (unsigned) i;
+    Glyph *g = &set->glyphs[i];
+    const RawGlyph *r = &raw[i];
+
+    /* Everything in one atlas is stored in that atlas's format, whatever the
+     * glyph arrived as. It has to be: the blend is chosen per atlas, so a
+     * grayscale glyph sitting in an LCD atlas -- the synthesised missing-glyph
+     * box is exactly that, and so is anything that came from a bitmap strike --
+     * would otherwise be composited as if its coverage were a colour. Widening
+     * one coverage into three equal stripes is what grayscale *is* under the
+     * subpixel blend, so the conversion is exact rather than approximate. */
+    for (int row = 0; row < r->h; row++) {
+      RenColor *dst = set->image->pixels + (g->y0 + row) * width + g->x0;
+      const unsigned char *src = r->bits + (size_t) row * (size_t) r->w
+                               * (size_t) (r->lcd ? 3 : 1);
+      for (int c = 0; c < r->w; c++) {
+        if (set->lcd) {
+          unsigned char cr = r->lcd ? src[c * 3]     : src[c];
+          unsigned char cg = r->lcd ? src[c * 3 + 1] : src[c];
+          unsigned char cb = r->lcd ? src[c * 3 + 2] : src[c];
+          dst[c] = (RenColor) { .r = cr, .g = cg, .b = cb, .a = 255 };
+        } else {
+          unsigned cov = r->lcd
+            ? ((unsigned) src[c * 3] + src[c * 3 + 1] + src[c * 3 + 2]) / 3u
+            : src[c];
+          dst[c] = (RenColor) { .r = 255, .g = 255, .b = 255, .a = (uint8_t) cov };
+        }
+      }
     }
 
-    stbtt_bakedchar *bc = &set->glyphs[i];
-    bc->x0 = (unsigned short) x;
-    bc->y0 = (unsigned short) y;
-    bc->x1 = (unsigned short) (x + gw);
-    bc->y1 = (unsigned short) (y + gh);
-    bc->xoff = (float) x0;
-    bc->yoff = (float) (y0 + baseline);
-    bc->xadvance = floorf(adv * face->scale);
+    g->xoff = (float) r->left;
+    g->yoff = (float) (font->baseline - r->top);
+    g->xadvance = r->advance;
 
     /* Grid snapping, and only for a monospace font.
      *
@@ -349,180 +654,185 @@ static int bake_glyphset(RenFont *font, GlyphSet *set, int block,
      * than two cells sits between them rather than hugging the left one.
      *
      * A proportional font gets none of this. There is no grid to snap to, and
-     * forcing one would make the menu bar look like a ransom note. */
+     * forcing one would make the menu bar look like a ransom note -- it keeps
+     * the fractional advance FreeType reported, which together with the three
+     * subpixel phases is what makes its spacing even. */
     if (font->cell > 0) {
       int cells = bog_cp_width(cp);
       if (cells > 0) {
         float want = (float) (font->cell * cells);
-        bc->xoff += (want - bc->xadvance) / 2.0f;
-        bc->xadvance = want;
+        g->xoff += (want - g->xadvance) / 2.0f;
+        g->xadvance = want;
       } else {
         /* A combining mark has no advance of its own and stacks on what came
          * before it. Only true for the simple cases -- there is no mark
          * positioning here, so the mark lands on the cell, not on the letter's
          * actual centre. */
-        bc->xadvance = 0.0f;
+        g->xadvance = 0.0f;
       }
     }
 
-    x = x + gw + 1;
-    if (y + gh + 1 > bottom_y) { bottom_y = y + gh + 1; }
-  }
-  return 1;
-}
-
-
-static GlyphSet* load_glyphset(RenFont *font, int block) {
-  GlyphSet *set = check_alloc(calloc(1, sizeof(GlyphSet)));
-
-  int width = 128;
-  int height = 128;
-  for (;;) {
-    set->image = ren_new_image(width, height);
-    if (bake_glyphset(font, set, block, width, height)) { break; }
-    /* Too small for this block's glyphs. CJK blocks are 256 ideographs at
-     * full em, so they land here two or three times before they fit. */
-    ren_free_image(set->image);
-    width *= 2;
-    height *= 2;
+    free(raw[i].bits);
   }
 
-  /* convert 8bit data to 32bit */
-  for (int i = width * height - 1; i >= 0; i--) {
-    uint8_t n = *((uint8_t*) set->image->pixels + i);
-    set->image->pixels[i] = (RenColor) { .r = 255, .g = 255, .b = 255, .a = n };
+  if (block == 0 && font->tab_advance > 0) {
+    set->glyphs['\t'].xadvance = (float) font->tab_advance;
   }
-
   return set;
 }
 
 
-static GlyphSet* get_glyphset(RenFont *font, int codepoint) {
+static GlyphSet* get_glyphset(RenFont *font, unsigned codepoint, int phase) {
   /* Unsigned throughout, so a decode that went wrong cannot index backwards --
    * font->planes[-1] is a pointer read out of the struct above this array, and
    * that is what a signed shift of a sign-extended continuation byte used to
    * produce. Anything past U+10FFFF is not a codepoint and is folded onto the
    * replacement character's block rather than given one of its own. */
-  unsigned cp = (unsigned) codepoint;
+  unsigned cp = codepoint;
   if (cp > 0x10FFFFu) { cp = 0xFFFDu; }
 
   unsigned plane = cp >> 16;
   unsigned block = (cp >> 8) & 0xffu;
   if (!font->planes[plane]) {
-    font->planes[plane] = check_alloc(calloc(BLOCKS_PER_PLANE, sizeof(GlyphSet*)));
+    font->planes[plane] = check_alloc(calloc(BLOCKS_PER_PLANE, sizeof(Block)));
   }
-  GlyphSet **table = font->planes[plane];
-  if (!table[block]) {
-    table[block] = load_glyphset(font, (int) (cp >> 8));
+  Block *b = &font->planes[plane][block];
+  if (!b->phase[phase]) {
+    b->phase[phase] = load_glyphset(font, (int) (cp >> 8), phase);
   }
-  return table[block];
+  return b->phase[phase];
 }
 
 
 /* The shared tail of ren_load_font and ren_load_font_mem: everything from
  * "we have the bytes" onwards. `font->data` is owned by the RenFont either
  * way -- the memory entry point copies, so a baked-in asset in read-only
- * .rodata and a file read off disk are freed the same way. */
-static RenFont* font_from_data(RenFont *font, float size);
+ * .rodata and a file read off disk are freed the same way, and both outlive
+ * the FT_Face that reads out of them. */
+static RenFont* font_from_data(RenFont *font);
 
 
-RenFont* ren_load_font_mem(const void *data, size_t len, float size) {
-  if (!data || len == 0) { return NULL; }
-  RenFont *font = check_alloc(calloc(1, sizeof(RenFont)));
-  font->size = size;
-  font->data = check_alloc(malloc(len));
-  memcpy(font->data, data, len);
-  return font_from_data(font, size);
+static void apply_options(RenFont *font, const RenFontOptions *opt) {
+  font->antialias = REN_AA_GRAYSCALE;
+  font->hinting = REN_HINT_SLIGHT;
+  font->style = 0;
+  if (opt) {
+    font->antialias = (unsigned char) opt->antialiasing;
+    font->hinting = (unsigned char) opt->hinting;
+    font->style = opt->style;
+  }
 }
 
 
-RenFont* ren_load_font(const char *filename, float size) {
+RenFont* ren_load_font_mem(const void *data, size_t len, float size,
+                           const RenFontOptions *opt) {
+  if (!data || len == 0) { return NULL; }
+  RenFont *font = check_alloc(calloc(1, sizeof(RenFont)));
+  font->size = size;
+  apply_options(font, opt);
+  font->data = check_alloc(malloc(len));
+  font->datalen = len;
+  memcpy(font->data, data, len);
+  return font_from_data(font);
+}
+
+
+RenFont* ren_load_font(const char *filename, float size,
+                       const RenFontOptions *opt) {
   RenFont *font = NULL;
   FILE *fp = NULL;
 
   /* init font */
   font = check_alloc(calloc(1, sizeof(RenFont)));
   font->size = size;
+  apply_options(font, opt);
 
   /* load font into buffer */
   fp = fopen(filename, "rb");
   if (!fp) { free(font); return NULL; }
   /* get size */
-  fseek(fp, 0, SEEK_END); int buf_size = ftell(fp); fseek(fp, 0, SEEK_SET);
+  fseek(fp, 0, SEEK_END); long buf_size = ftell(fp); fseek(fp, 0, SEEK_SET);
+  if (buf_size <= 0) { fclose(fp); free(font); return NULL; }
   /* load */
-  font->data = check_alloc(malloc(buf_size));
-  int _ = fread(font->data, 1, buf_size, fp); (void) _;
+  font->data = check_alloc(malloc((size_t) buf_size));
+  size_t got = fread(font->data, 1, (size_t) buf_size, fp);
   fclose(fp);
-  fp = NULL;
+  if (got != (size_t) buf_size) { free(font->data); free(font); return NULL; }
+  font->datalen = got;
 
-  return font_from_data(font, size);
+  return font_from_data(font);
 }
 
 
-static RenFont* font_from_data(RenFont *font, float size) {
-  /* init stbfont
-   *
-   * Offset 0 is a plain single-face file. A TrueType *collection* (.ttc, and
-   * some .otf) packs several faces behind a header, and stbtt_InitFont at
-   * offset 0 simply fails on one -- which is why choosing a font from
-   * /System/Library/Fonts used to be refused: macOS ships most of its faces
-   * that way, so the obvious thing to pick was the one thing that could not
-   * load.
-   *
-   * stbtt_GetFontOffsetForIndex is what the fallback chain in fontfallback.c
-   * already uses to walk a collection; the primary loader can use it too. Face
-   * 0 is taken because the alternative -- a syntax for naming a face inside a
-   * file -- is a setting nobody wants to learn, and face 0 is the regular
-   * weight in every collection I have looked at. */
-  int ok = stbtt_InitFont(&font->stbfont, font->data, 0);
-  if (!ok) {
-    int off = stbtt_GetFontOffsetForIndex(font->data, 0);
-    if (off >= 0) { ok = stbtt_InitFont(&font->stbfont, font->data, off); }
+static RenFont* font_from_data(RenFont *font) {
+  if (!ft_ready()) { goto fail; }
+
+  /* Face 0 of the file. A TrueType *collection* (.ttc, and some .otf) packs
+   * several faces behind a header; FreeType reads one natively, which is a
+   * special case this used to need and no longer does. Face 0 is taken because
+   * the alternative -- a syntax for naming a face inside a file -- is a setting
+   * nobody wants to learn, and face 0 is the regular weight in every collection
+   * I have looked at. */
+  FT_Face face = NULL;
+  if (FT_New_Memory_Face(library, font->data, (FT_Long) font->datalen, 0,
+                         &face) != 0) {
+    goto fail;
   }
-  if (!ok) { goto fail; }
+  if (!face->charmap && FT_Select_Charmap(face, FT_ENCODING_UNICODE) != 0) {
+    FT_Done_Face(face);
+    goto fail;
+  }
+  if (!face_set_size(face, font->size)) {
+    FT_Done_Face(face);
+    goto fail;
+  }
 
   /* The primary face is the head of its own fallback chain. Everything after
    * it is discovered lazily by face_at(). */
-  font->faces[0].info = font->stbfont;
-  font->faces[0].scale = stbtt_ScaleForMappingEmToPixels(&font->stbfont, size);
+  font->faces[0].face = face;
   font->nfaces = 1;
-  font->covered = face_signature(&font->stbfont);
+  font->covered = face_signature(face);
 
-  /* get height and scale */
-  int ascent, descent, linegap;
-  stbtt_GetFontVMetrics(&font->stbfont, &ascent, &descent, &linegap);
-  float scale = stbtt_ScaleForMappingEmToPixels(&font->stbfont, size);
-  font->height = (ascent - descent + linegap) * scale + 0.5;
+  /* Vertical metrics. FT_IS_SCALABLE decides which of the two the face can
+   * actually answer: an outline face is asked in design units and scaled here,
+   * a bitmap strike only knows the size it was made at. */
+  if (FT_IS_SCALABLE(face) && face->units_per_EM > 0) {
+    float s = font->size / (float) face->units_per_EM;
+    font->height = (int) (face->height * s + 0.5f);
+    font->baseline = (int) (face->ascender * s + 0.5f);
+    font->underline = (int) (face->underline_thickness * s + 0.5f);
+  } else {
+    font->height = (int) (face->size->metrics.height / 64.0f + 0.5f);
+    font->baseline = (int) (face->size->metrics.ascender / 64.0f + 0.5f);
+    font->underline = 0;
+  }
+  if (font->underline < 1) { font->underline = 1; }
 
   /* Is this a monospace font? Four characters that differ as much as Latin
    * ones can -- widest, narrowest, a digit, punctuation -- agreeing on their
    * advance is a reliable answer, and a cheap one. It decides whether glyphs
-   * get snapped to a cell grid; see bake_glyphset.
+   * get snapped to a cell grid; see pack_block's snapping.
    *
    * All four have to be present. A font with none of them -- icons.ttf is
    * exactly that, fourteen pictographs and no Latin -- answers every probe
    * with .notdef, so the four advances agree trivially and an icon font would
-   * be declared monospace and have every icon crushed to one cell. */
+   * be declared monospace and have every icon crushed to one cell.
+   *
+   * FT_IS_FIXED_WIDTH is not used instead: it reads the OS/2 panose byte,
+   * which plenty of genuinely monospaced fonts leave unset. */
   {
-    static const char probe[] = { 'W', 'i', '0', '.' };
+    static const unsigned char probe[] = { 'W', 'i', '0', '.' };
     int cell = -1;
     font->cell = 0;
     for (size_t i = 0; i < sizeof probe; i++) {
-      int glyph = stbtt_FindGlyphIndex(&font->stbfont, probe[i]);
-      if (!glyph) { cell = 0; break; }
-      int adv, lsb;
-      stbtt_GetGlyphHMetrics(&font->stbfont, glyph, &adv, &lsb);
-      int w = (int) floorf(adv * font->faces[0].scale);
+      FT_UInt gid = FT_Get_Char_Index(face, (FT_ULong) probe[i]);
+      if (!gid) { cell = 0; break; }
+      int w = (int) floorf(glyph_advance(font, face, gid));
       if (cell < 0) { cell = w; }
       else if (w != cell) { cell = 0; break; }
     }
     if (cell > 0) { font->cell = cell; }
   }
-
-  /* make tab and newline glyphs invisible */
-  stbtt_bakedchar *g = get_glyphset(font, '\n')->glyphs;
-  g['\t'].x1 = g['\t'].x0;
-  g['\n'].x1 = g['\n'].x0;
 
   return font;
 
@@ -535,15 +845,22 @@ fail:
 
 void ren_free_font(RenFont *font) {
   for (int p = 0; p < GLYPH_PLANES; p++) {
-    GlyphSet **table = font->planes[p];
+    Block *table = font->planes[p];
     if (!table) { continue; }
     for (int b = 0; b < BLOCKS_PER_PLANE; b++) {
-      if (table[b]) {
-        ren_free_image(table[b]->image);
-        free(table[b]);
+      for (int s = 0; s < SUBPIXEL_BITMAPS; s++) {
+        if (table[b].phase[s]) {
+          ren_free_image(table[b].phase[s]->image);
+          free(table[b].phase[s]);
+        }
       }
     }
     free(table);
+  }
+  /* Faces first, bytes second, and not the other way round: FreeType reads out
+   * of the buffer it was given for as long as the face exists. */
+  for (int i = 0; i < font->nfaces; i++) {
+    if (font->faces[i].face) { FT_Done_Face(font->faces[i].face); }
   }
   /* Only our own file. The fallback faces point into fontfallback.c's cache,
    * which is shared by every RenFont and lives as long as the process -- the
@@ -571,28 +888,33 @@ const char* ren_fallback_path(int i, int *loaded) {
 
 
 void ren_set_font_tab_width(RenFont *font, int n) {
-  GlyphSet *set = get_glyphset(font, '\t');
-  set->glyphs['\t'].xadvance = n;
+  font->tab_advance = n;
+  Block *table = font->planes[0];
+  if (!table) { return; }
+  for (int s = 0; s < SUBPIXEL_BITMAPS; s++) {
+    if (table[0].phase[s]) { table[0].phase[s]->glyphs['\t'].xadvance = (float) n; }
+  }
 }
 
 
 int ren_get_font_tab_width(RenFont *font) {
-  GlyphSet *set = get_glyphset(font, '\t');
-  return set->glyphs['\t'].xadvance;
+  return (int) get_glyphset(font, '\t', 0)->glyphs['\t'].xadvance;
 }
 
 
 int ren_get_font_width(RenFont *font, const char *text) {
-  int x = 0;
+  /* Phase 0 for the measurement, because the three phases differ only in where
+   * the ink lands, never in what the pen does. Measuring at phase 0 also keeps
+   * a width query from building two atlases it will never draw from. */
+  float x = 0;
   const char *p = text;
   unsigned codepoint;
   while (*p) {
     p = utf8_to_codepoint(p, &codepoint);
-    GlyphSet *set = get_glyphset(font, codepoint);
-    stbtt_bakedchar *g = &set->glyphs[codepoint & 0xff];
-    x += g->xadvance;
+    GlyphSet *set = get_glyphset(font, codepoint, 0);
+    x += set->glyphs[codepoint & 0xff].xadvance;
   }
-  return x;
+  return (int) lroundf(x);
 }
 
 
@@ -616,6 +938,20 @@ static inline RenColor blend_pixel2(RenColor dst, RenColor src, RenColor color) 
   dst.r = ((src.r * color.r * src.a) >> 16) + ((dst.r * ia) >> 8);
   dst.g = ((src.g * color.g * src.a) >> 16) + ((dst.g * ia) >> 8);
   dst.b = ((src.b * color.b * src.a) >> 16) + ((dst.b * ia) >> 8);
+  return dst;
+}
+
+
+/* The LCD blend: one coverage per colour stripe, so each channel composites
+ * against the destination independently. That is the whole of subpixel
+ * antialiasing -- there is no per-pixel alpha to speak of, which is why it
+ * cannot go through blend_pixel2. Arithmetic is lite-xl's: the 65025 is
+ * 255*255, the +32767 rounds rather than truncates. */
+static inline RenColor blend_pixel_lcd(RenColor dst, RenColor src, RenColor color) {
+  unsigned a = color.a;
+  dst.r = (uint8_t) ((color.r * src.r * a + dst.r * (65025 - src.r * a) + 32767) / 65025);
+  dst.g = (uint8_t) ((color.g * src.g * a + dst.g * (65025 - src.g * a) + 32767) / 65025);
+  dst.b = (uint8_t) ((color.b * src.b * a + dst.b * (65025 - src.b * a) + 32767) / 65025);
   return dst;
 }
 
@@ -726,21 +1062,23 @@ void ren_draw_rect(RenRect rect, RenColor color) {
 }
 
 
+/* Clip `sub` and the destination point against the clip rect, in place.
+ * Returns 0 when nothing survives. Shared by the two blit paths so that the
+ * grayscale and LCD glyph blits cannot disagree about what is on screen. */
+static int clip_blit(RenRect *sub, int *x, int *y) {
+  int n;
+  if ((n = clip.left - *x) > 0) { sub->width  -= n; sub->x += n; *x += n; }
+  if ((n = clip.top  - *y) > 0) { sub->height -= n; sub->y += n; *y += n; }
+  if ((n = *x + sub->width  - clip.right ) > 0) { sub->width  -= n; }
+  if ((n = *y + sub->height - clip.bottom) > 0) { sub->height -= n; }
+  return sub->width > 0 && sub->height > 0;
+}
+
+
 void ren_draw_image(RenImage *image, RenRect *sub, int x, int y, RenColor color) {
   if (color.a == 0) { return; }
+  if (!clip_blit(sub, &x, &y)) { return; }
 
-  /* clip */
-  int n;
-  if ((n = clip.left - x) > 0) { sub->width  -= n; sub->x += n; x += n; }
-  if ((n = clip.top  - y) > 0) { sub->height -= n; sub->y += n; y += n; }
-  if ((n = x + sub->width  - clip.right ) > 0) { sub->width  -= n; }
-  if ((n = y + sub->height - clip.bottom) > 0) { sub->height -= n; }
-
-  if (sub->width <= 0 || sub->height <= 0) {
-    return;
-  }
-
-  /* draw */
   SDL_Surface *surf = SDL_GetWindowSurface(window);
   RenColor *s = image->pixels;
   RenColor *d = (RenColor*) surf->pixels;
@@ -761,20 +1099,72 @@ void ren_draw_image(RenImage *image, RenRect *sub, int x, int y, RenColor color)
 }
 
 
+static void draw_image_lcd(RenImage *image, RenRect *sub, int x, int y,
+                           RenColor color) {
+  if (color.a == 0) { return; }
+  if (!clip_blit(sub, &x, &y)) { return; }
+
+  SDL_Surface *surf = SDL_GetWindowSurface(window);
+  RenColor *s = image->pixels + sub->x + sub->y * image->width;
+  RenColor *d = (RenColor*) surf->pixels + x + y * surf->w;
+  int sr = image->width - sub->width;
+  int dr = surf->w - sub->width;
+
+  for (int j = 0; j < sub->height; j++) {
+    for (int i = 0; i < sub->width; i++) {
+      *d = blend_pixel_lcd(*d, *s, color);
+      d++;
+      s++;
+    }
+    d += dr;
+    s += sr;
+  }
+}
+
+
 int ren_draw_text(RenFont *font, const char *text, int x, int y, RenColor color) {
-  RenRect rect;
+  /* The pen is a float even though the entry and exit points are integers.
+   * That is the whole of subpixel positioning: a proportional advance of 7.4px
+   * puts the next glyph at .4 of a pixel, and the phase index picks the
+   * pre-rendered bitmap that was shifted by the nearest third. Rounding the
+   * pen instead -- which is what this did while it was stb_truetype -- loses
+   * that, and the loss compounds across a word. */
+  float pen = (float) x;
   const char *p = text;
   unsigned codepoint;
+
   while (*p) {
     p = utf8_to_codepoint(p, &codepoint);
-    GlyphSet *set = get_glyphset(font, codepoint);
-    stbtt_bakedchar *g = &set->glyphs[codepoint & 0xff];
-    rect.x = g->x0;
-    rect.y = g->y0;
-    rect.width = g->x1 - g->x0;
-    rect.height = g->y1 - g->y0;
-    ren_draw_image(set->image, &rect, x + g->xoff, y + g->yoff, color);
-    x += g->xadvance;
+    int origin = (int) floorf(pen);
+    int phase = (int) ((pen - (float) origin) * SUBPIXEL_BITMAPS);
+    if (phase < 0) { phase = 0; }
+    if (phase >= SUBPIXEL_BITMAPS) { phase = SUBPIXEL_BITMAPS - 1; }
+
+    GlyphSet *set = get_glyphset(font, codepoint, phase);
+    Glyph *g = &set->glyphs[codepoint & 0xff];
+    RenRect rect = { g->x0, g->y0, g->x1 - g->x0, g->y1 - g->y0 };
+    int gx = origin + (int) lroundf(g->xoff);
+    int gy = y + (int) lroundf(g->yoff);
+    if (rect.width > 0 && rect.height > 0) {
+      if (set->lcd) {
+        draw_image_lcd(set->image, &rect, gx, gy, color);
+      } else {
+        ren_draw_image(set->image, &rect, gx, gy, color);
+      }
+    }
+    pen += g->xadvance;
   }
-  return x;
+
+  int end = (int) lroundf(pen);
+  /* Synthesised decorations, drawn once for the whole run rather than per
+   * glyph so a dashed-looking underline is impossible. */
+  if (font->style & REN_STYLE_UNDERLINE) {
+    ren_draw_rect((RenRect) { x, y + font->height - font->underline,
+                              end - x, font->underline }, color);
+  }
+  if (font->style & REN_STYLE_STRIKETHROUGH) {
+    ren_draw_rect((RenRect) { x, y + font->baseline - font->height / 6,
+                              end - x, font->underline }, color);
+  }
+  return end;
 }

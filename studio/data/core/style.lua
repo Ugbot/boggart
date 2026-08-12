@@ -7,10 +7,24 @@ style.scrollbar_size = common.round(4 * SCALE)
 style.caret_width = common.round(2 * SCALE)
 style.tab_width = common.round(170 * SCALE)
 
-style.font = renderer.font.load(DATADIR .. "/fonts/font.ttf", 14 * SCALE)
-style.big_font = renderer.font.load(DATADIR .. "/fonts/font.ttf", 34 * SCALE)
-style.icon_font = renderer.font.load(DATADIR .. "/fonts/icons.ttf", 14 * SCALE)
-style.code_font = renderer.font.load(DATADIR .. "/fonts/monospace.ttf", 13.5 * SCALE)
+-- The three text faces are loaded again by core.fonts once the store is open,
+-- which is where the hinting and antialiasing settings live; these are the
+-- values that hold for the frames before that happens, and they match
+-- fonts.RENDER_DEFAULTS.
+style.font = renderer.font.load(DATADIR .. "/fonts/font.ttf", 14 * SCALE,
+  { hinting = "slight" })
+style.big_font = renderer.font.load(DATADIR .. "/fonts/font.ttf", 34 * SCALE,
+  { hinting = "slight" })
+style.code_font = renderer.font.load(DATADIR .. "/fonts/monospace.ttf", 13.5 * SCALE,
+  { hinting = "slight" })
+
+-- The icon face gets no hinting, and is the one slot with no setting for it.
+-- A hinter's job is to pull stems onto whole pixels, which for a letter is
+-- what legibility is made of and for a pictograph is distortion: the chevron
+-- of a disclosure triangle and the two bars of a pause icon are not stems, and
+-- snapping them makes the icon lopsided rather than crisp.
+style.icon_font = renderer.font.load(DATADIR .. "/fonts/icons.ttf", 14 * SCALE,
+  { hinting = "none" })
 
 style.background = { common.color "#2e2e32" }
 style.background2 = { common.color "#252529" }

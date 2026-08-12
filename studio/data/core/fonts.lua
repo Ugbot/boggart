@@ -16,11 +16,35 @@ local fonts = {}
 
 -- What the bundled defaults are, so "reset" has something to mean and a
 -- missing custom file has somewhere to fall back to.
+--
+-- `hinting` and `antialiasing` are the rasteriser's, passed straight to
+-- renderer.font.load. Slight hinting -- FreeType's light autohinter, which
+-- moves points vertically only -- is the default for every slot because it is
+-- the one that sharpens small text without touching advance widths, and this
+-- renderer's whole contract with the layout above it is that a monospace
+-- advance is exactly one or two cells.
+--
+-- Grayscale rather than subpixel, deliberately. LCD antialiasing wins on a 1x
+-- RGB-striped panel and loses everywhere else: on a HiDPI backing store the
+-- fringes land between physical subpixels, and on a rotated, OLED or BGR panel
+-- the stripe order is wrong and the colour is simply wrong. It is offered as a
+-- setting for the people who know their panel; it is not guessed at.
 fonts.DEFAULTS = {
   ui   = { path = DATADIR .. "/fonts/font.ttf",       size = 14 },
   big  = { path = DATADIR .. "/fonts/font.ttf",       size = 34 },
   code = { path = DATADIR .. "/fonts/monospace.ttf",  size = 13.5 },
 }
+
+-- Applies to every slot unless the stored config overrides it per slot.
+fonts.RENDER_DEFAULTS = { hinting = "slight", antialiasing = "grayscale" }
+
+fonts.HINTING = { "none", "slight", "full" }
+fonts.ANTIALIASING = { "none", "grayscale", "subpixel" }
+
+local function valid(list, v)
+  for _, x in ipairs(list) do if x == v then return v end end
+  return nil
+end
 
 -- Where a person's own fonts actually live, per platform. Asked of the
 -- capability layer rather than inferred, like every other platform question
@@ -71,6 +95,13 @@ function fonts.settings()
       path = c.path or def.path,
       size = tonumber(c.size) or def.size,
       custom = c.path ~= nil,
+      -- Validated on the way out rather than trusted, because this row came
+      -- out of a database that a previous version -- or the agent -- may have
+      -- written. An unknown value would otherwise reach renderer.font.load,
+      -- which raises, and a raise here happens during startup.
+      hinting = valid(fonts.HINTING, c.hinting) or fonts.RENDER_DEFAULTS.hinting,
+      antialiasing = valid(fonts.ANTIALIASING, c.antialiasing)
+                     or fonts.RENDER_DEFAULTS.antialiasing,
     }
   end
   return out
@@ -82,16 +113,16 @@ end
 -- during startup or during a settings change -- either way the window either
 -- never appears or dies mid-frame. A font that will not load is a bad setting,
 -- not a fatal condition, so it degrades to the bundled face and says so.
-local function load_face(which, path, size)
-  local scaled = size * SCALE
-  local ok, face = pcall(renderer.font.load, path, scaled)
+local function load_face(which, s)
+  local opt = { hinting = s.hinting, antialiasing = s.antialiasing }
+  local ok, face = pcall(renderer.font.load, s.path, s.size * SCALE, opt)
   if ok and face then return face, nil end
   local def = fonts.DEFAULTS[which]
-  local ok2, fallback = pcall(renderer.font.load, def.path, def.size * SCALE)
+  local ok2, fallback = pcall(renderer.font.load, def.path, def.size * SCALE, opt)
   if ok2 then
-    return fallback, string.format("%s could not be loaded; using the bundled face", path)
+    return fallback, string.format("%s could not be loaded; using the bundled face", s.path)
   end
-  return nil, string.format("neither %s nor the bundled face could be loaded", path)
+  return nil, string.format("neither %s nor the bundled face could be loaded", s.path)
 end
 
 -- Apply the stored choice to style.*. Called at startup and after a change.
@@ -99,9 +130,9 @@ function fonts.apply()
   local s = fonts.settings()
   local problems = {}
 
-  local ui, e1 = load_face("ui", s.ui.path, s.ui.size)
-  local big, e2 = load_face("big", s.big.path, s.big.size)
-  local code, e3 = load_face("code", s.code.path, s.code.size)
+  local ui, e1 = load_face("ui", s.ui)
+  local big, e2 = load_face("big", s.big)
+  local code, e3 = load_face("code", s.code)
   for _, e in ipairs({ e1, e2, e3 }) do if e then problems[#problems + 1] = e end end
 
   if ui then style.font = ui end
@@ -130,10 +161,10 @@ end
 -- setting sits in the database claiming to be in force. "Nothing happened" is
 -- the worst possible answer to a settings change.
 --
--- Collections (.ttc) load now -- the loader falls back to
--- stbtt_GetFontOffsetForIndex and takes face 0 -- so what this catches is a
--- file that is not a font at all, or one stb cannot parse. It is still worth
--- doing: the failure is otherwise invisible.
+-- Collections (.ttc, .otc) load natively now that the renderer is FreeType --
+-- face 0 of the collection is taken -- so what this catches is a file that is
+-- not a font at all, or one whose outlines FreeType has no driver for. It is
+-- still worth doing: the failure is otherwise invisible.
 function fonts.set(which, path, size)
   if not fonts.DEFAULTS[which] then return nil, "no such font slot: " .. tostring(which) end
   if path then
@@ -148,6 +179,36 @@ function fonts.set(which, path, size)
   local entry = cfg[which] or {}
   if path then entry.path = path end
   if size then entry.size = tonumber(size) end
+  cfg[which] = entry
+  write_config(cfg)
+  return fonts.apply()
+end
+
+-- How a slot is rasterised, as opposed to which file it comes from.
+--
+-- Separate from fonts.set because it is a different kind of decision: the face
+-- is a matter of taste, and this is a matter of what panel you are looking at.
+-- `t` may name `hinting`, `antialiasing` or both; anything else is refused
+-- rather than stored, so a typo cannot sit in the database looking applied.
+function fonts.set_render(which, t)
+  if not fonts.DEFAULTS[which] then
+    return nil, "no such font slot: " .. tostring(which)
+  end
+  local cfg = read_config()
+  local entry = cfg[which] or {}
+  if t.hinting then
+    if not valid(fonts.HINTING, t.hinting) then
+      return nil, "hinting must be one of: " .. table.concat(fonts.HINTING, ", ")
+    end
+    entry.hinting = t.hinting
+  end
+  if t.antialiasing then
+    if not valid(fonts.ANTIALIASING, t.antialiasing) then
+      return nil, "antialiasing must be one of: "
+        .. table.concat(fonts.ANTIALIASING, ", ")
+    end
+    entry.antialiasing = t.antialiasing
+  end
   cfg[which] = entry
   write_config(cfg)
   return fonts.apply()
