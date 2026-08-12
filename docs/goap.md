@@ -45,6 +45,30 @@ Properties that matter for embedding:
 
 The whole thing is four files (`goap.h/.c`, `astar.h/.c`) and vendors cleanly.
 
+### Verified against the source (the digging)
+
+- **License: Apache-2.0**, © Abraham T. Stolk, 2012 — the same license boggart
+  already carries for luv and ltui, so it composes with the vendored set. Not a
+  ship-blocker. Vendoring must still ship the Apache-2.0 text at
+  `src/vendor/gpgoap/LICENSE` and preserve the per-file copyright headers (the
+  root `LICENSE` 404s on `master`, so take the license from the README's
+  statement and the file headers).
+- **Names are stored by pointer, not copied — a use-after-free trap.** A new
+  atom or action registers as `ap->atm_names[idx] = atomname;` /
+  `ap->act_names[idx] = actionname;` — GPGOAP keeps the *caller's* `const char*`,
+  it never `strdup`s. Driven from Lua, whose strings are GC-managed, the stored
+  pointer dangles the moment the Lua string is collected, and `astar_plan`'s
+  `strcmp`/description walks freed memory. **`src/lgoap.c` must own the name
+  strings** (§3). This is the single most important finding — it would have bitten
+  in Phase 1.
+- **A typo is a silent new atom.** The author warns: mistyped atom/action names
+  "will end up representing different atoms." There is no error — the planner just
+  quietly plans over a predicate that never becomes true. We turn this into a loud
+  failure with an atom-declaration discipline (§3).
+- **Separate planners are the author's own advice** for distinct action sets —
+  which validates the per-domain-planner strategy for living inside the 64-atom
+  cap (§3), rather than one global namespace.
+
 ---
 
 ## 2. The conceptual mapping
@@ -83,13 +107,29 @@ p:plan(start, goal)                -- start/goal are {atom=bool,...} (unset = do
 goap.describe(p)                   -- goap_description() text, for doctor / the library panel
 ```
 
-Boundary decisions, with the policy co-located in C (the §3 pattern):
+The handle is a **userdata with a metatable**, following `src/ldb.c` and
+`src/lmcp.c` exactly: `lua_newuserdatauv` for the `actionplanner_t`,
+`luaL_newmetatable(API_TYPE_GOAP)` with `__index = mt`, methods resolved through
+it, and a `__gc` that frees what the userdata owns. That "owns" is load-bearing
+here (see the name-lifetime finding):
 
+- **Name ownership — the fix for the use-after-free.** `lgoap.c` must not hand
+  GPGOAP a Lua string pointer. On intern, `strdup` the atom/action name into
+  C-owned storage held by the userdata (freed in `__gc`), *or* pin every name in
+  a uservalue table so the collector can't reclaim it (`lua_newuserdatauv(L, …,
+  1)`, as `lmcp.c` already does for exactly this reason). Recommend the `strdup`
+  route: self-contained, and `__gc` has a clear job.
+- **Atom-declaration discipline — the fix for silent typos.** A planner declares
+  its atom vocabulary up front (`p:declare_atoms{"tests_pass", …}`); thereafter
+  `p:action`/`p:plan` **reject** any atom name not in that set with a typed
+  validation error instead of interning a new one. This is `strict.lua`'s
+  philosophy (a misspelled global is a loud error) applied to the planner, and it
+  matters most precisely because the model writes these names.
 - **Interning & the 64-atom cap** enforced in C: `p:action`/`p:plan` raise a
   typed error (`Tool error: [validation] atom budget exhausted (64)`) rather than
   silently corrupting the bitfield. Design *around* the cap with **per-domain
-  planners** — one planner per task/skill domain, not one global namespace — so
-  64 is per-plan, not per-process.
+  planners** — one planner per task/skill domain, not one global namespace, which
+  is the author's own recommendation — so 64 is per-plan, not per-process.
 - **Reentrancy** is guaranteed by construction, not by patching GPGOAP:
   `p:plan` is a single non-yielding C call. We add an assertion/guard so that if a
   future threaded path ever calls it re-entrantly it fails loudly instead of
@@ -192,14 +232,19 @@ gets it, which is the intended safety net:
 - **Registration**: add `luaopen_boggart_goap` and its
   `luaL_requiref(...; "goap"); lua_setglobal(L, "goap")` to *both* `src/boggart.c`
   and `src/bogembed.c`.
-- **Fingerprint**: extend `tools/fingerprint.lua` so `goap` (and the new `plan` /
-  `define_action` tools) are part of the shared API surface the parity check
-  compares — so a future drift is caught.
-- **Credits + license**: GPGOAP's `LICENSE` file is absent at the repo root
-  (the raw URL 404s), so **the license must be confirmed from the source headers
-  before vendoring** and added to the README credits block and a
-  `src/vendor/gpgoap/LICENSE`. This matters doubly given boggart's own
-  missing-LICENSE ship-blocker — do not add an unlicensed vendored dependency.
+- **Fingerprint**: the `plan` / `define_action` **tools** are registered in
+  `tools.lua` — shared harness Lua baked identically into both binaries — so they
+  appear in both front ends for free and the existing `tools` line already parity-
+  checks them. The gap is the **`goap` C global**: `fingerprint.lua` dumps
+  `bog.api`/`bog.store`/`bog.tools`/`bog.memory`/`sys.caps()`, *not* arbitrary
+  globals, so a front end that forgot its `luaopen_boggart_goap` /
+  `luaL_requiref` would **not** be caught. Fix: register `goap` into `sys.caps()`
+  (already fingerprinted) or add an explicit `put("goap", sorted_keys(goap))`
+  line — so a missing C-side registration fails `core-parity` loudly.
+- **Credits + license**: license is **Apache-2.0** (§1) — compatible, already in
+  boggart's license set. Ship `src/vendor/gpgoap/LICENSE` (the Apache-2.0 text)
+  and a credits line in the README; preserve the per-file headers. Confirmed, so
+  no longer an open blocker — just wiring.
 
 ---
 
@@ -255,9 +300,12 @@ gets it, which is the intended safety net:
    choice and matches the swarm. Confirm this is the intended scope.
 2. **Who may plan.** Recommend the coordinator by default, plus any agent whose
    skill grants the `plan` tool. Confirm.
-3. **Vendor as-is vs. patch.** Recommend vendoring GPGOAP unmodified and relying
-   on cooperative scheduling for the reentrancy guarantee, accepting the 64-atom /
-   1024-node caps as per-domain budgets. Patching for reentrancy/heap is deferred
-   until a threaded path exists.
+3. **Vendor as-is vs. patch.** Recommend vendoring GPGOAP's `goap.c`/`astar.c`
+   unmodified and relying on cooperative scheduling for the reentrancy guarantee,
+   accepting the 64-atom / 1024-node caps as per-domain budgets. The name-lifetime
+   fix lives in *our* `lgoap.c` wrapper (own the strings), not in a patch to
+   GPGOAP — so the vendored files stay pristine and updatable. Patching GPGOAP for
+   reentrancy/heap is deferred until a threaded path exists. (License is
+   Apache-2.0, resolved — no longer a gating question.)
 4. **GOAP's boolean limit.** Confirm we accept discrete-only planning here and
    keep numeric/resource decisions in the agent (or a later, different planner).
