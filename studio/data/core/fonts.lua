@@ -130,23 +130,18 @@ end
 -- setting sits in the database claiming to be in force. "Nothing happened" is
 -- the worst possible answer to a settings change.
 --
--- The common case this catches is .ttc -- macOS ships most of its system faces
--- as TrueType *collections*, and the loader handles single-face .ttf/.otf
--- only. Supporting collections means passing an index through
--- stbtt_GetFontOffsetForIndex, which the fallback-chain code already does and
--- this path does not.
+-- Collections (.ttc) load now -- the loader falls back to
+-- stbtt_GetFontOffsetForIndex and takes face 0 -- so what this catches is a
+-- file that is not a font at all, or one stb cannot parse. It is still worth
+-- doing: the failure is otherwise invisible.
 function fonts.set(which, path, size)
   if not fonts.DEFAULTS[which] then return nil, "no such font slot: " .. tostring(which) end
   if path then
     local probe = (tonumber(size) or fonts.DEFAULTS[which].size) * SCALE
     local ok = pcall(renderer.font.load, path, probe)
     if not ok then
-      local why = path:lower():match("%.ttc$")
-        and (path .. " is a font collection (.ttc). boggart can only load a "
-             .. "single-face .ttf or .otf; most macOS system fonts are "
-             .. "collections, but ~/Library/Fonts usually has .ttf files.")
-        or (path .. " could not be loaded as a font.")
-      return nil, why
+      return nil, path .. " could not be read as a font (.ttf, .ttc and .otf "
+        .. "are understood; the file may be damaged or in another format)."
     end
   end
   local cfg = read_config()

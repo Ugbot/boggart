@@ -9,7 +9,17 @@
 #define CELLS_X 80
 #define CELLS_Y 50
 #define CELL_SIZE 96
-#define COMMAND_BUF_SIZE (1024 * 512)
+/* The command buffer starts here and grows. It used to be a fixed 512 KB that
+ * silently dropped everything past the limit -- a frame would simply lose its
+ * tail, which reads as "the bottom of the window stopped drawing" rather than
+ * as an error. One hatched diagram was enough to hit it: flattening curves into
+ * short lines put a single shape over a thousand commands.
+ *
+ * lite-xl solves this with an arena allocator. Growing one buffer is the same
+ * idea with less machinery, and safe here because a caller fills the command it
+ * was handed before pushing the next one -- no pointer outlives a push. That
+ * invariant is the whole argument, so it is stated rather than assumed. */
+#define COMMAND_BUF_INITIAL (1024 * 512)
 
 enum { FREE_FONT, SET_CLIP, DRAW_TEXT, DRAW_RECT, DRAW_LINE };
 
@@ -29,7 +39,8 @@ static unsigned cells_buf2[CELLS_X * CELLS_Y];
 static unsigned *cells_prev = cells_buf1;
 static unsigned *cells = cells_buf2;
 static RenRect rect_buf[CELLS_X * CELLS_Y / 2];
-static char command_buf[COMMAND_BUF_SIZE];
+static char *command_buf;
+static int command_buf_size;
 static int command_buf_idx;
 static RenRect screen_rect;
 static bool show_debug;
@@ -79,12 +90,24 @@ static RenRect merge_rects(RenRect a, RenRect b) {
 
 
 static Command* push_command(int type, int size) {
-  Command *cmd = (Command*) (command_buf + command_buf_idx);
   int n = command_buf_idx + size;
-  if (n > COMMAND_BUF_SIZE) {
-    fprintf(stderr, "Warning: (" __FILE__ "): exhausted command buffer\n");
-    return NULL;
+  if (n > command_buf_size) {
+    /* Double until it fits. A frame's command list is bounded by what is on
+     * screen, so this settles after the first busy frame and never shrinks --
+     * the alternative is reallocating every time a diagram appears. */
+    int want = command_buf_size ? command_buf_size : COMMAND_BUF_INITIAL;
+    while (want < n) { want *= 2; }
+    char *grown = realloc(command_buf, want);
+    if (!grown) {
+      /* Out of memory is not a reason to take the window down; dropping the
+       * rest of this frame is survivable and the next frame will retry. */
+      fprintf(stderr, "Warning: (" __FILE__ "): cannot grow command buffer to %d\n", want);
+      return NULL;
+    }
+    command_buf = grown;
+    command_buf_size = want;
   }
+  Command *cmd = (Command*) (command_buf + command_buf_idx);
   command_buf_idx = n;
   memset(cmd, 0, sizeof(Command));
   cmd->type = type;

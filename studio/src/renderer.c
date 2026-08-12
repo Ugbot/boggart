@@ -460,8 +460,25 @@ RenFont* ren_load_font(const char *filename, float size) {
 
 
 static RenFont* font_from_data(RenFont *font, float size) {
-  /* init stbfont */
+  /* init stbfont
+   *
+   * Offset 0 is a plain single-face file. A TrueType *collection* (.ttc, and
+   * some .otf) packs several faces behind a header, and stbtt_InitFont at
+   * offset 0 simply fails on one -- which is why choosing a font from
+   * /System/Library/Fonts used to be refused: macOS ships most of its faces
+   * that way, so the obvious thing to pick was the one thing that could not
+   * load.
+   *
+   * stbtt_GetFontOffsetForIndex is what the fallback chain in fontfallback.c
+   * already uses to walk a collection; the primary loader can use it too. Face
+   * 0 is taken because the alternative -- a syntax for naming a face inside a
+   * file -- is a setting nobody wants to learn, and face 0 is the regular
+   * weight in every collection I have looked at. */
   int ok = stbtt_InitFont(&font->stbfont, font->data, 0);
+  if (!ok) {
+    int off = stbtt_GetFontOffsetForIndex(font->data, 0);
+    if (off >= 0) { ok = stbtt_InitFont(&font->stbfont, font->data, off); }
+  }
   if (!ok) { goto fail; }
 
   /* The primary face is the head of its own fallback chain. Everything after
