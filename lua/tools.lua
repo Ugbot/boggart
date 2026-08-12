@@ -1024,6 +1024,10 @@ for name, def in pairs(require("plan").tools) do M.register(name, def) end
 -- See lua/goap.lua and lua/blackboard.lua.
 for name, def in pairs(require("goap").tools) do M.register(name, def) end
 
+-- claims tools: the shared edit blackboard (claim/release/claims) so concurrent
+-- agents coordinate on files instead of colliding. See lua/claims.lua.
+for name, def in pairs(require("claims").tools) do M.register(name, def) end
+
 -- model/user-defined tool files
 load_user_tools()
 
