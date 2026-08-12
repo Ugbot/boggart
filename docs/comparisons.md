@@ -186,3 +186,106 @@ Codex security/sandboxing & configuration docs (linked from the repo;
 the public docs reorganized to learn.chatgpt.com/docs during this research, so
 the sandbox/approval specifics above reflect Codex's established public model).
 
+---
+
+## 3. pi — the minimal harness boggart forks from
+
+**What it is.** [pi](https://github.com/badlogic/pi-mono) (pi.dev, Mario
+Zechner / Earendil Inc.) is a **TypeScript** terminal coding agent built as an
+experiment in minimalism-you-extend: four core tools (`read`/`write`/`edit`/
+`bash`, plus `grep`/`find`/`ls`), tree-structured JSONL sessions with in-place
+branching, automatic + manual compaction, Agent-Skills-standard skills, and a TS
+**extension** SDK (custom tools, commands, UI, event handlers), shareable as
+**Pi Packages**. It ships *powerful defaults*: 30+ model providers, four runtime
+modes (interactive, print/JSON, RPC, SDK). Its defining move is what it
+*refuses*: **no MCP, no sub-agents, no plan mode, no permission popups, no
+built-in todos, no background bash** — each punted to an extension, a container,
+or tmux. The ethos: "adapt pi to your workflows, not the other way around."
+
+**Verdict.** pi is boggart's **direct ancestor** — boggart's `tools.lua` header
+literally says "pi-minimal defaults," and the four-core-tools/tight-context/
+no-product-opinion shape is pi's. But the two diverge at the deepest point: **pi
+is a minimal core you extend from the outside** (in TypeScript, ahead of time),
+and it *cuts* MCP/sub-agents to stay small; **boggart is a mutable kernel that
+rewrites itself from the inside** (in Lua, at runtime), and it *re-adds* exactly
+what pi cut. Same starting aesthetic, opposite theory of where extension lives.
+
+### The usual feature-gap list mostly doesn't apply
+
+Auditing boggart against pi (or the wider field) as a feature checklist gives a
+long "missing" column — repo-map/LSP, web search, plan/todos, git workflow, a
+project-instructions file, multi-provider, multi-hunk patch. Under boggart's
+thesis **almost all of it dissolves**, because those capabilities are meant to
+be *grown* (Lua) or *plugged in* (MCP / an external LLM station), not baked into
+the core:
+
+| "Gap" | How it's actually provided | Verdict |
+|---|---|---|
+| LSP / semantic nav / repo-map | real language servers via MCP (e.g. an external llm-station) | **Not a gap** — real LSP beats a bespoke embedding index |
+| Multi-provider | `api.lua` is overlay-mutable Lua (C only streams bytes); or point at any `http://…` Messages-API gateway | Soft — an adapter written once, or offloaded to the station |
+| Web search, plan/todos, git workflow, `AGENTS.md` loader, multi-hunk patch | `define_tool` — the agent writes them when it needs them | Correctly *not* core |
+| MCP, sub-agents (the things pi cut) | boggart ships both: C MCP client + swarm actor bus | boggart *ahead* of pi here |
+
+So the honest question is not "what feature is absent" but **"what can neither
+be written in Lua nor handed to an external station?"** That list is short.
+
+### What is genuinely structural (survives the reframe)
+
+1. **The sandbox — and it is a *harder* sandbox than Codex's.** This is the
+   whole audit. Every other agent sandboxes a *fixed, vetted* toolset; boggart
+   must contain **code the agent writes about itself, at runtime**
+   (`define_tool` bodies today get `sys.exec`/`io`/`os` → full shell) **plus MCP
+   stdio subprocesses**. "The Lua adds whatever it needs" and "solid sandboxing"
+   pull in opposite directions — a tool must *do* real work yet stay contained —
+   and resolving that tension is the core's central unsolved problem. It is
+   C-level, not Lua.
+
+   The template already exists: `draw_panel` compiles into a restricted env
+   (drawing + theme + arithmetic; no io, network or credentials). Generalize it
+   into two tiers:
+   - **Pure-compute tier** (the `draw_panel` model): capability env, no
+     syscalls — already proven, free.
+   - **Effectful tier** (`bash`, `define_tool` bodies, MCP subprocesses): an OS
+     jail around the exec — **Landlock + seccomp** on Linux, **Seatbelt** on
+     macOS — parameterized by a per-agent/per-tool capability grant (filesystem
+     scope, network on/off) with an approval gate on escalation. The swarm's
+     per-agent tool allowlist is the *policy* layer; this is the *enforcement*
+     layer it currently lacks.
+
+   Until this exists, self-modification is "safe because the operator is
+   trusted" — precisely the assumption that swarm, MCP, and agent-authored tools
+   erode.
+
+2. **Two pieces that stay C / front-end work no matter how mutable the Lua is:**
+   - **Image / multimodal ingestion.** `api.lua` can be taught to *send* image
+     blocks (Lua), but the studio must *accept* them (C file handling) and the
+     terminal fundamentally cannot show them.
+   - **The OS-enforcement layer above.** Landlock/seccomp/Seatbelt bindings are
+     C; the agent cannot Lua its way to a syscall filter for its own host.
+
+3. **LICENSE file.** A hard ship-blocker (the README flags it), unrelated to
+   philosophy.
+
+### The bet, and its cost
+
+"Flex over structure" is a real bet, not a free win. It trades **discoverability
+and auditability**: a Cursor/Codex/pi user reads a fixed manifest of what the
+agent can do; a boggart user inspects a toolset the agent has been rewriting.
+boggart's mitigation is the **library panel** — every generated tool with its
+scope, defining git revision, and call/fail counts, plus full-text memory
+search. That provenance surface is what keeps runtime self-extension *legible*
+instead of spooky, and it should be treated as load-bearing, not decorative.
+
+**Bottom line.** Against pi, boggart is not "pi with more features" or "pi with
+fewer" — it is pi's aesthetic inverted into a self-modifying kernel. The
+feature-gap column that the comparison invites mostly collapses into Lua or MCP.
+What remains is essentially **one gap**: a sandbox strong enough that "the agent
+adds whatever it needs" is a safety *property* rather than a liability. Land the
+two-tier jail and the rest genuinely isn't missing — it is deferred by design,
+which is the entire point of the thing. pi stays the safer, more portable daily
+driver today (providers, containerized isolation, a mature TS package
+ecosystem); boggart is the more ambitious kernel.
+
+Sources: [badlogic/pi-mono](https://github.com/badlogic/pi-mono)
+(`packages/coding-agent/README.md`), pi.dev, and Mario Zechner's write-up
+"What I learned building an opinionated and minimal coding agent" (2025-11-30).
