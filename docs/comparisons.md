@@ -405,3 +405,113 @@ mostly known: an inbound-event + scheduler layer on the vendored libuv loop, a
 generalized approval gate, saga-grade journalling, and the one subprocess jail
 that was already the sole outstanding item. None of it fights the architecture;
 most of it is the architecture, turned on.
+
+---
+
+## 5. Trigger.dev — the durable-execution substrate §4 implies
+
+**What it is.** [Trigger.dev](https://github.com/triggerdotdev/trigger.dev)
+(TypeScript, Apache-2.0, cloud **or** self-hosted) is not an agent — it is an
+**open-source durable background-job / workflow-orchestration platform**, now
+positioned around "build and deploy fully-managed AI agents and workflows." You
+write a **task** in your own codebase and deploy it; the platform runs it with
+**no timeouts**, retries, queues, and observability.
+
+```ts
+export const helloWorld = task({
+  id: "hello-world",
+  run: async (payload: { message: string }) => { /* long-running work */ },
+});
+```
+
+The engineering core is **durable execution via checkpoint/restore**. At every
+`await`/wait point the **Run Engine** snapshots the task — on the managed side
+via **CRIU** (freeze memory, CPU registers, file descriptors), stored
+compressed — and can resume it later *on a different machine*, exactly where it
+paused. Tasks are **frozen during waits** (you pay only for execution). Around
+that sit the primitives a business process needs:
+
+- **Triggers**: programmatic (`task.trigger()` / batch), **cron** (`schedules.
+  task`), webhooks, events.
+- **Retries**: declarative policy (`maxAttempts`, `factor`, min/max backoff,
+  randomize); on failure only the failed subtask and everything after it re-runs.
+- **Idempotency**: first-class `idempotencyKey` on tasks *and* on `wait.for` /
+  `wait.until` (+ TTL), with **result caching** keyed by it.
+- **Queues & concurrency**: shared queues with `concurrencyLimit`, per-task and
+  per-tenant concurrency, concurrency keys for fan-out; `triggerAndWait`
+  checkpoints and *releases its concurrency slot* while suspended.
+- **Waitpoints / `waitForToken`**: a run pauses until a **token** is completed
+  (or times out) — the durable **human-in-the-loop** primitive (approve / reject
+  / suggest), or a wait on a webhook / external service.
+- **Ops**: dashboard trace view, realtime updates with LLM streaming, warm
+  starts (Run Engine 2.0); self-host via Docker Compose / Kubernetes Helm with
+  Postgres + Redis + object storage and horizontal worker scaling.
+
+**Verdict.** This is the section-4 substrate, built out and industrial-grade.
+Everything §4 listed as "what business-process work additionally demands" —
+persistence + triggers, a durable approval gate, saga-grade idempotency,
+concurrency control — Trigger.dev already *is*. So the useful comparison is not
+"rebuild it on boggart" but **"boggart is the brain, Trigger.dev is the durable
+body"**: they converge on the same AI-workflow target from opposite ends —
+Trigger.dev adding MCP, agent skills and HITL tokens *up* from infrastructure,
+boggart reaching *down* from the agent kernel toward durability.
+
+### Where boggart already has the shape (and where it stops)
+
+| Durable-execution need | boggart today | Trigger.dev | Gap |
+|---|---|---|---|
+| Resume after crash/restart | journalled swarm bus + resumable sessions; `--resume` redelivers unprocessed messages | CRIU snapshot resumes mid-`await` on any machine | **Granularity.** boggart's is *message-replay* durability (coarse, transcript-level); Trigger.dev's is *execution-snapshot* (fine, mid-function) |
+| Scheduled / webhook / event triggers | `events`/`on_event`, in-process only | cron + webhook + event + programmatic | boggart has no scheduler and no inbound transport (the §4 #1 add) |
+| Retries | the model retries `Tool error:` in-loop (LLM-driven) | declarative run-level retry policy with backoff | boggart has no durable retry engine for a whole run |
+| Idempotency + result cache | `processed_at` stops redelivery dupes | idempotency keys + cached results | boggart has no keys/caching |
+| Queues, concurrency limits, backpressure | cooperative scheduler + `curl_multi` fan-out, single process | queues, `concurrencyLimit`, per-tenant, concurrency keys | boggart has fan-out but no limits/queues/multi-tenant |
+| Durable human approval | studio diff-approval gate — **synchronous, in-session** | `waitForToken` — pause for days, survive restarts, resume on approval | boggart can't suspend a process to disk awaiting a human |
+| Deploy / scale | single local exe, single-user, single-machine | cloud or self-host, horizontal workers, Postgres+Redis | different universe (by design) |
+
+### The opinionated read (don't chase CRIU)
+
+The tempting conclusion — "add checkpoint/restore to boggart" — is the wrong
+lift. CRIU-style process snapshotting fits Trigger.dev because a task is
+arbitrary Node code; boggart's runtime is an **embedded Lua VM in one process**,
+and the durability model that actually fits an agent loop is **replay, not
+snapshot**: you never freeze the LLM, you replay the transcript — which boggart
+*already does* through resumable sessions. So the right things to lift from
+Trigger.dev's design are the three that compose with replay, and they are
+exactly §4's list:
+
+1. **Durable waitpoints.** A run can suspend *to the journal* and resume on a
+   token or a timeout — this is what turns the studio's synchronous approval gate
+   into a business-grade one ("pause three days until someone approves, surviving
+   restarts"). The swarm journal is the right home for it.
+2. **Idempotency keys + a result cache** on tool calls, so a replayed run doesn't
+   re-send an email or re-charge a card.
+3. **A trigger/scheduler source** (cron + webhook) feeding the bus, plus a
+   declarative retry policy layered *above* the model's in-loop retries.
+
+### Recommended architecture (if you did it)
+
+Two honest shapes, not one:
+
+- **Host boggart on Trigger.dev.** Wrap a `boggart --headless` run inside a
+  `task()`; Trigger.dev supplies schedule/webhook/retry/queue/waitpoint
+  durability, boggart supplies the agent turn. This makes §4's entire gap list
+  *someone else's solved problem* — the pragmatic path if the goal is BPM now.
+- **Lift the three primitives into the core.** If boggart wants to own the BPM
+  story natively (no Node platform dependency, staying a single self-contained
+  exe), implement durable waitpoints + idempotency + a trigger source on the
+  vendored libuv loop and the SQLite journal. More work, but it keeps the "one
+  self-contained binary, no runtime deps" property that is boggart's whole
+  distribution story — and Trigger.dev is the reference design to copy from.
+
+**Bottom line.** Trigger.dev is the clearest picture available of what boggart's
+§4 ambition looks like fully realized, and it settles the build-vs-borrow
+question by making the trade explicit: borrow it (host on Trigger.dev) and BPM
+works today at the cost of the Node platform under you; build it (replay +
+waitpoints + idempotency on libuv/SQLite) and boggart stays a single binary at
+the cost of writing the durable substrate yourself. Either way the target is the
+same, and boggart's journalled bus is already a recognizable first draft of it.
+
+Sources: [triggerdotdev/trigger.dev](https://github.com/triggerdotdev/trigger.dev),
+Trigger.dev docs "How it works", the v3 "durable serverless / no timeouts"
+announcement and the v4 GA notes (Run Engine 2.0, waitpoints, self-hosting on
+Postgres+Redis), and the CRIU checkpoint/restore write-ups referenced from them.
