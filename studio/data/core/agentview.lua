@@ -314,7 +314,7 @@ function AgentView:submit(text)
   self.busy_since = system.get_time()
   self.tool_running = nil
 
-  self.co = coroutine.create(function()
+  local fn = function()
     local okrun, err = pcall(bog.api.run_on, bog.session, text,
       function(chunk) self:stream(chunk) end,
       {
@@ -351,6 +351,13 @@ function AgentView:submit(text)
         -- continues from the same place whichever way the user decides.
         run_tool = function(name, input)
           input = input or {}
+          -- A swarm orchestration tool (spawn/await/send/...) needs the bus and
+          -- journal actually attached; stand the engine up the first time one is
+          -- used. Lazy on purpose: a turn that never spawns never pays for it.
+          if core.studio and core.studio.is_swarm_tool
+             and core.studio.is_swarm_tool(name) then
+            core.studio.ensure_engine()
+          end
           local policy = self:policy_for(name)
           if policy == "deny" then
             self:push("system", "blocked: " .. name)
@@ -394,9 +401,38 @@ function AgentView:submit(text)
     self:close_stream()
     if not okrun then self:push("error", tostring(err)) end
     self.busy, self.status, self.pending = false, "idle", nil
+    self.turn_id = nil
     if bog.save_session then pcall(bog.save_session) end
     core.redraw = true
-  end)
+  end
+
+  -- Swarm mode by default: run the turn as coordinator actor 0 in the shared
+  -- scheduler. That is the whole integration -- while the scheduler resumes this
+  -- coroutine, bog.sched.current() is the turn's id, so the swarm tools resolve
+  -- "self" to it and anything it spawns is an actor the studio is already
+  -- pumping. The turn's id is its session row's id (sessions and threads are one
+  -- table), so a spawned child's result routes back to it over the bus.
+  --
+  -- tick() must then NOT resume this coroutine -- the studio's pump does, and
+  -- resuming a coroutine the scheduler also resumes is an error. Registering it
+  -- with the scheduler instead of storing it in self.co is what tells tick which
+  -- world it is in.
+  --
+  -- Fallback: if the engine could not be set up (no store, a require failed), a
+  -- turn still runs as a bare coroutine that tick() drives, exactly as before.
+  -- A studio that cannot start a scheduler is still a chat window; it just
+  -- cannot spawn.
+  local id = (core.studio and core.studio.swarm_ok and bog.sched)
+    and core.studio.ensure_session() or nil
+  if id then
+    self.turn_id = id
+    self.co = nil
+    bog.sched.fatal = nil
+    bog.sched.add(id, coroutine.create(fn))
+  else
+    self.turn_id = nil
+    self.co = coroutine.create(fn)
+  end
 end
 
 -- One path for "send this", whether it came from the return key or the button.
@@ -439,14 +475,78 @@ end
 function AgentView:cancel()
   if self.pending then self:decide("reject"); return end
   if not self.busy then return end
-  self.co, self.busy, self.status = nil, false, "idle"
+  -- A scheduler-driven turn is stopped by the scheduler forgetting its actors --
+  -- there is no way to unwind a suspended coroutine in Lua, so anything already
+  -- in flight (an HTTP request, a child process) is abandoned when it next
+  -- reports. Every actor is reaped, not just the coordinator: in the studio the
+  -- chat turn is the root of everything running, so a cancelled turn must take
+  -- its sub-agents with it rather than leave workers running with nobody
+  -- watching. The store rows read "error" because that is the truth -- those
+  -- agents did not finish.
+  if self.turn_id and bog.sched then
+    for i = #bog.sched.actors, 1, -1 do
+      local aid = bog.sched.actors[i].id
+      bog.sched.kill(aid)
+      if aid ~= self.turn_id then pcall(bog.store.thread_set_status, aid, "error") end
+    end
+    pcall(bog.store.thread_set_status, self.turn_id, "idle")
+  end
+  self.co, self.turn_id, self.busy, self.status = nil, nil, false, "idle"
   self.busy_since, self.tool_running = nil, nil
   self:close_stream()
   self:push("system", "cancelled")
 end
 
+-- Reload a buffer the agent just wrote, so you are never reading a stale file
+-- while the agent works in it. Runs every frame from tick(), whichever world
+-- the turn is in, because run_tool records the write and this retires it.
+function AgentView:reload_dirty()
+  if not self.dirty_path then return end
+  local path, was = self.dirty_path, self.dirty_was
+  self.dirty_path, self.dirty_was = nil, nil
+  for _, d in ipairs(core.docs) do
+    if d.filename and d.filename:find(path, 1, true) and not d:is_dirty() then
+      pcall(function() d:reload() end)
+    end
+  end
+  -- Mark after the reload, never before: reloading replaces the buffer's lines
+  -- outright, and marks laid down first would be describing text that had just
+  -- been thrown away.
+  if was then
+    pcall(marks.from_edit, path, was, bog.util.read_file(path) or "",
+      { path = path, tool = "agent" })
+  end
+end
+
 -- One slice of agent work per frame. Must always return quickly.
 function AgentView:tick()
+  -- Scheduler-driven turn (the default). The studio's pump resumes the
+  -- coordinator actor, so tick only OBSERVES: it maps the actor's yield-state to
+  -- a status word (the pump has no view to talk to) and does the dirty-file
+  -- reload. It must never resume the coroutine -- that is the scheduler's job,
+  -- and doing it here as well is the single error this whole design avoids.
+  if self.turn_id then
+    local a = bog.sched and bog.sched.by_id and bog.sched.by_id[self.turn_id]
+    if a and not self.pending then
+      if a.status == "io" then self.status = "streaming"
+      elseif a.status == "proc" then self.status = "running a command"
+      elseif a.status == "recv" then self.status = "waiting for sub-agents" end
+    end
+    -- Safety net. The coroutine body clears busy before it returns, so normally
+    -- the actor is already gone by the time busy is false. If it instead
+    -- crashed inside the scheduler (an uncaught error past the body's own
+    -- pcall), the actor vanishes with busy still set; retire the turn rather
+    -- than leave the panel wedged "thinking" with nothing running.
+    if self.busy and not a
+       and not (self.pending and self.pending.decision == nil) then
+      self.busy, self.status, self.turn_id = false, "idle", nil
+    end
+    self:reload_dirty()
+    return
+  end
+
+  -- Fallback turn: no scheduler, so tick drives the bare coroutine itself,
+  -- exactly as the studio did before the swarm was unified.
   if not self.co then return end
   if coroutine.status(self.co) == "dead" then self.co = nil; return end
   -- While a decision is outstanding there is nothing to advance, and resuming
@@ -469,24 +569,7 @@ function AgentView:tick()
     if okuv then pcall(uv.run, "nowait") end
   end
 
-  -- Reload a buffer the agent just wrote, so you are never reading a stale
-  -- file while the agent works in it.
-  if self.dirty_path then
-    local path, was = self.dirty_path, self.dirty_was
-    self.dirty_path, self.dirty_was = nil, nil
-    for _, d in ipairs(core.docs) do
-      if d.filename and d.filename:find(path, 1, true) and not d:is_dirty() then
-        pcall(function() d:reload() end)
-      end
-    end
-    -- Mark after the reload, never before: reloading replaces the buffer's
-    -- lines outright, and marks laid down first would be describing text that
-    -- had just been thrown away.
-    if was then
-      pcall(marks.from_edit, path, was, bog.util.read_file(path) or "",
-        { path = path, tool = "agent" })
-    end
-  end
+  self:reload_dirty()
 end
 
 function AgentView:update()

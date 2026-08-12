@@ -357,6 +357,41 @@ if loaded then
   v:close_stream()
   v:stream("next")
   ok(#v.entries == 3, "a closed stream does not absorb the next reply")
+
+  -- ---- the fallback turn (no scheduler) ----------------------------------
+  -- Swarm mode is the studio's default now -- the chat turn normally runs as a
+  -- scheduler actor so it can spawn sub-agents -- but the studio must still be
+  -- a chat window when the actor layer cannot start (no store, a require
+  -- failed) or, as here, when there is no core.studio wired at all. In that
+  -- case submit() runs the turn as a bare coroutine that tick() drives, exactly
+  -- as it did before the swarm was unified, and a plain turn must still stream
+  -- and settle. The model is stubbed: this checks the panel's own machinery,
+  -- not the network, and it is the one path a headless suite can drive end to
+  -- end (the scheduler path needs a window and a live model, so it is covered
+  -- by the driven studio probe and ninja ui-check instead).
+  v.entries, v.busy, v.co, v.turn_id = {}, false, nil, nil
+  local saved_run_on = bog.api.run_on
+  bog.api.run_on = function(_, _, on_text)
+    on_text("hello ")
+    on_text("there")
+    return true
+  end
+  v:submit("say hi")
+  ok(v.busy, "fallback: submit marks the turn busy")
+  ok(v.turn_id == nil, "fallback: no scheduler wired, so no coordinator actor id")
+  ok(v.co ~= nil, "fallback: the turn runs as a bare coroutine tick() drives")
+  for _ = 1, 50 do
+    if not v.busy then break end
+    v:tick()
+  end
+  bog.api.run_on = saved_run_on
+  ok(not v.busy, "fallback: the turn completed with no scheduler pumping it")
+  local said = ""
+  for _, e in ipairs(v.entries) do
+    if e.role == "assistant" then said = said .. e.text end
+  end
+  ok(said == "hello there",
+    "fallback: streamed text landed in the transcript (got '" .. said .. "')")
 end
 
 -- ---------------------------------------------------------------------------

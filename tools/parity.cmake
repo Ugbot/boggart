@@ -9,7 +9,18 @@
 # match, and a capability present in the CLI but missing from the GUI fails
 # regardless, because that is the direction that makes the window a lesser
 # product rather than a different one.
-set(GUI_ONLY_TOOLS "draw_panel;list_panels;read_panel;delete_panel")
+#
+# Two groups of studio-only tools:
+#   1. The panel-drawing tools, which need a window.
+#   2. The swarm orchestration tools (spawn/await/send/publish/subscribe/inbox/
+#      threads). The CLI registers these only in `boggart swarm`, a distinct
+#      mode; the studio assumes swarm mode by default (the owner's directive:
+#      "if you're using the UI you're doing the kind of multi-agent work swarm
+#      mode is for"), so it offers them from every chat -- the chat turn is
+#      coordinator actor 0 and the studio pumps the scheduler. They are the same
+#      tools as the CLI's swarm mode, so this is a difference in which surface
+#      offers them by default, not a capability the CLI lacks.
+set(GUI_ONLY_TOOLS "draw_panel;list_panels;read_panel;delete_panel;spawn;await;send;publish;subscribe;inbox;threads")
 
 if(NOT DEFINED CLI OR NOT DEFINED GUI OR NOT DEFINED FP OR NOT DEFINED FPGUI)
   message(FATAL_ERROR "parity.cmake needs -DCLI= -DGUI= -DFP= -DFPGUI=")

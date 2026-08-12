@@ -575,6 +575,319 @@ core.add_thread(function()
     end
   end)
 
+  -- -------------------------------------------------------------------------
+  -- The surfaces that are not the conversation
+  -- -------------------------------------------------------------------------
+  --
+  -- Separately pcall'd so a failure here still reports everything the block
+  -- above found, and so a new scenario cannot silently swallow an old one.
+  local ok2, err2 = pcall(function()
+    local FIX = (os.getenv("TMPDIR") or "/tmp") .. "/boggart-uicheck"
+    sys.mkdir_p(FIX .. "/many")
+    for i = 1, 400 do
+      local f = io.open(string.format("%s/many/f%03d.txt", FIX, i), "wb")
+      if f then f:write("x"); f:close() end
+    end
+    local long = io.open(FIX .. "/many/" .. string.rep("w", 220) .. ".txt", "wb")
+    if long then long:write("x"); long:close() end
+
+    -- ---- the picker --------------------------------------------------------
+    local picker = studio.pick("file", function() end)
+    core.set_active_view(picker)
+    picker:cd(FIX .. "/many")
+    frame(4)
+
+    check(#picker.entries > 400,
+      "picker: only " .. #picker.entries .. " entries in a 400-file directory")
+
+    -- Drawing costs what is on screen, not what is in the directory.
+    check(#picker.row_hits < 200, string.format(
+      "picker: %d hit rects for %d entries -- the list is not clipped to the "
+      .. "viewport", #picker.row_hits, #picker.entries))
+
+    -- No row wider than its column: there is no eliding in common.draw_text.
+    do
+      local font = require("core.style").code_font
+      for _, r in ipairs(picker.row_hits) do
+        local e = r.entry
+        check(font:get_width((e.dir and "/ " or "  ") .. (e.shown or e.name))
+                <= r.w + font:get_width("0"),
+          "picker: the row for a " .. #(e.name) .. "-character name is drawn "
+          .. "wider than the column it is in")
+      end
+    end
+
+    -- The keyboard, through the event path.
+    picker.scroll.to.y, picker.scroll.y = 0, 0
+    for _ = 1, 60 do core.on_event("keypressed", "down") end
+    frame(2)
+    picker.scroll.y = picker.scroll.to.y
+    picker:draw()
+    check(picker.selected == 61,
+      "picker: 60 downs moved the selection to " .. picker.selected)
+    do
+      local row
+      for _, r in ipairs(picker.row_hits) do
+        if r.index == picker.selected then row = r end
+      end
+      check(row ~= nil and row.y >= picker.position.y
+              and row.y + row.h <= picker.position.y + picker.size.y + 1,
+        "picker: the selected row is off screen after 60 downs -- nothing "
+        .. "scrolls the list to follow the arrow keys")
+    end
+    shot("picker")
+
+    -- Filtering to one match and pressing enter opens THAT match, not the
+    -- parent -- ".." used to be kept in the filtered list, first.
+    picker:cd(FIX)
+    frame(2)
+    core.on_event("textinput", "m")
+    core.on_event("textinput", "a")
+    frame(2)
+    local vis = picker:visible_entries()
+    check(#vis == 1 and vis[1].name == "many", string.format(
+      "picker: filtering to 'ma' leaves %d rows (%s), not just 'many'",
+      #vis, vis[1] and vis[1].name or "-"))
+    local before = picker.dir
+    core.on_event("keypressed", "return")
+    frame(2)
+    check(picker.dir ~= before and picker.dir:find("many", 1, true) ~= nil,
+      "picker: enter on a filtered match went to " .. picker.dir)
+
+    -- An unreadable directory keeps ".." so a keyboard user can leave it.
+    sys.mkdir_p(FIX .. "/shut")
+    pcall(os.execute, "chmod 000 '" .. FIX .. "/shut' 2>/dev/null")
+    picker:cd(FIX .. "/shut")
+    frame(2)
+    if picker.error then
+      check(#picker.entries >= 1 and picker.entries[1].up,
+        "picker: an unreadable directory has no '..' row -- the only way out "
+        .. "is the mouse")
+    end
+    pcall(os.execute, "chmod 755 '" .. FIX .. "/shut' 2>/dev/null")
+    do
+      local n = core.root_view.root_node:get_node_for_view(picker)
+      if n then n:set_active_view(picker); n:close_active_view(core.root_view.root_node) end
+    end
+
+    -- ---- marks over a write with two changes in it -------------------------
+    local marks = require "core.marks"
+    local T = FIX .. "/two-hunks.lua"
+    local a, b = {}, {}
+    for i = 1, 40 do a[i] = "line " .. i end
+    for i = 1, 40 do b[i] = a[i] end
+    b[4] = "CHANGED FOUR"
+    b[37] = "CHANGED THIRTY-SEVEN"
+    local old, new = table.concat(a, "\n") .. "\n", table.concat(b, "\n") .. "\n"
+    marks.clear(T)
+    marks.from_edit(T, old, new, { path = T })
+    do
+      local lines = {}
+      for _, m in ipairs(marks.all(T)) do lines[#lines + 1] = m.line end
+      check(#lines == 2 and lines[1] == 4 and lines[2] == 37, string.format(
+        "marks: a two-change write marked %d lines (%s) instead of 4 and 37",
+        #lines, table.concat(lines, ",")))
+    end
+
+    -- ...and an earlier mark moves the right amount when a later write inserts
+    -- above it AND changes something below it, in one write.
+    local U = FIX .. "/moved.lua"
+    marks.clear(U)
+    local first_ids = marks.from_edit(U, "a\nb\nc\nd\ne\nf\n",
+                                         "a\nb\nSEE\nd\ne\nf\n")  -- line 3
+    marks.from_edit(U, "a\nb\nSEE\nd\ne\nf\n",
+                       "x\ny\na\nb\nSEE\nd\ne\nEFF\n")            -- +2 above
+    do
+      -- That mark, by id, not "is anything on line 5": the single-hunk answer
+      -- marks the whole file, so a line-5 check passes while the original is
+      -- still sitting at 3.
+      local m = marks.by_id(U, first_ids[1])
+      check(m ~= nil and m.line == 5, string.format(
+        "marks: the first write's mark is at line %s, not the 5 it moved to "
+        .. "when a later write inserted two lines above and changed a line "
+        .. "below it", tostring(m and m.line)))
+    end
+
+    -- ---- a panel the agent got wrong ---------------------------------------
+    local PanelView = require "core.panelview"
+    local uisandbox = require "core.uisandbox"
+    sys.mkdir_p(bog.userdir .. "/ui")
+    local function panel(name, src)
+      local f = io.open(bog.userdir .. "/ui/" .. name .. ".lua", "wb")
+      check(f ~= nil, "could not write the " .. name .. " panel fixture")
+      if not f then return nil end
+      f:write(src); f:close()
+      local pv = PanelView(name)
+      core.root_view:get_primary_node():add_view(pv)
+      core.set_active_view(pv)
+      return pv
+    end
+
+    local spinner = panel("uicheck_spin",
+      "function draw(ctx)\n"
+      .. "  while true do pcall(function() while true do end end) end\n"
+      .. "end")
+    if spinner then
+      local t0 = system.get_time()
+      frame(3)
+      local secs = system.get_time() - t0
+      check(secs < 5, string.format(
+        "panel: three frames of an unbounded draw took %.1fs -- the window is "
+        .. "hung, and a panel that swallows the guard in its own pcall is "
+        .. "still swallowing it", secs))
+      check(spinner.errors > 0 and (spinner.err or ""):find("did not finish"),
+        "panel: an unbounded draw was not reported as one (err: "
+        .. tostring(spinner.err) .. ")")
+    end
+
+    -- A panel cannot repaint the rest of the application. Only the top level of
+    -- the theme was frozen, so style.padding.x -- which every view lays itself
+    -- out with -- was writable through the read-only proxy.
+    local thief = panel("uicheck_theft", [[
+function draw(ctx)
+  ctx.state.ok1 = pcall(function() style.padding.x = 0 end)
+  ctx.state.ok2 = pcall(function() style.background = { 255, 0, 0, 255 } end)
+  ctx.text("theft", ctx.x, ctx.y, style.text)
+end]])
+    if thief then
+      local pad_before = require("core.style").padding.x
+      frame(3)
+      check(thief.state.ok1 == false,
+        "panel: a generated panel wrote to style.padding through the "
+        .. "read-only theme proxy")
+      check(thief.state.ok2 == false,
+        "panel: a generated panel replaced a theme colour")
+      check(require("core.style").padding.x == pad_before,
+        "panel: the application's padding changed under a panel")
+      shot("panel")
+    end
+    for _, name in ipairs { "uicheck_spin", "uicheck_theft" } do
+      local pv = nil
+      for _, node_view in ipairs(core.root_view.root_node:get_children()) do
+        if node_view.name == name then pv = node_view end
+      end
+      local n = pv and core.root_view.root_node:get_node_for_view(pv)
+      if n then n:set_active_view(pv); n:close_active_view(core.root_view.root_node) end
+      os.remove(bog.userdir .. "/ui/" .. name .. ".lua")
+    end
+
+    -- ---- the sidebar with more sessions than fit ---------------------------
+    local sb = studio.sidebar
+    sb.visible = true
+    local saved_sessions, saved_at = sb.sessions, sb.last_refresh
+    local rows = {}
+    for i = 1, 300 do
+      rows[i] = { id = i, title = (i == 2 and "") or ("session " .. i) }
+    end
+    rows[3].title = string.rep("\u{65e5}\u{672c}\u{8a9e}", 80)
+    sb.sessions = rows
+    sb.last_refresh = os.time() + 3600
+    core.set_active_view(sb)
+    frame(4)
+
+    check(sb:get_scrollable_size() ~= math.huge,
+      "sidebar: get_scrollable_size is still math.huge -- the scrollbar can "
+      .. "never be drawn and the scroll can never be clamped")
+    do
+      local _, _, sw, sh = sb:get_scrollbar_rect()
+      check(sw > 0 and sh > 0, string.format(
+        "sidebar: 300 sessions produce a %.0fx%.0f scrollbar", sw, sh))
+    end
+    check(#sb.hits < 80, string.format(
+      "sidebar: %d hit rects for 300 sessions -- the list is not clipped to "
+      .. "the viewport", #sb.hits))
+
+    -- The footer owns its own pixels; a row drawn under it wins the hit test.
+    do
+      local footer
+      for _, h in ipairs(sb.hits) do
+        if h.item and h.item.id == "model" then footer = h end
+      end
+      check(footer ~= nil, "sidebar: no footer hit rect")
+      if footer then
+        for _, h in ipairs(sb.hits) do
+          check(h == footer or h.y >= footer.y + footer.h
+                  or h.y + h.h <= footer.y,
+            "sidebar: a session row overlaps the footer, and wins its clicks")
+        end
+      end
+    end
+    for _, h in ipairs(sb.hits) do
+      if h.item and tostring(h.item.id or ""):find("^sess") then
+        check(utf8.len(tostring(h.item.id)) ~= nil, "sidebar: a row id is not UTF-8")
+      end
+    end
+    shot("sidebar")
+    sb.sessions, sb.last_refresh = saved_sessions, saved_at
+
+    -- Collapsing with a drag still held must not throw the width away.
+    do
+      local function find(node)
+        if node.type == "leaf" then return nil end
+        for _, which in ipairs { "a", "b" } do
+          local c = node[which]
+          if c.type == "leaf" and c.active_view == sb then return node end
+        end
+        return find(node.a) or find(node.b)
+      end
+      local split = find(core.root_view.root_node)
+      sb:set_target_size("x", 260); sb:update()
+      local kept = sb.size.x
+      sb.visible = false
+      sb.init_size = true
+      sb:update()
+      if split then
+        core.root_view.dragged_divider = split
+        core.root_view:on_mouse_moved(0, 0, 1, 0)
+        core.root_view.dragged_divider = nil
+      end
+      sb:update()
+      check(sb.visible and sb.size.x == kept, string.format(
+        "sidebar: a drag after a collapse reopened it at %.0f, not the %.0f it "
+        .. "had -- the width the user chose was discarded", sb.size.x, kept))
+      sb:set_target_size("x", 210); sb:update()
+    end
+
+    -- ---- settings ----------------------------------------------------------
+    --
+    -- Nothing here commits: the field is filled and then abandoned, because
+    -- ui-check runs against the real home directory of whoever ran it.
+    local SettingsView = require "core.settingsview"
+    local sv = SettingsView()
+    core.root_view:get_primary_node():add_view(sv)
+    core.set_active_view(sv)
+    frame(4)
+    check_hits("settings", sv)
+    sv:edit(1)
+    core.on_event("textinput", "a")
+    core.on_event("textinput", "\u{00e9}")
+    check(sv.buffer == "a\u{00e9}", "settings: the field ignored the keyboard")
+    core.on_event("keypressed", "backspace")
+    check(sv.buffer == "a" and utf8.len(sv.buffer) ~= nil, string.format(
+      "settings: backspace over a two-byte character left %q, which is not "
+      .. "a whole character", sv.buffer))
+    core.on_event("keypressed", "escape")
+    check(sv.focus == nil, "settings: escape left the field editing")
+
+    -- Committing an empty field says so. It used to return in silence, which
+    -- is what clearing the box and pressing enter looks like.
+    sv:edit(2)
+    sv.notice = nil
+    core.on_event("keypressed", "return")
+    check(sv.notice ~= nil and sv.notice.bad, "settings: committing an empty "
+      .. "field reported nothing at all")
+    shot("settings")
+    do
+      local n = core.root_view.root_node:get_node_for_view(sv)
+      if n then n:set_active_view(sv); n:close_active_view(core.root_view.root_node) end
+    end
+
+    v = studio.open_agent()
+    core.set_active_view(v)
+    frame(3)
+  end)
+  check(ok2, "the surfaces probe raised: " .. tostring(err2))
+
   check(ok, "the probe raised: " .. tostring(err))
 
   if #problems > 0 then

@@ -81,218 +81,79 @@ function SwarmView:new()
   self.transcripts = {}    -- id -> persisted transcript lines, for dead agents
   self.killed = {}         -- ids this view stopped, so they don't read "crashed"
   self.last_poll = 0
-  self.running = false
-  self.coord = nil
   self.selected = nil
   self.t0 = nil
 end
 
 function SwarmView:get_name()
-  return self.running and "Swarm *" or "Swarm"
+  return self:live() and "Swarm *" or "Swarm"
 end
 
--- This view is the swarm's only frame loop. Closing it while a run is in
--- flight would leave the actors suspended with nobody to resume them and the
--- bog.* wrappers still installed over the chat panel's own turns -- so closing
--- stops the run. It is not a silent stop: the roster says so, right up until
--- the tab goes away.
+-- Closing is just closing now. This view no longer owns the run -- the studio's
+-- pump drives the scheduler and the chat panel owns the coordinator -- so a
+-- swarm keeps running whether or not this tab is on screen. Nothing to stop.
 function SwarmView:try_close(do_close)
-  if self.running then self:stop() end
   if instance == self then instance = nil end
   do_close()
 end
 
 -- ---------------------------------------------------------------------------
--- The engine
+-- A dashboard, not a mode
 -- ---------------------------------------------------------------------------
-
--- Swarm mode's own wiring. lua/boot.lua does this on its `swarm` branch only:
--- the studio boots as "embedded", which loads the harness and stops, so the
--- actor layer is not there until someone asks for it. Same modules and same
--- two calls as lua/swarmmode.run, deliberately -- if that list grows, this is
--- the file that has to grow with it.
-function SwarmView:setup_engine()
-  if self.engine then return end
-  bog.sched       = bog.sched       or require("sched")
-  bog.skills      = bog.skills      or require("skills")
-  bog.agents      = bog.agents      or require("agents")
-  bog.thread      = bog.thread      or require("thread")
-  bog.tools_swarm = bog.tools_swarm or require("tools_swarm")
-  -- Journal to the store's own connection and start the writer thread
-  -- (src/jwriter.c). Both are idempotent; a second call is a no-op.
-  swarm.attach(bog.db)
-  self.engine = true
-end
-
--- The swarm tools (spawn/await/send/publish/subscribe/inbox/threads) go into
--- the one process-global registry, and the chat panel offers the model every
--- tool in it. So they are added for the duration of a run and taken away
--- again: `boggart swarm` never has to think about this because it is its own
--- process, and a chat session that can silently spawn actors nobody is
--- scheduling is a bug, not a feature.
-function SwarmView:tools_on()  bog.tools_swarm.register() end
-function SwarmView:tools_off()
-  for name in pairs(bog.tools_swarm.defs) do bog.tools.registry[name] = nil end
-end
-
--- Attribution, exactly as lua/dash.lua does it: wrap the three places output
--- comes out of and ask the scheduler whose coroutine is running. bog.sched
--- .current() is nil outside a resume, which is what keeps the chat panel's own
--- turns out of the roster -- they are not actors and must not appear as any.
 --
--- Installed before the coordinator is built, so thread.new_agent captures the
--- wrapped log_tool into every agent's opts.on_tool. (dash has to re-point the
--- coordinator's by hand precisely because it starts up after one exists.)
-function SwarmView:observe_on()
-  if self._orig_run_on then return end
-
-  self._orig_run_on = bog.api.run_on
-  bog.api.run_on = function(sess, text, on_text, opts)
-    return self._orig_run_on(sess, text, function(s)
-      local id = bog.sched.current()
-      if id then dash.feed(id, s); core.redraw = true end
-      if on_text then on_text(s) end
-    end, opts)
-  end
-
-  self._orig_log = bog.log
-  bog.log = function(msg)
-    local id = bog.sched.current()
-    if id then dash.emit(id, "* " .. tostring(msg)) end
-    -- Still says it somewhere findable: bog.log writes to stderr, which in a
-    -- windowed app goes to whatever terminal happened to launch it.
-    core.log_quiet("swarm: %s", tostring(msg))
-    core.redraw = true
-  end
-
-  self._orig_log_tool = bog.log_tool
-  bog.log_tool = function(name, input)
-    local id = bog.sched.current()
-    if not id then return self._orig_log_tool(name, input) end
-    local hint = ""
-    if type(input) == "table" then
-      local h = input.command or input.path or input.query or input.name or input.task
-      if h then hint = ": " .. tostring(h):gsub("%s+", " "):sub(1, 90) end
-    end
-    local rec = dash.touch(id)
-    rec.tools = (rec.tools or 0) + 1
-    dash.emit(id, "> " .. tostring(name) .. hint)
-    core.redraw = true
-  end
-end
-
-function SwarmView:observe_off()
-  if self._orig_run_on then bog.api.run_on = self._orig_run_on; self._orig_run_on = nil end
-  if self._orig_log then bog.log = self._orig_log; self._orig_log = nil end
-  if self._orig_log_tool then bog.log_tool = self._orig_log_tool; self._orig_log_tool = nil end
-end
+-- The engine lives in studio.lua now. The chat turn is coordinator actor 0, the
+-- studio pumps the scheduler every frame, and the swarm tools are always
+-- registered so the model can reach for them. This view owns none of that: it
+-- does not build a coordinator, install the observation wrappers, or step the
+-- scheduler -- stepping from here as well would double the scheduler's rate,
+-- which is the one bug a second frame loop over one engine is guaranteed to
+-- introduce. It reads the dash records the studio's wrappers populate and
+-- offers the per-agent controls the scheduler already supports (pause, kill).
 
 function SwarmView:note(text, bad)
   self.notice = { text = text, bad = bad }
   core.redraw = true
 end
 
--- ---------------------------------------------------------------------------
--- Running a swarm
--- ---------------------------------------------------------------------------
+-- Is a swarm running -- i.e. are there live actors to display? "Running" is no
+-- longer a flag this view sets; it is a fact about the shared scheduler.
+function SwarmView:live()
+  return bog.sched and #bog.sched.actors > 0 or false
+end
 
+-- Fan work out from here by handing the task to the chat coordinator, because
+-- the chat agent IS the coordinator now. It runs as an ordinary chat turn; if
+-- the model decides to spawn, the sub-agents show up in this view. agent_view()
+-- rather than open_agent() so watching the dashboard does not yank focus to the
+-- chat -- the point of typing the task here is to stay here and watch it.
 function SwarmView:ask_task()
-  if self.running then return end
-  core.command_view:enter("Swarm task:", function(text)
+  core.command_view:enter("Task for the coordinator:", function(text)
     if text == "" then return end
-    self:start(text)
+    local studio = core.studio
+    local v = studio and (studio.agent_view() or studio.open_agent())
+    if not v then self:note("no chat panel to coordinate through", true); return end
+    v:submit(text)
+    self:note("sent to the coordinator: " .. text:gsub("%s+", " "):sub(1, 60))
+    self.t0 = self.t0 or os.time()
   end, function() return {} end)
 end
 
--- Start (or continue) a coordinator turn. This is lua/swarmmode.run_turn's
--- opening: build the coroutine, hand it to the scheduler, let it drain. The
--- draining is the part that cannot be borrowed -- run_turn calls sched.run,
--- which owns the loop until the swarm is finished, and a view that did that
--- would freeze the window for the length of the whole task.
-function SwarmView:start(task)
-  if self.running then return end
-  local ok, err = core.try(function()
-    self:setup_engine()
-    self:tools_on()
-    self:observe_on()
-
-    if not self.coord then
-      -- A fresh swarm gets a fresh roster: dash's records are module state and
-      -- would otherwise still describe the previous run's agents.
-      dash.agents, dash.order = {}, {}
-      self.killed, self.transcripts = {}, {}
-      self.coord = bog.thread.new_agent{
-        agent = "coordinator", title = "coordinator", model = bog.session.model }
-      bog.swarm_root = self.coord
-      local rec = dash.touch(self.coord.id)
-      rec.kind, rec.kind_locked = "coordinator", true
-      -- The thread title doubles as the roster's "kind" column for spawned
-      -- agents, so the coordinator's is pinned above and the row is titled
-      -- with the task instead -- same as run_turn's first-turn rename.
-      bog.store.thread_save(self.coord.id,
-        { title = task:gsub("%s+", " "):sub(1, 60), status = "running" })
-    else
-      bog.store.thread_set_status(self.coord.id, "running")
-    end
-
-    local coord = self.coord
-    bog.sched.fatal, bog.sched.idle = nil, 0
-    bog.sched.add(coord.id, coroutine.create(function()
-      -- No sink: the run_on wrapper above already routes every chunk to the
-      -- agent it belongs to.
-      bog.api.run_on(coord.session, task, function() end, coord.opts)
-    end))
-  end)
-  if not ok then
-    self:observe_off()
-    self:tools_off()
-    self:note("could not start: " .. tostring(err):match("^[^\n]*"), true)
-    return
-  end
-  self.running = true
-  self.t0 = os.time()
-  self.selected = self.selected or self.coord.id
-  self:note("swarm running: " .. task:gsub("%s+", " "):sub(1, 60))
-  self:refresh(true)
-end
-
--- The run drained (or wedged, or hit a fatal condition). Persist the
--- coordinator the way run_turn does, and hand the globals back.
-function SwarmView:finish(word)
-  if not self.running then return end
-  self.running = false
-  if self.coord then
-    pcall(bog.store.thread_save, self.coord.id,
-      { messages = self.coord.session.messages, status = "idle" })
-  end
-  self:observe_off()
-  self:tools_off()
-  local fatal = bog.sched and bog.sched.fatal
-  if fatal then
-    self:note(tostring(fatal), true)
-  else
-    self:note(word or "swarm finished")
-  end
-  self:refresh(true)
-end
-
--- Stop everything. There is no way to unwind a suspended coroutine in Lua, so
--- "stop" is the scheduler forgetting the actors: their frames are collected,
--- and any HTTP request already in flight is abandoned when curl next reports
--- it. The store rows say "error" because that is the truth -- those agents did
--- not finish -- while the roster says "stopped", because the view knows which
--- ones it stopped and "crashed" would be a lie.
+-- Stop everything. Cancelling the chat turn is the honest way -- it owns the
+-- coordinator -- and its cancel already reaps every sub-agent. Fall back to
+-- forgetting the actors directly if there is no busy turn (e.g. orphans left by
+-- a closed panel). The store rows read "error" because that is the truth: those
+-- agents did not finish.
 function SwarmView:stop()
-  if not self.running then return end
-  for i = #bog.sched.actors, 1, -1 do
+  local v = core.studio and core.studio.agent_view and core.studio.agent_view()
+  if v and v.busy then v:cancel() end
+  for i = #(bog.sched and bog.sched.actors or {}), 1, -1 do
     local id = bog.sched.actors[i].id
     bog.sched.kill(id)
     self.killed[id] = true
-    if not self.coord or id ~= self.coord.id then
-      pcall(bog.store.thread_set_status, id, "error")
-    end
+    pcall(bog.store.thread_set_status, id, "error")
   end
-  self:finish("stopped")
+  self:note("stopped")
+  self:refresh(true)
 end
 
 function SwarmView:kill(id)
@@ -300,9 +161,10 @@ function SwarmView:kill(id)
   self.killed[id] = true
   pcall(bog.store.thread_set_status, id, "error")
   self:note("killed agent " .. tostring(id))
-  -- Killing the last actor (usually the coordinator) ends the run; nothing
-  -- else would ever notice, because step() only returns false when it runs.
-  if #bog.sched.actors == 0 then self:finish("stopped") end
+  -- If this was the coordinator (the chat turn's actor), the chat panel is left
+  -- thinking with nothing running; its tick() safety net notices the vanished
+  -- actor and retires the turn. Nothing to finish here.
+  self:refresh(true)
 end
 
 function SwarmView:toggle_pause(id)
@@ -346,31 +208,26 @@ function SwarmView:refresh(force)
 end
 
 function SwarmView:update()
-  if self.running then
-    -- One slice of the whole swarm. step(false) never waits: it polls curl and
-    -- libuv, resumes whoever can run, and comes back.
-    local ok, alive = pcall(bog.sched.step, false)
-    if not ok then
-      self:note("scheduler: " .. tostring(alive):match("^[^\n]*"), true)
-      self:finish("stopped after a scheduler error")
-    elseif not alive then
-      self:finish()
-    end
-    core.redraw = true
-  end
-  -- Cheap: it walks the actor list, and its own store poll is already limited
-  -- to once a wall second (dash.observe's _polled guard). A new actor's kind
-  -- and model only exist in its thread row, though, so when the roster grows
-  -- we clear that guard and let it read once now -- otherwise a freshly
-  -- spawned agent sits there as an anonymous "agent  ?" for up to a second,
-  -- which is exactly the second you are watching it.
-  if self.engine then
+  -- Observe only -- never step. The studio's pump (studio.start_pump) is the
+  -- one and only frame loop over the scheduler; a second one here would advance
+  -- every actor twice per frame.
+  local studio = core.studio
+  if studio and studio.swarm_ok then
+    -- Cheap: it walks the actor list, and its own store poll is already limited
+    -- to once a wall second (dash.observe's _polled guard). A new actor's kind
+    -- and model only exist in its thread row, though, so when the roster grows
+    -- we clear that guard and let it read once now -- otherwise a freshly
+    -- spawned agent sits there as an anonymous "agent  ?" for up to a second,
+    -- which is exactly the second you are watching it.
     if #dash.order ~= self._seen_n then
       self._seen_n = #dash.order
       dash._polled = nil
     end
     pcall(dash.observe, os.time())
-    self:refresh()   -- nothing has ever been on the bus until the engine exists
+    -- The journal only exists once the bus is attached (first spawn); refresh
+    -- calls swarm.flush, so gate it on the engine being up.
+    if studio.engine then self:refresh() end
+    if self:live() then core.redraw = true end
   end
   SwarmView.super.update(self)
 end
@@ -479,7 +336,7 @@ end
 function SwarmView:on_key_pressed(key)
   if key == "up" then self:select_delta(-1); return true end
   if key == "down" then self:select_delta(1); return true end
-  if key == "escape" and self.running then self:stop(); return true end
+  if key == "escape" and self:live() then self:stop(); return true end
 end
 
 -- ---------------------------------------------------------------------------
@@ -498,18 +355,12 @@ end
 
 function SwarmView:toolbar_items()
   local items = {}
-  if self.running then
+  if self:live() then
     items[#items + 1] = { label = "Stop", tone = style.warn,
                           action = function() self:stop() end }
   else
-    items[#items + 1] = { label = self.coord and "New task" or "Start swarm",
+    items[#items + 1] = { label = "New task",
                           action = function() self:ask_task() end }
-    if self.coord then
-      items[#items + 1] = { label = "New swarm", action = function()
-        self.coord, self.selected = nil, nil
-        self:ask_task()
-      end }
-    end
   end
   items[#items + 1] = { label = (bog.session and bog.session.model) or "?",
                         command = "agent:set-model", dim = true }
@@ -541,7 +392,8 @@ function SwarmView:draw_roster(font, charw, x, y, lh, voff, cols, rows)
 
   if #recs == 0 then
     cell(font, charw, x, y + voff, C.id,
-      self.engine and "(no agents yet)" or "(no swarm running -- Start swarm)", style.dim)
+      (core.studio and core.studio.engine) and "(no agents yet)"
+        or "(no swarm running -- ask the chat to spawn, or New task)", style.dim)
     return y + lh
   end
 
@@ -722,7 +574,7 @@ function SwarmView:draw_totals(font, charw, x, y, cols)
   end
   parts[#parts + 1] = { dash.human(t.bytes) .. " out", style.dim }
   parts[#parts + 1] = { dash.mmss(self.t0
-    and ((self.running and os.time() or self.last_poll) - self.t0) or 0), style.dim }
+    and ((self:live() and os.time() or self.last_poll) - self.t0) or 0), style.dim }
   local col = 0
   for _, p in ipairs(parts) do
     if col >= cols then break end
@@ -832,7 +684,7 @@ command.add(nil, {
   ["swarm:open"] = function() SwarmView.open() end,
   ["swarm:start"] = function() SwarmView.open():ask_task() end,
   ["swarm:stop"] = function()
-    if instance and instance.running then instance:stop()
+    if instance and instance:live() then instance:stop()
     else core.log("no swarm running") end
   end,
 })
