@@ -569,7 +569,7 @@ endif()
 # rule itself under test -- it still resolves %LOCALAPPDATA%, that just now
 # points somewhere disposable.
 enable_testing()
-foreach(suite test integration swarm mcp ltui sysfs bus jwriter proc sandbox scopes errors studio events lifecycle plan goap claims)
+foreach(suite test integration swarm mcp ltui sysfs bus jwriter proc sandbox scopes errors studio events lifecycle plan goap claims prompt)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home}
