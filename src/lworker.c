@@ -261,6 +261,16 @@ struct worker {
   struct { size_t live, peak; } mem;  /* hard part 4: per-worker counter */
 
   /* main-thread-only bookkeeping */
+  /* Display metadata, for worker.list(): so a UI -- or boggart doctor --
+   * can see how many workers exist and roughly what each is doing, which the
+   * handle-only API could not answer. Owned by the main thread: set once at
+   * spawn, last updated only when an out-ring message is drained on the main
+   * thread. The worker never writes these, so no lock is needed. */
+  uint64_t id;
+  char *label;
+  char *kind;
+  double started;
+  char *last;
   int exit_flag;             /* latched from exit_sem */
   int saw_exit;              /* WKS_EXIT consumed from the out ring */
   int joined;
@@ -272,6 +282,7 @@ struct worker {
  * inside workers, and spawn/join/__gc all run on the spawner's thread. */
 static worker *g_workers = NULL;
 static int g_atexit_done = 0;
+static uint64_t g_worker_seq = 0;  /* monotonic ids; main-thread-only */
 
 static const char *WK_SELF = "boggart.worker.self"; /* registry mark */
 
@@ -684,6 +695,13 @@ static void pend_append(worker *h, wk_slot *s) {
  * a finalizer's C path is a place bugs live. */
 static void deliver_out(worker *h, wk_slot *s, int allow_lua) {
   if (s->kind == WKS_EXIT) { h->saw_exit = 1; return; }
+  /* Remember the last string a worker posted, for worker.list(). Main-thread
+   * only (this function is), so the swap is unguarded by design. A number
+   * message leaves the previous line standing -- the display wants words. */
+  if (s->kind == WKS_STR && s->str) {
+    free(h->last);
+    h->last = strdup(s->str);
+  }
   if (h->outa && allow_lua) {
     lua_State *L = h->outa->L;
     lua_pushcfunction(L, traceback);
@@ -768,6 +786,9 @@ static void wk_free(worker *h) {
   free(h->version);
   free(h->arg.str);
   free(h->result_str);
+  free(h->label);
+  free(h->kind);
+  free(h->last);
   /* unlink from the registry */
   worker **it = &g_workers;
   while (*it && *it != h) it = &(*it)->next;
@@ -881,6 +902,17 @@ static int l_spawn(lua_State *L) {
     }
     lua_pop(L, 1);
   }
+
+  /* Display metadata, copied before the thread starts so list() reads
+   * strings the worker never touches. */
+  h->id = ++g_worker_seq;
+  h->started = (double)time(NULL);
+  if (has_opts) {
+    lua_getfield(L, 2, "label"); if (lua_isstring(L, -1)) h->label = strdup(lua_tostring(L, -1)); lua_pop(L, 1);
+    lua_getfield(L, 2, "kind");  if (lua_isstring(L, -1)) h->kind  = strdup(lua_tostring(L, -1)); lua_pop(L, 1);
+  }
+  if (!h->label) { char b[32]; snprintf(b, sizeof b, "worker %llu", (unsigned long long)h->id); h->label = strdup(b); }
+  if (!h->kind)  h->kind = strdup("task");
 
   if (!g_atexit_done) { atexit(workers_atexit); g_atexit_done = 1; }
   h->next = g_workers;
@@ -1006,7 +1038,53 @@ static int l_tostring(lua_State *L) {
   return 1;
 }
 
+/* worker.list() -> array of { id, label, kind, status, elapsed, last }.
+ *
+ * Walks the same g_workers registry atexit uses -- the authoritative list of
+ * live threads, tracked in C rather than in a Lua wrapper, because a wrapper
+ * only sees what was spawned through it. This is the introspection a UI needs:
+ * how many workers, and roughly what each is on.
+ *
+ * Main-thread-only, like everything that touches g_workers. Reads a worker's
+ * own status the way l_status does; `last` is the most recent string it posted,
+ * captured in deliver_out. No lock: the metadata is main-thread-owned and the
+ * status booleans it reads are set-once by the worker and separated by the
+ * exit semaphore's happens-before. */
+static int l_list(lua_State *L) {
+  double now = (double)time(NULL);
+  lua_newtable(L);
+  int i = 0;
+  for (worker *h = g_workers; h; h = h->next) {
+    lua_newtable(L);
+    lua_pushinteger(L, (lua_Integer)h->id);        lua_setfield(L, -2, "id");
+    lua_pushstring(L, h->label ? h->label : "?");  lua_setfield(L, -2, "label");
+    lua_pushstring(L, h->kind ? h->kind : "task"); lua_setfield(L, -2, "kind");
+    const char *st = h->joined ? "joined"
+                   : wk_exited(h) ? (h->ok ? "done" : "error")
+                   : "running";
+    lua_pushstring(L, st);                         lua_setfield(L, -2, "status");
+    lua_pushnumber(L, now - h->started);           lua_setfield(L, -2, "elapsed");
+    if (h->last) { lua_pushstring(L, h->last); lua_setfield(L, -2, "last"); }
+    lua_rawseti(L, -2, ++i);
+  }
+  return 1;
+}
+
+/* worker.count() -> running, total. The cheap summary for a status bar. */
+static int l_count(lua_State *L) {
+  int running = 0, total = 0;
+  for (worker *h = g_workers; h; h = h->next) {
+    total++;
+    if (!h->joined && !wk_exited(h)) running++;
+  }
+  lua_pushinteger(L, running);
+  lua_pushinteger(L, total);
+  return 2;
+}
+
 static const luaL_Reg worker_lib[] = {
+  {"list",   l_list},
+  {"count",  l_count},
   {"spawn",  l_spawn},
   {"post",   l_post},
   {"recv",   l_recv},

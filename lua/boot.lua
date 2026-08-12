@@ -97,7 +97,7 @@ end
 -- putting it in the reload set means an edited ~/.boggart/lua/events.lua takes
 -- effect like any other module. Registrations themselves survive the reload --
 -- they live on bog.__events, not in the module (see lua/events.lua).
-local CORE = { "events", "json", "util", "lifecycle", "store", "memory", "mcphost", "prompt", "tools", "api" }
+local CORE = { "events", "json", "util", "lifecycle", "store", "memory", "mcphost", "prompt", "tools", "api", "workers" }
 
 local function wire()
   for _, m in ipairs(CORE) do package.loaded[m] = nil end
@@ -111,6 +111,7 @@ local function wire()
   bog.prompt = require("prompt")
   bog.tools = require("tools")
   bog.api = require("api")
+  bog.worker = require("workers")
 end
 
 -- Session lifecycle (persisted in the SQLite store; bog.db survives reloads).
