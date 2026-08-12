@@ -622,6 +622,113 @@ boundary, and the agent can already write to it.
 
 ---
 
+## 7. CodeRabbit — AI PR-review platform
+
+**What it is.** [CodeRabbit](https://coderabbit.ai) is an AI code-review
+*platform*, not a harness: the most-installed AI app on GitHub/GitLab (2M+ repos,
+13M+ PRs reviewed), a hosted App that auto-reviews every pull request — line
+comments, summaries, walkthroughs — enriched by **40+ linter/SAST integrations**,
+**code-graph analysis** for repo-wide context, per-org **Learnings** that persist
+across PRs, an IDE surface, and a multi-tenant SaaS (fully self-hosted only at
+Enterprise ≥ 500 seats).
+
+**Verdict.** Split the question, because the answer differs by half. The review
+*brain* is table stakes any good agent clears, and is arguably boggart's
+strength; the review *product/platform* is a separate, company-scale build,
+mostly orthogonal to boggart's kernel — the same "maps onto the kernel, not the
+shell" verdict as OpenClaw (§1). CodeRabbit's moat is ~80% platform, ~20%
+intelligence.
+
+### The brain — boggart can meet or beat it
+boggart already has the agent loop, `git` diff (the C capability, see
+`workspace.md`), MCP to reach GitHub, and the real edge — **swarm**: specialised
+reviewers (correctness / security / perf / style) as actors with **adversarial
+verification** before a finding is posted, which is a better review *architecture*
+than a single pass and is native, not bolted on. Plus self-modification: the
+reviewer can `define_tool` repo-specific checks at runtime and persist them with
+provenance. On review *quality*, boggart is not behind.
+
+### The platform — the gaps, ranked
+1. **Always-on + VCS integration — the blocker.** CodeRabbit auto-reviews on PR
+   open/push; boggart runs to quiescence and exits. Needs the §4 daemon + webhook
+   inbound, or — far cheaper — a **CI Action wrapper** that runs `boggart review`
+   per PR. (The platform *around this very session* already proves the pattern:
+   `subscribe_pr_activity` + GitHub MCP + PR-triggered runs.)
+2. **Static-analysis aggregation** — 40+ linters/SAST normalised and deduped into
+   one review. boggart can *run* them via `bash`; the aggregation layer is
+   missing. Achievable.
+3. **Repo-wide code graph / context** — CodeRabbit indexes the repo; boggart reads
+   bounded files with no index (the repo-map gap; answer: LSP/index via MCP).
+4. **Persistent org-level learnings** — boggart's memory is per-user/local; needs
+   shared/team-scoped memory.
+5. **PR-review product surface** — summaries, walkthroughs, committable
+   suggestions, `.coderabbit.yaml`-style path rules, incremental review on push,
+   thread resolution, severity/labels. Each buildable; none exist.
+6. **SaaS + compliance + scale + multi-VCS** — skip for the wedge; it is the part
+   that is not boggart.
+
+### The wedge
+Don't clone the SaaS; be the **local-first / self-hosted / CI-integrated
+swarm reviewer**. CodeRabbit's fully self-hosted option is Enterprise ≥ 500 seats,
+so every privacy-conscious small/mid team that cannot ship code to a SaaS is
+unserved. boggart's differentiators there: multi-agent adversarial review (higher
+signal, fewer false positives — the thing everyone hates about AI reviewers),
+local-first BYOK (code stays on your infra, no per-seat markup), self-extending
+repo-specific checks, and PR-walkthrough **diagrams** via boggart-studio's
+sketch engine.
+
+**Bottom line.** Cloning CodeRabbit-the-SaaS is off-mission — it is a platform
+company, not a kernel feature. A local-first, CI-integrated, swarm-based reviewer
+with better signal and real privacy is genuinely competitive, and structurally
+beyond what CodeRabbit serves under 500 seats. The MVP is small: a `review` mode
+emitting structured findings (swarm + adversarial verify), a GitHub Action to
+post them, a guidelines config, and linter aggregation — mostly on pieces boggart
+has, plus the §4 inbound work. Code-graph/learnings depth is where you keep
+investing for review-quality parity at scale.
+
+Sources: [coderabbit.ai](https://coderabbit.ai), CodeRabbit docs, and 2025
+coverage of its scale, integrations, Learnings and self-hosting tiers.
+
+---
+
+## 8. t3code — an agent control surface (borrow, don't clone)
+
+**What it is.** [t3code](https://github.com/pingdotgg/t3code) (Theo / ping) is a
+**WebSocket control surface** — event-sourced (Command → Decider → events →
+Projector → per-agent Provider Adapters) — that remote-drives *other* agents
+(Claude Code, Codex, Cursor, Grok, OpenCode) from web/desktop/mobile over
+local/relay/Tailscale, with **turn-level git checkpoints** (a hidden ref per turn
+so the app can diff and restore). It is the *shell*; boggart is the *engine* it
+would drive. Nearly orthogonal, which makes the borrow question sharp.
+
+### What to borrow
+1. **Turn-level git checkpoints via a hidden ref** — their best single idea, and
+   boggart now has it: the `git` C capability (`workspace.md`) checkpoints to
+   `refs/boggart/` and generalises to a git-free snapshot backend for non-coders.
+2. **The inverse of building a surface** — make boggart *controllable* by a
+   surface like t3code (match a headless/RPC contract, or ship an adapter) to
+   inherit its mobile/web/desktop clients for free. Highest leverage.
+3. **Journal-as-source-of-truth, views-as-projections** — the *principle*, not
+   the CQRS ceremony; it validates §5/§6's replay-durability and gives multi-client
+   consistency.
+4. **Supervised / Full-access posture** — a coarse permission toggle layered over
+   boggart's finer capability boundary (§3) + per-agent allowlists.
+
+### What not to borrow
+Becoming a control surface for other agents (t3code's identity), the four-platform
+client suite (be *controllable* instead), and the full CQRS layering (overkill for
+a single-user kernel).
+
+**Bottom line.** Complementary, not competitive. Borrow git-ref checkpointing
+(done), adopt journal-as-truth, and treat t3code as the **client surface to plug
+into, not to reimplement** — its remote/daemon protocol doubles as the §4 BPM
+substrate, the recurring unlock.
+
+Sources: [pingdotgg/t3code](https://github.com/pingdotgg/t3code), its docs, and
+2025 coverage.
+
+---
+
 ## Appendix — Why Lua, not a Lisp or a Scheme
 
 A self-modifying agent that rewrites its own code at runtime *screams* Lisp:
