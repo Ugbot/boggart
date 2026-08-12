@@ -88,16 +88,30 @@ local function wrap(text, cols)
   return lines
 end
 
--- Text that does not fit is elided rather than drawn past its box: this view
--- does not clip, and a data directory under a temporary HOME is long.
+-- Text that does not fit is elided rather than drawn past its box: a data
+-- directory under a temporary HOME is long, and an endpoint or a model name is
+-- whatever a server or a person supplied.
+--
+-- The bisection walks CHARACTERS. Over bytes it lands part-way through any
+-- multi-byte character -- and this file's own comment two paragraphs up says
+-- that anything from a server "can be any script", which is exactly the input
+-- that breaks it: both the measurement and the drawn result are then made from
+-- a string the decoder cannot read.
 local function elide(font, text, width)
   if font:get_width(text) <= width then return text end
-  local lo, hi = 0, #text
+  local n = utf8.len(text)
+  local function upto(chars)
+    if n then return text:sub(1, (utf8.offset(text, chars + 1) or (#text + 1)) - 1) end
+    local i = math.min(chars, #text)
+    while i > 0 and common.is_utf8_cont(text:sub(i + 1, i + 1)) do i = i - 1 end
+    return text:sub(1, i)
+  end
+  local lo, hi = 0, n or #text
   while lo < hi do
     local mid = (lo + hi + 1) // 2
-    if font:get_width(text:sub(1, mid) .. "...") <= width then lo = mid else hi = mid - 1 end
+    if font:get_width(upto(mid) .. "...") <= width then lo = mid else hi = mid - 1 end
   end
-  return text:sub(1, lo) .. "..."
+  return upto(lo) .. "..."
 end
 
 -- What C is willing to say about the key: a mask, and where the value came
@@ -297,9 +311,19 @@ end
 function WelcomeView:commit()
   local f = self:fields()[self.focus or 0]
   if not f then return end
-  local value = self.buffer:gsub("^%s+", ""):gsub("%s+$", "")
+  -- Parenthesised: gsub returns the count as well, and the bare call was
+  -- handing a second argument to everything downstream.
+  local value = (self.buffer:gsub("^%s+", ""):gsub("%s+$", ""))
   self.focus, self.buffer = nil, ""
-  if value == "" then return end
+  if value == "" then
+    -- Said out loud. Pressing enter on an empty field did nothing and reported
+    -- nothing, which on the screen a new install opens on is the difference
+    -- between "I have not typed anything" and "this application is broken".
+    self.notice = { text = "nothing entered -- the " .. f.label:lower()
+      .. " is unchanged", bad = true }
+    core.redraw = true
+    return
+  end
   self:report(pcall(f.set, value))
 end
 

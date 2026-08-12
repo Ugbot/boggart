@@ -170,10 +170,19 @@ end
 --   * `--- step` at the start of a line is the delimiter and cannot be escaped,
 --     so a prompt cannot contain that line. Nothing else in the file is
 --     reserved.
---   * headers are a fixed, known set (model, tools, out). An unrecognised
---     `Note: ...` line at the top of a prompt stays part of the prompt, which
---     is what you meant; the alternative -- "anything word-colon is a header"
---     -- silently eats prose.
+--   * headers are a fixed, known set (model, tools, out), they are lower case,
+--     and they stop at the first blank line. An unrecognised `Note: ...` line
+--     at the top of a prompt stays part of the prompt, which is what you meant;
+--     the alternative -- "anything word-colon is a header" -- silently eats
+--     prose.
+--
+-- The blank-line rule is not decoration. The key was matched case-insensitively
+-- and at any point before the first non-blank line, so a prompt that opened
+-- `out: the JSON schema below` -- or `Model: whichever you like` -- had that
+-- line quietly removed and, if the header was `out`, gained an output slot
+-- named after the rest of the sentence. `serialise` always writes a blank line
+-- between the headers and the prompt, so a saved workflow survives the round
+-- trip whatever its prompt starts with.
 local WF_KEYS = { model = true, tools = true, out = true }
 
 local workflows = {}
@@ -270,21 +279,30 @@ function workflows.parse(text)
     end
   end
 
-  for line in (tostring(text or "") .. "\n"):gmatch("(.-)\r?\n") do
+  local in_headers = false
+  -- Line endings are normalised once rather than matched around, so a lone \r
+  -- terminates a line too. Classic-Mac endings are rare, but a whole file of
+  -- them used to parse as a single line: no `--- step` was ever seen, the
+  -- entire workflow came back as its own description with no steps, and the
+  -- next save wrote that back.
+  local norm = (tostring(text or ""):gsub("\r\n", "\n"):gsub("\r", "\n"))
+  for line in (norm .. "\n"):gmatch("(.-)\n") do
     local title = line:match("^%-%-%-%s*step%s*:%s*(.-)%s*$")
     if not title and line:match("^%-%-%-%s*step%s*$") then title = "" end
     if title then
       close()
-      cur, body = { name = (title ~= "" and title) or nil }, {}
+      cur, body, in_headers = { name = (title ~= "" and title) or nil }, {}, true
     elseif cur then
       local k, v = line:match("^(%a[%w_]*)%s*:%s*(.-)%s*$")
-      k = k and k:lower()
-      if #body == 0 and k and WF_KEYS[k] then
+      if in_headers and k and WF_KEYS[k] then
         if k == "tools" then cur.tools = workflows.split_list(v)
         elseif v ~= "" then cur[k] = v end
-      elseif #body == 0 and line:match("^%s*$") then
-        -- blank lines between the headers and the prompt are separators
+      elseif in_headers and line:match("^%s*$") then
+        -- The blank line between the headers and the prompt. Everything after
+        -- it is prompt, whatever it looks like.
+        in_headers = false
       else
+        in_headers = false
         body[#body + 1] = line
       end
     else

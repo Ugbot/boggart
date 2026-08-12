@@ -78,6 +78,11 @@ end
 -- Re-read on demand, not per frame: this is a directory listing, and it changes
 -- when you create or edit a workflow, which is not sixty times a second.
 
+-- Re-reads the selected workflow as well as the list. It used to load it and
+-- throw the result away, using it only as an existence check, so "Reload" --
+-- and re-opening the tab after editing the file as text -- showed the copy
+-- already in memory and nothing appeared to have happened. Refuses while a run
+-- is in flight, because the coroutine holds the workflow it started with.
 function WorkflowView:refresh()
   self.names = workflows.list()
   -- An empty list is where someone learns what a workflow is, so seed a working
@@ -90,14 +95,21 @@ function WorkflowView:refresh()
       self.notice = { text = "seeded an example workflow -- edit it, or press Run" }
     end
   end
-  if self.selected and not workflows.load(self.selected) then
-    self.selected, self.wf = nil, nil
+  if self.busy then core.redraw = true; return end
+  if self.selected then
+    local wf = workflows.load(self.selected)
+    if wf then self.wf = wf else self.selected, self.wf = nil, nil end
   end
   if not self.selected and #self.names > 0 then self:select(self.names[1]) end
   core.redraw = true
 end
 
 function WorkflowView:select(name)
+  if self.busy and name ~= self.selected then
+    self.notice = { text = "stop the run before switching workflow", bad = true }
+    core.redraw = true
+    return
+  end
   self.focus, self.buffer = nil, ""
   self.form, self.runner = nil, nil
   self.selected = name
@@ -174,6 +186,15 @@ function WorkflowView:commit()
   self:persist()
 end
 
+-- The step at an index, now. Every hit rectangle captures its index when it
+-- is drawn and acts on a later frame, and between the two the list can have
+-- been reordered, shortened, or replaced wholesale by a different workflow --
+-- so a closure that held the step table itself would edit a step that is no
+-- longer on screen, and one that indexed the captured array would index nil.
+function WorkflowView:step_at(i)
+  return self.wf and self.wf.steps and self.wf.steps[i] or nil
+end
+
 function WorkflowView:focus_index()
   for i, f in ipairs(self.fields) do
     if self.focus and f.kind == self.focus.kind and f.i == self.focus.i then
@@ -182,12 +203,23 @@ function WorkflowView:focus_index()
   end
 end
 
+-- Refuses to change the steps while a run is in flight. The run's coroutine
+-- walks wf.steps with ipairs and indexes run.steps[i] alongside it, so swapping
+-- entries made a finished step run again under its neighbour's name, and
+-- table.remove ended the loop early so later steps silently never ran.
+function WorkflowView:editing_blocked()
+  if not self.busy then return false end
+  self.notice = { text = "stop the run before changing the steps", bad = true }
+  core.redraw = true
+  return true
+end
+
 -- Adding, moving or deleting a step renumbers the run that is on screen, and a
 -- result shown against the wrong step is worse than no result at all. Editing
 -- a prompt does not: the output still came from that step, and seeing what it
 -- used to say is the reason you are editing it.
 function WorkflowView:add_step()
-  if not self.wf then return end
+  if not self.wf or self:editing_blocked() then return end
   self.wf.steps[#self.wf.steps + 1] = { prompt = "" }
   self.runner = nil
   self:persist()
@@ -196,16 +228,20 @@ end
 
 function WorkflowView:move_step(i, dir)
   local steps = self.wf and self.wf.steps
-  if not steps then return end
+  if not steps or self:editing_blocked() then return end
   local j = i + dir
   if j < 1 or j > #steps then return end
   steps[i], steps[j] = steps[j], steps[i]
+  -- The focus is an index into the step list, and the list just moved under
+  -- it: typing into a prompt then nudging that step up used to write what you
+  -- typed into the step it swapped with, and persist it.
+  self.focus, self.buffer = nil, ""
   self.runner = nil
   self:persist()
 end
 
 function WorkflowView:remove_step(i)
-  if not (self.wf and self.wf.steps[i]) then return end
+  if not (self.wf and self.wf.steps[i]) or self:editing_blocked() then return end
   table.remove(self.wf.steps, i)
   self.focus, self.runner = nil, nil
   self:persist()
@@ -269,13 +305,16 @@ function WorkflowView:start(values)
   -- run proceeds, and "what did I actually type" should not scroll away.
   local shown = {}
   for k, v in pairs(values) do
-    shown[#shown + 1] = k .. " = " .. tostring(v):gsub("%s+", " "):sub(1, 60)
+    shown[#shown + 1] = k .. " = " .. sys.wtake((tostring(v):gsub("%s+", " ")), 60)
   end
   table.sort(shown)
   run.inputs = table.concat(shown, "   ")
   self.runner = run
   self.busy = true
   self.notice = nil
+  -- Held outside the coroutine so that stopping mid-run can still hand back
+  -- what the steps that did finish produced.
+  self.values_so_far = values
 
   self.co = coroutine.create(function()
     for i, step in ipairs(wf.steps) do
@@ -289,6 +328,20 @@ function WorkflowView:start(values)
       local filled = recipes.fill(step.prompt or "", values)
       r.prompt = filled
       local allow = allow_set(step)
+
+      -- Both of these used to be discovered by the server, and came back as a
+      -- raw transport error that named neither the step nor the field at fault.
+      if filled:match("^%s*$") then
+        r.status, r.error = "failed", "this step has no prompt"
+        run.failed = i
+        break
+      end
+      if not r.model or r.model == "" then
+        r.status, r.error = "failed",
+          "no model for this step, and no session default to fall back on"
+        run.failed = i
+        break
+      end
 
       -- A private session per step: fresh messages, this step's model. run_on
       -- accepts any table shaped like a session, which is what makes reusing
@@ -314,7 +367,7 @@ function WorkflowView:start(values)
             local hint = ""
             if type(input) == "table" then
               local h = input.command or input.path or input.query or input.name
-              if h then hint = " " .. tostring(h):gsub("%s+", " "):sub(1, 60) end
+              if h then hint = " " .. sys.wtake((tostring(h):gsub("%s+", " ")), 60) end
             end
             r.tools[#r.tools + 1] = name .. hint
             core.redraw = true
@@ -358,7 +411,12 @@ function WorkflowView:stop()
   if self.runner then
     local r = self.runner.steps[self.runner.i]
     if r and r.status == "running" then r.status = "stopped" end
-    self.runner.done = true
+    -- Marked stopped as well as done. done alone made the banner report
+    -- "finished N step(s)" the instant you pressed Stop, and put up the "Send
+    -- to chat" button -- which then pushed an empty assistant message, because
+    -- values is only attached when the loop runs to the end.
+    self.runner.done, self.runner.stopped = true, true
+    self.runner.values = self.runner.values or self.values_so_far
   end
   core.redraw = true
 end
@@ -405,6 +463,11 @@ function WorkflowView:on_text_input(text)
 end
 
 function WorkflowView:on_key_pressed(key)
+  -- The Mac mirror in keymap.lua turns ctrl+return into cmd+return, so the key
+  -- this view was told to test for is one a Mac keyboard cannot send.
+  if key == "cmd+return" then key = "ctrl+return" end
+  if key == "keypad enter" then key = "return" end
+
   if key == "ctrl+return" and self.form then
     self:commit()
     local values = {}
@@ -427,7 +490,11 @@ function WorkflowView:on_key_pressed(key)
   elseif key == "return" then
     self:commit()
   elseif key == "backspace" then
-    self.buffer = self.buffer:sub(1, -2)
+    -- By character, not by byte: a dangling continuation byte was otherwise
+    -- drawn, committed, and written to the workflow file on disk.
+    local i = #self.buffer
+    while i > 1 and common.is_utf8_cont(self.buffer:sub(i, i)) do i = i - 1 end
+    self.buffer = self.buffer:sub(1, i - 1)
   elseif key == "tab" then
     local at = self:focus_index()
     local fields = self.fields
@@ -476,17 +543,27 @@ end
 -- Drawing
 -- ---------------------------------------------------------------------------
 
--- Hard-wrap for the monospace font, where a column is a character. The control
--- variable of a for-in loop is read-only in Lua 5.5, hence the copy.
+-- Hard-wrap for the monospace grid, where a column is a display CELL. The
+-- control variable of a for-in loop is read-only in Lua 5.5, hence the copy.
+--
+-- This measured and cut in bytes while cols is a cell count, so any non-ASCII
+-- prompt wrapped at roughly a third of the column, and the mid-word fallback
+-- cut at an arbitrary byte offset and handed the C decoder half a codepoint.
+-- sys.width and sys.wtake are the C answer the renderer's own advances agree
+-- with.
 local function wrap(text, cols)
   local rows = {}
+  cols = math.max(1, math.floor(cols))
   for raw in (tostring(text or "") .. "\n"):gmatch("(.-)\r?\n") do
     local line = raw
-    while #line > cols do
-      -- Break at the last space that fits; cut mid-word only when a single
-      -- word is wider than the column.
-      local cut = line:sub(1, cols + 1):match("^.*()%s")
-      if not cut or cut <= 1 then cut = cols + 1 end
+    while sys.width(line) > cols do
+      local head = sys.wtake(line, cols)
+      if head == "" then
+        head = line:match("^[\0-\x7f\xc2-\xf4][\x80-\xbf]*") or line
+      end
+      local cut = #head + 1
+      local space = head:match("^.*()%s")
+      if space and space > 1 then cut = space end
       rows[#rows + 1] = line:sub(1, cut - 1)
       line = line:sub(cut):gsub("^%s+", "")
     end
@@ -659,7 +736,10 @@ function WorkflowView:draw()
       end
       local slot = i
       add({ x = x, y = y, w = w, h = boxh },
-        { id = "var" .. i, action = function() self:edit("var", slot, self.form[slot].value) end })
+        { id = "var" .. i, action = function()
+            local f = self.form and self.form[slot]
+            if f then self:edit("var", slot, f.value) end
+          end })
       y = y + boxh + vpad * 0.5
     end
     if vis(y) then
@@ -688,7 +768,12 @@ function WorkflowView:draw()
     local run = self.runner
     local text
     if run.failed then
-      text = string.format("step %d failed", run.failed)
+      text = (run.failed >= #run.steps)
+        and string.format("step %d failed", run.failed)
+        or string.format("step %d failed -- steps %d to %d did not run",
+          run.failed, run.failed + 1, #run.steps)
+    elseif run.stopped then
+      text = string.format("stopped at step %d of %d", run.i, #run.steps)
     elseif run.done then
       text = string.format("finished %d step(s)", #run.steps)
     else
@@ -731,7 +816,10 @@ function WorkflowView:draw()
       self.fields[#self.fields + 1] = { kind = "name", i = i, value = step.name or "" }
       add({ x = x, y = y, w = w - pad * 7, h = lh },
         { id = "name" .. i,
-          action = function() self:edit("name", slot, steps[slot].name or "") end })
+          action = function()
+            local st2 = self:step_at(slot)
+            if st2 then self:edit("name", slot, st2.name or "") end
+          end })
       local rowhits = widgets.row(font, {
         { label = "^", action = function() self:move_step(slot, -1) end, dim = i == 1 },
         { label = "v", action = function() self:move_step(slot, 1) end, dim = i == #steps },
@@ -755,7 +843,10 @@ function WorkflowView:draw()
       self.fields[#self.fields + 1] = { kind = "model", i = i, value = step.model or "" }
       add({ x = x, y = y, w = mw, h = mlh },
         { id = "model" .. i,
-          action = function() self:edit("model", slot, steps[slot].model or "") end })
+          action = function()
+            local st2 = self:step_at(slot)
+            if st2 then self:edit("model", slot, st2.model or "") end
+          end })
 
       local tlabel = "tools: " .. ((step.tools and #step.tools > 0)
         and table.concat(step.tools, ", ") or "none")
@@ -770,8 +861,10 @@ function WorkflowView:draw()
         value = (step.tools and table.concat(step.tools, ", ")) or "" }
       add({ x = tx, y = y, w = w / 2, h = mlh },
         { id = "tools" .. i, action = function()
-            self:edit("tools", slot, (steps[slot].tools
-              and table.concat(steps[slot].tools, ", ")) or "")
+            local st2 = self:step_at(slot)
+            if not st2 then return end
+            self:edit("tools", slot,
+              (st2.tools and table.concat(st2.tools, ", ")) or "")
           end })
       y = y + mlh + vpad * 0.5
     end
@@ -800,7 +893,10 @@ function WorkflowView:draw()
       self.fields[#self.fields + 1] = { kind = "prompt", i = i, value = step.prompt or "" }
       add({ x = x, y = y, w = w, h = boxh },
         { id = "prompt" .. i,
-          action = function() self:edit("prompt", slot, steps[slot].prompt or "") end })
+          action = function()
+            local st2 = self:step_at(slot)
+            if st2 then self:edit("prompt", slot, st2.prompt or "") end
+          end })
       y = y + boxh
       if #rows > shown then
         if vis(y) then
@@ -888,20 +984,28 @@ function WorkflowView:draw()
   end
 
   -- ---- the result ---------------------------------------------------------
-  if self.runner and self.runner.done and not self.runner.failed then
-    local out = self.runner.values and self.runner.values.previous or ""
-    local hits = widgets.row(font, {
-      { label = "Send to chat", action = function()
-          -- Required lazily: core.studio requires this file, so requiring it at
-          -- the top would be a cycle.
+  -- Offered after a stop and after a failure too: the steps that did finish
+  -- produced real output, and reaching it used to mean running the whole
+  -- workflow again. name and out are read here, at draw time, because the
+  -- action runs on a later frame by which point self.runner may be nil.
+  local run = self.runner
+  if run and run.done then
+    local out = (run.values and run.values.previous) or ""
+    local what = run.failed and "failed at step " .. run.failed
+      or (run.stopped and "stopped at step " .. tostring(run.i) or "finished")
+    local name = tostring(run.name)
+    local buttons = {}
+    if out ~= "" then
+      buttons[#buttons + 1] = { label = "Send to chat", action = function()
           local studio = require "core.studio"
           local v = studio.open_agent()
-          v:push("system", "workflow '" .. tostring(self.runner.name) .. "' finished")
+          v:push("system", "workflow '" .. name .. "' " .. what)
           v:push("assistant", out)
           core.set_active_view(v)
-        end },
-      { label = "Run again", action = function() self:prepare_run() end },
-    }, x, y, self.mouse)
+        end }
+    end
+    buttons[#buttons + 1] = { label = "Run again", action = function() self:prepare_run() end }
+    local hits = widgets.row(font, buttons, x, y, self.mouse)
     for _, hit in ipairs(hits) do self.hits[#self.hits + 1] = hit end
     y = y + bh + vpad
   end

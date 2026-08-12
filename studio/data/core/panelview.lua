@@ -47,8 +47,8 @@ function PanelView:reload()
   local fn, err = uisandbox.compile(self.name, src)
   self.draw_fn, self.err = fn, err
   self.errors = 0
-  local _, mtime = sys.stat(self:path())
-  self.mtime = mtime
+  local _, mtime, size = sys.stat(self:path())
+  self.mtime, self.size_seen = mtime, size
   core.redraw = true
   return fn ~= nil
 end
@@ -60,8 +60,24 @@ function PanelView:update()
   self.check_at = (self.check_at or 0) - 1
   if self.check_at <= 0 then
     self.check_at = 60
-    local kind, mtime = sys.stat(self:path())
-    if kind and mtime ~= self.mtime then self:reload() end
+    local kind, mtime, size = sys.stat(self:path())
+    if not kind then
+      -- Deleted out from under us. The compiled function still works, and
+      -- saying nothing would leave a panel on screen with no file behind it --
+      -- editing which creates a new one that this view would then adopt.
+      if not self.gone then
+        self.gone = true
+        self.err = "the file for this panel is gone: " .. self:path()
+        self.draw_fn = nil
+        core.redraw = true
+      end
+    elseif self.gone or mtime ~= self.mtime or size ~= self.size_seen then
+      -- Size as well as mtime: sys.stat's mtime has one-second resolution, so
+      -- two saves inside the same second looked identical and the second one
+      -- was never picked up.
+      self.gone = false
+      self:reload()
+    end
   end
   PanelView.super.update(self)
 end
@@ -102,7 +118,12 @@ function PanelView:draw()
 
   if self.draw_fn and self.errors < uisandbox.MAX_ERRORS then
     local ctx, hits = uisandbox.context(self, x, y, w, h, self.mouse, font)
-    local ok, err = pcall(self.draw_fn, ctx)
+    -- Through uisandbox.run, not pcall. A pcall catches a generated panel that
+    -- indexes a nil; it does nothing at all about one that loops forever or
+    -- allocates in a loop, and either of those takes the window with it --
+    -- including the error message and the Retry button that would have got it
+    -- back. See uisandbox.run for why the bound yields instead of erroring.
+    local ok, err = uisandbox.run(self.draw_fn, ctx)
     self.clicked = nil          -- the latch lasts exactly one frame
     if ok then
       self.hits = hits

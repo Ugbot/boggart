@@ -36,17 +36,32 @@ local function key_summary()
   return masked, source
 end
 
--- Text that does not fit is elided rather than drawn past its box. This view
--- does not clip, and the credentials path -- which on a temporary HOME is long
--- -- was running off the right edge of the window entirely.
+-- Text that does not fit is elided rather than drawn past its box: a
+-- credentials path under a temporary HOME is long, and an endpoint is whatever
+-- somebody typed.
+--
+-- The bisection walks CHARACTERS, not bytes. Over bytes it lands part-way
+-- through any multi-byte character -- an endpoint with an accented hostname, a
+-- model name from a server, a home directory with a non-ASCII username -- and
+-- both the measurement and the drawn result are then made from a string the
+-- decoder cannot read.
 local function elide(font, text, width)
   if font:get_width(text) <= width then return text end
-  local lo, hi = 0, #text
+  local n = utf8.len(text)
+  local function upto(chars)
+    if n then return text:sub(1, (utf8.offset(text, chars + 1) or (#text + 1)) - 1) end
+    -- Not valid UTF-8 (nothing stops a stored value being anything): step back
+    -- off continuation bytes by hand, because utf8.offset raises on one.
+    local i = math.min(chars, #text)
+    while i > 0 and common.is_utf8_cont(text:sub(i + 1, i + 1)) do i = i - 1 end
+    return text:sub(1, i)
+  end
+  local lo, hi = 0, n or #text
   while lo < hi do
     local mid = (lo + hi + 1) // 2
-    if font:get_width(text:sub(1, mid) .. "...") <= width then lo = mid else hi = mid - 1 end
+    if font:get_width(upto(mid) .. "...") <= width then lo = mid else hi = mid - 1 end
   end
-  return text:sub(1, lo) .. "..."
+  return upto(lo) .. "..."
 end
 
 function SettingsView:new()
@@ -102,6 +117,13 @@ function SettingsView:fields()
       value = auth.base_url() or "https://api.anthropic.com",
       hint = "a local server speaking /v1/messages, e.g. http://127.0.0.1:8000",
       set = function(v)
+        -- Refused rather than stored. Without a scheme the transport has no
+        -- idea what to do with it, and the failure surfaced later, in the
+        -- conversation, as a connection error that said nothing about the
+        -- endpoint being the thing that was wrong.
+        if not v:match("^%a[%w+%-.]*://") then
+          return nil, ("%q has no scheme -- try http://%s"):format(v, v)
+        end
         auth.set("base_url", v)
         if bog.api.forget_auth then bog.api.forget_auth() end
         return "endpoint: " .. bog.api.endpoint()
@@ -161,12 +183,36 @@ function SettingsView:report(ok, msg, why)
   core.redraw = true
 end
 
+-- Surrounding whitespace is removed from every value before it is stored.
+--
+-- A key is copied from a terminal or a password manager and arrives with a
+-- trailing newline or a leading space more often than not, and it was stored
+-- exactly as typed: the header then went out with the space in it and every
+-- request came back 401, with a settings screen showing a key that looked
+-- perfectly correct. The same applies to an endpoint with a stray space and to
+-- a model name -- none of the three has any meaning for leading or trailing
+-- blanks, and interior ones are left alone.
+local function tidy(v)
+  return (tostring(v or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
 function SettingsView:commit()
   local f = self:fields()[self.focus or 0]
   if not f then return end
-  local value = self.buffer
+  local value = tidy(self.buffer)
   self.focus, self.buffer = nil, ""
-  if value == "" then return end
+  if value == "" then
+    -- Said out loud. Committing an empty field did nothing and reported
+    -- nothing, which is indistinguishable from a form that has stopped
+    -- working -- particularly since clearing the box is exactly what someone
+    -- does when they mean to remove a value.
+    self.notice = { text = f.clear
+      and ("nothing entered -- use Clear to remove the " .. f.label:lower())
+      or ("nothing entered -- the " .. f.label:lower() .. " is unchanged"),
+      bad = true }
+    core.redraw = true
+    return
+  end
   self:report(pcall(f.set, value))
 end
 
@@ -188,7 +234,12 @@ function SettingsView:on_key_pressed(key)
   elseif key == "return" then
     self:commit()
   elseif key == "backspace" then
-    self.buffer = self.buffer:sub(1, -2)
+    -- By character, not by byte: one press over an accented character used to
+    -- leave a dangling continuation byte, which was then drawn and, on Enter,
+    -- stored as part of the credential.
+    local i = #self.buffer
+    while i > 1 and common.is_utf8_cont(self.buffer:sub(i, i)) do i = i - 1 end
+    self.buffer = self.buffer:sub(1, i - 1)
   elseif key == "tab" then
     local n = #self:fields()
     local next_i = (self.focus % n) + 1

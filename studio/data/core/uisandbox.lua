@@ -53,12 +53,89 @@ end
 
 -- A read-only proxy, so a panel cannot repaint the whole application by
 -- assigning to style.background.
+--
+-- The proxy has to go one level down. Only the top table was frozen, and
+-- __index handed the real nested table straight back -- so `style.padding.x =
+-- 0` from a generated panel reached the actual padding every other view in the
+-- application lays itself out with.
+--
+-- Colour tables are the exception, and they are returned raw on purpose: the C
+-- renderer reads a colour with lua_rawgeti, which bypasses __index, so a
+-- proxied colour arrives as four nils and errors inside the draw. A colour is
+-- recognised by having a numeric first element, which is what distinguishes it
+-- from every other table in the theme. Writing through one of those still
+-- changes a theme colour; that is a smaller hole than the padding was, and it
+-- is the honest limit of what can be frozen without a copy per frame.
+local proxies = setmetatable({}, { __mode = "k" })
+
 local function readonly(t)
-  return setmetatable({}, {
-    __index = t,
+  local hit = proxies[t]
+  if hit then return hit end
+  local p = setmetatable({}, {
+    __index = function(_, k)
+      local v = t[k]
+      if type(v) == "table" and v[1] == nil then return readonly(v) end
+      return v
+    end,
+    __len = function() return #t end,
+    __pairs = function() return pairs(t) end,
     __newindex = function() error("this table is read-only", 2) end,
     __metatable = false,
   })
+  proxies[t] = p
+  return p
+end
+
+-- How many VM instructions a panel's code may spend in one call.
+--
+-- Two million is far more than any honest draw needs and still bounded: a
+-- runaway costs one slow frame rather than the window.
+uisandbox.MAX_STEPS = 2000000
+
+-- Run a panel's code with that bound.
+--
+-- pcall alone does not make a generated draw function safe to call from the
+-- frame loop. `while true do end` never returns, and a window that has stopped
+-- repainting cannot show the error or offer the Retry button that would fix
+-- it -- the application is simply hung, with no way back short of killing it.
+-- The same is true of a panel that appends to a table in a loop: it takes the
+-- machine's memory rather than its frame.
+--
+-- So the call runs in its own coroutine under a count hook that raises when
+-- the budget is spent. Raising alone is not enough, because the sandbox hands
+-- panels `pcall` and a panel that wrapped its own loop in one would catch the
+-- very error meant to stop it and go straight back round. Yielding from the
+-- hook instead would be uncatchable -- and is not available: Lua answers a
+-- yield from a hook with "attempt to yield across a C-call boundary".
+--
+-- What does work is re-arming. The first fire sets the count to one, so every
+-- instruction after it raises. A panel that swallows the error cannot make
+-- even one loop iteration of progress before the next raise, and that one
+-- lands in the loop itself rather than inside the pcall, so it escapes and the
+-- coroutine dies. Measured against `while true do pcall(function() while true
+-- do end end) end`, nested two deep: stopped in under a millisecond.
+function uisandbox.run(fn, ...)
+  local co = coroutine.create(fn)
+  local blown = false
+  local function hook()
+    if not blown then
+      blown = true
+      debug.sethook(co, hook, "", 1)
+    end
+    error(string.format("the panel did not finish within %d steps -- "
+      .. "an unbounded loop, or something that allocates in one",
+      uisandbox.MAX_STEPS), 0)
+  end
+  debug.sethook(co, hook, "", uisandbox.MAX_STEPS)
+  local ok, err = coroutine.resume(co, ...)
+  debug.sethook(co)
+  if not ok then return false, tostring(err) end
+  -- Belt and braces: a coroutine that is still suspended made no progress this
+  -- frame and must not be treated as a completed draw.
+  if coroutine.status(co) ~= "dead" then
+    return false, "the panel suspended part-way through its frame"
+  end
+  return true
 end
 
 function uisandbox.env()
@@ -121,7 +198,16 @@ function uisandbox.context(panel, x, y, w, h, mouse, font)
 
     text = function(s, tx, ty, colour, align, tw)
       s = tostring(s or "")
+      tx, ty = tonumber(tx) or x, tonumber(ty) or y
       if ty + lh < y or ty > y + h then return end   -- off the panel entirely
+      -- Horizontally too, which this did not do: the vertical test above was
+      -- the whole of the clipping, so a row starting left of the panel was
+      -- drawn from wherever it was told to start. The view's own clip stopped
+      -- it leaving the window, which is why it looked merely mis-drawn.
+      if tx > x + w then return end
+      local room = math.floor(((x + w) - math.max(tx, x)) / font:get_width("0"))
+      if room < 1 then return end
+      if sys.width(s) > room then s = sys.wtake(s, math.max(1, room - 1)) .. "…" end
       common.draw_text(font, colour or style.text, s, align or "left",
         tx, ty, tw or (x + w - tx), lh)
     end,
@@ -215,8 +301,12 @@ function uisandbox.compile(name, src)
   local env = uisandbox.env()
   local chunk, err = load(src, "@ui:" .. name, "t", env)
   if not chunk then return nil, tostring(err) end
-  local ok, ret = pcall(chunk)
-  if not ok then return nil, tostring(ret) end
+  -- The chunk body is arbitrary code as much as draw() is, and it runs during
+  -- a reload -- which happens on the frame thread. A panel whose top level
+  -- loops would hang the window before it ever drew anything.
+  local ret
+  local ok, rerr = uisandbox.run(function() ret = chunk() end)
+  if not ok then return nil, tostring(rerr) end
   local draw = env.draw or (type(ret) == "function" and ret) or nil
   if type(draw) ~= "function" then
     return nil, "the panel defines no draw(ctx) function"

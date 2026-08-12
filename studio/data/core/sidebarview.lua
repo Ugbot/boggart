@@ -36,6 +36,15 @@ end
 
 function SidebarView:get_name() return "Sidebar" end
 
+-- The rail computed content_height every frame and nobody asked for it. The
+-- base View answers math.huge, which get_scrollbar_rect reads as "no bar" and
+-- clamp_scroll_position reads as "no bottom" -- so the scrollbar was a
+-- zero-sized rect that never appeared, and the wheel could push every session
+-- off the top with nothing on screen to say where you were or how to get back.
+function SidebarView:get_scrollable_size()
+  return self.content_height or math.huge
+end
+
 -- A rail wider than a third of the window is no longer a rail, and below the
 -- minimum the labels are unreadable. One function owns both ends so the drag,
 -- the animation and the frame-by-frame ceiling cannot disagree about them.
@@ -48,6 +57,18 @@ end
 -- if you can grab the edge at all, pulling it should work.
 function SidebarView:set_target_size(axis, value)
   if axis ~= "x" then return false end
+  -- Reopening by drag restores the width the rail had, rather than starting
+  -- again from zero. RootView drags against get_target_size, which answers 0
+  -- while collapsed and must -- the rail really does occupy nothing -- so a
+  -- single pixel of mouse movement with the button still held after ctrl+b had
+  -- hidden the rail both undid the collapse and threw the user's width away,
+  -- snapping to the minimum with the animation skipped. The first drag pixel
+  -- now reopens it at the width it had; the ones after it resize as usual.
+  if not self.visible then
+    self.visible = true
+    self.init_size = true
+    return true
+  end
   config.sidebar_size = self:allowed_size(value)
   self.visible = true
   self.init_size = true       -- take the new width immediately, do not glide
@@ -130,8 +151,45 @@ function SidebarView:on_mouse_pressed(button, x, y, clicks)
   return true
 end
 
+-- A title cut to fit a pixel width, on character boundaries, by bisection.
+--
+-- The previous loop shortened the string two BYTES at a time and measured
+-- again, which cut an accented or CJK title part-way through a character and
+-- then measured the invalid result -- and cost one font measurement per two
+-- bytes per row per frame, so a session auto-titled from a pasted log ran that
+-- loop thousands of times, forty rows deep, sixty times a second. The ellipsis
+-- is part of what is fitted rather than appended afterwards, which is how the
+-- finished label used to come out wider than the space it had just been fitted
+-- to. A title that is not valid UTF-8 -- nothing stops one reaching the
+-- database -- falls back to walking off continuation bytes, because
+-- utf8.offset raises on one.
+local function fit(font, text, room)
+  if room <= 0 then return "" end
+  if font:get_width(text) <= room then return text end
+  local n = utf8.len(text)
+  local function upto(chars)
+    if n then
+      return text:sub(1, (utf8.offset(text, chars + 1) or (#text + 1)) - 1)
+    end
+    local i = math.min(chars, #text)
+    while i > 0 and common.is_utf8_cont(text:sub(i + 1, i + 1)) do i = i - 1 end
+    return text:sub(1, i)
+  end
+  local lo, hi = 0, n or #text
+  while lo < hi do
+    local mid = (lo + hi + 1) // 2
+    if font:get_width(upto(mid) .. "…") <= room then lo = mid else hi = mid - 1 end
+  end
+  return upto(lo) .. "…"
+end
+
 function SidebarView:draw()
   self:draw_background(style.background2)
+  -- Cleared before the early return, not after it. Once the collapsing rail
+  -- narrowed past this the draw bailed while self.hits still held the last
+  -- full-width layout, so for the ten frames of the animation a click near the
+  -- left edge opened a session in a rail that was no longer on screen.
+  self.hits = {}
   if self.size.x < 20 then return end
 
   local font = style.font
@@ -141,7 +199,6 @@ function SidebarView:draw()
   local x = self.position.x + pad
   local w = self.size.x - pad * 2
   local y = self.position.y + vpad - self.scroll.y
-  self.hits = {}
 
   local function add(hit, item) hit.item = item; self.hits[#self.hits + 1] = hit end
 
@@ -184,24 +241,35 @@ function SidebarView:draw()
   common.draw_text(font, style.dim, "Recents", "left", x, y, w, lh)
   y = y + lh
 
+  -- Where the footer starts. The list used to run to the bottom of the VIEW,
+  -- so the last row or two were drawn under the model name -- and because a
+  -- session's rect is registered before the footer's, and widgets.hit answers
+  -- with the first rect containing the point, clicking the model name opened a
+  -- session instead of the settings.
+  local footer_top = self.position.y + self.size.y - lh - vpad * 2
+
+  -- Only the rows between the scroll offset and the footer are drawn, and
+  -- content_height counts the WHOLE list rather than the part that fitted.
+  -- Measuring what was drawn made the scrollable size equal the viewport, so
+  -- the clamp pinned the scroll at zero and the rows past the fold could not
+  -- be reached at all -- with no scrollbar to say they were there.
+  local list_top = y
+  local n = #self.sessions
+  local first = math.max(1, math.floor(self.scroll.y / lh) + 1)
   local current = bog.session and bog.session.id
-  for _, s in ipairs(self.sessions) do
-    if y > self.position.y + self.size.y then break end
-    local title = s.title
-    if not title or title == "" then title = "(untitled)" end
+  for i = first, n do
+    local s = self.sessions[i]
+    y = list_top + (i - first) * lh
+    if y + lh > footer_top then break end
+    local title = tostring(s.title or "")
+    if title == "" then title = "(untitled)" end
     local active = (s.id == current)
     local hov = self.mouse and widgets.inside(
       { x = x, y = y, w = w, h = lh }, self.mouse.x, self.mouse.y)
     if active or hov then
       renderer.draw_rect(x, y, w, lh, active and style.selection or style.line_highlight)
     end
-    -- Truncated by measurement, not by a guessed character count: the sidebar
-    -- font is proportional, so "iiii" and "WWWW" are not the same width.
-    local label = title
-    while font:get_width(label) > w - pad * 2 and #label > 4 do
-      label = label:sub(1, #label - 2)
-    end
-    if label ~= title then label = label .. "…" end
+    local label = fit(font, title, w - pad * 2)
     common.draw_text(font, active and style.text or style.dim, label,
       "left", x + pad / 2, y, w, lh)
     add({ x = x, y = y, w = w, h = lh }, {
@@ -214,7 +282,8 @@ function SidebarView:draw()
     y = y + lh
   end
 
-  self.content_height = (y + self.scroll.y) - self.position.y
+  self.content_height = (list_top + self.scroll.y - self.position.y)
+    + n * lh + lh + vpad * 3
 
   -- ---- footer: who and what -----------------------------------------------
   local fy = self.position.y + self.size.y - lh - vpad

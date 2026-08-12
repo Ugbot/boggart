@@ -85,14 +85,22 @@ local SCOPE_TAG = {
   session = "sess", project = "proj", ["global"] = "glob",
 }
 
-local function tool_entries()
+-- `may_block` is true only when a person asked for this -- opening the view, or
+-- pressing Refresh -- and never on the three-second timer or from a draw.
+-- project_root() and stale_note() shell out to git; on the main thread that
+-- froze the first paint of the view for as long as git took, and the pcall is
+-- no protection because pcall in Lua 5.5 is yieldable.
+local function tool_entries(may_block)
   local out = {}
   local reg = (bog and bog.tools and bog.tools.registry) or {}
 
   -- Provenance and usage come from the tools table, keyed by (name, scope):
   -- tool_stats already returns the rows for this project plus the global ones.
   local stats, root = {}, ""
-  pcall(function() root = bog.tools.project_root() end)
+  pcall(function()
+    root = (may_block and bog.tools.project_root()
+            or bog.tools.project_root_cached()) or ""
+  end)
   if bog.store and bog.store.tool_stats then
     local ok, rows = pcall(bog.store.tool_stats, root)
     if ok then
@@ -109,7 +117,7 @@ local function tool_entries()
     }
     -- Staleness is asked of tools.lua rather than recomputed here: it is a
     -- judgement about procedural memory, and two copies of it would drift.
-    if d.body and d.scope == "project" then
+    if d.body and d.scope == "project" and may_block then
       local ok, note = pcall(bog.tools.stale_note, name, d)
       e.stale = ok and note or nil
     end
@@ -160,7 +168,8 @@ local function skill_entries()
     local mod = skills and skills.load(name) or nil
     out[#out + 1] = {
       key = name, name = name, origin = from,
-      description = mod and mod.description or "(will not load)",
+      description = (mod and (mod.description or "(no description)"))
+                    or "(will not load)",
       instructions = mod and mod.instructions or "",
       tools = (mod and mod.tools) or {},
       sub = (mod and mod.description) or "",
@@ -228,7 +237,7 @@ function LibraryView:refresh(force)
   if not force and now - self.last_refresh < REFRESH_SECS then return end
   self.last_refresh = now
   self.data = {
-    tools = tool_entries(),
+    tools = tool_entries(force),
     skills = skill_entries(),
     memory = memory_entries(self.committed),
     mcp = mcp_entries(),
@@ -251,6 +260,10 @@ function LibraryView:set_section(s)
   if self.section == s then return end
   self.section = s
   self.confirm = nil
+  -- The notice belongs to the thing you just did, not the session; it was only
+  -- ever set and never cleared, so a deletion banner stayed up for good and
+  -- cost a row of the list below it for good too.
+  self.notice = nil
   self.scroll.to.y = 0
   -- The query does not follow you between sections. It filters different
   -- things in each one, and a leftover query silently rendering an empty list
@@ -338,7 +351,11 @@ function LibraryView:cancel_search()
 end
 
 function LibraryView:backspace()
-  self.query = self.query:sub(1, -2)
+  -- By character, not by byte: one backspace over a non-ASCII character used to
+  -- leave a dangling continuation byte, drawn and handed to SQLite as a term.
+  local i = #self.query
+  while i > 1 and common.is_utf8_cont(self.query:sub(i, i)) do i = i - 1 end
+  self.query = self.query:sub(1, i - 1)
   core.redraw = true
 end
 
@@ -351,8 +368,13 @@ end
 -- project on the machine, and a UI that renders those as the same button is
 -- lying about what the second one does.
 
+-- Called from draw(), so it must not discover the project root: tools_dir
+-- ("project") calls project_root(), and a git rev-parse reachable from a
+-- repaint is a frozen window. A project tool can only have been loaded through
+-- the same tools_dir, so by now the root is cached; if not, say so.
 function LibraryView:tool_path(e)
   if not (e.def and e.def.body) or not e.scope or e.scope == "session" then return nil end
+  if e.scope == "project" and not bog.tools.project_root_cached() then return nil end
   local ok, dir = pcall(bog.tools.tools_dir, e.scope)
   if not ok or not dir then return nil end
   return dir .. "/" .. e.name .. ".lua"
@@ -360,6 +382,10 @@ end
 
 function LibraryView:delete_tool(e)
   if not (e and e.def and e.def.body) then return end
+  -- Where it sat, so the selection lands on its neighbour rather than the top
+  -- of the list.
+  local at
+  for i, x in ipairs(self:list()) do if x.key == e.key then at = i; break end end
   local path = self:tool_path(e)
   if path then
     local ok, err = os.remove(path)
@@ -384,6 +410,11 @@ function LibraryView:delete_tool(e)
   self.confirm = nil
   self.sel[self.section] = nil
   self:refresh(true)
+  if at then
+    local list = self:list()
+    local pick = list[math.min(at, #list)]
+    self.sel[self.section] = pick and pick.key or nil
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -692,14 +723,19 @@ function LibraryView:draw()
     tabs[#tabs + 1] = { label = string.format("%s (%d)", LABEL[s], #(self.data[s] or {})),
                         active = self.section == s, id = s }
   end
-  for _, hit in ipairs(widgets.row(font, tabs, x0, top + vpad, self.mouse)) do
+  -- Refresh is pinned right, so the tabs get an explicit limit: without one a
+  -- narrow window laid the last tab under Refresh, and widgets.hit answers with
+  -- whichever rect was registered first -- the tab -- so clicking Refresh
+  -- changed section instead.
+  local rl = "Refresh"
+  local rw = widgets.width(font, rl)
+  local rx = self.position.x + self.size.x - pad - rw
+  for _, hit in ipairs(widgets.row(font, tabs, x0, top + vpad, self.mouse,
+                                   rx - style.padding.x)) do
     local id = hit.item.id
     add(hit, id, function() self:set_section(id) end)
   end
 
-  local rl = "Refresh"
-  local rw = widgets.width(font, rl)
-  local rx = self.position.x + self.size.x - pad - rw
   add(widgets.button(font, rl, rx, top + vpad,
         { w = rw, dim = true, hover = hovered(rx, top + vpad, rw, bh) }),
       "refresh", function() self:refresh(true) end)
@@ -906,7 +942,11 @@ function LibraryView:draw()
       text, "left", x0, ny, full, lh)
   end
 
-  self.content_height = math.max(list_bottom, dy) + self.scroll.y - body_top + vpad * 2
+  -- Measured from the top of the VIEW, not body_top: clamp_scroll_position
+  -- subtracts the whole view height, so measuring from body_top left the
+  -- maximum scroll short by the header and the last entries unreachable.
+  self.content_height = math.max(list_bottom, dy) + self.scroll.y
+    - self.position.y + vpad * 2
   self:draw_scrollbar()
 end
 

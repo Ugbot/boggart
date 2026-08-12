@@ -19,10 +19,16 @@
 -- column, so an edit within a line moves nothing and costs nothing. What does
 -- NOT track is a change that never passes through the buffer: the agent writes
 -- files on disk, and `Doc:reload` replaces the line table wholesale. That case
--- is handled by `marks.shift`, called from `from_edit` below, and it is only as
--- good as the diff it is given -- one contiguous hunk. Two agent edits far
--- apart in one write will leave the earlier marks off by the second hunk's
--- delta.
+-- is handled by `marks.shift`, called from `from_edit` below, over every change
+-- region `diff.hunks` finds. It used to be given one contiguous hunk covering
+-- everything between the first and last change, which meant a write with two
+-- edits far apart marked the whole span between them and left any earlier mark
+-- inside it standing still.
+--
+-- What is still approximate: a mark that sits INSIDE a region the agent
+-- replaced does not move, because a line that was rewritten has no
+-- well-defined new home. It stays at the top of the region rather than being
+-- deleted, on the same reasoning as `on_remove` below.
 local style = require "core.style"
 local difflib = require "core.diff"
 
@@ -301,40 +307,54 @@ end
 -- to read, the buffer already has them.
 function marks.from_edit(target, old_text, new_text, opts)
   opts = opts or {}
-  local d = difflib.compute(old_text or "", new_text or "", 0)
-  if d.unchanged then return {} end
-
   local a, b = difflib.lines(old_text or ""), difflib.lines(new_text or "")
-  local at = d.start_line
-  local old_lines, new_lines = {}, {}
-  for i = at, at + d.removed - 1 do old_lines[#old_lines + 1] = a[i] end
-  for i = at, at + d.added - 1 do new_lines[#new_lines + 1] = b[i] end
+  local hunks = difflib.hunks(a, b)
+  if #hunks == 0 then return {} end
 
-  -- Marks below this hunk have to move by whatever it changed. They cannot
-  -- find out any other way: the agent writes through the filesystem and the
-  -- buffer is reloaded rather than edited, so raw_insert never sees it.
-  marks.shift(target, at + d.removed, d.added - d.removed)
+  -- Every existing mark is in the coordinates of the file as it was, so the
+  -- shifts go bottom-up: moving text at the end of the file cannot change a
+  -- line number above it, which is what keeps each hunk's own old-file
+  -- coordinates valid while the ones below it are being applied. All of them
+  -- happen before any new mark is set, or a mark just placed in the new
+  -- coordinates would be shifted a second time by the hunk above it.
+  --
+  -- This is the only way marks can find out at all: the agent writes through
+  -- the filesystem and the buffer is reloaded rather than edited, so
+  -- raw_insert never sees it.
+  for i = #hunks, 1, -1 do
+    local h = hunks[i]
+    marks.shift(target, h.old + h.old_n, h.new_n - h.old_n)
+  end
 
-  local kind = (d.added == 0 and "removed")
-    or (d.removed == 0 and "added" or "changed")
-  local first = math.max(1, math.min(at, math.max(1, #b)))
-  local last = d.added > 0 and (at + d.added - 1) or first
-  local group = "hunk" .. tostring(next_id + 1)
   local ids = {}
+  for _, h in ipairs(hunks) do
+    local old_lines, new_lines = {}, {}
+    for i = h.old, h.old + h.old_n - 1 do old_lines[#old_lines + 1] = a[i] end
+    for i = h.new, h.new + h.new_n - 1 do new_lines[#new_lines + 1] = b[i] end
 
-  for line = first, last do
-    -- Only the first line of a hunk carries the label and the controls. A
-    -- "revert" button against every line of a fifty-line change is noise, and
-    -- the thing being reverted is the hunk anyway.
-    local head = (line == first)
-    ids[#ids + 1] = marks.set(target, line, {
-      kind = kind, group = group,
-      text = head and string.format("agent +%d -%d", d.added, d.removed) or nil,
-      data = head and {
-        path = opts.path, tool = opts.tool, group = group,
-        revert = { lines = old_lines, after = new_lines, count = d.added },
-      } or nil,
-    })
+    local kind = (h.new_n == 0 and "removed")
+      or (h.old_n == 0 and "added" or "changed")
+    -- A pure deletion has no line of its own, so it marks the line that closed
+    -- the gap -- clamped, because deleting the tail of a file leaves that
+    -- position one past the end.
+    local first = math.max(1, math.min(h.new, math.max(1, #b)))
+    local last = h.new_n > 0 and (h.new + h.new_n - 1) or first
+    local group = "hunk" .. tostring(next_id + 1)
+
+    for line = first, last do
+      -- Only the first line of a hunk carries the label and the controls. A
+      -- "revert" button against every line of a fifty-line change is noise,
+      -- and the thing being reverted is the hunk anyway.
+      local head = (line == first)
+      ids[#ids + 1] = marks.set(target, line, {
+        kind = kind, group = group,
+        text = head and string.format("agent +%d -%d", h.new_n, h.old_n) or nil,
+        data = head and {
+          path = opts.path, tool = opts.tool, group = group,
+          revert = { lines = old_lines, after = new_lines, count = h.new_n },
+        } or nil,
+      })
+    end
   end
   return ids
 end
