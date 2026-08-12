@@ -23,6 +23,7 @@ int luaopen_boggart_db(lua_State *L);
 int luaopen_boggart_swarm(lua_State *L);
 int luaopen_boggart_mcp(lua_State *L);
 int luaopen_boggart_auth(lua_State *L);
+int luaopen_boggart_git(lua_State *L);
 int luaopen_luv(lua_State *L);
 void boggart_open_mem(lua_State *L);
 
@@ -76,6 +77,7 @@ void boggart_open_libs(lua_State *L) {
   luaL_requiref(L, "swarm", luaopen_boggart_swarm, 0); lua_setglobal(L, "swarm");
   luaL_requiref(L, "mcp", luaopen_boggart_mcp, 0);     lua_setglobal(L, "mcp");
   luaL_requiref(L, "auth", luaopen_boggart_auth, 0);   lua_setglobal(L, "auth");
+  luaL_requiref(L, "git", luaopen_boggart_git, 0);     lua_setglobal(L, "git");
 
   /* luv lazily: opening it creates a uv_loop_t, and the app only needs one
    * once an agent actually runs. */

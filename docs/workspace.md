@@ -51,23 +51,36 @@ foreign holder, and refresh on the `file:write`/`file:edit` events.
 
 ---
 
-## 2. Isolation — a git worktree per agent (gold skill)
+## 2. The git backend lives in C; the workflow is Lua
 
-For code, the strongest collision-avoidance is that agents never share a working
-directory. A worktree gives each swarm child its own checkout of the same repo;
-they cannot step on each other, and results merge back through git. The plumbing
-is verified (see §4). This becomes a **gold skill** plus a `gold.git` helper:
+The split matters, and it is deliberate. **Git tooling is a C capability**
+(`src/lgit.c`, the `git` global) — *not* Lua shelling out. Everything else
+async in boggart is Lua "where the agent can rewrite it"; git is the exception,
+because git *is the safety net* (checkpoints, undo), and a safety net the agent
+can rewrite is not one. So the operations and their policy are fixed below that
+line:
 
-- **`gold.git`** — a blessed helper over `sys.exec("git ...")`: `worktree_add`,
-  `worktree_remove`, `checkpoint`, `restore`, `diff`, `current_branch`,
-  `is_repo`. Blessed because model-written tools should compose one careful git
-  wrapper, not re-shell `git` a dozen inconsistent ways (the `gold` doctrine).
-- **`skills/git_worktree.lua`** — a skill bundle (instructions + a permitted tool
-  set) for the coordinator↦child pattern: coordinator opens a worktree per child,
-  each child works isolated in its own directory, the coordinator collects/merges
-  and removes the worktree. The skill encodes the *lifecycle* (add → work →
-  collect → remove, and always remove on failure) so an agent cannot leak
-  worktrees.
+- `git.checkpoint`, `git.restore`, `git.diff`, `git.worktree_add/remove/list`,
+  `git.is_repo`, `git.current_branch`, and a `git.run` escape hatch.
+- Policy in C: checkpoints only ever write hidden refs under `refs/boggart/`,
+  never HEAD/branches/index; a checkpoint goes through a throwaway index so
+  untracked files are captured (`git stash create` drops them, §4); worktrees are
+  ours to add and remove.
+- Implemented with **`uv_spawn`** (libuv is already linked — no new dependency,
+  keeps the single tiny binary) running the system `git`, synchronously on a
+  private short-lived loop, rather than vendoring **libgit2** (a heavy dep that
+  would break that binary). `git` must be on PATH, which any worktree workflow
+  already assumes.
+
+Above that line, in Lua:
+
+- **Model-facing tools** (`lua/gittools.lua`): `checkpoint`, `restore`,
+  `git_diff`, `worktree` — thin wrappers so the model, which calls tools not C
+  functions, can use the capability. Thin on purpose: the policy is in C.
+- **`skills/git_worktree.lua`** — the *workflow*: the coordinator↦child pattern
+  (a worktree per child; work isolated; always remove on completion or failure so
+  an agent cannot leak worktrees) and the checkpoint-before-risk discipline. The
+  skill gates exactly the tools above plus the claim/release tools.
 
 Worktrees and claims compose: worktrees remove collisions *physically* for code;
 claims coordinate the cases that remain (a shared tree, or non-git files).
@@ -79,13 +92,14 @@ claims coordinate the cases that remain (a shared tree, or non-git files).
 Every turn ends with a checkpoint so any change is reversible — the idea worth
 borrowing from t3code, generalised so it does not require git.
 
-- **git backend (verified).** Snapshot the working tree to a **hidden ref**
-  (`refs/boggart/checkpoints/<session>/<turn>`) without touching HEAD, the branch,
-  the index or the working tree — via `git stash create` (or, to include
-  untracked files, a temp-index `git add -A` + `write-tree` + `commit-tree`; see
-  the caveat in §4). Store the sha per turn in the session/journal. `restore`
-  checks the tree out from that sha; `diff` diffs against it. Hidden refs keep
-  `git branch` and the user's history clean.
+- **git backend (implemented in C, §2).** `git.checkpoint` snapshots the working
+  tree to a **hidden ref** (`refs/boggart/checkpoints/<label>`) without touching
+  HEAD, the branch, the index or the working tree — through a **temp index**
+  (`GIT_INDEX_FILE` + `git add -A` + `write-tree` + `commit-tree`) so untracked
+  files are captured, which `git stash create` would drop. Store the sha per turn
+  in the session/journal. `git.restore` resets the tree from that sha;
+  `git.diff` diffs against it. Hidden refs keep `git branch` and the user's
+  history clean.
 - **git-free backend.** For a folder with no repo, a checkpoint is a manifest of
   `path → content-hash` for the files a turn touched, with contents
   content-addressed into the store (SQLite blobs / the data dir). `restore`
@@ -142,11 +156,15 @@ being git-first, simply do not offer.
 
 ## 6. Status and phasing
 
-- **Built:** `lua/claims.lua` + `tests/claims.lua` — the shared edit blackboard,
-  backend-agnostic. Git checkpoint/worktree plumbing verified (§4).
-- **Next (git backend):** `gold.git` helper; the `checkpoint`/`restore`/`diff`
-  tools over hidden refs; the `git_worktree` gold skill for swarm isolation;
-  auto-claim on `edit`/`write`.
+- **Built:** the **`git` C capability** (`src/lgit.c`, via `uv_spawn`; compiles
+  clean, wired into both front ends and the parity fingerprint); the model-facing
+  **git tools** (`lua/gittools.lua`) and the **`git_worktree` skill**
+  (`lua/skills/`); the **claims** shared edit blackboard (`lua/claims.lua` +
+  `tests/claims.lua`). Git checkpoint/worktree plumbing verified against a real
+  repo (§4); the tool wrappers tested with a stubbed capability. The C module and
+  in-binary suites need the CLI to build to run end-to-end (no libcurl-dev here).
+- **Next:** auto-claim on `edit`/`write`; wire `release_all` to
+  `swarm:actor_stopped`; a per-turn auto-checkpoint on `turn:end`.
 - **Then (git-free backend):** the snapshot store (touched-file manifests,
   content-addressed) behind the same tools; backend auto-detection in a
   `workspace` capability.

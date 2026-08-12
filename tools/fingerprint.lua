@@ -39,6 +39,9 @@ put("tools_api", sorted_keys(bog.tools))
 put("memory", sorted_keys(bog.memory))
 put("caps", sorted_keys(sys.caps()))
 put("events", tostring(bog.events ~= nil))
+-- git is a C capability registered by both front ends; a missing registration on
+-- one side must fail parity, so its surface is part of the fingerprint.
+put("git", sorted_keys(git))
 
 -- ---- the tools the model is offered ----------------------------------------
 -- The one place asymmetry is legitimate: the studio registers panel-drawing

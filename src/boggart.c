@@ -24,6 +24,7 @@ int luaopen_boggart_db(lua_State *L);
 int luaopen_boggart_swarm(lua_State *L);
 int luaopen_boggart_mcp(lua_State *L);
 int luaopen_boggart_auth(lua_State *L);
+int luaopen_boggart_git(lua_State *L);
 lua_State *boggart_newstate(void);       /* src/lmem.c: counts real bytes */
 void boggart_open_mem(lua_State *L);
 int luaopen_ltui_lcurses(lua_State *L); /* vendored ltui curses binding */
@@ -132,6 +133,8 @@ static void register_boggart(lua_State *L, int argc, char **argv) {
   lua_setglobal(L, "mcp");
   luaL_requiref(L, "auth", luaopen_boggart_auth, 0);
   lua_setglobal(L, "auth");
+  luaL_requiref(L, "git", luaopen_boggart_git, 0);
+  lua_setglobal(L, "git");
 
   /* ltui's curses binding, as package.preload["ltui.lcurses"] rather than an
    * eager require: opening it allocates metatables and calls setlocale, which

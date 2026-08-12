@@ -1028,6 +1028,11 @@ for name, def in pairs(require("goap").tools) do M.register(name, def) end
 -- agents coordinate on files instead of colliding. See lua/claims.lua.
 for name, def in pairs(require("claims").tools) do M.register(name, def) end
 
+-- git tools: model-facing wrappers (checkpoint/restore/git_diff/worktree) over
+-- the C `git` capability (src/lgit.c). Tooling and policy are C; these are the
+-- thin Lua glue the model calls. See lua/gittools.lua.
+for name, def in pairs(require("gittools").tools) do M.register(name, def) end
+
 -- model/user-defined tool files
 load_user_tools()
 

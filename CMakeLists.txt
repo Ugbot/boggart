@@ -305,6 +305,7 @@ add_executable(boggart
   src/ldb.c
   src/lswarm.c
   src/lmcp.c
+  src/lgit.c
   src/jwriter.c
   src/lauth.c
   src/bogembed.c
@@ -449,6 +450,7 @@ if(BOGGART_BUILD_APP AND SDL2_FOUND)
     src/ldb.c
     src/lswarm.c
     src/lmcp.c
+    src/lgit.c
     src/jwriter.c
     src/lauth.c
     src/bogembed.c
