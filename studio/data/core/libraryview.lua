@@ -33,6 +33,30 @@ local LABEL = {
   tools = "Tools", skills = "Skills", memory = "Memory", mcp = "MCP",
 }
 
+-- What each section is, said once. This is the signpost the owner could not find
+-- -- particularly for skills, which are always present but were never explained.
+-- Drawn as a fixed banner under the tabs, so every section teaches what it holds
+-- and how one comes to exist. ASCII only: the bundled monospace font draws these,
+-- and a stray glyph outside Latin renders as an empty box in the chrome.
+local EXPLAIN = {
+  tools =
+    "A tool is a small Lua function the agent wrote for itself with define_tool: "
+    .. "code it can call to get the same answer every time, with a scope and "
+    .. "provenance. Ask the agent to build one and it appears here.",
+  skills =
+    "A skill is a named bundle of instructions plus the tools an agent is allowed "
+    .. "to use -- the thing that scopes what a swarm agent can do. Seven ship built "
+    .. "in; overlay your own under ~/.boggart/lua/skills/.",
+  memory =
+    "Memory is what the agent keeps across sessions: durable facts it saves with "
+    .. "`remember` and searches with `recall`. Tell it something worth keeping and "
+    .. "it lands here.",
+  mcp =
+    "MCP servers are external tool servers the agent connects to; each contributes "
+    .. "its tools as mcp__<server>__<tool>. Declare them in "
+    .. "~/.boggart/lua/mcp_servers.lua -- none are connected until you add one.",
+}
+
 -- How long a snapshot is trusted. The data behind this view is SQLite queries
 -- and directory scans; update() runs ~60 times a second and must return
 -- immediately, so nothing here is read per frame. Three seconds is short enough
@@ -512,8 +536,19 @@ function LibraryView:skill_detail(e, cols, head, body)
         { style.dim, string.format("   (%d matching tool%s now)", n, n == 1 and "" or "s") },
       }
     else
+      -- Some grants name tools that only exist in a particular mode. The swarm
+      -- messaging and orchestration tools (send/publish/subscribe/inbox/spawn/
+      -- await/threads) are registered when swarm mode starts, so a skill that
+      -- grants them looks broken in a plain window when it is not -- the tool
+      -- is real, it just is not loaded right now.
+      local SWARM_ONLY = {
+        send = true, publish = true, subscribe = true, inbox = true,
+        spawn = true, await = true, threads = true,
+      }
       local d = reg[pat]
-      local desc = "   (no such tool)"
+      local desc = SWARM_ONLY[pat] and "   (swarm tool -- loaded in swarm mode)"
+        or "   (no such tool)"
+      local colour = d and style.text or (SWARM_ONLY[pat] and style.dim or style.error)
       if d then
         local room = math.max(0, cols - #pat - 3)
         desc = d.description or ""
@@ -521,7 +556,7 @@ function LibraryView:skill_detail(e, cols, head, body)
         desc = "   " .. desc
       end
       body[#body + 1] = {
-        { d and style.text or style.error, pat },
+        { colour, pat },
         { style.dim, desc },
       }
     end
@@ -635,14 +670,22 @@ function LibraryView:draw()
                                          self.mouse.x, self.mouse.y)
   end
 
-  -- ---- header: sections, then the search box ------------------------------
+  -- ---- header: sections, the search box, then the section signpost --------
   local top = self.position.y
-  local header_h = bh * 2 + vpad * 4
-  renderer.draw_rect(self.position.x, top, self.size.x, header_h, style.background2)
-  renderer.draw_rect(self.position.x, top + header_h - 1, self.size.x, 1, style.divider)
-
   local x0 = self.position.x + pad
   local full = self.size.x - pad * 2
+
+  -- The signpost for the current section, wrapped to the full width and computed
+  -- before the header rect so the rect is tall enough to hold it. Fixed in the
+  -- header rather than scrolled with the list, because "what is a skill" should
+  -- not scroll away the moment you look at one.
+  local ex_cols = math.max(20, math.floor(full / charw))
+  local ex_rows = {}
+  wrap(ex_rows, EXPLAIN[self.section] or "", style.dim, ex_cols)
+
+  local header_h = bh * 2 + vpad * 4 + #ex_rows * lh + vpad / 2
+  renderer.draw_rect(self.position.x, top, self.size.x, header_h, style.background2)
+  renderer.draw_rect(self.position.x, top + header_h - 1, self.size.x, 1, style.divider)
 
   local tabs = {}
   for _, s in ipairs(SECTIONS) do
@@ -684,6 +727,14 @@ function LibraryView:draw()
   add({ x = x0, y = sy, w = full, h = sh }, "search", function()
     self.searching = true
   end)
+
+  -- The section signpost, drawn under the search box. Each row is a single
+  -- coloured segment (see wrap), so one draw_text per line is enough.
+  local ey = sy + sh + vpad / 4
+  for _, r in ipairs(ex_rows) do
+    common.draw_text(font, r[1][1], r[1][2], "left", x0, ey, full, lh)
+    ey = ey + lh
+  end
 
   -- ---- panes ---------------------------------------------------------------
   local body_top = top + header_h

@@ -179,6 +179,53 @@ local WF_KEYS = { model = true, tools = true, out = true }
 local workflows = {}
 recipes.workflows = workflows
 
+-- What a workflow is, kept beside the recipe copy above so the two ideas are
+-- each described in exactly one place. The empty workflow screen reads WHAT_IT_IS
+-- and VERSUS from here; if a second surface ever needs to explain a workflow it
+-- reads them too, and the descriptions cannot drift apart.
+workflows.WHAT_IT_IS =
+  "A workflow is several prompts run in order. Each step can use a different " ..
+  "model and its own tools, and each step can read what the step before it " ..
+  "returned through {{previous}}."
+
+-- The distinction people actually need, because a recipe and a workflow sit next
+-- to each other: a recipe is one prompt, a workflow is a chain of them.
+workflows.VERSUS =
+  "A recipe is one prompt you fill in and send. A workflow is a chain: the first " ..
+  "step's answer becomes the next step's input, so you can summarise a file in " ..
+  "one step and critique that summary in the next, each with the model that suits it."
+
+workflows.EXAMPLE_NAME = "summarise-then-critique"
+
+-- Shipped so the idea is legible on sight rather than from documentation. Step
+-- one reads a file and summarises it -- the `read` tool is granted so the step
+-- can actually open the file, since a workflow step has no tools unless its file
+-- says so. Step two takes that summary through {{previous}} and argues with it.
+-- Runnable as it stands: point {{file}} at anything and press Run.
+workflows.EXAMPLE = {
+  description =
+    "# summarise-then-critique -- read a file, summarise it, then critique the summary.\n" ..
+    "# Step 1 reads {{file}} and summarises it; step 2 reads that summary through\n" ..
+    "# {{previous}} and looks for what it got wrong. Press Run and give it a file.",
+  steps = {
+    {
+      name = "Summarise",
+      tools = { "read" },
+      out = "summary",
+      prompt =
+        "Read {{file}} and summarise what it does in three or four bullet points.\n" ..
+        "Be concrete: name the functions or sections that matter, not just the topic.",
+    },
+    {
+      name = "Critique",
+      prompt =
+        "Here is a summary of a file:\n\n{{previous}}\n\n" ..
+        "What would a careful reviewer say this summary gets wrong, overstates, or " ..
+        "leaves out? If it is accurate and complete, say so plainly.",
+    },
+  },
+}
+
 function workflows.dir()
   return bog.userdir .. "/workflows"
 end
@@ -280,6 +327,15 @@ function workflows.save(name, wf)
   sys.mkdir_p(workflows.dir())
   bog.util.write_file(workflows.path(name), workflows.serialise(wf))
   return workflows.path(name)
+end
+
+-- Write the example, once, if the user has no workflows. The same guard and the
+-- same bargain as recipes.seed_example: an example you can read and run beats a
+-- paragraph describing one, but only when it is not trampling something the user
+-- already made.
+function workflows.seed_example()
+  if #workflows.list() > 0 then return nil end
+  return workflows.save(workflows.EXAMPLE_NAME, workflows.EXAMPLE)
 end
 
 -- The name a step's answer is stored under, so a later step can say

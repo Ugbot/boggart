@@ -80,6 +80,16 @@ end
 
 function WorkflowView:refresh()
   self.names = workflows.list()
+  -- An empty list is where someone learns what a workflow is, so seed a working
+  -- one rather than opening to a bare screen -- the same bargain the recipe list
+  -- strikes. seed_example guards on emptiness, so this never overwrites anything
+  -- the user made, and reappears only if they delete every workflow.
+  if #self.names == 0 then
+    if workflows.seed_example() then
+      self.names = workflows.list()
+      self.notice = { text = "seeded an example workflow -- edit it, or press Run" }
+    end
+  end
   if self.selected and not workflows.load(self.selected) then
     self.selected, self.wf = nil, nil
   end
@@ -570,11 +580,19 @@ function WorkflowView:draw()
   local cols = math.max(20, math.floor((w - pad * 2) / charw))
   local y = body_top + vpad - self.scroll.y
 
+  -- Only reached when the user has deleted every workflow, since a fresh view
+  -- seeds one. It still has to teach: this is where the idea gets explained
+  -- before there is an example to point at.
   if not self.wf then
-    common.draw_text(font, style.dim,
-      "A workflow is a list of prompts run in order. Press New workflow.",
-      "left", x, y, w, lh)
-    self.content_height = self.size.y
+    for _, para in ipairs({ workflows.WHAT_IT_IS, workflows.VERSUS,
+                            "Press New workflow to make one." }) do
+      for _, row in ipairs(wrap(para, cols)) do
+        if vis(y) then common.draw_text(font, style.dim, row, "left", x, y, w, lh) end
+        y = y + lh
+      end
+      y = y + vpad
+    end
+    self.content_height = (y + self.scroll.y) - self.position.y + vpad * 2
     self:draw_scrollbar()
     return
   end
