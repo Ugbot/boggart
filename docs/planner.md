@@ -1,5 +1,16 @@
 # Planning in the C core — a rebuilt HTN + GOAP planner
 
+> **Status (2026-08).** A Lua **execution-only** prototype ships first —
+> `lua/plan.lua` with the `run_plan` / `define_task` / `tasks` tools and a
+> `tests/plan.lua` suite. It does the part that actually pays for itself: a named
+> task decomposes into ordered steps that fire **with no model turn between
+> them** — "a skill minus the per-step tool call" — which is HTN's *execution*
+> half and nothing more. It has no search, no C, no arenas: a defined procedure
+> is chained tool calls, bounded against cycles, run locally. This document is the
+> fuller design for *if and when* planning needs to drop below the Lua line — for
+> performance, or to add real **GOAP search** — which the prototype exists to tell
+> us whether we actually need. Read it as the destination, not the next commit.
+
 A plan for a **from-scratch** planner in the C core: not a vendored library but
 our own small, arena-backed, assertion-heavy planner that unifies **HTN**
 (hierarchical task networks — structure and domain knowledge) and **GOAP**

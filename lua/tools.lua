@@ -1014,6 +1014,11 @@ M.register("mcp", {
 -- memory tools
 for name, def in pairs(bog.memory.tools) do M.register(name, def) end
 
+-- plan/task tools: compiled procedures (run_plan/define_task/tasks). A defined
+-- task chains tool calls with no model turn between them -- a skill minus the
+-- per-step call. See lua/plan.lua.
+for name, def in pairs(require("plan").tools) do M.register(name, def) end
+
 -- model/user-defined tool files
 load_user_tools()
 
