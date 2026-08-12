@@ -20,6 +20,7 @@ local PanelView = require "core.panelview"
 local WorkflowView = require "core.workflowview"
 local LibraryView = require "core.libraryview"
 local PickerView = require "core.pickerview"
+local fonts = require "core.fonts"
 local SwarmView = require "core.swarmview"
 local uitools = require "core.uitools"
 
@@ -60,6 +61,12 @@ function studio.attach()
   -- because they only mean anything when there is a window: offering
   -- `draw_panel` to a headless run would be a tool that cannot work.
   core.try(uitools.register, studio)
+
+  -- The stored typeface, before anything draws with the default one.
+  core.try(function()
+    local problems = fonts.apply()
+    for _, p2 in ipairs(problems or {}) do core.log("%s", p2) end
+  end)
 
   studio.sidebar = SidebarView()
   core.root_view:get_primary_node():split("left", studio.sidebar, true)
@@ -907,6 +914,50 @@ command.add(nil, {
   -- A picker, because there was no way to reach anything that was not passed
   -- on the command line. See core/pickerview.lua for why it is drawn rather
   -- than delegated to the system dialog.
+  -- ---- fonts ---------------------------------------------------------------
+  ["studio:set-font"] = function()
+    local which = "code"
+    core.command_view:enter("Which text: code (the conversation) or ui?",
+      function(text, item)
+        which = (item or text) == "ui" and "ui" or "code"
+        studio.pick("file", function(path)
+          if not path then return end
+          if not path:lower():match("%.tt[fc]$") and not path:lower():match("%.otf$") then
+            studio.say("%s does not look like a font file (.ttf, .ttc or .otf).", path)
+            return
+          end
+          local problems, refused = fonts.set(which, path)
+          if refused then
+            studio.say("%s", refused)
+          elseif problems and #problems > 0 then
+            for _, p2 in ipairs(problems) do studio.say("%s", p2) end
+          else
+            studio.say("%s font is now %s.", which, path:match("[^/\\]+$") or path)
+          end
+        end, fonts.first_search_path())
+      end, function(text)
+        return require("core.common").fuzzy_match({ "code", "ui" }, text)
+      end)
+  end,
+
+  ["studio:font-size"] = function()
+    local s2 = fonts.settings()
+    prompt("Size for the conversation text:", function(text)
+      local n = tonumber(text)
+      if not n or n < 6 or n > 72 then
+        studio.say("A font size between 6 and 72, please.")
+        return
+      end
+      fonts.set("code", nil, n)
+      studio.say("Conversation text is now %g point.", n)
+    end, tostring(s2.code.size))
+  end,
+
+  ["studio:reset-fonts"] = function()
+    fonts.reset()
+    studio.say("Fonts are back to the ones that ship with boggart.")
+  end,
+
   ["studio:open-file"] = function()
     studio.pick("file", function(path)
       if path then core.root_view:open_doc(core.open_doc(path)) end
@@ -1005,6 +1056,9 @@ command.add(nil, {
   ["agent:settings-list"] = function()
     local items = {
       { "Welcome (set up a model)", "agent:welcome" },
+      { "Font",                   "studio:set-font" },
+      { "Font size",              "studio:font-size" },
+      { "Reset fonts",            "studio:reset-fonts" },
       { "Workflows",              "agent:workflows" },
       { "Library (tools, memory)", "agent:library" },
       { "Swarm (multi-agent)",    "agent:swarm" },
