@@ -1019,6 +1019,11 @@ for name, def in pairs(bog.memory.tools) do M.register(name, def) end
 -- per-step call. See lua/plan.lua.
 for name, def in pairs(require("plan").tools) do M.register(name, def) end
 
+-- goap tools: opt-in goal planning (goap/define_action/blackboard). The model
+-- states a goal world-state; A* over declared actions finds the tool ordering.
+-- See lua/goap.lua and lua/blackboard.lua.
+for name, def in pairs(require("goap").tools) do M.register(name, def) end
+
 -- model/user-defined tool files
 load_user_tools()
 

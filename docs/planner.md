@@ -1,15 +1,23 @@
 # Planning in the C core — a rebuilt HTN + GOAP planner
 
-> **Status (2026-08).** A Lua **execution-only** prototype ships first —
-> `lua/plan.lua` with the `run_plan` / `define_task` / `tasks` tools and a
-> `tests/plan.lua` suite. It does the part that actually pays for itself: a named
-> task decomposes into ordered steps that fire **with no model turn between
-> them** — "a skill minus the per-step tool call" — which is HTN's *execution*
-> half and nothing more. It has no search, no C, no arenas: a defined procedure
-> is chained tool calls, bounded against cycles, run locally. This document is the
-> fuller design for *if and when* planning needs to drop below the Lua line — for
-> performance, or to add real **GOAP search** — which the prototype exists to tell
-> us whether we actually need. Read it as the destination, not the next commit.
+> **Status (2026-08).** A Lua prototype ships first — no C, no arenas — in two
+> halves:
+> - **Execution** (`lua/plan.lua`; `run_plan` / `define_task` / `tasks`): a named
+>   task decomposes into ordered steps that fire **with no model turn between
+>   them** — "a skill minus the per-step tool call" — HTN's execution half,
+>   bounded against cycles.
+> - **Search** (`lua/goap.lua` + `lua/blackboard.lua`; `goap` / `define_action` /
+>   `blackboard`): an **opt-in** planner. Declare actions (a tool + boolean
+>   pre/effect/cost); state a **goal** world-state; A* over the declared actions,
+>   from the agent's **per-agent blackboard**, finds the tool ordering and
+>   (optionally) runs it, writing effects back to the blackboard. Nothing invokes
+>   it unless the model chooses the `goap` tool.
+>
+> Both are covered by `tests/plan.lua` and `tests/goap.lua`. This document remains
+> the fuller design for *if and when* planning needs to drop below the Lua line —
+> for performance, or for a raised atom cap, arenas, and unified HTN+GOAP in C.
+> The Lua version exists to tell us whether that is ever worth building. Read the
+> rest as the destination, not the next commit.
 
 A plan for a **from-scratch** planner in the C core: not a vendored library but
 our own small, arena-backed, assertion-heavy planner that unifies **HTN**
