@@ -186,3 +186,222 @@ Codex security/sandboxing & configuration docs (linked from the repo;
 the public docs reorganized to learn.chatgpt.com/docs during this research, so
 the sandbox/approval specifics above reflect Codex's established public model).
 
+---
+
+## 3. pi — the minimal harness boggart forks from
+
+**What it is.** [pi](https://github.com/badlogic/pi-mono) (pi.dev, Mario
+Zechner / Earendil Inc.) is a **TypeScript** terminal coding agent built as an
+experiment in minimalism-you-extend: four core tools (`read`/`write`/`edit`/
+`bash`, plus `grep`/`find`/`ls`), tree-structured JSONL sessions with in-place
+branching, automatic + manual compaction, Agent-Skills-standard skills, and a TS
+**extension** SDK (custom tools, commands, UI, event handlers), shareable as
+**Pi Packages**. It ships *powerful defaults*: 30+ model providers, four runtime
+modes (interactive, print/JSON, RPC, SDK). Its defining move is what it
+*refuses*: **no MCP, no sub-agents, no plan mode, no permission popups, no
+built-in todos, no background bash** — each punted to an extension, a container,
+or tmux. The ethos: "adapt pi to your workflows, not the other way around."
+
+**Verdict.** pi is boggart's **direct ancestor** — boggart's `tools.lua` header
+literally says "pi-minimal defaults," and the four-core-tools/tight-context/
+no-product-opinion shape is pi's. But the two diverge at the deepest point: **pi
+is a minimal core you extend from the outside** (in TypeScript, ahead of time),
+and it *cuts* MCP/sub-agents to stay small; **boggart is a mutable kernel that
+rewrites itself from the inside** (in Lua, at runtime), and it *re-adds* exactly
+what pi cut. Same starting aesthetic, opposite theory of where extension lives.
+
+### The usual feature-gap list mostly doesn't apply
+
+Auditing boggart against pi (or the wider field) as a feature checklist gives a
+long "missing" column — repo-map/LSP, web search, plan/todos, git workflow, a
+project-instructions file, multi-provider, multi-hunk patch. Under boggart's
+thesis **almost all of it dissolves**, because those capabilities are meant to
+be *grown* (Lua) or *plugged in* (MCP / an external LLM station), not baked into
+the core:
+
+| "Gap" | How it's actually provided | Verdict |
+|---|---|---|
+| LSP / semantic nav / repo-map | real language servers via MCP (e.g. an external llm-station) | **Not a gap** — real LSP beats a bespoke embedding index |
+| Multi-provider | `api.lua` is overlay-mutable Lua (C only streams bytes); or point at any `http://…` Messages-API gateway | Soft — an adapter written once, or offloaded to the station |
+| Web search, plan/todos, git workflow, `AGENTS.md` loader, multi-hunk patch | `define_tool` — the agent writes them when it needs them | Correctly *not* core |
+| MCP, sub-agents (the things pi cut) | boggart ships both: C MCP client + swarm actor bus | boggart *ahead* of pi here |
+
+So the honest question is not "what feature is absent" but **"what can neither
+be written in Lua nor handed to an external station?"** That list is short.
+
+### What is genuinely structural (survives the reframe)
+
+1. **The sandbox — but it is already most of the way there, and of the
+   stronger kind.** The instinct is to reach for an OS jail as Codex does, and
+   to call the whole thing unsolved. That undersells what boggart already has.
+   Its sandbox **is not a Lua sandbox — it is the C/Lua boundary** (`tools.lua`
+   is explicit about this). A `define_tool` body is compiled against `tool_env()`
+   as its `_ENV`, and `io`, the destructive half of `os`, `package`/`require`/
+   `load`, `debug`, and raw `uv`/`http`/`swarm`/`mcp` are all *deliberately
+   absent*. The only way to touch the world is a C-backed capability (`sys`,
+   `db`) with its **policy co-located in C**: `sys.rmtree` refuses `/` and uses
+   `lstat` so it cannot be walked out of the overlay, `proc.run` bounds output
+   and enforces a timeout, `db` goes through the store, even `getenv` refuses
+   secret-ish names. There is no second route, so limits and tracing are
+   enforced once.
+
+   This is the **capability-positive** model, and it is *stronger* than an OS
+   deny-list: a tool can only do what it was handed, where seccomp enumerates
+   what to forbid and leaks by omission. So the "harder sandbox" framing is
+   backwards — for pure-Lua and C-capability composition, the boundary already
+   contains the agent's own generated code.
+
+   What remains is exactly **one residual hole**: `sys.exec` (and MCP stdio
+   servers) spawn a real subprocess, and *that child* leaves the boundary into
+   native land. OS enforcement — **Landlock + seccomp** on Linux, **Seatbelt**
+   on macOS — therefore applies to **precisely one tier, the shell-out /
+   subprocess tier, and nowhere else**; the in-VM tiers need nothing added. That
+   is a far smaller, sharper piece of C work than a general jail, and the swarm's
+   per-agent allowlist is already the *policy* layer waiting for it. Until it
+   lands, only shelling out is "safe because the operator is trusted" — and that
+   is the assumption untrusted inbound work (see §4) erodes.
+
+2. **Two pieces that stay C / front-end work no matter how mutable the Lua is:**
+   - **Image / multimodal ingestion.** `api.lua` can be taught to *send* image
+     blocks (Lua), but the studio must *accept* them (C file handling) and the
+     terminal fundamentally cannot show them.
+   - **The OS-enforcement layer above.** Landlock/seccomp/Seatbelt bindings are
+     C; the agent cannot Lua its way to a syscall filter for its own host.
+
+3. **LICENSE file.** A hard ship-blocker (the README flags it), unrelated to
+   philosophy.
+
+### The bet, and its cost
+
+"Flex over structure" is a real bet, not a free win. It trades **discoverability
+and auditability**: a Cursor/Codex/pi user reads a fixed manifest of what the
+agent can do; a boggart user inspects a toolset the agent has been rewriting.
+boggart's mitigation is the **library panel** — every generated tool with its
+scope, defining git revision, and call/fail counts, plus full-text memory
+search. That provenance surface is what keeps runtime self-extension *legible*
+instead of spooky, and it should be treated as load-bearing, not decorative.
+
+**Bottom line.** Against pi, boggart is not "pi with more features" or "pi with
+fewer" — it is pi's aesthetic inverted into a self-modifying kernel. The
+feature-gap column that the comparison invites mostly collapses into Lua or MCP.
+What remains is essentially **one gap, and a narrow one**: jailing the single
+subprocess tier so that "the agent adds whatever it needs" is a safety *property*
+rather than a liability. Close that one hole and the rest genuinely isn't
+missing — it is deferred by design, which is the entire point of the thing. pi
+stays the safer, more portable daily driver today (providers, containerized
+isolation, a mature TS package ecosystem); boggart is the more ambitious kernel,
+and its capability boundary is a better *foundation* for that ambition than the
+comparison first suggests.
+
+Sources: [badlogic/pi-mono](https://github.com/badlogic/pi-mono)
+(`packages/coding-agent/README.md`), pi.dev, and Mario Zechner's write-up
+"What I learned building an opinionated and minimal coding agent" (2025-11-30).
+
+---
+
+## 4. Looking forward — one kernel, two domains (coding + business process)
+
+The sections above ask "could you rebuild *X* on boggart?" This one asks the
+inverse: **what is boggart for next?** The answer that fits its architecture is
+not "a better coding agent" but **a domain-neutral agent kernel that serves both
+hardcore coding and business-process work from the same core** — because the
+primitives it already has are not coding primitives, they are *process*
+primitives.
+
+### Why the two are the same shape
+
+Re-read the two domains through boggart's own machinery and they are one loop
+with two tool-packs:
+
+- **Coding** = a process whose tools are `read`/`write`/`edit`/`bash` and whose
+  system-of-record is a **git repo**.
+- **Business process** = a process whose tools are **MCP / API integrations**
+  (mail, calendar, drive, a CRM, a database) and whose system-of-record is
+  **SaaS + the SQLite store**.
+
+Same turn loop (`api.lua`), same self-extension (`define_tool` + overlay +
+`reload`), same durable journal — the only thing that changes is which
+tool-pack (`skills/*`) is loaded and what counts as the record of truth. This is
+the pi/boggart "flex over structure" bet taken to its conclusion: don't ship a
+coding *product* or a BPM *product*, ship the **kernel** and let skills carry the
+opinion.
+
+### The machinery already leans toward BPM
+
+A single-repo coding agent barely needs a durable bus; a business process *is*
+one. Boggart's least-exercised subsystems are exactly a workflow engine's core:
+
+| Business-process need | boggart primitive that already fits |
+|---|---|
+| Long-running, multi-step, resumable flow | swarm **journal** + resumable sessions (`processed_at` stamps = a saga log) |
+| Triggers ("when an invoice arrives…") | **events** / `on_event` (autocommands) — inversion of control |
+| Integrations with outside systems | **MCP client** (register `mcp__<server>__*` as ordinary tools) + `define_tool` to compose them |
+| Business state / records | **memory** (FTS5) + `kv` + `sql` |
+| Named roles / process definitions | **skills** = instructions + a permitted tool set |
+| Human-in-the-loop approval | studio's existing **diff-approval gate**, generalized |
+| Rendering a dashboard / approval board | **`draw_panel`** — the agent writes the surface per pack |
+
+The MindStudio nod in the README (the workflow-builder shape) shows the intent is
+already latent. The pieces are perhaps 70% there for BPM and ~40% there for a
+*product-grade* coding agent — the reverse of what the name suggests.
+
+### What business-process work additionally demands
+
+Coding gets away with an ephemeral, trusted, synchronous model. BPM does not, and
+the honest additions are:
+
+1. **Persistence + triggers (the #1 add).** Coding runs to quiescence and exits;
+   a business process must stay up and be *woken* — webhook, cron, mailbox poll,
+   queue. The bus can *deliver* an inbound event; the **listener and scheduler
+   do not exist yet.** This is C-level, but **libuv is already vendored**, so the
+   event-loop substrate is in the binary — it needs an inbound transport and a
+   supervisor, not a new foundation. (Same gap the OpenClaw study flagged as
+   "always-on daemon + inbound Gateway"; BPM is the reason to close it.)
+2. **A generalized approval gate.** The studio gates *file writes* today; BPM
+   needs the same gate on effectful business actions ("approve: send this email /
+   issue this refund"). Generalize "diff approval" to "any capability tagged
+   *approval-required*" — and the capability boundary (§3) is exactly where the
+   tag belongs.
+3. **Idempotency + compensation (sagas).** A business process must not
+   double-charge. `processed_at` is a start; real flows need idempotency keys and
+   compensating actions layered on the journal.
+4. **Capability *grades*.** Per-agent allowlists + the C boundary already exist;
+   add **read-only** and **requires-approval** grades so a BPM agent gets
+   `mcp__mail__*` for reading but `send` only behind a human.
+
+### The security through-line
+
+BPM changes the threat model: coding assumes a **trusted operator**, but a
+business process ingests **emails, documents, and webhooks — attacker-controlled
+input** — so prompt injection acquires real-world blast radius (money, records,
+outbound messages). This is why the sandbox has been the spine of every section
+here, and the three defenses compose cleanly:
+
+- the **C capability boundary** (§3) — no ambient authority, one lawful channel;
+- the **subprocess jail** — the single residual hole, Landlock/seccomp/Seatbelt
+  around shell-out and MCP-stdio only;
+- the **approval gate** — a human on the irreversible actions.
+
+Together they are what make it *safe* to point one self-rewriting kernel at both
+a git repo and a company's inbox. The **library panel's** provenance
+(which tool, what scope, which git revision, call/fail counts) stops being a nice
+touch and becomes a **compliance surface** — an auditable record of what an
+autonomous process was permitted to do and did.
+
+### The one caution
+
+Build it as **one kernel + two tool-packs, not two products.** The failure mode
+is UX dilution: a single front-end trying to serve a coder and a business analyst
+at once. The success mode is a coding-pack and a BPM-pack over the same loop,
+with `draw_panel` specializing the surface per pack — a diff for code, a
+process/approval board for BPM. The kernel stays neutral; the packs carry the
+opinion; the capability boundary keeps both honest.
+
+**Bottom line.** "Hardcore coding *and* business-process work" is not a stretch
+for boggart — it is the shape the kernel already has, with coding as the
+effect-heavy/local/trusted end and BPM as the integration-heavy/long-running/
+untrusted end of one spectrum. The work to reach the BPM end is additive and
+mostly known: an inbound-event + scheduler layer on the vendored libuv loop, a
+generalized approval gate, saga-grade journalling, and the one subprocess jail
+that was already the sole outstanding item. None of it fights the architecture;
+most of it is the architecture, turned on.
