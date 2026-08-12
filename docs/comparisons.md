@@ -515,3 +515,107 @@ Sources: [triggerdotdev/trigger.dev](https://github.com/triggerdotdev/trigger.de
 Trigger.dev docs "How it works", the v3 "durable serverless / no timeouts"
 announcement and the v4 GA notes (Run Engine 2.0, waitpoints, self-hosting on
 Postgres+Redis), and the CRIU checkpoint/restore write-ups referenced from them.
+
+---
+
+## 6. Lua steps as workflow nodes — the native composition layer
+
+§4 argued boggart should serve business processes; §5 showed the durable
+substrate that implies and said to lift *replay + waitpoints + idempotency*
+rather than chase CRIU. This section names the missing middle: **the composition
+layer — how steps are sequenced into a durable flow — and asserts its unit.** A
+boggart workflow should be a journalled graph whose deterministic nodes are
+**Lua steps**: capability-bounded Lua functions, interleaved with agent turns and
+durable waits. We can support this, and we should — because boggart is the one
+system whose *step language is already the sandboxed one*.
+
+### Two node types, one graph
+
+An agentic workflow has two fundamentally different kinds of work, and boggart
+already has a primitive for each:
+
+- **Agent turn** — open-ended judgment: read this, decide that, use tools. A
+  session + a skill-pack. Expensive, nondeterministic, exactly what an LLM is
+  for.
+- **Lua step** — deterministic mechanism: parse the invoice, route if total >
+  $10k, normalize the record, call one API. A Lua body compiled against the §3
+  capability env. Cheap, testable, auditable, no nondeterminism.
+
+The discipline is the same rule the tool prompt already states — *promote stable
+mechanics, keep judgment in yourself* — lifted from tool-authoring to
+workflow-authoring. Not every node in a business process needs an LLM; most of a
+real flow is routing and transformation, and paying for a model turn to decide
+`total > 10000` is waste. Lua steps are where that logic belongs, and agent
+turns are the judgment nodes between them. A third node type, the **waitpoint**
+(§5), durably suspends the graph to the journal until a token, timeout, or
+webhook — human approval and external events.
+
+### The structural payoff: one boundary does both jobs
+
+Why Lua steps rather than "a workflow feature" in the abstract: in boggart the
+**capability boundary and the effect-replay boundary are the same boundary.**
+
+- A Lua step touches the world *only* through C-backed capabilities (§3) — there
+  is no second route. That is what makes it safe.
+- Because there is only that one route, the journal can interpose at exactly that
+  point: record every effect's result keyed by an idempotency key, and on replay
+  return the cached value instead of re-executing. That is what makes it durable.
+
+The single lawful channel (the "monadic" C boundary from earlier) is therefore
+*also* the single place to record and replay side effects. Pure-Lua steps replay
+for free (deterministic given inputs); effectful steps — `sys.exec`, an MCP call,
+sending mail — replay against their cached result so a resumed run never
+double-fires. This is precisely Trigger.dev's "cache each subtask by idempotency
+key," except boggart gets the interposition point for free from a boundary it
+already has for security. No other agent's step language is capability-contained,
+so no other agent can offer safe, replayable, user-or-agent-authored steps as one
+thing.
+
+### The self-modification thesis, applied to workflows
+
+`define_tool` already lets the agent author a Lua body at runtime against that
+capability env. A Lua step is the same object with a different caller (the
+workflow engine schedules it; the model doesn't invoke it inside a turn). So an
+agent can **extend its own workflow mid-run** — write a new deterministic routing
+or transform step and splice it in — the §3 self-extension story reaching the
+composition layer. And like tools, workflow definitions and their steps live as
+overlay-mutable Lua the human can read, listed in the **library panel** with
+provenance (scope, git revision, call/fail counts) — so an autonomous,
+self-editing workflow stays legible and auditable, which is the whole reason the
+capability boundary is *not* a security boundary against the agent but *is* one
+around effects.
+
+### What maps to what
+
+| Workflow concept | boggart mechanism (have / add) |
+|---|---|
+| Deterministic step | **Lua step** = `define_tool` body vs §3 capability env — *have* the unit, *add* engine-scheduled invocation |
+| Judgment step | agent turn (session + skill-pack) — *have* |
+| Durable wait / human approval | **waitpoint** suspending to the journal — *add* (§5) |
+| Sequence / branch / fan-out / join | a Lua step returns the next edge; fan-out spawns over the swarm bus — *have* the bus, *add* the control vocabulary |
+| Crash recovery | journalled bus + resumable sessions + `--resume` — *have* (replay-durability, §5) |
+| Don't-double-fire | idempotency key + result cache **at the capability boundary** — *add*, cheaply, because the boundary is already the one route |
+| Trigger (cron / webhook / event) | `events`/`on_event` in-process — *add* the inbound + scheduler source (§4 #1) |
+| Legibility / audit | library panel provenance over steps and workflows — *have* |
+
+### The determinism caveat
+
+Replay-durability only holds if a step is deterministic given its inputs plus its
+cached effect results. Pure Lua is fine. The traps are ambient nondeterminism a
+step must *not* reach for outside a recorded capability: wall-clock time, random,
+environment — which is why `tool_env` already ships `os.time`/`date` but the
+effectful reads go through C. To make steps replayable, those too become
+capability calls whose results are journalled (record the clock once, replay it),
+the same move Trigger.dev makes for its cached subtasks. The capability boundary
+is what makes this enforceable rather than a convention: a step *cannot* smuggle
+in an unrecorded effect, because the only effects it has are the ones handed to
+it.
+
+**Bottom line.** "Lua steps in an agentic workflow" is not a new subsystem bolted
+on — it is the existing capability-bounded Lua body (§3) promoted from *tool the
+model calls* to *node the engine schedules and journals*, interleaved with agent
+turns and waitpoints on the bus boggart already has. It is the composition layer
+§4 and §5 were circling, and it is the one part of the durable-workflow story
+that boggart is *better* positioned to build than Trigger.dev or n8n — because in
+boggart the step language, the sandbox, and the effect-replay log are the same
+boundary, and the agent can already write to it.
