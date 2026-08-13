@@ -45,7 +45,7 @@ local EXPLAIN = {
     .. "provenance. Ask the agent to build one and it appears here.",
   skills =
     "A skill is a named bundle of instructions plus the tools an agent is allowed "
-    .. "to use -- the thing that scopes what a swarm agent can do. Seven ship built "
+    .. "to use -- the thing that scopes what a swarm agent can do. Eight ship built "
     .. "in; overlay your own under ~/.boggart/lua/skills/.",
   memory =
     "Memory is what the agent keeps across sessions: durable facts it saves with "
