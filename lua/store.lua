@@ -339,6 +339,40 @@ function M.mem_search(query)
     { fq })
 end
 
+-- ---- skill search (FTS5) ---------------------------------------------------
+-- A derived cache, not durable data: the live skill set is Lua modules
+-- (embedded + overlay + session-defined), so the router rebuilds this table
+-- from that set and queries it with FTS5's built-in bm25(). Created lazily
+-- here rather than in SCHEMA: it carries no state worth versioning, and an
+-- older boggart finding it in the DB just ignores it.
+--
+-- Column order matters: bm25() weights are positional, and skills_search's
+-- (4,3,2,1) means a hit on the name says more than one deep in instructions.
+local SKILLS_FTS = "CREATE VIRTUAL TABLE IF NOT EXISTS skills_fts "
+  .. "USING fts5(name, description, tools, instructions)"
+
+-- rows: { { name=, description=, tools=, instructions= }, ... } -- full rebuild.
+function M.skills_reindex(rows)
+  bog.db:exec(SKILLS_FTS)
+  bog.db:run("DELETE FROM skills_fts")
+  for _, r in ipairs(rows or {}) do
+    bog.db:run("INSERT INTO skills_fts(name,description,tools,instructions) VALUES(?,?,?,?)",
+      { r.name, r.description or "", r.tools or "", r.instructions or "" })
+  end
+end
+
+-- Best matches first. FTS5's bm25() is smaller-is-better (negative for good
+-- hits); it is negated here so callers see the intuitive bigger-is-better.
+function M.skills_search(query, n)
+  local fq = fts_query(query or "")
+  if not fq then return {} end
+  return bog.db:query(
+    "SELECT name, description, -bm25(skills_fts, 4.0, 3.0, 2.0, 1.0) AS score "
+    .. "FROM skills_fts WHERE skills_fts MATCH ? "
+    .. "ORDER BY score DESC, name ASC LIMIT ?",
+    { fq, n or 5 })
+end
+
 -- ---- sessions --------------------------------------------------------------
 function M.sess_create(title, model)
   local r = bog.db:run("INSERT INTO sessions(title,model,created,updated,messages) VALUES(?,?,?,?, '[]')",

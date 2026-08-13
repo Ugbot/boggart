@@ -1038,6 +1038,10 @@ for name, def in pairs(require("gittools").tools) do M.register(name, def) end
 -- Lua so there is one substrate. See lua/skills.lua.
 for name, def in pairs(require("skills").tools) do M.register(name, def) end
 
+-- skill router: find_skill, BM25 search over the skill corpus so the model can
+-- discover which skills fit a task before granting them. See lua/skillrouter.lua.
+for name, def in pairs(require("skillrouter").tools) do M.register(name, def) end
+
 -- model/user-defined tool files
 load_user_tools()
 
