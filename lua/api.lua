@@ -40,6 +40,30 @@ local function endpoint()
 end
 M.endpoint = endpoint
 
+-- What model this run is actually talking to, resolved exactly the way a real
+-- request resolves it, so nothing that displays it can drift from what is sent:
+--   * the model is sess.model -- the field the request body carries (see
+--     stream() below); auth.model() is only the persisted default that seeds a
+--     new session, so it is the fallback, not the answer.
+--   * the provider and local/remote verdict come from the endpoint, which is
+--     environment-wins: auth.provider() derives "local" (an address or a port,
+--     i.e. your own server) from a named vendor ("deepseek", "anthropic").
+-- One source of truth for the status bar, the /model command and doctor.
+function M.status()
+  local ep = endpoint()
+  local host = ep:match("^%a[%w+.-]*://([^/]+)") or ep
+  local provider = (auth.provider and auth.provider()) or "anthropic"
+  local sess = bog and bog.session
+  return {
+    model    = (sess and sess.model) or auth.model() or "?",
+    provider = provider,
+    is_local = (provider == "local"),
+    endpoint = ep,
+    host     = host,
+    has_key  = auth.has_key(),
+  }
+end
+
 -- ---- failure classification -------------------------------------------------
 --
 -- Three kinds of thing go wrong here and they want opposite treatment:

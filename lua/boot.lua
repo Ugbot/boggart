@@ -291,7 +291,11 @@ local function handle_command(line)
     end
   elseif cmd == "model" then
     if rest ~= "" then bog.session.model = rest end
-    io.write("model = ", bog.session.model, "\n")
+    local s = bog.api.status()
+    local where = s.is_local and ("local  " .. s.host)
+      or (s.provider .. "  (remote)")
+    io.write(string.format("model     %s\nrunning   %s\nendpoint  %s\n",
+      s.model, where, s.endpoint))
   elseif cmd == "new" then
     bog.new_session()
     io.write("started new session ", tostring(bog.session.id), ".\n")

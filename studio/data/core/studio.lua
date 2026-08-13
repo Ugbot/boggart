@@ -371,7 +371,24 @@ end
 function studio.status_items()
   if not bog then return {} end
   local v = studio.agent_view()
-  local out = { style.dim, "agent ", style.text, (bog.session and bog.session.model) or "?" }
+
+  -- Which model, and crucially where it runs: local (your own server, free) or
+  -- remote (a named vendor, per-token money). The status()-derived provider is
+  -- the same one a request resolves, so the badge cannot claim you are on local
+  -- while a request goes to the cloud. Remote is the one worth flagging -- it is
+  -- the "what am I about to spend money on?" this line exists to answer -- so the
+  -- provider name takes the warning colour when remote and stays dim when local.
+  local ok, st = pcall(bog.api.status)
+  st = ok and st or nil
+  local out
+  if st then
+    out = { style.dim, "agent ",
+      st.is_local and style.dim or (style.warn or style.accent), st.provider,
+      style.dim, " · ", style.text, st.model }
+    if st.is_local then out[#out + 1] = style.dim; out[#out + 1] = "  " .. st.host end
+  else
+    out = { style.dim, "agent ", style.text, (bog.session and bog.session.model) or "?" }
+  end
 
   -- Token usage: what this conversation has cost, and how full the context is.
   -- The percentage is the actionable one -- it says when a compaction is
