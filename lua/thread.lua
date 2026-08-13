@@ -5,6 +5,68 @@
 local M = {}
 
 -- Build an agent record (creates its persisted thread/session row). Does NOT
+-- The fanout cap: how many agents may exist at once.
+--
+-- This is the ONLY structural difference between "single-agent mode" and swarm
+-- mode. Everything is a swarm; a lone agent is a swarm whose cap is 1, so it
+-- cannot spawn and never needs the bus -- but it resolves skills, filters its
+-- tools and builds its prompt through exactly the same code as a swarm actor.
+-- Raising the cap is what turns one into the other.
+M.max_agents = 1
+M.live = 0
+
+function M.at_capacity()
+  return M.max_agents >= 0 and M.live >= M.max_agents
+end
+
+-- The tool/prompt policy an agent runs under. Shared by the lone agent and every
+-- swarm actor: the only per-mode differences are the transport (`async`) and
+-- whether spawning is permitted, both of which are data.
+--
+-- An agent with no skills gets the whole registry, which is what keeps the
+-- default REPL behaving exactly as before: skills narrow, they never widen.
+function M.agent_opts(rec, async)
+  return {
+    async = async or false,
+    system = function() return bog.prompt.agent_system(rec) end,
+    tools = function()
+      if not rec.allow or next(rec.allow) == nil then return bog.tools.schemas() end
+      return bog.tools.schemas_for(rec.allow)
+    end,
+    run_tool = function(name, input)
+      if rec.allow and next(rec.allow) ~= nil and not bog.tools.allowed(rec.allow, name) then
+        return "Tool error: tool '" .. name .. "' is not permitted for this agent"
+      end
+      return bog.tools.run(name, input)
+    end,
+    on_tool = bog.log_tool,
+  }
+end
+
+-- Build the record for the session's own agent (the lone one, or a swarm's
+-- coordinator seen from the REPL). Skills resolve here exactly as they do for a
+-- spawned child -- which is the whole point: skills work in single-agent mode
+-- because there is only one kind of agent.
+function M.session_agent(sess, skills)
+  skills = skills or sess.skills or {}
+  local instructions, allow, unknown = bog.skills.resolve(skills)
+  if #unknown > 0 then
+    error("unknown skill(s): " .. table.concat(unknown, ", ")
+      .. " (see the `skills` tool for what exists)", 0)
+  end
+  -- The session's own agent occupies a slot: a cap of 1 means "just me", which
+  -- is exactly what single-agent mode is. Counting it here is what makes
+  -- at_capacity() mean the same thing for the root as for a spawned child.
+  if M.live < 1 then M.live = 1 end
+  local rec = {
+    id = sess.id, skills = skills, allow = allow, instructions = instructions,
+    may_spawn = not M.at_capacity(), session = sess,
+  }
+  rec.opts = M.agent_opts(rec, false)
+  sess.agent = rec
+  return rec
+end
+
 -- start a coroutine. p: { agent?, skills?, model?, title?, parent_id? }
 function M.new_agent(p)
   p = p or {}
@@ -40,18 +102,9 @@ function M.new_agent(p)
     allow = allow, instructions = instructions, sys_override = spec.system,
     session = { id = id, model = model, messages = {}, max_tokens = 16000, compact_at = 400000 },
   }
-  rec.opts = {
-    async = true,
-    system = function() return bog.prompt.swarm_system(rec) end,
-    tools = function() return bog.tools.schemas_for(rec.allow) end,
-    run_tool = function(name, input)
-      if not bog.tools.allowed(rec.allow, name) then
-        return "Tool error: tool '" .. name .. "' is not permitted for this agent"
-      end
-      return bog.tools.run(name, input)
-    end,
-    on_tool = bog.log_tool,
-  }
+  rec.may_spawn = not M.at_capacity()
+  rec.opts = M.agent_opts(rec, true)
+  M.live = M.live + 1
   return rec
 end
 

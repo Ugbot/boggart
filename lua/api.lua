@@ -808,8 +808,18 @@ function M.run_on(sess, user_text, on_text, opts)
 end
 
 -- Default single-agent entry point (unchanged behaviour): bog.session, sync.
+-- The default turn. It runs through the session's agent record -- the same
+-- record shape a swarm actor has -- so skills, tool filtering and prompt
+-- assembly are one code path. A session with no skills gets the whole registry,
+-- so this is behaviour-identical to the old direct call until skills are set.
 function M.run_turn(user_text, on_text)
-  return M.run_on(bog.session, user_text, on_text, nil)
+  local sess = bog.session
+  local opts = sess.agent and sess.agent.opts
+  if not opts and bog.thread and bog.thread.session_agent then
+    local ok, rec = pcall(bog.thread.session_agent, sess)
+    if ok then opts = rec.opts end
+  end
+  return M.run_on(sess, user_text, on_text, opts)
 end
 
 return M

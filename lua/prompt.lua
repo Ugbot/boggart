@@ -182,22 +182,15 @@ function M.project_instructions()
   return nil
 end
 
+-- The default agent's prompt. Same builder as a swarm actor's: the lone agent is
+-- an agent whose fanout is capped, carrying whatever skills the session has.
 function M.system()
-  local mem = bog.memory.index_text()
-  local blocks = {
-    { type = "text", text = DISCIPLINE, cache_control = { type = "ephemeral" } },
-    { type = "text", text = M.shell_note() },
-  }
-  local proj = M.project_instructions()
-  if proj then blocks[#blocks + 1] = { type = "text", text = proj } end
-  blocks[#blocks + 1] = { type = "text", text = "# Memory (durable, from earlier sessions)\n" .. mem }
-  blocks[#blocks + 1] = { type = "text", text = M.place() }
-  return blocks
+  return M.agent_system(bog.session and bog.session.agent)
 end
 
--- Swarm-mode system prompt for an agent record (see lua/thread.lua). Combines a
--- shared actor/coordination preamble, the agent's spec system prompt, its
--- resolved skill instructions, and the live memory index.
+-- The actor/coordination preamble. Included only when the agent may ACTUALLY
+-- spawn: with the fanout capped (the single-agent case is a cap of one), telling
+-- the model it can delegate is simply false, and it will waste turns trying.
 local SWARM_BASE = [[
 You are one agent in a boggart swarm: a team of conversation-thread agents that
 run in parallel and coordinate over a message bus. You are an actor with your
@@ -207,15 +200,45 @@ Delegate only when a subtask is genuinely independent and worth the overhead;
 otherwise do the work yourself. Finish with a clear, self-contained answer.
 ]]
 
-function M.swarm_system(rec)
-  local parts = { SWARM_BASE }
-  if rec.sys_override and rec.sys_override ~= "" then parts[#parts + 1] = rec.sys_override end
-  if rec.instructions and rec.instructions ~= "" then parts[#parts + 1] = rec.instructions end
-  parts[#parts + 1] = M.shell_note()
+-- One system prompt for every agent, single or swarm.
+--
+-- There is no longer a "single-agent prompt" and a "swarm prompt": there is one
+-- agent, and the differences are data on its record -- whether it may spawn
+-- (fanout cap), what its skills say, whether its spec overrides the system text.
+-- A lone agent is a swarm of one, so it takes the same path with the fanout
+-- capped and the actor preamble left out.
+--
+-- rec may be nil (a plain agent with no skills), and is:
+--   { instructions?, sys_override?, may_spawn? }
+function M.agent_system(rec)
+  rec = rec or {}
+  local blocks = {}
+  if rec.may_spawn then
+    blocks[#blocks + 1] = { type = "text", text = SWARM_BASE }
+  end
+  if rec.sys_override and rec.sys_override ~= "" then
+    blocks[#blocks + 1] = { type = "text", text = rec.sys_override }
+  end
+  -- The stable prefix carries the cache breakpoint wherever it lands.
+  blocks[#blocks + 1] = { type = "text", text = DISCIPLINE,
+                          cache_control = { type = "ephemeral" } }
+  if rec.instructions and rec.instructions ~= "" then
+    blocks[#blocks + 1] = { type = "text", text = "# Skills\n" .. rec.instructions }
+  end
+  blocks[#blocks + 1] = { type = "text", text = M.shell_note() }
   local proj = M.project_instructions()
-  if proj then parts[#parts + 1] = proj end
-  parts[#parts + 1] = "# Memory (durable)\n" .. bog.memory.index_text()
-  return { { type = "text", text = table.concat(parts, "\n\n"), cache_control = { type = "ephemeral" } } }
+  if proj then blocks[#blocks + 1] = { type = "text", text = proj } end
+  blocks[#blocks + 1] = { type = "text",
+    text = "# Memory (durable, from earlier sessions)\n" .. bog.memory.index_text() }
+  blocks[#blocks + 1] = { type = "text", text = M.place() }
+  return blocks
+end
+
+-- Kept as the swarm's entry point; it is now just an agent that may spawn.
+function M.swarm_system(rec)
+  rec = rec or {}
+  if rec.may_spawn == nil then rec.may_spawn = true end
+  return M.agent_system(rec)
 end
 
 return M
