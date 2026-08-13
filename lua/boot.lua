@@ -112,6 +112,11 @@ local function wire()
   bog.tools = require("tools")
   bog.api = require("api")
   bog.worker = require("workers")
+  -- Coordination surfaces, so a front end can draw them and the scheduler can
+  -- release an agent's claims when it exits. Reachable as tools already; on
+  -- bog so Lua that is not the model can read them too.
+  bog.claims = require("claims")
+  bog.blackboard = require("blackboard")
 end
 
 -- Session lifecycle (persisted in the SQLite store; bog.db survives reloads).

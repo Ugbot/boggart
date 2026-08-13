@@ -457,6 +457,37 @@ end
 -- The bus. Journal rows carry the payload the C bus wrote, which the Lua layer
 -- JSON-encodes, so the interesting part is one decode away; a row that will
 -- not decode is shown raw rather than dropped.
+-- Who is editing what -- the shared edit blackboard (lua/claims.lua), drawn so
+-- a spawned fleet's file contention is visible before it becomes a conflict.
+-- Advisory: agents announce a write claim on the files they touch (best-effort
+-- in the write/edit tools), so this is "who says they are on what", not a lock.
+-- Returns the y it consumed; draws nothing and consumes nothing when idle.
+function SwarmView:draw_claims(font, charw, x, y, lh, voff, cols, max_rows)
+  local rows = (bog.claims and bog.claims.list and bog.claims.list()) or {}
+  if #rows == 0 then return y end
+  cell(font, charw, x, y + voff, 0, "EDITING", style.dim)
+  y = y + lh
+  local shown = math.min(#rows, math.max(1, max_rows))
+  for i = 1, shown do
+    local r = rows[i]
+    local who = r.writer and ("agent " .. tostring(r.writer)) or ""
+    if #(r.readers or {}) > 0 then
+      who = who .. (who ~= "" and " " or "") .. "read:" .. table.concat(r.readers, ",")
+    end
+    -- path first (what), then who -- the file is the thing two agents collide on.
+    cell(font, charw, x, y + voff, 0, dash.strip(r.path):gsub("%s+", " "),
+      style.text, math.max(8, cols - 18))
+    cell(font, charw, x, y + voff, math.max(10, cols - 17), who, style.accent, 17)
+    y = y + lh
+  end
+  if #rows > shown then
+    cell(font, charw, x, y + voff, 0,
+      string.format("... and %d more", #rows - shown), style.dim)
+    y = y + lh
+  end
+  return y
+end
+
 function SwarmView:draw_journal(font, charw, x, y, lh, voff, cols, rows)
   cell(font, charw, x, y + voff, 0, "BUS", style.dim)
   y = y + lh
@@ -644,6 +675,14 @@ function SwarmView:draw()
   y = y + vpad / 2
   renderer.draw_rect(x, y, w, math.max(1, SCALE), style.divider)
   y = y + vpad
+
+  -- ---- who is editing what (only when someone is) -------------------------
+  local claims_before = y
+  y = self:draw_claims(font, charw, x, y, lh, voff, cols, 4)
+  if y > claims_before then
+    renderer.draw_rect(x, y, w, math.max(1, SCALE), style.divider)
+    y = y + vpad
+  end
 
   -- ---- detail + bus -------------------------------------------------------
   -- Side by side when there is room for two readable columns, stacked when

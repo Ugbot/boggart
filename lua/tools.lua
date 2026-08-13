@@ -45,12 +45,32 @@ local function tool_read(a)
   return header .. "\n" .. table.concat(out, "\n")
 end
 
+-- Take (or refresh) this agent's write claim on a path and describe any
+-- contention, without ever failing the caller. Returns "" normally, or a short
+-- note when another agent already holds the file -- advisory by design (real
+-- isolation is a git worktree), so the edit still proceeds; the note is how a
+-- coordinator learns two agents landed on one file. pcall because the claim
+-- table is bounded and a full one must never turn a write into an error.
+local function claim_note(path)
+  local claims = bog and bog.claims
+  if not claims then return "" end
+  -- pcall returns (ok, claim_ret1, claim_ret2). On a contested write claim()
+  -- returns (nil, holder), so the holder is the THIRD value here, not the
+  -- second -- getting that wrong swallows every contention note.
+  local ok, got, holder = pcall(claims.claim, path, "write")
+  if not ok then return "" end            -- table full or errored: stay quiet
+  if got == true then return "" end       -- we hold it now, no contention
+  holder = (type(holder) == "string") and holder or "held by another agent"
+  return "\n(note: this file is also " .. holder .. " -- coordinate or use a worktree)"
+end
+
 local function tool_write(a)
   if type(a.path) ~= "string" then return M.err(M.ERR.validation, "write requires 'path'") end
   if type(a.content) ~= "string" then return M.err(M.ERR.validation, "write requires string 'content'") end
   -- create parent dir
   local parent = a.path:match("^(.*)/[^/]+$")
   if parent and parent ~= "" then sys.mkdir_p(parent) end
+  local note = claim_note(a.path)
   local ok, err = util.write_file(a.path, a.content)
   if not ok then return M.err(M.ERR.runtime, tostring(err)) end
   local n = select(2, a.content:gsub("\n", "\n")) + 1
@@ -59,7 +79,7 @@ local function tool_write(a)
   -- and pretending otherwise would be worse than the gap: this is "the agent
   -- used its write tool", not "the disk changed".
   events.emit("file:write", { path = a.path, bytes = #a.content, lines = n })
-  return string.format("Wrote %s (%d bytes, %d lines)", a.path, #a.content, n)
+  return string.format("Wrote %s (%d bytes, %d lines)%s", a.path, #a.content, n, note)
 end
 
 local function tool_edit(a)
@@ -75,6 +95,7 @@ local function tool_edit(a)
   local second = data:find(a.old, first + 1, true)
   if second then return M.err(M.ERR.validation, "`old` matches more than once in " .. a.path .. "; add context to make it unique") end
 
+  local note = claim_note(a.path)
   local before = data:sub(1, first - 1)
   local after = data:sub(first + #a.old)
   local updated = before .. a.new .. after
@@ -92,8 +113,8 @@ local function tool_edit(a)
   local ctx_to = math.min(#ulines, start_line + new_line_count + 4)
   local ctx = {}
   for i = ctx_from, ctx_to do ctx[#ctx + 1] = string.format("%d\t%s", i, ulines[i]) end
-  return string.format("Edited %s. Post-edit context (lines %d-%d of %d):\n%s",
-    a.path, ctx_from, ctx_to, #ulines, table.concat(ctx, "\n"))
+  return string.format("Edited %s.%s Post-edit context (lines %d-%d of %d):\n%s",
+    a.path, note, ctx_from, ctx_to, #ulines, table.concat(ctx, "\n"))
 end
 
 local function tool_bash(a)

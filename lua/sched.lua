@@ -40,13 +40,25 @@ local function remove(a, reason)
   for i, x in ipairs(M.actors) do
     if x == a then table.remove(M.actors, i); break end
   end
+  -- Every exit path runs through here, so this is the one place an agent's
+  -- file claims are guaranteed to be let go -- finished, crashed or killed
+  -- alike. Without it a crashed agent would hold a file forever and its peers
+  -- would route around a claim nobody is honouring.
+  if bog and bog.claims then pcall(bog.claims.release_all, a.id) end
   events.emit("swarm:actor_stopped", { id = a.id, reason = reason or "done" })
 end
 
 local function resume(a)
   current_id = a.id
+  -- The acting agent's identity, for anything that asks "who am I" without a
+  -- handle on the scheduler -- claims and the blackboard, so a file one agent
+  -- edits is attributed to that agent and not to whatever session id happened
+  -- to be lying around. Set around the resume only; nil between actors so
+  -- work outside a turn has no false owner.
+  if bog then bog.current_agent = a.id end
   local ok, kind, arg = coroutine.resume(a.co)
   current_id = nil
+  if bog then bog.current_agent = nil end
   if not ok then
     local err = kind -- on failure the second return value is the error
     if type(err) == "table" and err.boggart_error then
