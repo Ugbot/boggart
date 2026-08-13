@@ -1033,6 +1033,11 @@ for name, def in pairs(require("claims").tools) do M.register(name, def) end
 -- thin Lua glue the model calls. See lua/gittools.lua.
 for name, def in pairs(require("gittools").tools) do M.register(name, def) end
 
+-- skill tools: list/author/import skills (skills, define_skill, import_skill).
+-- define_tool's counterpart for behaviour; imports compile markdown SKILL.md to
+-- Lua so there is one substrate. See lua/skills.lua.
+for name, def in pairs(require("skills").tools) do M.register(name, def) end
+
 -- model/user-defined tool files
 load_user_tools()
 

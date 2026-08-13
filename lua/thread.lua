@@ -20,7 +20,14 @@ function M.new_agent(p)
     skills = t
   end
 
-  local instructions, allow = bog.skills.resolve(skills)
+  -- A misspelled skill name used to vanish here: the agent started without the
+  -- tools it asked for and nothing said so. Refuse instead -- spawning an agent
+  -- that quietly cannot do its job is worse than not spawning it.
+  local instructions, allow, unknown = bog.skills.resolve(skills)
+  if #unknown > 0 then
+    error("unknown skill(s): " .. table.concat(unknown, ", ")
+      .. " (see the `skills` tool for what exists)", 0)
+  end
   local model = p.model or spec.model or bog.session.model
   local id = bog.store.thread_create{
     parent_id = p.parent_id, title = p.title or p.agent or "agent",
