@@ -405,3 +405,429 @@ mostly known: an inbound-event + scheduler layer on the vendored libuv loop, a
 generalized approval gate, saga-grade journalling, and the one subprocess jail
 that was already the sole outstanding item. None of it fights the architecture;
 most of it is the architecture, turned on.
+
+---
+
+## 5. Trigger.dev — the durable-execution substrate §4 implies
+
+**What it is.** [Trigger.dev](https://github.com/triggerdotdev/trigger.dev)
+(TypeScript, Apache-2.0, cloud **or** self-hosted) is not an agent — it is an
+**open-source durable background-job / workflow-orchestration platform**, now
+positioned around "build and deploy fully-managed AI agents and workflows." You
+write a **task** in your own codebase and deploy it; the platform runs it with
+**no timeouts**, retries, queues, and observability.
+
+```ts
+export const helloWorld = task({
+  id: "hello-world",
+  run: async (payload: { message: string }) => { /* long-running work */ },
+});
+```
+
+The engineering core is **durable execution via checkpoint/restore**. At every
+`await`/wait point the **Run Engine** snapshots the task — on the managed side
+via **CRIU** (freeze memory, CPU registers, file descriptors), stored
+compressed — and can resume it later *on a different machine*, exactly where it
+paused. Tasks are **frozen during waits** (you pay only for execution). Around
+that sit the primitives a business process needs:
+
+- **Triggers**: programmatic (`task.trigger()` / batch), **cron** (`schedules.
+  task`), webhooks, events.
+- **Retries**: declarative policy (`maxAttempts`, `factor`, min/max backoff,
+  randomize); on failure only the failed subtask and everything after it re-runs.
+- **Idempotency**: first-class `idempotencyKey` on tasks *and* on `wait.for` /
+  `wait.until` (+ TTL), with **result caching** keyed by it.
+- **Queues & concurrency**: shared queues with `concurrencyLimit`, per-task and
+  per-tenant concurrency, concurrency keys for fan-out; `triggerAndWait`
+  checkpoints and *releases its concurrency slot* while suspended.
+- **Waitpoints / `waitForToken`**: a run pauses until a **token** is completed
+  (or times out) — the durable **human-in-the-loop** primitive (approve / reject
+  / suggest), or a wait on a webhook / external service.
+- **Ops**: dashboard trace view, realtime updates with LLM streaming, warm
+  starts (Run Engine 2.0); self-host via Docker Compose / Kubernetes Helm with
+  Postgres + Redis + object storage and horizontal worker scaling.
+
+**Verdict.** This is the section-4 substrate, built out and industrial-grade.
+Everything §4 listed as "what business-process work additionally demands" —
+persistence + triggers, a durable approval gate, saga-grade idempotency,
+concurrency control — Trigger.dev already *is*. So the useful comparison is not
+"rebuild it on boggart" but **"boggart is the brain, Trigger.dev is the durable
+body"**: they converge on the same AI-workflow target from opposite ends —
+Trigger.dev adding MCP, agent skills and HITL tokens *up* from infrastructure,
+boggart reaching *down* from the agent kernel toward durability.
+
+### Where boggart already has the shape (and where it stops)
+
+| Durable-execution need | boggart today | Trigger.dev | Gap |
+|---|---|---|---|
+| Resume after crash/restart | journalled swarm bus + resumable sessions; `--resume` redelivers unprocessed messages | CRIU snapshot resumes mid-`await` on any machine | **Granularity.** boggart's is *message-replay* durability (coarse, transcript-level); Trigger.dev's is *execution-snapshot* (fine, mid-function) |
+| Scheduled / webhook / event triggers | `events`/`on_event`, in-process only | cron + webhook + event + programmatic | boggart has no scheduler and no inbound transport (the §4 #1 add) |
+| Retries | the model retries `Tool error:` in-loop (LLM-driven) | declarative run-level retry policy with backoff | boggart has no durable retry engine for a whole run |
+| Idempotency + result cache | `processed_at` stops redelivery dupes | idempotency keys + cached results | boggart has no keys/caching |
+| Queues, concurrency limits, backpressure | cooperative scheduler + `curl_multi` fan-out, single process | queues, `concurrencyLimit`, per-tenant, concurrency keys | boggart has fan-out but no limits/queues/multi-tenant |
+| Durable human approval | studio diff-approval gate — **synchronous, in-session** | `waitForToken` — pause for days, survive restarts, resume on approval | boggart can't suspend a process to disk awaiting a human |
+| Deploy / scale | single local exe, single-user, single-machine | cloud or self-host, horizontal workers, Postgres+Redis | different universe (by design) |
+
+### The opinionated read (don't chase CRIU)
+
+The tempting conclusion — "add checkpoint/restore to boggart" — is the wrong
+lift. CRIU-style process snapshotting fits Trigger.dev because a task is
+arbitrary Node code; boggart's runtime is an **embedded Lua VM in one process**,
+and the durability model that actually fits an agent loop is **replay, not
+snapshot**: you never freeze the LLM, you replay the transcript — which boggart
+*already does* through resumable sessions. So the right things to lift from
+Trigger.dev's design are the three that compose with replay, and they are
+exactly §4's list:
+
+1. **Durable waitpoints.** A run can suspend *to the journal* and resume on a
+   token or a timeout — this is what turns the studio's synchronous approval gate
+   into a business-grade one ("pause three days until someone approves, surviving
+   restarts"). The swarm journal is the right home for it.
+2. **Idempotency keys + a result cache** on tool calls, so a replayed run doesn't
+   re-send an email or re-charge a card.
+3. **A trigger/scheduler source** (cron + webhook) feeding the bus, plus a
+   declarative retry policy layered *above* the model's in-loop retries.
+
+### Recommended architecture (if you did it)
+
+Two honest shapes, not one:
+
+- **Host boggart on Trigger.dev.** Wrap a `boggart --headless` run inside a
+  `task()`; Trigger.dev supplies schedule/webhook/retry/queue/waitpoint
+  durability, boggart supplies the agent turn. This makes §4's entire gap list
+  *someone else's solved problem* — the pragmatic path if the goal is BPM now.
+- **Lift the three primitives into the core.** If boggart wants to own the BPM
+  story natively (no Node platform dependency, staying a single self-contained
+  exe), implement durable waitpoints + idempotency + a trigger source on the
+  vendored libuv loop and the SQLite journal. More work, but it keeps the "one
+  self-contained binary, no runtime deps" property that is boggart's whole
+  distribution story — and Trigger.dev is the reference design to copy from.
+
+**Bottom line.** Trigger.dev is the clearest picture available of what boggart's
+§4 ambition looks like fully realized, and it settles the build-vs-borrow
+question by making the trade explicit: borrow it (host on Trigger.dev) and BPM
+works today at the cost of the Node platform under you; build it (replay +
+waitpoints + idempotency on libuv/SQLite) and boggart stays a single binary at
+the cost of writing the durable substrate yourself. Either way the target is the
+same, and boggart's journalled bus is already a recognizable first draft of it.
+
+Sources: [triggerdotdev/trigger.dev](https://github.com/triggerdotdev/trigger.dev),
+Trigger.dev docs "How it works", the v3 "durable serverless / no timeouts"
+announcement and the v4 GA notes (Run Engine 2.0, waitpoints, self-hosting on
+Postgres+Redis), and the CRIU checkpoint/restore write-ups referenced from them.
+
+---
+
+## 6. Lua steps as workflow nodes — the native composition layer
+
+§4 argued boggart should serve business processes; §5 showed the durable
+substrate that implies and said to lift *replay + waitpoints + idempotency*
+rather than chase CRIU. This section names the missing middle: **the composition
+layer — how steps are sequenced into a durable flow — and asserts its unit.** A
+boggart workflow should be a journalled graph whose deterministic nodes are
+**Lua steps**: capability-bounded Lua functions, interleaved with agent turns and
+durable waits. We can support this, and we should — because boggart is the one
+system whose *step language is already the sandboxed one*.
+
+### Two node types, one graph
+
+An agentic workflow has two fundamentally different kinds of work, and boggart
+already has a primitive for each:
+
+- **Agent turn** — open-ended judgment: read this, decide that, use tools. A
+  session + a skill-pack. Expensive, nondeterministic, exactly what an LLM is
+  for.
+- **Lua step** — deterministic mechanism: parse the invoice, route if total >
+  $10k, normalize the record, call one API. A Lua body compiled against the §3
+  capability env. Cheap, testable, auditable, no nondeterminism.
+
+The discipline is the same rule the tool prompt already states — *promote stable
+mechanics, keep judgment in yourself* — lifted from tool-authoring to
+workflow-authoring. Not every node in a business process needs an LLM; most of a
+real flow is routing and transformation, and paying for a model turn to decide
+`total > 10000` is waste. Lua steps are where that logic belongs, and agent
+turns are the judgment nodes between them. A third node type, the **waitpoint**
+(§5), durably suspends the graph to the journal until a token, timeout, or
+webhook — human approval and external events.
+
+### The structural payoff: one boundary does both jobs
+
+Why Lua steps rather than "a workflow feature" in the abstract: in boggart the
+**capability boundary and the effect-replay boundary are the same boundary.**
+
+- A Lua step touches the world *only* through C-backed capabilities (§3) — there
+  is no second route. That is what makes it safe.
+- Because there is only that one route, the journal can interpose at exactly that
+  point: record every effect's result keyed by an idempotency key, and on replay
+  return the cached value instead of re-executing. That is what makes it durable.
+
+The single lawful channel (the "monadic" C boundary from earlier) is therefore
+*also* the single place to record and replay side effects. Pure-Lua steps replay
+for free (deterministic given inputs); effectful steps — `sys.exec`, an MCP call,
+sending mail — replay against their cached result so a resumed run never
+double-fires. This is precisely Trigger.dev's "cache each subtask by idempotency
+key," except boggart gets the interposition point for free from a boundary it
+already has for security. No other agent's step language is capability-contained,
+so no other agent can offer safe, replayable, user-or-agent-authored steps as one
+thing.
+
+### The self-modification thesis, applied to workflows
+
+`define_tool` already lets the agent author a Lua body at runtime against that
+capability env. A Lua step is the same object with a different caller (the
+workflow engine schedules it; the model doesn't invoke it inside a turn). So an
+agent can **extend its own workflow mid-run** — write a new deterministic routing
+or transform step and splice it in — the §3 self-extension story reaching the
+composition layer. And like tools, workflow definitions and their steps live as
+overlay-mutable Lua the human can read, listed in the **library panel** with
+provenance (scope, git revision, call/fail counts) — so an autonomous,
+self-editing workflow stays legible and auditable, which is the whole reason the
+capability boundary is *not* a security boundary against the agent but *is* one
+around effects.
+
+### What maps to what
+
+| Workflow concept | boggart mechanism (have / add) |
+|---|---|
+| Deterministic step | **Lua step** = `define_tool` body vs §3 capability env — *have* the unit, *add* engine-scheduled invocation |
+| Judgment step | agent turn (session + skill-pack) — *have* |
+| Durable wait / human approval | **waitpoint** suspending to the journal — *add* (§5) |
+| Sequence / branch / fan-out / join | a Lua step returns the next edge; fan-out spawns over the swarm bus — *have* the bus, *add* the control vocabulary |
+| Crash recovery | journalled bus + resumable sessions + `--resume` — *have* (replay-durability, §5) |
+| Don't-double-fire | idempotency key + result cache **at the capability boundary** — *add*, cheaply, because the boundary is already the one route |
+| Trigger (cron / webhook / event) | `events`/`on_event` in-process — *add* the inbound + scheduler source (§4 #1) |
+| Legibility / audit | library panel provenance over steps and workflows — *have* |
+
+### The determinism caveat
+
+Replay-durability only holds if a step is deterministic given its inputs plus its
+cached effect results. Pure Lua is fine. The traps are ambient nondeterminism a
+step must *not* reach for outside a recorded capability: wall-clock time, random,
+environment — which is why `tool_env` already ships `os.time`/`date` but the
+effectful reads go through C. To make steps replayable, those too become
+capability calls whose results are journalled (record the clock once, replay it),
+the same move Trigger.dev makes for its cached subtasks. The capability boundary
+is what makes this enforceable rather than a convention: a step *cannot* smuggle
+in an unrecorded effect, because the only effects it has are the ones handed to
+it.
+
+**Bottom line.** "Lua steps in an agentic workflow" is not a new subsystem bolted
+on — it is the existing capability-bounded Lua body (§3) promoted from *tool the
+model calls* to *node the engine schedules and journals*, interleaved with agent
+turns and waitpoints on the bus boggart already has. It is the composition layer
+§4 and §5 were circling, and it is the one part of the durable-workflow story
+that boggart is *better* positioned to build than Trigger.dev or n8n — because in
+boggart the step language, the sandbox, and the effect-replay log are the same
+boundary, and the agent can already write to it.
+
+---
+
+## 7. CodeRabbit — AI PR-review platform
+
+**What it is.** [CodeRabbit](https://coderabbit.ai) is an AI code-review
+*platform*, not a harness: the most-installed AI app on GitHub/GitLab (2M+ repos,
+13M+ PRs reviewed), a hosted App that auto-reviews every pull request — line
+comments, summaries, walkthroughs — enriched by **40+ linter/SAST integrations**,
+**code-graph analysis** for repo-wide context, per-org **Learnings** that persist
+across PRs, an IDE surface, and a multi-tenant SaaS (fully self-hosted only at
+Enterprise ≥ 500 seats).
+
+**Verdict.** Split the question, because the answer differs by half. The review
+*brain* is table stakes any good agent clears, and is arguably boggart's
+strength; the review *product/platform* is a separate, company-scale build,
+mostly orthogonal to boggart's kernel — the same "maps onto the kernel, not the
+shell" verdict as OpenClaw (§1). CodeRabbit's moat is ~80% platform, ~20%
+intelligence.
+
+### The brain — boggart can meet or beat it
+boggart already has the agent loop, `git` diff (the C capability, see
+`workspace.md`), MCP to reach GitHub, and the real edge — **swarm**: specialised
+reviewers (correctness / security / perf / style) as actors with **adversarial
+verification** before a finding is posted, which is a better review *architecture*
+than a single pass and is native, not bolted on. Plus self-modification: the
+reviewer can `define_tool` repo-specific checks at runtime and persist them with
+provenance. On review *quality*, boggart is not behind.
+
+### The platform — the gaps, ranked
+1. **Always-on + VCS integration — the blocker.** CodeRabbit auto-reviews on PR
+   open/push; boggart runs to quiescence and exits. Needs the §4 daemon + webhook
+   inbound, or — far cheaper — a **CI Action wrapper** that runs `boggart review`
+   per PR. (The platform *around this very session* already proves the pattern:
+   `subscribe_pr_activity` + GitHub MCP + PR-triggered runs.)
+2. **Static-analysis aggregation** — 40+ linters/SAST normalised and deduped into
+   one review. boggart can *run* them via `bash`; the aggregation layer is
+   missing. Achievable.
+3. **Repo-wide code graph / context** — CodeRabbit indexes the repo; boggart reads
+   bounded files with no index (the repo-map gap; answer: LSP/index via MCP).
+4. **Persistent org-level learnings** — boggart's memory is per-user/local; needs
+   shared/team-scoped memory.
+5. **PR-review product surface** — summaries, walkthroughs, committable
+   suggestions, `.coderabbit.yaml`-style path rules, incremental review on push,
+   thread resolution, severity/labels. Each buildable; none exist.
+6. **SaaS + compliance + scale + multi-VCS** — skip for the wedge; it is the part
+   that is not boggart.
+
+### The wedge
+Don't clone the SaaS; be the **local-first / self-hosted / CI-integrated
+swarm reviewer**. CodeRabbit's fully self-hosted option is Enterprise ≥ 500 seats,
+so every privacy-conscious small/mid team that cannot ship code to a SaaS is
+unserved. boggart's differentiators there: multi-agent adversarial review (higher
+signal, fewer false positives — the thing everyone hates about AI reviewers),
+local-first BYOK (code stays on your infra, no per-seat markup), self-extending
+repo-specific checks, and PR-walkthrough **diagrams** via boggart-studio's
+sketch engine.
+
+**Bottom line.** Cloning CodeRabbit-the-SaaS is off-mission — it is a platform
+company, not a kernel feature. A local-first, CI-integrated, swarm-based reviewer
+with better signal and real privacy is genuinely competitive, and structurally
+beyond what CodeRabbit serves under 500 seats. The MVP is small: a `review` mode
+emitting structured findings (swarm + adversarial verify), a GitHub Action to
+post them, a guidelines config, and linter aggregation — mostly on pieces boggart
+has, plus the §4 inbound work. Code-graph/learnings depth is where you keep
+investing for review-quality parity at scale.
+
+Sources: [coderabbit.ai](https://coderabbit.ai), CodeRabbit docs, and 2025
+coverage of its scale, integrations, Learnings and self-hosting tiers.
+
+---
+
+## 8. t3code — an agent control surface (borrow, don't clone)
+
+**What it is.** [t3code](https://github.com/pingdotgg/t3code) (Theo / ping) is a
+**WebSocket control surface** — event-sourced (Command → Decider → events →
+Projector → per-agent Provider Adapters) — that remote-drives *other* agents
+(Claude Code, Codex, Cursor, Grok, OpenCode) from web/desktop/mobile over
+local/relay/Tailscale, with **turn-level git checkpoints** (a hidden ref per turn
+so the app can diff and restore). It is the *shell*; boggart is the *engine* it
+would drive. Nearly orthogonal, which makes the borrow question sharp.
+
+### What to borrow
+1. **Turn-level git checkpoints via a hidden ref** — their best single idea, and
+   boggart now has it: the `git` C capability (`workspace.md`) checkpoints to
+   `refs/boggart/` and generalises to a git-free snapshot backend for non-coders.
+2. **The inverse of building a surface** — make boggart *controllable* by a
+   surface like t3code (match a headless/RPC contract, or ship an adapter) to
+   inherit its mobile/web/desktop clients for free. Highest leverage.
+3. **Journal-as-source-of-truth, views-as-projections** — the *principle*, not
+   the CQRS ceremony; it validates §5/§6's replay-durability and gives multi-client
+   consistency.
+4. **Supervised / Full-access posture** — a coarse permission toggle layered over
+   boggart's finer capability boundary (§3) + per-agent allowlists.
+
+### What not to borrow
+Becoming a control surface for other agents (t3code's identity), the four-platform
+client suite (be *controllable* instead), and the full CQRS layering (overkill for
+a single-user kernel).
+
+**Bottom line.** Complementary, not competitive. Borrow git-ref checkpointing
+(done), adopt journal-as-truth, and treat t3code as the **client surface to plug
+into, not to reimplement** — its remote/daemon protocol doubles as the §4 BPM
+substrate, the recurring unlock.
+
+Sources: [pingdotgg/t3code](https://github.com/pingdotgg/t3code), its docs, and
+2025 coverage.
+
+---
+
+## Appendix — Why Lua, not a Lisp or a Scheme
+
+A self-modifying agent that rewrites its own code at runtime *screams* Lisp:
+homoiconicity, macros, live redefinition, the image. So the fair question is
+whether boggart picked the wrong runtime on day one. The answer is no — but the
+reason is specific, and it only becomes clear once you separate **the runtime**
+(the VM the agent's code lives and mutates in) from **the surface syntax** (what
+that code looks like). The Lisp instinct is right about the *surface* and wrong
+about the *runtime*, and boggart needs the runtime to be right.
+
+### What "runtime flexibility" has to mean *here*
+
+boggart does not need maximal malleability; it needs a particular five-way
+intersection, and every one of these is load-bearing elsewhere in this document:
+
+1. **A language-level, per-unit capability sandbox** — because self-modification
+   is only safe if a generated unit of code can be handed an exact set of
+   capabilities and *nothing else* (§3). This is the single most important
+   property, and the one the effect-replay log reuses (§5, §6).
+2. **Embeddable in a small C core**, so the whole thing ships as one
+   self-contained ~1.8MB binary — the distribution story (§5's build-vs-borrow
+   hinges on keeping it).
+3. **Text source, not an image** — the agent's own code is diffable, greppable,
+   version-controlled overlay files, not an opaque heap dump.
+4. **Replay durability, not snapshot durability** — so continuation-capture and
+   image-persistence, the flashiest Lisp runtime tricks, are things boggart
+   routes *around* by design (§5, §6).
+5. **Model fluency** — the agent writes this code; subtle metaprogramming is
+   where LLMs are weakest.
+
+Rank the Lisp/Scheme family against that intersection and it sorts cleanly:
+
+| Runtime | Embeds in a small C core | Per-unit in-language sandbox | Resource limits (time/mem) | Source is text, not image | Metaprogramming | Model fluency |
+|---|---|---|---|---|---|---|
+| **Lua** | ✅ *its reason to exist* | ✅ `load(chunk,name,"t",env)` sets `_ENV` | ◐ debug-hook (boggart uses it) | ✅ overlay `.lua` | ◐ metatables + code-as-string | ✅ high |
+| **Guile (Scheme)** | ✅ GNU's C extension lang | ✅ `(ice-9 sandbox)` safe bindings | ✅ time + allocation limits | ✅ | ✅ full macros | ◐ |
+| **Racket** | ❌ heavy runtime | ✅ `make-evaluator` restricted namespace | ✅ memory/eval/fs/net guards | ✅ | ✅ full macros | ◐ |
+| **R7RS Scheme** | ◐ impl-dependent | ◐ `eval` + environment specifiers (bindings only) | ❌ not in the spec | ✅ | ✅ | ◐ |
+| **Common Lisp** | ❌ ECL heavy; SBCL not embed-friendly | ❌ no standard restricted eval; reader `#.` is live-eval | ❌ | ❌ the **image** is the idiom | ✅ *maximal* | ◐ low (macros/CLOS/conditions) |
+
+### Reading the table
+
+- **Common Lisp is the most powerful language and the worst *fit*.** It has the
+  crown-jewel property Lua lacks — `defun`/`defmethod`/`defclass` redefine
+  through symbol cells and generic functions so every caller sees the new code
+  live, with no stale-closure discipline — plus maximal macros and the
+  condition/restart system. But it fails the two properties boggart's safety and
+  distribution rest on: there is **no standard way to sandbox untrusted code
+  in-process** (the reader alone does read-eval via `#.`, packages aren't a
+  security boundary), and its signature flexibility is the **image**, which is
+  the exact opposite of "source is diffable text." CL hands you more power at
+  precisely the two axes where boggart needs *containment*, not power.
+- **Scheme sandboxes better than CL, by design.** R7RS `eval` takes an
+  environment specifier, so you can restrict *which bindings* exist — closer in
+  spirit to Lua's `_ENV` than anything in CL. But standard Scheme stops at
+  bindings: no resource limits, and "Scheme" is a spec with many runtimes rather
+  than one embeddable VM.
+- **Racket is the strongest "if not Lua."** `racket/sandbox` gives you *both*
+  full macros *and* a real security sandbox with memory, time, filesystem and
+  network limits — the combination CL cannot offer. If footprint were free,
+  Racket would be a serious answer. But it is a heavyweight runtime, not a
+  library you embed in a tiny C core, so it fails property 2 outright and takes
+  the single-binary story with it.
+- **Guile is the honest closest rival.** It is GNU's *embed-in-C extension
+  language* — Lua's own niche — and `(ice-9 sandbox)` provides safe-binding sets
+  with time and allocation limits: a genuine language-level sandbox with resource
+  bounds. On paper it hits four of the five. Lua wins on the margins that
+  compound: a smaller/faster VM with no GC-library dependency, and a sandbox
+  that is *just a table you hand the chunk as its `_ENV`* — more legible and more
+  minimal than Guile's module machinery — plus materially higher model fluency.
+
+### The move that dissolves the question: Fennel
+
+The Lisp instinct is really about *surface* — s-expressions, macros,
+code-as-data. That is separable from the runtime, and on the Lua VM it is
+already available: **[Fennel](https://fennel-lang.org) is a Lisp that compiles to
+Lua**, runs on the same VM, compiles into the *same* `_ENV` capability sandbox,
+and ships in the same single binary. So "should it have been a Lisp?" has a
+disarming answer — you can have the Lisp surface, with a full macro system, at
+zero architectural cost, *without* giving up the per-unit sandbox, the C
+embedding, the text source, or the model-fluency of the underlying Lua. Choosing
+the Lua runtime never foreclosed the Lisp ergonomics; it kept them optional.
+
+### Verdict
+
+The "we should have chosen a Lisp" instinct conflates the runtime with the
+syntax. The right *runtime* for a **safely** self-modifying, embeddable,
+text-sourced agent is a small VM with per-unit environment sandboxing — which is
+Lua, with Guile the only real family alternative and Lua ahead of it on size,
+legibility, and model fluency. Common Lisp would have handed boggart *more*
+metaprogramming and *less* of the one property the whole design rests on
+(containable self-modification); Racket has both but cannot embed small; plain
+Scheme is a specification, not a runtime. And the Lisp that boggart's instinct is
+actually reaching for — homoiconic, macro-capable — is available as **Fennel on
+the Lua VM** whenever it is wanted. Lua was not the compromise choice. It was the
+choice whose strengths are boggart's requirements, and it left the Lisp door
+open besides.
+
+Sources: Lua 5.4/5.5 reference (`load`, `_ENV`, the `debug` library);
+R7RS (`eval` + environment specifiers); Racket `racket/sandbox`
+(`make-evaluator`, memory/eval limits, security guards); Guile `(ice-9 sandbox)`
+(safe bindings, time/allocation limits); Fennel language reference.

@@ -1014,6 +1014,34 @@ M.register("mcp", {
 -- memory tools
 for name, def in pairs(bog.memory.tools) do M.register(name, def) end
 
+-- plan/task tools: compiled procedures (run_plan/define_task/tasks). A defined
+-- task chains tool calls with no model turn between them -- a skill minus the
+-- per-step call. See lua/plan.lua.
+for name, def in pairs(require("plan").tools) do M.register(name, def) end
+
+-- goap tools: opt-in goal planning (goap/define_action/blackboard). The model
+-- states a goal world-state; A* over declared actions finds the tool ordering.
+-- See lua/goap.lua and lua/blackboard.lua.
+for name, def in pairs(require("goap").tools) do M.register(name, def) end
+
+-- claims tools: the shared edit blackboard (claim/release/claims) so concurrent
+-- agents coordinate on files instead of colliding. See lua/claims.lua.
+for name, def in pairs(require("claims").tools) do M.register(name, def) end
+
+-- git tools: model-facing wrappers (checkpoint/restore/git_diff/worktree) over
+-- the C `git` capability (src/lgit.c). Tooling and policy are C; these are the
+-- thin Lua glue the model calls. See lua/gittools.lua.
+for name, def in pairs(require("gittools").tools) do M.register(name, def) end
+
+-- skill tools: list/author/import skills (skills, define_skill, import_skill).
+-- define_tool's counterpart for behaviour; imports compile markdown SKILL.md to
+-- Lua so there is one substrate. See lua/skills.lua.
+for name, def in pairs(require("skills").tools) do M.register(name, def) end
+
+-- skill router: find_skill, BM25 search over the skill corpus so the model can
+-- discover which skills fit a task before granting them. See lua/skillrouter.lua.
+for name, def in pairs(require("skillrouter").tools) do M.register(name, def) end
+
 -- model/user-defined tool files
 load_user_tools()
 

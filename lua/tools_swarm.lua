@@ -30,6 +30,14 @@ defs.spawn = {
   },
   run = function(a)
     if type(a.task) ~= "string" or a.task == "" then return "Tool error: spawn requires 'task'" end
+    -- The fanout cap is what distinguishes single-agent mode from a swarm, and
+    -- it is enforced here rather than by hiding the tool: refusing with the
+    -- reason lets the model do the work itself instead of retrying blindly.
+    if bog.thread.at_capacity() then
+      return string.format(
+        "Tool error: [validation_error] agent cap reached (%d): cannot spawn more agents. "
+        .. "Do this work yourself.", bog.thread.max_agents)
+    end
     local id = bog.thread.spawn{
       task = a.task, agent = a.agent, model = a.model, skills = a.skills,
       parent_id = bog.sched.current(),

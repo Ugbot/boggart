@@ -418,6 +418,20 @@ end
 
 if bog.mode ~= "eval" then bog.try(bog.mcphost.load) end
 
+-- The agent layer, in every mode: everything is a swarm, and a lone agent is a
+-- swarm whose fanout is capped at one. Skills, agent specs and the agent record
+-- are therefore not swarm-only any more -- they are how *any* agent is built, so
+-- skills work in the default REPL exactly as they do for a spawned child.
+--
+-- These three are pure Lua with no load-time cost. The scheduler is not: it
+-- requires uv, which allocates a loop, so it stays lazy and swarm-only -- and it
+-- is only needed once the cap allows more than one agent.
+bog.skills = require("skills")
+bog.agents = require("agents")
+bog.thread = require("thread")
+bog.thread.max_agents = tonumber(os.getenv("BOGGART_MAX_AGENTS"))
+  or (bog.mode == "swarm" and 16 or 1)
+
 if bog.mode == "embedded" then
   -- Embedded in boggart-studio: the harness is wired and the store is open;
   -- the editor drives it from here. No REPL, no dispatch, no reading stdin.
@@ -425,11 +439,10 @@ if bog.mode == "embedded" then
   return 0
 
 elseif bog.mode == "swarm" then
-  -- Load the actor layer lazily (swarm-only; keeps the default wiring minimal).
+  -- The agent layer is already wired above. What swarm mode adds is the raised
+  -- cap (set above), the scheduler -- which requires uv, so it stays lazy -- and
+  -- the coordination tools, which only mean anything once fanout is allowed.
   bog.sched = require("sched")
-  bog.skills = require("skills")
-  bog.agents = require("agents")
-  bog.thread = require("thread")
   bog.tools_swarm = require("tools_swarm")
   return require("swarmmode").run() -- "swarm" is the C bus global; the mode lives in swarmmode.lua
 

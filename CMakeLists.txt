@@ -305,6 +305,7 @@ add_executable(boggart
   src/ldb.c
   src/lswarm.c
   src/lmcp.c
+  src/lgit.c
   src/jwriter.c
   src/lauth.c
   src/lworker.c
@@ -494,6 +495,7 @@ if(BOGGART_BUILD_APP AND SDL2_FOUND)
     src/ldb.c
     src/lswarm.c
     src/lmcp.c
+    src/lgit.c
     src/jwriter.c
     src/lauth.c
     src/lworker.c
@@ -614,7 +616,7 @@ endif()
 # rule itself under test -- it still resolves %LOCALAPPDATA%, that just now
 # points somewhere disposable.
 enable_testing()
-foreach(suite test integration swarm mcp ltui sysfs bus jwriter worker proc sandbox scopes errors studio events lifecycle)
+foreach(suite test integration swarm mcp ltui sysfs bus jwriter worker proc sandbox scopes errors studio events lifecycle plan goap claims prompt skills agentmodel skillrouter)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home}
