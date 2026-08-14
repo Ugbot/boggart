@@ -97,7 +97,7 @@ end
 -- putting it in the reload set means an edited ~/.boggart/lua/events.lua takes
 -- effect like any other module. Registrations themselves survive the reload --
 -- they live on bog.__events, not in the module (see lua/events.lua).
-local CORE = { "events", "json", "util", "lifecycle", "store", "memory", "mcphost", "prompt", "tools", "api", "workers" }
+local CORE = { "events", "json", "util", "lifecycle", "store", "memory", "mcphost", "prompt", "tools", "api", "workers", "complete" }
 
 local function wire()
   for _, m in ipairs(CORE) do package.loaded[m] = nil end
@@ -117,6 +117,10 @@ local function wire()
   -- bog so Lua that is not the model can read them too.
   bog.claims = require("claims")
   bog.blackboard = require("blackboard")
+  -- The completion engine. bog.complete is the *function* src/lterm.c calls on
+  -- Tab (with the input up to the cursor); the module also owns /help's text and
+  -- the command registry, so the three cannot drift.
+  bog.complete = require("complete").complete
 end
 
 -- Session lifecycle (persisted in the SQLite store; bog.db survives reloads).
@@ -211,22 +215,9 @@ end
 
 -- ---- REPL ------------------------------------------------------------------
 local function print_help()
-  io.write([[
-boggart commands:
-  /help            this help
-  /tools [name]    list tools with scope + usage; name shows its source
-  /auth            show or set stored credentials (key / url / model)
-  /doctor          check the install: paths, store, credentials, overlays
-  /memory          list stored memories
-  /sessions        list recent saved sessions
-  /resume <id>     resume a saved session
-  /reload          hot-reload the harness Lua
-  /reset [file]    delete an overlay file (or all with no arg), then reload
-  /model <id>      switch model (current: ]] .. bog.session.model .. [[)
-  /new             start a fresh conversation (new saved session)
-  /quit            exit
-Anything else is sent to the agent.
-]])
+  -- Generated from the command registry (lua/complete.lua) so /help, Tab
+  -- completion and the dispatch below all describe the same set of commands.
+  io.write(require("complete").help_text())
 end
 
 local function handle_command(line)
@@ -330,6 +321,9 @@ local function do_repl()
   -- Persist REPL history across sessions. isocline handles the file; linenoise
   -- never had this wired up.
   if sys.history_file then sys.history_file(bog.userdir .. "/history", 500) end
+  -- Tab completion, hints and (later) highlighting. `term` is a CLI-only C
+  -- module (src/lterm.c); it is absent in the studio, so the call is guarded.
+  if term and term.enable then pcall(term.enable) end
   while true do
     local line = sys.readline("boggart")
     if line == nil then io.write("\n"); break end
