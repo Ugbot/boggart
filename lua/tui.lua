@@ -233,14 +233,23 @@ local function page(st) local _, h = tc.size(); return math.max(1, h - 3) end
 -- or interrupt (Ctrl-C) while the fleet works.
 local function run_turn(st, text)
   st.entries[#st.entries + 1] = { role = "user", text = text }
-  local e = { role = "assistant", text = "" }
-  st.entries[#st.entries + 1] = e
+  st.cur = nil -- the first assistant chunk opens a fresh entry, after any tool call
   st.scroll, st.running, st.t0, st.abort = 0, true, os.time(), false
   st.dirty, st.last_paint = true, 0
 
   local co = coroutine.create(function()
-    bog.api.run_on(st.coord.session, text,
-      function(chunk) e.text = e.text .. chunk; st.dirty = true end, st.coord.opts)
+    -- Assistant text streams into st.cur; a tool call or note (captured in M.run)
+    -- closes it, so the next chunk opens a new entry and the transcript reads in
+    -- order: text, tool, text. Never write here -- everything is an entry the
+    -- cell grid draws, or it would shred the frame.
+    bog.api.run_on(st.coord.session, text, function(chunk)
+      if not st.cur then
+        st.cur = { role = "assistant", text = "" }
+        st.entries[#st.entries + 1] = st.cur
+      end
+      st.cur.text = st.cur.text .. chunk
+      st.dirty = true
+    end, st.coord.opts)
   end)
   bog.sched.add(st.coord.id, co)
 
@@ -290,6 +299,35 @@ function M.run()
   local st = { coord = coord, entries = {}, box = Input.new{}, scroll = 0,
                total = 0, running = false }
 
+  -- Route the agent's line logging into the transcript. bog.log_tool and bog.log
+  -- write raw bytes to stdout/stderr; in the cell-grid cTUI those land wherever
+  -- the cursor happens to sit and shred the frame -- the classic symptom being
+  -- tool-call lines smeared through the streamed text. Capture them as entries
+  -- the grid draws instead, and only the coordinator's: a sub-agent's calls
+  -- belong to the pane, not the main transcript (dropped here, not printed, so
+  -- they still cannot corrupt anything). A tool/note also closes the open
+  -- assistant run. Restored on exit, as dash.lua does for ltui.
+  local saved_log_tool, saved_log = bog.log_tool, bog.log
+  local function is_coord()
+    local cur = bog.sched and bog.sched.current()
+    return cur == nil or cur == st.coord.id
+  end
+  local function push(role, text)
+    st.cur = nil
+    st.entries[#st.entries + 1] = { role = role, text = text }
+    st.scroll, st.dirty = 0, true
+  end
+  bog.log_tool = function(name, input)
+    if not is_coord() then return end
+    local preview = ""
+    if type(input) == "table" then
+      local hint = input.command or input.path or input.query or input.name or input.title
+      if hint then preview = ": " .. tostring(hint):gsub("%s+", " "):sub(1, 100) end
+    end
+    push("tool", tostring(name) .. preview)
+  end
+  bog.log = function(msg) if is_coord() then push("system", tostring(msg)) end end
+
   local ok, err = pcall(function()
     draw(st)
     while true do
@@ -317,6 +355,7 @@ function M.run()
     end
   end)
 
+  bog.log_tool, bog.log = saved_log_tool, saved_log -- restore before leaving the alt screen
   tc.shutdown()
   if not ok then io.stderr:write("tui: ", tostring(err), "\n") end
   return true
