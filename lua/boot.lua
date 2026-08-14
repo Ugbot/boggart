@@ -351,36 +351,58 @@ local function run_one_turn(text)
   bog.activate_agents()
   local uv = require("uv")
   local tty = term and term.istty and term.istty()
+  local myid = S.id or 1
 
-  local started, si, turn_err = false, 0, nil
+  -- A single rewritable activity line at the cursor: "thinking" until the first
+  -- token, then -- if the turn spawned a fleet -- the live roster of sub-agents,
+  -- which shrinks as each finishes. Every token clears it first, so streamed
+  -- text is never clobbered. This is the scrolling REPL's window onto the one
+  -- swarm; the cTUI draws the same fleet as a pane. Sub-agents are just the
+  -- scheduler's other actors -- there is no second bookkeeping.
+  local started, si, turn_err, shown = false, 0, nil, false
+  local function clear_status() if shown then io.write("\r\27[K"); shown = false end end
+  local function status()
+    local ids = {}
+    if bog.sched and bog.sched.actors then
+      for _, a in ipairs(bog.sched.actors) do
+        if a.id ~= myid then ids[#ids + 1] = "#" .. a.id end
+      end
+    end
+    local frame = SPIN[(si % #SPIN) + 1]
+    if #ids > 0 then
+      return string.format("%s  %d agent%s working: %s", frame, #ids,
+        #ids == 1 and "" or "s", table.concat(ids, " "))
+    elseif not started then
+      return frame .. "  thinking\u{2026}"
+    end
+  end
+
   local co = coroutine.create(function()
     local ok, e = pcall(bog.api.run_on, S, text, function(t)
-      if tty and not started then io.write("\r\27[K") end -- wipe the spinner on first token
+      if tty then clear_status() end -- print tokens at a clean position
       started = true
       io.write(t); io.flush()
     end, { async = true })
     if not ok then turn_err = e end
   end)
-  bog.sched.add(S.id or 1, co)
+  bog.sched.add(myid, co)
 
   -- The timer fires on the loop the scheduler is already running, so it only
-  -- ticks while the turn is in flight; it paints the spinner until the first
-  -- token, then goes quiet and lets the text stream.
+  -- ticks while the turn is in flight, repainting the activity line in place.
   local timer
   if tty then
     timer = uv.new_timer()
     timer:start(120, 120, function()
-      if not started then
-        si = si + 1
-        io.write("\r\27[K", COL.dim, "  ", SPIN[(si % #SPIN) + 1], "  thinking\u{2026}", COL.reset)
-        io.flush()
-      end
+      si = si + 1
+      clear_status()
+      local line = status()
+      if line then io.write(COL.dim, "  ", line, COL.reset); io.flush(); shown = true end
     end)
   end
 
   local ok = pcall(bog.sched.run, {})
   if timer then timer:stop(); timer:close() end
-  if tty and not started then io.write("\r\27[K") end
+  if tty then clear_status() end
   io.write("\n")
   print_turn_error(ok and turn_err == nil, turn_err or (not ok and "scheduler error") or nil)
   bog.save_session() -- persist transcript for /resume and crash recovery
