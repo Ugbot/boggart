@@ -1,11 +1,21 @@
--- termrender.lua -- turn a transcript entry into ANSI-coloured terminal text.
+-- termrender.lua -- turn a transcript entry into styled runs, then ANSI text.
 --
 -- This is the terminal twin of studio/data/core/agentview.lua: the studio draws
 -- the same transcript into a GPU/software canvas, this renders it into the
--- scrolling REPL. It is deliberately PURE -- every function is (input -> string)
+-- scrolling REPL. It is deliberately PURE -- every function is (input -> value)
 -- with no side effects, no terminal control (no cursor moves, no clearing), and
 -- no global state. The one environment read is NO_COLOR, which the spec (and the
 -- de-facto https://no-color.org convention) requires.
+--
+-- The core (Contract B) produces STYLED RUNS, not strings:
+--   runs(entry, opts) -> lines,  lines = { line, ... },  line = { run, ... }
+--   run  = { text=<string>, fg=<"rrggbb"|nil>, bg=<"rrggbb"|nil>,
+--            attr={bold?,dim?,italic?,underline?,reverse?}|nil }
+-- Concatenating a line's run texts yields that line's plain text, and every
+-- visible char lives in exactly one run. The public .entry/.assistant/.diff/...
+-- functions are a thin SERIALISER over those runs: they walk the lines and emit
+-- 24-bit truecolour SGR (matching the studio palette by construction), or plain
+-- text when colour is off. runs -> string is the only place a "\27[" is minted.
 --
 -- The entry shapes are the real ones the turn loop and agentview produce, not
 -- invented: an entry is { role = <kind>, text = <string>, ... } where role is
@@ -14,10 +24,6 @@
 -- exactly as agentview pushes it:  push("diff", "", { diff = rec.diff, path = ... })
 -- and difflib.compute returns { added, removed, hunk = {{" "/"+"/"-", text},...},
 -- start_line, unchanged }.
---
--- Colours echo studio/data/core/style.lua where it makes sense, emitted as
--- 24-bit truecolour SGR so the terminal matches the studio's palette by
--- construction rather than by a hand-maintained 16-colour approximation.
 local M = {}
 
 -- ---------------------------------------------------------------------------
@@ -50,7 +56,7 @@ local SYN = {
 }
 
 -- SGR attribute codes, kept named so the paint sites read as intent.
-local BOLD, DIM, ITALIC, UNDERLINE = "1", "2", "3", "4"
+local BOLD, DIM, ITALIC, UNDERLINE, REVERSE = "1", "2", "3", "4", "7"
 
 local function rgb(hex)
   return tonumber(hex:sub(1, 2), 16),
@@ -61,36 +67,40 @@ local function fg(hex) local r, g, b = rgb(hex); return "38;2;" .. r .. ";" .. g
 local function bg(hex) local r, g, b = rgb(hex); return "48;2;" .. r .. ";" .. g .. ";" .. b end
 
 -- ---------------------------------------------------------------------------
--- The painter -- one per call, bound to opts. When colour is off (opts.color ==
--- false or NO_COLOR in the environment) every method degrades to plain text, so
--- a caller never has to branch on it and the output provably contains no "\27["
--- at all. This is a closure over locals, not module state, so it stays pure.
+-- The serialiser primitives. RESET closes a styled span; esc wraps a list of
+-- SGR codes as one introducer. run_codes flattens a run's fg + attrs into that
+-- code list, in the fixed order the old painter emitted (fg, then bold, dim,
+-- italic, underline, reverse) so a serialised run is byte-for-byte what the
+-- previous span-emitting core produced. bg is deliberately absent here: it is
+-- handled by the code band (see serialise_line), never per-run.
+-- ---------------------------------------------------------------------------
+local RESET = "\27[0m"
+local function esc(codes) return "\27[" .. table.concat(codes, ";") .. "m" end
+
+local function run_codes(r)
+  local c = {}
+  if r.fg then c[#c + 1] = fg(r.fg) end
+  local a = r.attr
+  if a then
+    if a.bold then c[#c + 1] = BOLD end
+    if a.dim then c[#c + 1] = DIM end
+    if a.italic then c[#c + 1] = ITALIC end
+    if a.underline then c[#c + 1] = UNDERLINE end
+    if a.reverse then c[#c + 1] = REVERSE end
+  end
+  return c
+end
+
+-- ---------------------------------------------------------------------------
+-- The painter -- one per serialise, bound to opts. When colour is off (opts.color
+-- == false or NO_COLOR in the environment) the serialiser degrades to plain
+-- text, so the output provably contains no "\27[" at all. This is a closure over
+-- locals, not module state, so it stays pure.
 -- ---------------------------------------------------------------------------
 local function painter(opts)
   local color = not (opts and opts.color == false)
   if os.getenv("NO_COLOR") ~= nil then color = false end
-  local P = { enabled = color }
-
-  -- Raw SGR introducer (no trailing reset), for the code band where the
-  -- background must persist across several fg changes.
-  function P.seq(...)
-    if not color then return "" end
-    local n, codes = select("#", ...), {}
-    for k = 1, n do local c = select(k, ...); if c then codes[#codes + 1] = c end end
-    if #codes == 0 then return "" end
-    return "\27[" .. table.concat(codes, ";") .. "m"
-  end
-  P.reset = color and "\27[0m" or ""
-
-  -- A self-contained styled span: codes, text, reset. nil codes are ignored so
-  -- callers can pass `cond and CODE or nil` freely.
-  function P.span(text, ...)
-    if not color then return text end
-    local s = P.seq(...)
-    if s == "" then return text end
-    return s .. text .. "\27[0m"
-  end
-  return P
+  return { enabled = color }
 end
 
 -- ---------------------------------------------------------------------------
@@ -113,6 +123,63 @@ local function take(s, n)
   local off = utf8.offset(s, n + 1)
   if not off then return s, "" end
   return s:sub(1, off - 1), s:sub(off)
+end
+
+-- ---------------------------------------------------------------------------
+-- The serialiser -- runs -> ANSI. A line is a list of runs; most runs become a
+-- self-contained "\27[..m..\27[0m" span (or bare text when unstyled). The one
+-- exception is the fenced-code band: consecutive runs sharing a background open
+-- that bg ONCE, ride it while each contributes only its foreground, then close
+-- with a single reset and (when a width is given) pad the band to a full-width
+-- stripe. Colour off collapses the whole line to concatenated run texts, which
+-- is exactly a line's plain text and provably escape-free.
+-- ---------------------------------------------------------------------------
+local function serialise_line(runs, P, width)
+  if not P.enabled then
+    local t = {}
+    for _, r in ipairs(runs) do t[#t + 1] = r.text end
+    return table.concat(t)
+  end
+  local buf, i, n, cols = {}, 1, #runs, 0
+  while i <= n do
+    local r = runs[i]
+    if r.bg then
+      -- A background band: open the bg, then each run sets only its fg on top,
+      -- so the band rides underneath a run of fg changes with no intermediate
+      -- reset -- fewer escapes, contiguous visible text.
+      local band = r.bg
+      buf[#buf + 1] = esc({ bg(band) })
+      while i <= n and runs[i].bg == band do
+        local rr = runs[i]
+        local codes = run_codes(rr)
+        buf[#buf + 1] = (#codes > 0 and esc(codes) or "") .. rr.text
+        cols = cols + vis_len(rr.text)
+        i = i + 1
+      end
+      if width then                             -- pad the stripe to the margin
+        local pad = width - cols
+        if pad > 0 then buf[#buf + 1] = string.rep(" ", pad); cols = cols + pad end
+      end
+      buf[#buf + 1] = RESET
+    else
+      local codes = run_codes(r)
+      if #codes == 0 then buf[#buf + 1] = r.text
+      else buf[#buf + 1] = esc(codes) .. r.text .. RESET end
+      cols = cols + vis_len(r.text)
+      i = i + 1
+    end
+  end
+  return table.concat(buf)
+end
+
+-- lines -> string. Every public ANSI function funnels through here: build a
+-- painter from opts, serialise each line, join with newlines.
+local function serialise(lines, opts)
+  local P = painter(opts)
+  local width = opts and opts.width
+  local out = {}
+  for _, line in ipairs(lines) do out[#out + 1] = serialise_line(line, P, width) end
+  return table.concat(out, "\n")
 end
 
 -- ---------------------------------------------------------------------------
@@ -157,12 +224,16 @@ local function inline(text, base)
   return toks
 end
 
-local function paint_token(sty, text, P)
-  return P.span(text,
-    sty.hex and fg(sty.hex) or nil,
-    sty.bold and BOLD or nil,
-    sty.italic and ITALIC or nil,
-    sty.underline and UNDERLINE or nil)
+-- One inline token -> one run, carrying its colour and any emphasis attrs.
+local function token_run(sty, text)
+  local attr
+  if sty.bold or sty.italic or sty.underline then
+    attr = {}
+    if sty.bold then attr.bold = true end
+    if sty.italic then attr.italic = true end
+    if sty.underline then attr.underline = true end
+  end
+  return { text = text, fg = sty.hex, attr = attr }
 end
 
 -- Split styled tokens into whitespace / word pieces, each keeping its style, so
@@ -219,37 +290,36 @@ local function pack(pieces, width)
   return rows
 end
 
--- Wrap a token row to width and render it, giving the first line `prefix` (a
+-- Wrap a token row to width and build its runs, giving the first line `prefix` (a
 -- { text, hex, bold } record) and the continuations a blank indent of the same
--- width so bullets and quotes hang correctly. Returns a list of strings.
-local function wrap_render(tokens, width, P, prefix)
+-- width so bullets and quotes hang correctly. Returns a list of lines (each a
+-- list of runs). Adjacent pieces that share a style coalesce into one run, so a
+-- run of same-styled words becomes a single span rather than one per word.
+local function wrap_runs(tokens, width, prefix)
   local plen = prefix and vis_len(prefix.text) or 0
   local inner = width and math.max(1, width - plen) or nil
   local rows = pack(split_pieces(tokens), inner)
   local lines = {}
   for i, row in ipairs(rows) do
-    local buf = {}
+    local line = {}
     if prefix then
       if i == 1 then
-        buf[#buf + 1] = P.span(prefix.text,
-          prefix.hex and fg(prefix.hex) or nil, prefix.bold and BOLD or nil)
+        line[#line + 1] = { text = prefix.text, fg = prefix.hex,
+          attr = prefix.bold and { bold = true } or nil }
       else
-        buf[#buf + 1] = string.rep(" ", plen)
+        line[#line + 1] = { text = string.rep(" ", plen) }   -- blank indent, unstyled
       end
     end
-    -- Coalesce adjacent pieces that share a style into one painted span, so a
-    -- run of same-styled words is a single "\27[..m...\27[0m" rather than one
-    -- per word -- fewer escapes, and the visible text stays contiguous.
     local j = 1
     while j <= #row do
       local sty, run = row[j].sty, {}
       while j <= #row and row[j].sty == sty do run[#run + 1] = row[j].text; j = j + 1 end
-      buf[#buf + 1] = paint_token(sty, table.concat(run), P)
+      line[#line + 1] = token_run(sty, table.concat(run))
     end
-    lines[#lines + 1] = table.concat(buf)
+    lines[#lines + 1] = line
   end
   if #lines == 0 then
-    lines[1] = prefix and P.span(prefix.text, prefix.hex and fg(prefix.hex) or nil) or ""
+    lines[1] = prefix and { { text = prefix.text, fg = prefix.hex } } or { { text = "" } }
   end
   return lines
 end
@@ -332,33 +402,30 @@ local function hl(line, lang, st)
   return toks, st
 end
 
--- One code line: a dim gutter, then a subtle background band carrying the
--- highlighted tokens. The band's bg is opened once and never reset until the
--- line's end, so each token only sets its foreground -- the background rides
--- underneath. Optionally padded to `width` so the band is a full-width stripe.
-local function render_code_line(line, lang, st, P, width)
+-- One code line as runs: a dim gutter (its own span), then the highlighted
+-- tokens, each a run carrying its fg over the shared code background. The band's
+-- bg is what the serialiser opens once and rides; an empty line still needs a
+-- band, so it gets a single bg-only run so the stripe is drawn. No padding is
+-- baked in here -- the serialiser stripes to width, keeping plain text clean.
+local function code_line_runs(line, lang, st)
   local toks
   toks, st = hl(line, lang, st)
-  if not P.enabled then return "\226\148\130 " .. line, st end   -- "│ " gutter, plain
-  local buf = { P.span("\226\148\130 ", fg(PAL.dim)) }           -- gutter, outside the band
-  buf[#buf + 1] = P.seq(bg(CODEBG))                              -- open the band
-  for _, t in ipairs(toks) do buf[#buf + 1] = P.seq(fg(t[2])) .. t[1] end
-  if width then
-    local pad = width - 2 - vis_len(line)
-    if pad > 0 then buf[#buf + 1] = string.rep(" ", pad) end
+  local runs = { { text = "\226\148\130 ", fg = PAL.dim } }   -- "│ " gutter, outside the band
+  for _, t in ipairs(toks) do
+    runs[#runs + 1] = { text = t[1], fg = t[2], bg = CODEBG }
   end
-  buf[#buf + 1] = P.reset
-  return table.concat(buf), st
+  if #toks == 0 then runs[#runs + 1] = { text = "", bg = CODEBG } end
+  return runs, st
 end
 
 -- ---------------------------------------------------------------------------
 -- Block markdown for one non-code line: headings, blockquotes, bullet and
 -- numbered lists, horizontal rules, then the inline scanner for the rest.
--- Returns a list of rendered strings (a line may wrap to several).
+-- Returns a list of lines (a source line may wrap to several), each a run list.
 -- ---------------------------------------------------------------------------
-local function render_md_line(line, width, P)
+local function md_line_runs(line, width)
   if line:match("^%s*[-*_][-*_ ]*$") and #line:gsub("%s", "") >= 3 then
-    return { P.span(string.rep("\226\148\128", math.min(width or 48, 48)), fg(PAL.divider)) }
+    return { { { text = string.rep("\226\148\128", math.min(width or 48, 48)), fg = PAL.divider } } }
   end
 
   local hashes, htext = line:match("^(#+)%s+(.*)$")
@@ -369,23 +436,23 @@ local function render_md_line(line, width, P)
   if hashes then
     local toks = inline(htext, PAL.accent)
     for _, t in ipairs(toks) do t.bold = true end
-    local rows = wrap_render(toks, width, P, nil)
+    local rows = wrap_runs(toks, width, nil)
     if #hashes <= 2 then     -- underline h1/h2, as agentview draws a rule
-      rows[#rows + 1] = P.span(string.rep("\226\148\128",
-        math.min(width or vis_len(htext), math.max(4, vis_len(htext)))), fg(PAL.divider))
+      rows[#rows + 1] = { { text = string.rep("\226\148\128",
+        math.min(width or vis_len(htext), math.max(4, vis_len(htext)))), fg = PAL.divider } }
     end
     return rows
   elseif quote then
-    return wrap_render(inline(quote, PAL.dim), width, P,
+    return wrap_runs(inline(quote, PAL.dim), width,
       { text = "\226\148\130 ", hex = PAL.divider })     -- "│ "
   elseif bullet then
-    return wrap_render(inline(bullet, PAL.text), width, P,
+    return wrap_runs(inline(bullet, PAL.text), width,
       { text = ind .. "\226\128\162 ", hex = PAL.accent })  -- indent + "• "
   elseif numlead then
-    return wrap_render(inline(numbody, PAL.text), width, P,
+    return wrap_runs(inline(numbody, PAL.text), width,
       { text = numlead, hex = PAL.accent })
   else
-    return wrap_render(inline(line, PAL.text), width, P, nil)
+    return wrap_runs(inline(line, PAL.text), width, nil)
   end
 end
 
@@ -393,26 +460,25 @@ end
 -- A plain (non-markdown) line block with a coloured prefix -- used for the user
 -- echo, tool headers, errors and system notes. The prefix leads the first line;
 -- wrapped and subsequent source lines get a blank indent so the text stays in a
--- clean column.
+-- clean column. Returns a list of lines (run lists).
 -- ---------------------------------------------------------------------------
-local function simple(text, prefix_text, hex, opts, bold)
-  local P = painter(opts)
+local function simple_runs(text, prefix_text, hex, opts, bold)
   local width = opts and opts.width
   local blank = string.rep(" ", vis_len(prefix_text))
-  local lines, first = {}, true
+  local out, first = {}, true
   for line in (tostring(text) .. "\n"):gmatch("(.-)\n") do
     local pfx = {
       text = first and prefix_text or blank,
       hex  = first and hex or nil,
       bold = first and bold or nil,
     }
-    for _, l in ipairs(wrap_render({ { text = line, hex = hex, bold = bold } }, width, P, pfx)) do
-      lines[#lines + 1] = l
+    for _, l in ipairs(wrap_runs({ { text = line, hex = hex, bold = bold } }, width, pfx)) do
+      out[#out + 1] = l
     end
     first = false
   end
-  if #lines == 0 then lines[1] = P.span(prefix_text, fg(hex)) end
-  return table.concat(lines, "\n")
+  if #out == 0 then out[1] = { { text = prefix_text, fg = hex } } end
+  return out
 end
 
 local function textof(x)
@@ -420,14 +486,31 @@ local function textof(x)
   return tostring(x or "")
 end
 
+-- A hunk row from difflib.compute, as one run: green add, red remove, dim context.
+local function diff_row_run(kind, text)
+  if kind == "+" then return { text = "+ " .. text, fg = PAL.good }
+  elseif kind == "-" then return { text = "- " .. text, fg = PAL.err }
+  else return { text = "  " .. text, fg = PAL.dim } end
+end
+
+-- One line of a raw unified diff as a run, classified by its leading marker.
+local function unified_run(line)
+  local h = line:sub(1, 1)
+  if line:match("^%+%+%+") or line:match("^%-%-%-") or line:match("^diff ") then
+    return { text = line, fg = PAL.accent, attr = { bold = true } }
+  elseif line:match("^@@") then
+    return { text = line, fg = PAL.keyword }
+  elseif h == "+" then return { text = line, fg = PAL.good }
+  elseif h == "-" then return { text = line, fg = PAL.err }
+  else return { text = line, fg = PAL.dim } end
+end
+
 -- ---------------------------------------------------------------------------
--- Public per-kind renderers. Each accepts either an entry table or a bare
--- string, plus opts { width, color }.
+-- Core run builders, one per kind. Each returns lines = { {run,...}, ... }.
 -- ---------------------------------------------------------------------------
 
-function M.assistant(entry, opts)
+local function assistant_runs(entry, opts)
   local text = textof(entry)
-  local P = painter(opts)
   local width = opts and opts.width
   local out = {}
   local in_code, fence_len, lang = false, 0, nil
@@ -445,46 +528,21 @@ function M.assistant(entry, opts)
         st = { block = false }
       end
     elseif in_code then
-      local rendered
-      rendered, st = render_code_line(line, lang, st, P, width)
-      out[#out + 1] = rendered
+      local ln
+      ln, st = code_line_runs(line, lang, st)
+      out[#out + 1] = ln
     else
-      for _, l in ipairs(render_md_line(line, width, P)) do out[#out + 1] = l end
+      for _, l in ipairs(md_line_runs(line, width)) do out[#out + 1] = l end
     end
   end
-  return table.concat(out, "\n")
-end
-
-function M.user(entry, opts)  return simple(textof(entry), "\226\128\186 ", PAL.accent, opts) end   -- "› "
-function M.tool(entry, opts)  return simple(textof(entry), "\194\187 ", PAL.keyword, opts) end       -- "» "
-function M.error(entry, opts) return simple(textof(entry), "\226\156\151 ", PAL.err, opts, true) end -- "✗ "
-function M.system(entry, opts) return simple(textof(entry), "\194\183 ", PAL.dim, opts) end          -- "· "
-
--- A hunk row from difflib.compute: green add, red remove, dim context.
-local function render_diff_row(kind, text, P)
-  if kind == "+" then return P.span("+ " .. text, fg(PAL.good))
-  elseif kind == "-" then return P.span("- " .. text, fg(PAL.err))
-  else return P.span("  " .. text, fg(PAL.dim)) end
-end
-
--- One line of a raw unified diff, classified by its leading marker.
-local function render_unified_line(line, P)
-  local h = line:sub(1, 1)
-  if line:match("^%+%+%+") or line:match("^%-%-%-") or line:match("^diff ") then
-    return P.span(line, fg(PAL.accent), BOLD)
-  elseif line:match("^@@") then
-    return P.span(line, fg(PAL.keyword))
-  elseif h == "+" then return P.span(line, fg(PAL.good))
-  elseif h == "-" then return P.span(line, fg(PAL.err))
-  else return P.span(line, fg(PAL.dim)) end
+  return out
 end
 
 -- Diffs. Accepts, in order of preference:
 --   * an entry { diff = <difflib result>, path = ... } (what agentview pushes)
 --   * a difflib result directly (has .hunk)
 --   * a raw unified-diff string
-function M.diff(x, opts)
-  local P = painter(opts)
+local function diff_runs(x, opts)
   local d, path, raw
   if type(x) == "string" then
     raw = x
@@ -505,17 +563,50 @@ function M.diff(x, opts)
         d.added or 0, d.removed or 0,
         d.start_line and ("  @ line " .. d.start_line) or "")
     end
-    out[#out + 1] = P.span("\226\150\184 " .. head, fg(PAL.accent), BOLD)   -- "▸ " file header
+    out[#out + 1] = { { text = "\226\150\184 " .. head, fg = PAL.accent, attr = { bold = true } } }
     for _, row in ipairs(d.hunk) do
-      out[#out + 1] = render_diff_row(row[1], row[2], P)
+      out[#out + 1] = { diff_row_run(row[1], row[2]) }
     end
   elseif raw and raw ~= "" then
     for line in (raw .. "\n"):gmatch("(.-)\n") do
-      out[#out + 1] = render_unified_line(line, P)
+      out[#out + 1] = { unified_run(line) }
     end
   end
-  return table.concat(out, "\n")
+  return out
 end
+
+-- ---------------------------------------------------------------------------
+-- Public runs API + dispatcher. runs(entry, opts) -> lines is the core; the
+-- ANSI functions below serialise the same lines. Each simple kind carries its
+-- own prefix glyph and colour (see agentview).
+-- ---------------------------------------------------------------------------
+local RUNS = {
+  assistant = assistant_runs,
+  user  = function(e, o) return simple_runs(textof(e), "\226\128\186 ", PAL.accent, o) end,        -- "› "
+  tool  = function(e, o) return simple_runs(textof(e), "\194\187 ", PAL.keyword, o) end,           -- "» "
+  error = function(e, o) return simple_runs(textof(e), "\226\156\151 ", PAL.err, o, true) end,     -- "✗ "
+  system = function(e, o) return simple_runs(textof(e), "\194\183 ", PAL.dim, o) end,              -- "· "
+  diff  = diff_runs,
+}
+
+-- runs(entry, opts) -> lines. Unknown roles fall back to assistant, the most
+-- forgiving builder (plain prose still reads correctly through it).
+function M.runs(entry, opts)
+  entry = entry or {}
+  local fn = RUNS[entry.role or "assistant"] or assistant_runs
+  return fn(entry, opts)
+end
+
+-- ---------------------------------------------------------------------------
+-- Public per-kind ANSI renderers -- a serialiser over the runs above. Each
+-- accepts either an entry table or a bare string, plus opts { width, color }.
+-- ---------------------------------------------------------------------------
+function M.assistant(entry, opts) return serialise(assistant_runs(entry, opts), opts) end
+function M.user(entry, opts)  return serialise(RUNS.user(entry, opts), opts) end
+function M.tool(entry, opts)  return serialise(RUNS.tool(entry, opts), opts) end
+function M.error(entry, opts) return serialise(RUNS.error(entry, opts), opts) end
+function M.system(entry, opts) return serialise(RUNS.system(entry, opts), opts) end
+function M.diff(x, opts) return serialise(diff_runs(x, opts), opts) end
 
 -- ---------------------------------------------------------------------------
 -- Dispatcher + convenience.

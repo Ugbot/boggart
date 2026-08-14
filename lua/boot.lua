@@ -561,6 +561,14 @@ elseif bog.mode == "oneshot" then
   return 0
 
 else
+  -- `boggart --tui` (no subcommand) opens the full-screen chat cTUI. It manages
+  -- its own session and bows out (returns false) when there is no real terminal,
+  -- so a pipe or a dumb term falls straight through to the scrolling REPL. The
+  -- ltui swarm dashboard (`boggart swarm --tui`) is a separate mode, untouched.
+  if boggart.tui and tc then
+    local ok, tui = pcall(require, "tui")
+    if ok and tui and tui.run() then return 0 end
+  end
   bog.new_session()
   return do_repl()
 end

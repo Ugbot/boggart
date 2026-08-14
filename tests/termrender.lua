@@ -167,5 +167,74 @@ do
   ok(has(s, "do the thing") and has(s, "Done."), "transcript: joins all entries")
 end
 
+-- ---- runs: the styled-run core beneath the ANSI serialiser (Contract B) ------
+-- runs(entry, opts) -> lines; line = { run,... }; run = { text, fg, bg, attr }.
+-- Concatenating a line's run texts is that line's plain text, and every visible
+-- char lives in exactly one run -- these assert that shape directly, before any
+-- escape byte is minted.
+do
+  -- plain text of a line = its run texts concatenated.
+  local function linetext(line)
+    local t = {}
+    for _, r in ipairs(line) do t[#t + 1] = r.text end
+    return table.concat(t)
+  end
+  -- does any run on any line satisfy pred(run)?
+  local function any_run(lines, pred)
+    for _, line in ipairs(lines) do
+      for _, r in ipairs(line) do if pred(r) then return true end end
+    end
+    return false
+  end
+
+  -- A heading contributes a bold run carrying the heading text.
+  local head = tr.runs({ role = "assistant", text = "# Heading one" }, color)
+  ok(any_run(head, function(r) return r.attr and r.attr.bold and has(r.text, "Heading") end),
+    "runs: heading emits a run with attr.bold")
+
+  -- A fenced code line's tokens carry per-token fg (a string hex) over the band.
+  local code = tr.runs({ role = "assistant", text = table.concat({
+    "```lua", 'local x = "hi"', "```" }, "\n") }, color)
+  ok(any_run(code, function(r) return r.bg == "252529" and type(r.fg) == "string" end),
+    "runs: fenced code carries per-token fg over the code background")
+  ok(any_run(code, function(r) return r.fg == "e58ac9" end),
+    "runs: fenced code keyword token gets the keyword hex")
+  ok(any_run(code, function(r) return r.fg == "f7c95c" end),
+    "runs: fenced code string token gets the string hex")
+
+  -- A diff '+' run is the good hex, a '-' run is the error hex.
+  local dlines = tr.runs({ role = "diff", text = "", path = "p.lua", diff = {
+    added = 1, removed = 1, start_line = 1, unchanged = false,
+    hunk = { { "+", "added" }, { "-", "gone" } } } }, color)
+  local plus, minus
+  for _, line in ipairs(dlines) do
+    for _, r in ipairs(line) do
+      if has(r.text, "+ added") then plus = r end
+      if has(r.text, "- gone") then minus = r end
+    end
+  end
+  ok(plus and plus.fg == "7fb77e", "runs: diff '+' run fg is the good hex")
+  ok(minus and minus.fg == "f77483", "runs: diff '-' run fg is the error hex")
+
+  -- A plain paragraph is a single run per line (one style, no emphasis).
+  local para = tr.runs({ role = "assistant", text = "just some plain prose here" }, color)
+  ok(#para == 1 and #para[1] == 1, "runs: a plain paragraph is one run per line")
+  ok(para[1][1].fg == "97979c" and para[1][1].attr == nil,
+    "runs: plain paragraph run is base-coloured with no attrs")
+
+  -- Concatenating run texts reproduces the plain text, everywhere.
+  local plain_of = tr.entry({ role = "assistant", text = "a plain line" }, plain)
+  ok(linetext(para[1]) == "just some plain prose here",
+    "runs: concatenated run texts reproduce the paragraph text")
+  local pcode = tr.entry({ role = "assistant", text = table.concat({
+    "```lua", 'local x = "hi"', "```" }, "\n") }, plain)
+  -- The colour-off serialiser is exactly the per-line run-text concatenation.
+  local rebuilt = {}
+  for _, line in ipairs(code) do rebuilt[#rebuilt + 1] = linetext(line) end
+  ok(table.concat(rebuilt, "\n") == pcode,
+    "runs: run-text concatenation equals the color=false serialisation")
+  ok(has(plain_of, "a plain line"), "runs: plain serialiser keeps the text")
+end
+
 io.write(string.format("\ntermrender: %d passed, %d failed\n", passed, failed))
 return failed == 0 and 0 or 1
