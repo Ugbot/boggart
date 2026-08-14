@@ -407,15 +407,48 @@ end
 -- bg is what the serialiser opens once and rides; an empty line still needs a
 -- band, so it gets a single bg-only run so the stripe is drawn. No padding is
 -- baked in here -- the serialiser stripes to width, keeping plain text clean.
-local function code_line_runs(line, lang, st)
+-- One source line of code -> one OR MORE rendered rows (a list), each within
+-- `width`. A code line is not prose and cannot be re-flowed on spaces, so a line
+-- wider than the viewport is hard-wrapped at the column boundary with the same
+-- "│ " gutter on every row -- otherwise it overflows the viewport (and, in the
+-- cTUI, spills into whatever is beside it). Highlighting is preserved: the line
+-- is tokenised once, then the coloured tokens are packed into rows, splitting a
+-- token across rows only when it does not fit. With no width (or too narrow to
+-- be worth it) it stays a single row, byte-identical to before.
+local function code_line_runs(line, lang, st, width)
   local toks
   toks, st = hl(line, lang, st)
-  local runs = { { text = "\226\148\130 ", fg = PAL.dim } }   -- "│ " gutter, outside the band
-  for _, t in ipairs(toks) do
-    runs[#runs + 1] = { text = t[1], fg = t[2], bg = CODEBG }
+  local gutter = { text = "\226\148\130 ", fg = PAL.dim } -- "│ ", outside the band
+  local cw = width and (width - 2) or nil                 -- content width after the gutter
+
+  if not cw or cw < 4 then
+    local runs = { gutter }
+    for _, t in ipairs(toks) do runs[#runs + 1] = { text = t[1], fg = t[2], bg = CODEBG } end
+    if #toks == 0 then runs[#runs + 1] = { text = "", bg = CODEBG } end
+    return { runs }, st
   end
-  if #toks == 0 then runs[#runs + 1] = { text = "", bg = CODEBG } end
-  return runs, st
+
+  local rows, row, used = {}, { gutter }, 0
+  local function flush() rows[#rows + 1] = row; row, used = { gutter }, 0 end
+  for _, t in ipairs(toks) do
+    local text, hex = t[1], t[2]
+    while #text > 0 do
+      local room = cw - used
+      if room <= 0 then flush(); room = cw end
+      if vis_len(text) <= room then
+        row[#row + 1] = { text = text, fg = hex, bg = CODEBG }
+        used = used + vis_len(text); text = ""
+      else
+        local head, rest = take(text, room)
+        row[#row + 1] = { text = head, fg = hex, bg = CODEBG }
+        used = cw; text = rest
+      end
+      if used >= cw then flush() end
+    end
+  end
+  if #row > 1 then flush() end
+  if #rows == 0 then rows = { { gutter, { text = "", bg = CODEBG } } } end
+  return rows, st
 end
 
 -- ---------------------------------------------------------------------------
@@ -696,9 +729,9 @@ local function assistant_runs(entry, opts)
       end
       i = i + 1
     elseif in_code then
-      local ln
-      ln, st = code_line_runs(line, lang, st)
-      out[#out + 1] = ln
+      local rws
+      rws, st = code_line_runs(line, lang, st, width)
+      for _, r in ipairs(rws) do out[#out + 1] = r end
       i = i + 1
     elseif not in_code and has_pipe(line) and i < n and is_delim_row(L[i + 1]) then
       -- A GFM table: header L[i], delimiter L[i+1]. Consume the whole block.

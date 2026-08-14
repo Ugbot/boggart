@@ -309,5 +309,24 @@ do
     "table: run-text concatenation reproduces the header row's plain text")
 end
 
+-- ---- code wrapping: a long code line fits the viewport ---------------------
+do
+  local long = "```lua\nlocal x = fn(aaaaaaaaaa, bbbbbbbbbb, cccccccccc, dddddddddd, eeeeeeeeee, ffffffffff)\n```"
+  for _, W in ipairs({30, 24, 40}) do
+    local lines = tr.runs({ role = "assistant", text = long }, { width = W })
+    local worst = 0
+    for _, ln in ipairs(lines) do
+      local t = {} ; for _, r in ipairs(ln) do t[#t+1] = r.text or "" end
+      local n = (utf8 and utf8.len(table.concat(t))) or #table.concat(t)
+      if n > worst then worst = n end
+    end
+    ok(worst <= W, "code wraps within width " .. W .. " (widest " .. worst .. ")")
+    ok(#lines > 1, "long code line wrapped to multiple rows at width " .. W)
+  end
+  -- short code at a comfortable width stays one row (no gratuitous wrapping)
+  local short = tr.runs({ role = "assistant", text = "```\nx = 1\n```" }, { width = 40 })
+  ok(#short == 1, "short code line is a single row")
+end
+
 io.write(string.format("\ntermrender: %d passed, %d failed\n", passed, failed))
 return failed == 0 and 0 or 1

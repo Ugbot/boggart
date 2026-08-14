@@ -135,6 +135,13 @@ end
 -- The pane is drawn only while there are actors to show; between turns the
 -- transcript takes the full width. Loaded lazily and guarded, so the cTUI still
 -- runs if the pane module is absent.
+-- The transcript's minimum column and the pane's bounds. The pane is a nicety;
+-- it must never shrink the transcript below MIN_TW, and on a terminal too narrow
+-- for both it disappears entirely (the transcript takes the whole width). This
+-- is the arithmetic that was wrong: a fixed 24-38 pane on a 30-column terminal
+-- left the transcript 5 columns -- or, narrower still, a negative width, which
+-- drew nothing. Fan-out shows in the status row's agent count regardless.
+local MIN_TW, MIN_PANE, MAX_PANE = 30, 20, 40
 local function pane_width(st, w)
   if not (bog.sched and bog.sched.count and bog.sched.count() > 0) then return 0 end
   if not M._Agents then
@@ -142,7 +149,10 @@ local function pane_width(st, w)
     M._Agents = ok and A or false
   end
   if not M._Agents then return 0 end
-  return math.min(38, math.max(24, w // 3))
+  if w < MIN_TW + 1 + MIN_PANE then return 0 end -- no room for both -> no pane
+  -- Up to a third of the width, bounded, and never past what leaves the
+  -- transcript its minimum (the guard above makes this at least MIN_PANE).
+  return math.max(MIN_PANE, math.min(MAX_PANE, w // 3, w - 1 - MIN_TW))
 end
 
 -- ---- status row ------------------------------------------------------------
