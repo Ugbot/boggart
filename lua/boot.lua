@@ -332,6 +332,22 @@ end
 local SPIN = { "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}",
                "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280F}" }
 
+-- A persistent stdin TTY handle for in-turn control keys. Created once and
+-- reused: closing a uv_tty bound to fd 0 can take the fd down with it, which
+-- would leave isocline (the between-turns line editor) with nothing to read. So
+-- it is only ever read_start/read_stop'd and mode-toggled, never closed.
+local repl_input, repl_input_tried
+local function control_input()
+  if repl_input_tried then return repl_input end
+  repl_input_tried = true
+  local uv = require("uv")
+  if uv.guess_handle(0) == "tty" then
+    local ok, h = pcall(uv.new_tty, 0, true)
+    repl_input = ok and h or nil
+  end
+  return repl_input
+end
+
 -- Run a turn on the libuv loop rather than blocking in a read().
 --
 -- The old path called the blocking transport (stream_once): the whole process
@@ -360,6 +376,7 @@ local function run_one_turn(text)
   -- swarm; the cTUI draws the same fleet as a pane. Sub-agents are just the
   -- scheduler's other actors -- there is no second bookkeeping.
   local started, si, turn_err, shown = false, 0, nil, false
+  local abort, paused = false, false
   local function clear_status() if shown then io.write("\r\27[K"); shown = false end end
   local function status()
     local ids = {}
@@ -370,8 +387,9 @@ local function run_one_turn(text)
     end
     local frame = SPIN[(si % #SPIN) + 1]
     if #ids > 0 then
-      return string.format("%s  %d agent%s working: %s", frame, #ids,
-        #ids == 1 and "" or "s", table.concat(ids, " "))
+      return string.format("%s  %d agent%s %s: %s   [^C cancel  p %s  k kill]",
+        frame, #ids, #ids == 1 and "" or "s", paused and "paused" or "working",
+        table.concat(ids, " "), paused and "resume" or "pause")
     elseif not started then
       return frame .. "  thinking\u{2026}"
     end
@@ -387,6 +405,36 @@ local function run_one_turn(text)
   end)
   bog.sched.add(myid, co)
 
+  -- Foreground control: read single keys off stdin on the SAME uv loop the fleet
+  -- runs on, so you can steer it while it works. Raw mode turns Ctrl-C into a
+  -- byte we interpret (a graceful cancel) rather than a signal that kills
+  -- boggart. Sub-agents are the scheduler's other actors, acted on through its
+  -- own pause/kill -- no separate control plane.
+  local input = tty and control_input() or nil
+  if input then
+    pcall(function() input:set_mode(1) end) -- 1 = raw
+    input:read_start(function(err, data)
+      if err or not data then return end
+      for i = 1, #data do
+        local b = data:byte(i)
+        if b == 3 or b == 27 then -- Ctrl-C / Esc: cancel the whole turn
+          abort = true
+        elseif b == 32 or b == 112 then -- space / p: pause or resume the fleet
+          paused = not paused
+          for _, a in ipairs(bog.sched.actors) do
+            if a.id ~= myid then pcall(bog.sched.pause, a.id, paused) end
+          end
+        elseif b == 107 then -- k: kill the newest sub-agent (await unblocks)
+          local newest
+          for _, a in ipairs(bog.sched.actors) do
+            if a.id ~= myid and (not newest or a.id > newest) then newest = a.id end
+          end
+          if newest then pcall(bog.thread.kill, newest) end
+        end
+      end
+    end)
+  end
+
   -- The timer fires on the loop the scheduler is already running, so it only
   -- ticks while the turn is in flight, repainting the activity line in place.
   local timer
@@ -400,10 +448,30 @@ local function run_one_turn(text)
     end)
   end
 
-  local ok = pcall(bog.sched.run, {})
+  -- should_stop pumps the uv loop itself so control keys land promptly even in
+  -- the one state the scheduler does not pump it: a fully paused fleet (nothing
+  -- runnable, nothing in flight). uv.run("once") there blocks on the roster
+  -- timer/keypress instead of busy-spinning; "nowait" otherwise keeps input snappy.
+  local ok = pcall(bog.sched.run, {
+    should_stop = function()
+      uv.run("nowait")
+      if paused and not abort then uv.run("once") end
+      return abort
+    end,
+  })
+
+  if input then
+    pcall(function() input:read_stop() end)
+    pcall(function() input:set_mode(0) end) -- restore cooked mode for isocline
+  end
   if timer then timer:stop(); timer:close() end
   if tty then clear_status() end
-  io.write("\n")
+  if abort then
+    for _, a in ipairs(bog.sched.actors) do pcall(bog.sched.kill, a.id) end
+    io.write(COL.dim, "  (cancelled)", COL.reset, "\n")
+  else
+    io.write("\n")
+  end
   print_turn_error(ok and turn_err == nil, turn_err or (not ok and "scheduler error") or nil)
   bog.save_session() -- persist transcript for /resume and crash recovery
 end

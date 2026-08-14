@@ -125,6 +125,26 @@ function M._run(rec, task)
   bog.log(string.format("agent %d (%s) %s", rec.id, rec.spec_name or "agent", status))
 end
 
+-- Kill one agent from a controlling interface (an operator picking a worker off
+-- while the rest run on). Unlike a bare sched.kill, this first tells the agent's
+-- parent the child is gone -- a synthetic failed result on the bus -- so a
+-- coordinator blocked in await() unblocks instead of hanging forever on a child
+-- that will now never report. (A crash needs no such courtesy: _run's pcall
+-- still sends a result. A whole-turn cancel kills the parent too, so it does
+-- not either. This is only for targeted single-agent kills.)
+function M.kill(id)
+  local parent
+  for _, r in ipairs(bog.store.thread_list(true)) do
+    if r.id == id then parent = r.parent_id; break end
+  end
+  if parent then
+    pcall(swarm.send, id, parent, bog.json.encode{
+      kind = "result", from = id, agent = "agent", ok = false, text = "(killed by operator)",
+    })
+  end
+  return bog.sched.kill(id)
+end
+
 -- Spawn a child actor; returns its id immediately (it runs when the scheduler
 -- next resumes it).
 function M.spawn(p)
