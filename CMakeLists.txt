@@ -310,6 +310,8 @@ add_executable(boggart
   src/lauth.c
   src/lworker.c
   src/lterm.c
+  src/termctl.c
+  src/ltermctl.c
   src/bogembed.c
   src/lmem.c
   ${EMBEDDED_C})
