@@ -16,6 +16,10 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+#ifndef _WIN32
+#include <sys/ioctl.h>
+#endif
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -80,10 +84,79 @@ static void completer(ic_completion_env_t *cenv, const char *prefix) {
   ic_complete_word(cenv, prefix, add_candidates, word_char);
 }
 
-/* term.enable() -- register the completer against this interpreter and switch on
- * the isocline niceties. Idempotent; the REPL calls it once at start-up. */
+/* The syntax highlighter isocline runs as the line is edited. Like the
+ * completer, the mechanism is here but the policy is in Lua: bog.repl_style(line)
+ * returns { {pos, len, style}, ... } (byte offsets, and one of the named styles
+ * defined in l_enable), and this applies each span. Its whole point is that an
+ * unknown /command is coloured as an error before Enter is ever pressed. Errors
+ * are swallowed -- it runs on every keystroke and must never raise. */
+static void highlighter(ic_highlight_env_t *henv, const char *input, void *arg) {
+  lua_State *L = (lua_State *) arg;
+  if (!L || !input) return;
+  int top = lua_gettop(L);
+  lua_getglobal(L, "bog");
+  lua_getfield(L, -1, "repl_style");
+  if (!lua_isfunction(L, -1)) { lua_settop(L, top); return; }
+  lua_pushstring(L, input);
+  if (lua_pcall(L, 1, 1, 0) != LUA_OK) { lua_settop(L, top); return; }
+  if (lua_istable(L, -1)) {
+    lua_Integer n = luaL_len(L, -1);
+    for (lua_Integer i = 1; i <= n; i++) {
+      lua_rawgeti(L, -1, i);
+      if (lua_istable(L, -1)) {
+        lua_getfield(L, -1, "pos");
+        lua_getfield(L, -2, "len");
+        lua_getfield(L, -3, "style");
+        long pos = (long) luaL_optinteger(L, -3, -1);
+        long len = (long) luaL_optinteger(L, -2, 0);
+        const char *style = lua_tostring(L, -1);
+        if (pos >= 0 && len > 0 && style) ic_highlight(henv, pos, len, style);
+        lua_pop(L, 3);
+      }
+      lua_pop(L, 1);
+    }
+  }
+  lua_settop(L, top);
+}
+
+/* term.size() -> width, height. The terminal's cell dimensions, so the renderer
+ * can wrap and the status line can fill the row. 80x24 if it cannot be asked. */
+static int l_size(lua_State *L) {
+  int w = 80, h = 24;
+#ifndef _WIN32
+  struct winsize ws;
+  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
+    w = ws.ws_col;
+    h = ws.ws_row > 0 ? ws.ws_row : h;
+  }
+#endif
+  lua_pushinteger(L, w);
+  lua_pushinteger(L, h);
+  return 2;
+}
+
+/* term.istty() -> bool. True only when both ends are a real terminal, so the
+ * REPL knows to colour, animate a spinner and paint a status line -- and to do
+ * none of that when piped, where the output must stay clean. */
+static int l_istty(lua_State *L) {
+  lua_pushboolean(L, isatty(STDIN_FILENO) && isatty(STDOUT_FILENO));
+  return 1;
+}
+
+/* term.enable() -- register the completer and highlighter against this
+ * interpreter and switch on the isocline niceties. Idempotent; the REPL calls it
+ * once at start-up. */
 static int l_enable(lua_State *L) {
   ic_set_default_completer(completer, L);
+  ic_set_default_highlighter(highlighter, L);
+  /* The named styles the highlighter refers to, from the studio palette
+   * (style.lua): a valid command reads as "good", an unknown one as "error",
+   * an @file reference as a link. Defined once here so Lua names them, not
+   * hexes. */
+  ic_style_def("bog-cmd", "color=#7fb77e");
+  ic_style_def("bog-bad", "color=#f77483");
+  ic_style_def("bog-file", "color=#93ddfa");
+  ic_enable_highlight(true);
   ic_enable_completion_preview(true); /* show the top completion inline */
   ic_enable_hint(true);               /* and a candidate's help as a dim hint */
   ic_enable_inline_help(true);
@@ -93,6 +166,8 @@ static int l_enable(lua_State *L) {
 
 static const luaL_Reg term_lib[] = {
   {"enable", l_enable},
+  {"size", l_size},
+  {"istty", l_istty},
   {NULL, NULL},
 };
 

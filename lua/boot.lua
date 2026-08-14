@@ -97,7 +97,7 @@ end
 -- putting it in the reload set means an edited ~/.boggart/lua/events.lua takes
 -- effect like any other module. Registrations themselves survive the reload --
 -- they live on bog.__events, not in the module (see lua/events.lua).
-local CORE = { "events", "json", "util", "lifecycle", "store", "memory", "mcphost", "prompt", "tools", "api", "workers", "complete", "goal" }
+local CORE = { "events", "json", "util", "lifecycle", "store", "memory", "mcphost", "prompt", "tools", "api", "workers", "complete", "goal", "termrender" }
 
 local function wire()
   for _, m in ipairs(CORE) do package.loaded[m] = nil end
@@ -121,9 +121,15 @@ local function wire()
   -- Tab (with the input up to the cursor); the module also owns /help's text and
   -- the command registry, so the three cannot drift.
   bog.complete = require("complete").complete
+  -- repl_style is the highlighter policy src/lterm.c calls per keystroke; it and
+  -- complete come from the same registry, so a command is completed and coloured
+  -- from one source.
+  bog.repl_style = require("complete").style
   -- Run-until-a-goal: the supervisor that runs turns toward an objective until a
   -- done-check passes or the turn budget is spent.
   bog.goal = require("goal")
+  -- Terminal transcript rendering (markdown, code, diffs) for the REPL's output.
+  bog.termrender = require("termrender")
 end
 
 -- Session lifecycle (persisted in the SQLite store; bog.db survives reloads).
@@ -315,23 +321,87 @@ local function handle_command(line)
   return false
 end
 
+-- Is this an interactive terminal, and how wide? Drives whether the REPL
+-- colours, animates and renders (a tty) or stays byte-clean (piped, one-shot).
+local function term_info()
+  local tty = term and term.istty and term.istty() or false
+  local w = 100
+  if term and term.size then
+    local ok, ww = pcall(term.size)
+    if ok and ww then w = ww end
+  end
+  return tty, w
+end
+
+local SPIN = { "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}",
+               "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280F}" }
+
+local function print_turn_error(ok, err)
+  if ok then return end
+  -- A boggart_error is already a complete, actionable explanation; do not prefix.
+  local msg = (type(err) == "table" and err.boggart_error) and tostring(err)
+    or ("error: " .. tostring(err))
+  io.write(COL.err, msg, COL.reset, "\n")
+end
+
 local function run_one_turn(text)
   local S = bog.session
   if not S.title or S.title == "" then S.title = text:gsub("%s+", " "):sub(1, 60) end
-  local ok, err = bog.try(function()
-    bog.api.run_turn(text, function(t) io.write(t); io.flush() end)
-  end)
-  io.write("\n")
-  if not ok then
-    if type(err) == "table" and err.boggart_error then
-      -- Already a complete, actionable explanation. Printing "error:" in front
-      -- of "No API credentials found." just adds noise.
-      io.write(COL.err, tostring(err), COL.reset, "\n")
-    else
-      io.write(COL.err, "error: ", tostring(err), COL.reset, "\n")
-    end
+  local tty, width = term_info()
+
+  if not tty then
+    -- Piped or one-shot: stream raw, unchanged, so a consumer keeps streaming
+    -- and byte-for-byte output. termrender is an interactive nicety only.
+    local ok, err = bog.try(function()
+      bog.api.run_turn(text, function(t) io.write(t); io.flush() end)
+    end)
+    io.write("\n")
+    print_turn_error(ok, err)
+    bog.save_session()
+    return
   end
+
+  -- Interactive: a spinner while the turn streams (so there is activity within a
+  -- frame), then render the whole assistant message -- markdown, code, diffs --
+  -- in one pass. Tool-call lines still print live above the spinner.
+  local buf, si = {}, 0
+  local ok, err = bog.try(function()
+    bog.api.run_turn(text, function(t)
+      buf[#buf + 1] = t
+      si = si + 1
+      io.write("\r\27[K", COL.dim, "  ", SPIN[(si % #SPIN) + 1], "  thinking", COL.reset)
+      io.flush()
+    end)
+  end)
+  io.write("\r\27[K") -- erase the spinner line before the rendered answer
+  local full = table.concat(buf)
+  if full ~= "" then
+    local okr, rendered = pcall(bog.termrender.assistant, full,
+      { width = math.max(20, width - 2), color = true })
+    io.write(okr and rendered or full, "\n")
+  end
+  print_turn_error(ok, err)
   bog.save_session() -- persist transcript for /resume and crash recovery
+end
+
+-- The dim status row printed above each prompt: which model, local or remote
+-- (remote flagged amber -- it is the one that spends money), how full the
+-- context is, and how many worker agents are live. The terminal equivalent of
+-- the studio's status bar, from the same bog.api.status().
+local function status_line()
+  local ok, s = pcall(bog.api.status)
+  if not ok or not s then return nil end
+  local frac = 0
+  pcall(function() frac = bog.api.context_fraction(bog.session) or 0 end)
+  local running = 0
+  pcall(function() running = bog.worker.count() or 0 end)
+  local amber, sep = "\27[33m", COL.dim .. " \u{00B7} " .. COL.reset
+  local prov = (s.is_local and COL.dim or amber) .. s.provider .. COL.reset
+  local line = prov .. sep .. COL.dim .. s.model .. COL.reset
+  if s.is_local then line = line .. sep .. COL.dim .. s.host .. COL.reset end
+  line = line .. sep .. COL.dim .. string.format("ctx %d%%", math.floor(frac * 100 + 0.5)) .. COL.reset
+  line = line .. sep .. COL.dim .. string.format("%d agent%s", running, running == 1 and "" or "s") .. COL.reset
+  return line
 end
 
 local function do_repl()
@@ -343,7 +413,12 @@ local function do_repl()
   -- Tab completion, hints and (later) highlighting. `term` is a CLI-only C
   -- module (src/lterm.c); it is absent in the studio, so the call is guarded.
   if term and term.enable then pcall(term.enable) end
+  local tty = term and term.istty and term.istty()
   while true do
+    -- A fresh status row above each prompt keeps "which model am I about to
+    -- spend on, and how full is the context" always in view. Interactive only,
+    -- so piped output stays clean.
+    if tty then local sl = status_line(); if sl then io.write(sl, "\n") end end
     local line = sys.readline("boggart")
     if line == nil then io.write("\n"); break end
     if line ~= "" then sys.add_history(line) end

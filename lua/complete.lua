@@ -202,4 +202,28 @@ function filter(items, word)
   return out
 end
 
+-- ---- highlighting ----------------------------------------------------------
+-- M.style(line) -> { {pos, len, style}, ... }, the spans src/lterm.c colours as
+-- the line is edited. pos is a 0-based byte offset (what isocline wants); style
+-- is a named style defined in l_enable. The point of it: a leading /command is
+-- coloured good when it exists and error when it does not, so a typo is visible
+-- before Enter -- and @file references stand out wherever they appear.
+function M.style(line)
+  line = tostring(line or "")
+  local spans = {}
+  local cmd = line:match("^/(%S+)")
+  if cmd then
+    local known = M.map[cmd] or M.map[M.aliases[cmd] or ""]
+    spans[#spans + 1] = { pos = 0, len = #cmd + 1, style = known and "bog-cmd" or "bog-bad" }
+  end
+  local init = 1
+  while true do
+    local s, e = line:find("@%S+", init)
+    if not s then break end
+    spans[#spans + 1] = { pos = s - 1, len = e - s + 1, style = "bog-file" }
+    init = e + 1
+  end
+  return spans
+end
+
 return M
