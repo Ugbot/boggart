@@ -97,6 +97,7 @@ M.commands = {
   { name = "reset",    help = "delete an overlay file (or all with no arg), then reload",
                        args = overlay_names },
   { name = "model",    help = "show the running model, or switch it", args = model_names },
+  { name = "until",    help = "run turns until a goal is met, or the budget is spent" },
   { name = "new",      help = "start a fresh conversation (new saved session)" },
   { name = "quit",     help = "exit" },
 }

@@ -97,7 +97,7 @@ end
 -- putting it in the reload set means an edited ~/.boggart/lua/events.lua takes
 -- effect like any other module. Registrations themselves survive the reload --
 -- they live on bog.__events, not in the module (see lua/events.lua).
-local CORE = { "events", "json", "util", "lifecycle", "store", "memory", "mcphost", "prompt", "tools", "api", "workers", "complete" }
+local CORE = { "events", "json", "util", "lifecycle", "store", "memory", "mcphost", "prompt", "tools", "api", "workers", "complete", "goal" }
 
 local function wire()
   for _, m in ipairs(CORE) do package.loaded[m] = nil end
@@ -121,6 +121,9 @@ local function wire()
   -- Tab (with the input up to the cursor); the module also owns /help's text and
   -- the command registry, so the three cannot drift.
   bog.complete = require("complete").complete
+  -- Run-until-a-goal: the supervisor that runs turns toward an objective until a
+  -- done-check passes or the turn budget is spent.
+  bog.goal = require("goal")
 end
 
 -- Session lifecycle (persisted in the SQLite store; bog.db survives reloads).
@@ -287,6 +290,22 @@ local function handle_command(line)
       or (s.provider .. "  (remote)")
     io.write(string.format("model     %s\nrunning   %s\nendpoint  %s\n",
       s.model, where, s.endpoint))
+  elseif cmd == "until" then
+    -- /until <task>                    -- run until the model judges it done
+    -- /until <shell-check> :: <task>   -- run until the shell command exits 0
+    if rest == "" then
+      io.write("usage: /until <task>   |   /until <shell-check> :: <task>\n")
+    else
+      local shell, task = rest:match("^(.-)%s*::%s*(.+)$")
+      local spec = { task = task or rest,
+                     on_text = function(t) io.write(t); io.flush() end }
+      if shell and shell ~= "" then spec.done = { shell = shell } end
+      local r = bog.goal.run(spec)
+      io.write(string.format("\n[goal %s after %d/%d turn(s)]\n",
+        r.met and "met" or "not met -- budget spent", r.turns, r.budget))
+      if not r.met and r.detail then io.write(tostring(r.detail):sub(1, 300), "\n") end
+      bog.save_session()
+    end
   elseif cmd == "new" then
     bog.new_session()
     io.write("started new session ", tostring(bog.session.id), ".\n")
