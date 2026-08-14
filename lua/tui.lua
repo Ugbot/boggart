@@ -189,16 +189,11 @@ local function draw(st)
 end
 
 -- ---- swarm setup + turns ---------------------------------------------------
--- The cTUI runs the agent layer the way swarm mode does: the scheduler and the
--- coordination tools loaded, the fanout cap raised so the chat may spawn a
--- fleet, and one coordinator agent whose session is the conversation.
-local function setup_swarm()
-  bog.sched = bog.sched or require("sched")
-  bog.tools_swarm = bog.tools_swarm or require("tools_swarm")
-  if swarm and swarm.attach then pcall(swarm.attach, bog.db) end
-  pcall(bog.tools_swarm.register)
-  bog.thread.max_agents = tonumber(os.getenv("BOGGART_MAX_AGENTS")) or 16
-end
+-- The cTUI runs the agent layer the same way every other mode does -- one shared
+-- activation (bog.activate_agents): the scheduler, the coordination tools, the
+-- bus and a raised fanout cap. The cTUI's own addition is a coordinator agent
+-- whose session is the conversation (created in M.run).
+local function setup_swarm() bog.activate_agents() end
 
 local function page(st) local _, h = tc.size(); return math.max(1, h - 3) end
 

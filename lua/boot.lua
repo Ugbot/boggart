@@ -346,7 +346,9 @@ local SPIN = { "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}",
 local function run_one_turn(text)
   local S = bog.session
   if not S.title or S.title == "" then S.title = text:gsub("%s+", " "):sub(1, 60) end
-  bog.sched = bog.sched or require("sched")
+  -- The runtime, stood up once: the turn runs as a scheduler coroutine that can
+  -- spawn a fleet of more, and the whole tree drains on the same uv loop.
+  bog.activate_agents()
   local uv = require("uv")
   local tty = term and term.istty and term.istty()
 
@@ -410,6 +412,10 @@ local function do_repl()
   -- Persist REPL history across sessions. isocline handles the file; linenoise
   -- never had this wired up.
   if sys.history_file then sys.history_file(bog.userdir .. "/history", 500) end
+  -- Stand the agent runtime up now, so the spawn/await tools are live and a turn
+  -- can fan out a fleet from the very first message -- the scrolling REPL is a
+  -- coordinator like every other mode, not a lesser one.
+  bog.activate_agents()
   -- Tab completion, hints and (later) highlighting. `term` is a CLI-only C
   -- module (src/lterm.c); it is absent in the studio, so the call is guarded.
   if term and term.enable then pcall(term.enable) end
@@ -529,6 +535,19 @@ bog.thread = require("thread")
 bog.thread.max_agents = tonumber(os.getenv("BOGGART_MAX_AGENTS"))
   or (bog.mode == "swarm" and 16 or 1)
 
+-- Activate the agent runtime: the scheduler (which allocates the uv loop), the
+-- coordination tools, the bus, and a raised fanout cap. Idempotent, and the SAME
+-- setup for every mode that runs turns -- the scrolling REPL, the cTUI and swarm
+-- mode all run a turn as a libuv-driven scheduler coroutine that may spawn a
+-- fleet of more coroutines. There is one way to stand the runtime up, not three.
+function bog.activate_agents()
+  bog.sched = bog.sched or require("sched")
+  bog.tools_swarm = bog.tools_swarm or require("tools_swarm")
+  if swarm and swarm.attach then pcall(swarm.attach, bog.db) end
+  pcall(bog.tools_swarm.register)
+  bog.thread.max_agents = tonumber(os.getenv("BOGGART_MAX_AGENTS")) or 16
+end
+
 if bog.mode == "embedded" then
   -- Embedded in boggart-studio: the harness is wired and the store is open;
   -- the editor drives it from here. No REPL, no dispatch, no reading stdin.
@@ -536,11 +555,9 @@ if bog.mode == "embedded" then
   return 0
 
 elseif bog.mode == "swarm" then
-  -- The agent layer is already wired above. What swarm mode adds is the raised
-  -- cap (set above), the scheduler -- which requires uv, so it stays lazy -- and
-  -- the coordination tools, which only mean anything once fanout is allowed.
-  bog.sched = require("sched")
-  bog.tools_swarm = require("tools_swarm")
+  -- Same activation as every other mode; swarm mode differs only in its front
+  -- end (a coordinator + the optional --tui dashboard), not its runtime.
+  bog.activate_agents()
   return require("swarmmode").run() -- "swarm" is the C bus global; the mode lives in swarmmode.lua
 
 elseif bog.mode == "eval" then

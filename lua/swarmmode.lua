@@ -102,9 +102,9 @@ function M.repl(coord)
 end
 
 function M.run()
-  swarm.attach(bog.db)
-  bog.tools_swarm.register()
-
+  -- The runtime is stood up by bog.activate_agents() (the boot dispatch calls it
+  -- before us) -- the same activation the REPL and cTUI use.
+  --
   -- --tui only: everything else (REPL, oneshot, --headless) stays plain
   -- linear streaming to stdout. Requiring dash does not load ltui or curses.
   local dash = require("dash")
