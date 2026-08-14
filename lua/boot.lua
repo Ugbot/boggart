@@ -321,21 +321,6 @@ local function handle_command(line)
   return false
 end
 
--- Is this an interactive terminal, and how wide? Drives whether the REPL
--- colours, animates and renders (a tty) or stays byte-clean (piped, one-shot).
-local function term_info()
-  local tty = term and term.istty and term.istty() or false
-  local w = 100
-  if term and term.size then
-    local ok, ww = pcall(term.size)
-    if ok and ww then w = ww end
-  end
-  return tty, w
-end
-
-local SPIN = { "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}",
-               "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280F}" }
-
 local function print_turn_error(ok, err)
   if ok then return end
   -- A boggart_error is already a complete, actionable explanation; do not prefix.
@@ -344,43 +329,58 @@ local function print_turn_error(ok, err)
   io.write(COL.err, msg, COL.reset, "\n")
 end
 
+local SPIN = { "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}",
+               "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280F}" }
+
+-- Run a turn on the libuv loop rather than blocking in a read().
+--
+-- The old path called the blocking transport (stream_once): the whole process
+-- sat in a socket read for the length of the turn, so a model that paused
+-- mid-generation froze the REPL outright -- no activity, no clean Ctrl-C. Here
+-- the turn is an async transport (opts.async) driven as a scheduler coroutine,
+-- so the uv loop keeps running: tokens stream in as they arrive, a uv timer
+-- animates a "thinking" indicator through the initial latency and any pause, and
+-- the loop is alive to catch a signal. Tokens are streamed live (a scrolling
+-- terminal cannot re-flow printed text, so live beats post-hoc rendering);
+-- termrender stays wired into the cTUI, which repaints each frame.
 local function run_one_turn(text)
   local S = bog.session
   if not S.title or S.title == "" then S.title = text:gsub("%s+", " "):sub(1, 60) end
-  local tty, width = term_info()
+  bog.sched = bog.sched or require("sched")
+  local uv = require("uv")
+  local tty = term and term.istty and term.istty()
 
-  if not tty then
-    -- Piped or one-shot: stream raw, unchanged, so a consumer keeps streaming
-    -- and byte-for-byte output. termrender is an interactive nicety only.
-    local ok, err = bog.try(function()
-      bog.api.run_turn(text, function(t) io.write(t); io.flush() end)
-    end)
-    io.write("\n")
-    print_turn_error(ok, err)
-    bog.save_session()
-    return
-  end
-
-  -- Interactive: a spinner while the turn streams (so there is activity within a
-  -- frame), then render the whole assistant message -- markdown, code, diffs --
-  -- in one pass. Tool-call lines still print live above the spinner.
-  local buf, si = {}, 0
-  local ok, err = bog.try(function()
-    bog.api.run_turn(text, function(t)
-      buf[#buf + 1] = t
-      si = si + 1
-      io.write("\r\27[K", COL.dim, "  ", SPIN[(si % #SPIN) + 1], "  thinking", COL.reset)
-      io.flush()
-    end)
+  local started, si, turn_err = false, 0, nil
+  local co = coroutine.create(function()
+    local ok, e = pcall(bog.api.run_on, S, text, function(t)
+      if tty and not started then io.write("\r\27[K") end -- wipe the spinner on first token
+      started = true
+      io.write(t); io.flush()
+    end, { async = true })
+    if not ok then turn_err = e end
   end)
-  io.write("\r\27[K") -- erase the spinner line before the rendered answer
-  local full = table.concat(buf)
-  if full ~= "" then
-    local okr, rendered = pcall(bog.termrender.assistant, full,
-      { width = math.max(20, width - 2), color = true })
-    io.write(okr and rendered or full, "\n")
+  bog.sched.add(S.id or 1, co)
+
+  -- The timer fires on the loop the scheduler is already running, so it only
+  -- ticks while the turn is in flight; it paints the spinner until the first
+  -- token, then goes quiet and lets the text stream.
+  local timer
+  if tty then
+    timer = uv.new_timer()
+    timer:start(120, 120, function()
+      if not started then
+        si = si + 1
+        io.write("\r\27[K", COL.dim, "  ", SPIN[(si % #SPIN) + 1], "  thinking\u{2026}", COL.reset)
+        io.flush()
+      end
+    end)
   end
-  print_turn_error(ok, err)
+
+  local ok = pcall(bog.sched.run, {})
+  if timer then timer:stop(); timer:close() end
+  if tty and not started then io.write("\r\27[K") end
+  io.write("\n")
+  print_turn_error(ok and turn_err == nil, turn_err or (not ok and "scheduler error") or nil)
   bog.save_session() -- persist transcript for /resume and crash recovery
 end
 
