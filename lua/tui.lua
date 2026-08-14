@@ -23,6 +23,15 @@
 local M = {}
 
 local Input = require("tui.input")
+local uv = require("uv")
+
+-- Frame budget for the scheduler-driven paint. should_stop fires once per
+-- scheduler step -- i.e. once per stream chunk, dozens of times a second -- so
+-- painting every time both floods the terminal and re-renders the whole growing
+-- message each chunk (quadratic over a long answer). Instead paint at most ~30fps
+-- and only when something changed, with a slower heartbeat so the agents pane's
+-- elapsed clock still ticks while a turn sits waiting on the network.
+local FRAME_MS, HEARTBEAT_MS = 33, 250
 
 -- The studio palette (style.lua), the same hexes termrender and the status bar
 -- use, so the chrome matches the content.
@@ -201,23 +210,30 @@ local function run_turn(st, text)
   local e = { role = "assistant", text = "" }
   st.entries[#st.entries + 1] = e
   st.scroll, st.running, st.t0, st.abort = 0, true, os.time(), false
+  st.dirty, st.last_paint = true, 0
 
   local co = coroutine.create(function()
     bog.api.run_on(st.coord.session, text,
-      function(chunk) e.text = e.text .. chunk end, st.coord.opts)
+      function(chunk) e.text = e.text .. chunk; st.dirty = true end, st.coord.opts)
   end)
   bog.sched.add(st.coord.id, co)
 
   local ok, err = pcall(bog.sched.run, {
     should_stop = function()
+      -- Input every step (responsive); paint throttled (see FRAME_MS above).
       local ev = tc.poll(0)
       if ev.type == "key" then
         if ev.key == "ctrl" and ev.char == "c" then st.abort = true end
-        if ev.key == "pageup" then st.scroll = st.scroll + page(st) end
-        if ev.key == "pagedown" then st.scroll = math.max(0, st.scroll - page(st)) end
+        if ev.key == "pageup" then st.scroll = st.scroll + page(st); st.dirty = true end
+        if ev.key == "pagedown" then st.scroll = math.max(0, st.scroll - page(st)); st.dirty = true end
       end
-      draw(st)
-      return st.abort
+      if st.abort then return true end
+      local dt = uv.now() - st.last_paint
+      if dt >= FRAME_MS and (st.dirty or dt >= HEARTBEAT_MS) then
+        st.dirty, st.last_paint = false, uv.now()
+        draw(st)
+      end
+      return false
     end,
   })
 
