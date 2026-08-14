@@ -236,5 +236,78 @@ do
   ok(has(plain_of, "a plain line"), "runs: plain serialiser keeps the text")
 end
 
+-- ---- assistant: GFM tables render as cleanly aligned monospace columns ------
+-- A header + delimiter + data rows become padded, aligned columns: header runs
+-- carry attr.bold, numeric columns right-align, an overwide table truncates a
+-- cell to "…" while every row stays within width, and colour-off is escape-free.
+do
+  local function linetext(line)
+    local t = {}
+    for _, r in ipairs(line) do t[#t + 1] = r.text end
+    return table.concat(t)
+  end
+  local function any_run(lines, pred)
+    for _, line in ipairs(lines) do
+      for _, r in ipairs(line) do if pred(r) then return true end end
+    end
+    return false
+  end
+  -- Display width in cells (codepoints), matching the renderer's vis_len.
+  local function cols(s) return utf8 and utf8.len(s) or #s end
+
+  -- A simple table: every cell's text is present and the header runs are bold.
+  local simple = table.concat({
+    "| Name | Age |",
+    "| ---- | --- |",
+    "| Alice | 30 |",
+    "| Bob | 7 |",
+  }, "\n")
+  local sruns = tr.runs({ role = "assistant", text = simple }, color)
+  local sstr  = tr.entry({ role = "assistant", text = simple }, color)
+  ok(has(sstr, "Name") and has(sstr, "Alice") and has(sstr, "Bob") and has(sstr, "30"),
+    "table: all cell text is present")
+  ok(any_run(sruns, function(r) return r.attr and r.attr.bold and has(r.text, "Name") end),
+    "table: header cell is a bold run")
+
+  -- A numeric column with '--:' right-aligns: the short value is padded on the
+  -- LEFT, so its cell run begins with spaces before the digits.
+  local nums = table.concat({
+    "| Item | Qty |",
+    "| :--- | --: |",
+    "| a | 5 |",
+    "| bb | 100 |",
+  }, "\n")
+  local nruns = tr.runs({ role = "assistant", text = nums }, color)
+  ok(any_run(nruns, function(r) return r.text:match("^ +5$") ~= nil end),
+    "table: numeric column right-aligns (short value padded on the left)")
+
+  -- Wider than a small width: the widest column shrinks, a cell truncates to
+  -- "…", and no rendered row exceeds the width in display cells.
+  local wide = table.concat({
+    "| Key | Value |",
+    "| --- | ----- |",
+    "| id | a-very-long-value-here |",
+    "| n | short |",
+  }, "\n")
+  local W = 16
+  local wstr = tr.entry({ role = "assistant", text = wide }, { width = W, color = false })
+  ok(has(wstr, "\226\128\166"), "table: an overwide cell is truncated with an ellipsis")
+  local widest = 0
+  for line in (wstr .. "\n"):gmatch("(.-)\n") do
+    local c = cols(line); if c > widest then widest = c end
+  end
+  ok(widest <= W, "table: every rendered row fits width (" .. widest .. " <= " .. W .. ")")
+
+  -- Colour off: a table serialises to plain text with no ANSI escape at all.
+  ok(no_escapes(wstr), "table: color=false emits no ANSI escapes")
+
+  -- Concatenating a rendered row's run texts reproduces that row's plain text
+  -- (the run-shape invariant the serialiser depends on).
+  local splain = tr.entry({ role = "assistant", text = simple }, plain)
+  local first_plain = splain:match("^(.-)\n")
+  ok(linetext(sruns[1]) == first_plain,
+    "table: run-text concatenation reproduces the header row's plain text")
+end
+
 io.write(string.format("\ntermrender: %d passed, %d failed\n", passed, failed))
 return failed == 0 and 0 or 1

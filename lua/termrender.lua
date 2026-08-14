@@ -506,6 +506,165 @@ local function unified_run(line)
 end
 
 -- ---------------------------------------------------------------------------
+-- GFM tables -- terminals are monospace, so a table renders as CLEANLY aligned
+-- columns rather than the raw pipe soup markdown source. A block is a header
+-- row, a delimiter row (dashes/colons, not rendered, only read for alignment),
+-- and zero or more data rows. We measure columns in display cells (vis_len),
+-- pad/truncate every cell to its column so the grid stays square, and never
+-- wrap a cell -- an overlong one is cut to (w-1)+"…" so the row keeps its width.
+-- ---------------------------------------------------------------------------
+
+-- A real (unescaped) column pipe: '\|' is an escaped literal, not a separator.
+local function has_pipe(line)
+  return line:gsub("\\|", ""):find("|", 1, true) ~= nil
+end
+
+-- Split a table row into trimmed cells. One optional leading and trailing '|'
+-- (the outer border) is stripped, the split is on '|' that is not escaped as
+-- '\|', and each '\|' collapses back to a literal '|' in the cell text.
+local function split_row(line)
+  local s = line:match("^%s*(.-)%s*$")            -- trim the row ends
+  s = s:gsub("^|", "")                            -- drop one leading border pipe
+  if s:sub(-1) == "|" and s:sub(-2) ~= "\\|" then -- ...and an unescaped trailing one
+    s = s:sub(1, -2)
+  end
+  local cells, cur, i, n = {}, {}, 1, #s
+  while i <= n do
+    local c = s:sub(i, i)
+    if c == "\\" and s:sub(i + 1, i + 1) == "|" then
+      cur[#cur + 1] = "|"; i = i + 2                -- unescape '\|' -> '|'
+    elseif c == "|" then
+      cells[#cells + 1] = table.concat(cur); cur = {}; i = i + 1
+    else
+      cur[#cur + 1] = c; i = i + 1
+    end
+  end
+  cells[#cells + 1] = table.concat(cur)
+  for k, v in ipairs(cells) do cells[k] = v:match("^%s*(.-)%s*$") end
+  return cells
+end
+
+-- Is `line` a GFM delimiter row? It must carry a real pipe (so a bare "---"
+-- hrule under a piped line is not mistaken for one) and every '|'-split cell
+-- must be dashes with optional leading/trailing colons.
+local function is_delim_row(line)
+  if not has_pipe(line) then return false end
+  local cells = split_row(line)
+  if #cells == 0 then return false end
+  for _, c in ipairs(cells) do
+    if not c:match("^%s*:?%-+:?%s*$") then return false end
+  end
+  return true
+end
+
+-- Column alignment from its delimiter cell: ':-:' centre, '--:' right, ':--'
+-- and plain '---' left (the default).
+local function align_of(cell)
+  local c = cell:match("^%s*(.-)%s*$")
+  local l, r = c:sub(1, 1) == ":", c:sub(-1) == ":"
+  if l and r then return "center" elseif r then return "right" else return "left" end
+end
+
+-- Pad or truncate `s` to exactly `w` display cells under `align`. An overlong
+-- cell is cut to (w-1) cells plus "…" so it still occupies w -- never wrapped.
+local function fit_cell(s, w, align)
+  local len = vis_len(s)
+  if len > w then
+    local head = take(s, math.max(0, w - 1))
+    s = head .. "\226\128\166"                       -- append "…" (U+2026)
+    len = vis_len(s)
+  end
+  local pad = w - len
+  if pad <= 0 then return s end
+  if align == "right" then return string.rep(" ", pad) .. s
+  elseif align == "center" then
+    local left = math.floor(pad / 2)
+    return string.rep(" ", left) .. s .. string.rep(" ", pad - left)
+  else return s .. string.rep(" ", pad) end
+end
+
+-- Force a cell list to exactly `ncol` entries: missing cells are empty, extra
+-- cells beyond the header's column count are dropped (GFM ignores them).
+local function normalise(cells, ncol)
+  for c = 1, ncol do cells[c] = cells[c] or "" end
+  for c = #cells, ncol + 1, -1 do cells[c] = nil end
+  return cells
+end
+
+-- Render the table beginning at L[start] (header, L[start+1] delimiter) into
+-- `out`, and return the index of the first line PAST the block. Separators are
+-- " │ " (U+2502) and the header gets a "─" rule; both ride the dim/divider
+-- colour, header cells are bold accent, data cells the base text colour.
+local MIN_COL = 3
+local function table_runs(L, start, width, out)
+  local n = #L
+  local header = normalise(split_row(L[start]), #split_row(L[start]))
+  local ncol   = #header
+  local delim  = split_row(L[start + 1])
+  local align = {}
+  for c = 1, ncol do align[c] = delim[c] and align_of(delim[c]) or "left" end
+
+  -- Data rows: the contiguous run of following lines that still look like table
+  -- rows (non-blank, carry a pipe, not a fence). Advance past the whole block.
+  local rows, i = {}, start + 2
+  while i <= n do
+    local ln = L[i]
+    if ln:match("^%s*$") or not has_pipe(ln) or ln:match("^%s*```") then break end
+    rows[#rows + 1] = normalise(split_row(ln), ncol)
+    i = i + 1
+  end
+
+  -- Natural column widths = widest cell in the column, floored at MIN_COL.
+  local col = {}
+  for c = 1, ncol do
+    local w = vis_len(header[c])
+    for _, r in ipairs(rows) do local cw = vis_len(r[c]); if cw > w then w = cw end end
+    col[c] = math.max(MIN_COL, w)
+  end
+
+  -- Fit the whole grid (columns + the 3-cell " │ " separators) inside width by
+  -- shrinking the widest column a cell at a time until it fits or all are at
+  -- the floor; fit_cell then truncates any cell that no longer fits its column.
+  local function total()
+    local t = 0
+    for c = 1, ncol do t = t + col[c] end
+    return t + 3 * (ncol - 1)
+  end
+  if width then
+    while total() > width do
+      local widest, wc = 0, nil
+      for c = 1, ncol do
+        if col[c] > MIN_COL and col[c] > widest then widest, wc = col[c], c end
+      end
+      if not wc then break end                       -- everything at the floor
+      col[wc] = col[wc] - 1
+    end
+  end
+
+  -- One row of runs: cells styled by fg/bold, separated by a dim " │ ". The
+  -- concatenated run texts are exactly the padded row (the plain-text invariant).
+  local function row_runs(cells, hex, bold)
+    local line = {}
+    for c = 1, ncol do
+      if c > 1 then line[#line + 1] = { text = " \226\148\130 ", fg = PAL.dim } end   -- " │ "
+      line[#line + 1] = { text = fit_cell(cells[c], col[c], align[c]), fg = hex,
+        attr = bold and { bold = true } or nil }
+    end
+    return line
+  end
+
+  out[#out + 1] = row_runs(header, PAL.accent, true)
+  -- The under-header rule: each column's "─" run, joined by "─┼─" so a crossing
+  -- lands under every " │ ", the whole thing in the divider colour.
+  local segs = {}
+  for c = 1, ncol do segs[#segs + 1] = string.rep("\226\148\128", col[c]) end
+  out[#out + 1] = { { text = table.concat(segs, "\226\148\128\226\148\188\226\148\128"),
+    fg = PAL.divider } }
+  for _, r in ipairs(rows) do out[#out + 1] = row_runs(r, PAL.text, false) end
+  return i
+end
+
+-- ---------------------------------------------------------------------------
 -- Core run builders, one per kind. Each returns lines = { {run,...}, ... }.
 -- ---------------------------------------------------------------------------
 
@@ -516,7 +675,15 @@ local function assistant_runs(entry, opts)
   local in_code, fence_len, lang = false, 0, nil
   local st = { block = false }
 
-  for line in (text .. "\n"):gmatch("(.-)\n") do
+  -- Collect the lines into an array so a table can look ahead one line (a table
+  -- is only a table when the NEXT line is its delimiter row). Non-table content
+  -- flows through the same fence/md_line_runs path as before, unchanged.
+  local L = {}
+  for line in (text .. "\n"):gmatch("(.-)\n") do L[#L + 1] = line end
+
+  local i, n = 1, #L
+  while i <= n do
+    local line = L[i]
     local fence, flang = line:match("^%s*(```+)%s*([%w_+#%-]*)")
     -- A fence only closes one at least as long as the one that opened it, so a
     -- ````-fence can contain a ``` block (agentview's rule). The fence markers
@@ -527,12 +694,18 @@ local function assistant_runs(entry, opts)
         lang = (flang ~= "" and flang:lower()) or nil
         st = { block = false }
       end
+      i = i + 1
     elseif in_code then
       local ln
       ln, st = code_line_runs(line, lang, st)
       out[#out + 1] = ln
+      i = i + 1
+    elseif not in_code and has_pipe(line) and i < n and is_delim_row(L[i + 1]) then
+      -- A GFM table: header L[i], delimiter L[i+1]. Consume the whole block.
+      i = table_runs(L, i, width, out)
     else
       for _, l in ipairs(md_line_runs(line, width)) do out[#out + 1] = l end
+      i = i + 1
     end
   end
   return out
