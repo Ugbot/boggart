@@ -134,11 +134,13 @@ Auth: set `ANTHROPIC_API_KEY`, or log in once with the `ant` CLI (`ant auth
 login`) and boggart will use that token.
 
 ```sh
-./boggart                 # interactive REPL (single agent)
+./boggart                 # interactive REPL — a coordinator that can spawn a fleet
+./boggart --tui           # full-screen chat: scrolling transcript + live agents pane
 ./boggart "one-shot task" # run a single prompt and exit
 echo "task" | ./boggart --headless   # scriptable: prompt on stdin, reply on stdout
-./boggart swarm           # interactive coordinator that fans out to sub-agents
+./boggart swarm           # swarm coordinator that fans out to sub-agents
 ./boggart swarm "task"    # one-shot multi-agent orchestration
+./boggart swarm --tui     # swarm + the full-screen ltui dashboard
 ./boggart swarm --resume  # redeliver unprocessed journalled messages and continue
 ./boggart init            # copy the default Lua into the data dir to edit
 ./boggart --reset [file]  # revert an overlay file (or all) to the baked-in default
@@ -148,6 +150,14 @@ echo "task" | ./boggart --headless   # scriptable: prompt on stdin, reply on std
 ./boggart-studio          # the desktop app; ./boggart-studio <dir> opens a project
 ```
 
+These are not separate programs — they are **interfaces onto one swarm runtime**.
+Every turn runs as a libuv-driven scheduler coroutine that may spawn more, so a
+plain `boggart` chat is simply a swarm whose fan-out starts at one and grows when
+the model decides to delegate (cap `BOGGART_MAX_AGENTS`, default 16). While a
+turn's fleet is running you keep the foreground: **Ctrl-C** cancels the turn, **p**
+pauses and resumes the whole fleet, **k** kills the newest sub-agent — the same
+scheduler primitives the cTUI's agents pane draws.
+
 On a new install the studio opens on a welcome screen rather than an empty
 conversation it has no credentials to run: paste an API key, or point it at a
 local server (`http://127.0.0.1:8000` speaks the Messages API), pick a model
@@ -155,7 +165,12 @@ from the ones that server reports, and test the connection before committing to
 it. The test runs a real turn through `lua/api.lua`, so its verdicts come from
 the same error taxonomy the agent itself uses.
 
-REPL commands: `/help /tools /auth /doctor /memory /sessions /resume <id> /reload /reset [file] /model <id> /new /quit`.
+REPL commands (Tab-completed; `/help` is generated from the registry, so it is
+always current): `/help /tools /auth /doctor /memory /sessions /resume <id>
+/reload /reset [file] /model /until <task> /new /quit`. `/until <task>` runs turns
+toward a goal until it is met or a turn budget is spent (`/until <shell-check> ::
+<task>` stops when the command exits 0). `/model` shows the running model and
+whether it is local or remote; `/model <id>` switches.
 Swarm commands: `/help /threads /journal [n] /agents /model <id> /quit`.
 
 ### Where boggart keeps its files
@@ -216,8 +231,14 @@ scheduler — no OS threads for actors) and report back.
   journalled with a `processed_at` stamp, so `--resume` reloads and redelivers
   anything unhandled.
 
-The default single-agent path is untouched: it stays synchronous, bus-free, and
-uses the blocking HTTP transport.
+There is **one runtime, not two**. The scrolling REPL, `--tui` and `swarm` all
+stand it up the same way (`bog.activate_agents`) and run every turn as a
+libuv-driven scheduler coroutine that can spawn more — a lone chat is a swarm
+whose fan-out stayed at one. The interfaces differ (a scrolling transcript, a
+full-screen cell grid, a dashboard); the engine — scheduler, bus, journal,
+coordination tools — is shared, and reads its live fleet from one place
+(`bog.sched.actors`), so the REPL's roster line and the cTUI's pane cannot
+disagree.
 
 ## MCP (Model Context Protocol)
 
