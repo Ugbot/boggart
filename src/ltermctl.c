@@ -310,9 +310,24 @@ static int l_poll(lua_State *L) {
   return 1;
 }
 
+/* tc.snapshot() -> string. The on-screen buffer as UTF-8 rows -- exactly what
+ * the terminal is showing, for tests. */
+static int l_snapshot(lua_State *L) {
+  int w = 0, h = 0;
+  tc_size(&w, &h);
+  size_t cap = (size_t) (w + 1) * (size_t) (h + 1) * 4 + 64;
+  char *buf = (char *) malloc(cap);
+  if (!buf) { lua_pushliteral(L, ""); return 1; }
+  size_t n = tc_snapshot(buf, cap);
+  lua_pushlstring(L, buf, n);
+  free(buf);
+  return 1;
+}
+
 static const luaL_Reg tc_lib[] = {
   {"init",     l_init},
   {"shutdown", l_shutdown},
+  {"snapshot", l_snapshot},
   {"size",     l_size},
   {"clear",    l_clear},
   {"set",      l_set},

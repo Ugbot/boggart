@@ -54,6 +54,7 @@
 #ifndef BOGGART_TERMCTL_H
 #define BOGGART_TERMCTL_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -124,6 +125,10 @@ void tc_shutdown(void);
 /* Current grid size in cells. Either pointer may be NULL. Updated whenever a
  * TCEV_RESIZE is returned by tc_poll. */
 void tc_size(int *w, int *h);
+
+/* Snapshot the on-screen (front) buffer as UTF-8 rows (NUL-terminated), for
+ * tests/verification. Returns bytes written. */
+size_t tc_snapshot(char *out, size_t cap);
 
 /* ---- back-buffer painting ----------------------------------------------
  * All drawing mutates the *back* buffer only; nothing reaches the screen

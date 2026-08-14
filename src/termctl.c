@@ -291,6 +291,30 @@ void tc_size(int *w, int *h) {
     if (h) *h = T.h;
 }
 
+/* The on-screen (front) buffer as UTF-8, one row per line, into `out`
+ * (NUL-terminated, at most cap bytes). Exactly what the terminal is showing, for
+ * tests and verification. Returns the byte length written. */
+size_t tc_snapshot(char *out, size_t cap) {
+    size_t o = 0;
+    if (cap == 0) return 0;
+    if (!T.front) { out[0] = '\0'; return 0; }
+    for (int y = 0; y < T.h; y++) {
+        for (int x = 0; x < T.w; x++) {
+            tc_cell *c = &T.front[y * T.w + x];
+            if (c->ch == 0) continue; /* right half of a wide glyph */
+            char u[4];
+            int n = utf8_encode(c->ch, u);
+            if (o + (size_t) n + 1 >= cap) goto done;
+            for (int k = 0; k < n; k++) out[o++] = u[k];
+        }
+        if (o + 1 >= cap) goto done;
+        out[o++] = '\n';
+    }
+done:
+    out[o] = '\0';
+    return o;
+}
+
 void tc_clear(void) {
     if (!T.back) return;
     size_t n = (size_t)T.w * (size_t)T.h;

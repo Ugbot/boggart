@@ -43,7 +43,20 @@ local C = {
   amber  = "ffa94d",
   cursor = "e1e1e6",
   divider = "202024",
+  tool   = "7c86b8", -- the activity strip's muted blue
 }
+
+-- The tool/activity strip: a fixed, bounded, rolling region at the foot of the
+-- transcript. Tool calls and notes go HERE, not into the conversation, so the
+-- blue "» read: ..." lines stay in one place and roll instead of scattering
+-- through the transcript. Shows the newest ACTIVITY_LINES; the buffer keeps more
+-- for scrollback headroom but is capped.
+local ACTIVITY_LINES, ACTIVITY_KEEP = 4, 300
+
+-- Test hook: when BOGGART_TUI_SNAP names a file, every frame writes the actual
+-- on-screen buffer there (tc.snapshot), so a harness can verify exactly what the
+-- terminal shows rather than replaying the diff stream. Off unless set.
+local SNAP = os.getenv("BOGGART_TUI_SNAP")
 
 -- ---- painting helpers ------------------------------------------------------
 
@@ -177,11 +190,25 @@ local function status_runs(st)
 end
 
 -- ---- the frame -------------------------------------------------------------
+-- Rows the activity strip needs: a divider plus up to ACTIVITY_LINES of the
+-- newest tool/log lines. Zero when there is nothing to show.
+local function strip_rows(st)
+  local n = st.activity and #st.activity or 0
+  if n == 0 then return 0 end
+  return math.min(ACTIVITY_LINES, n) + 1 -- +1 for the divider row
+end
+
 local function draw(st)
   local w, h = tc.size()
   if h < 3 or w < 8 then return end
   tc.clear()
-  local body = h - 2
+
+  -- Split the height: input (h-1), status (h-2), then the activity strip, then
+  -- the transcript/pane get whatever is left. The strip is dropped if the
+  -- terminal is too short to keep a usable transcript.
+  local sh = strip_rows(st)
+  local body = h - 2 - sh
+  if body < 3 then sh, body = 0, h - 2 end
 
   local pw = pane_width(st, w)
   local tw = pw > 0 and (w - pw - 1) or w
@@ -195,7 +222,7 @@ local function draw(st)
     if ln then blit(0, i, ln, tw) end -- clipped to the transcript column
   end
 
-  -- agents pane, right column
+  -- agents pane, right column (spans the transcript height, above the strip)
   if pw > 0 then
     local dx = w - pw - 1
     for y = 0, body - 1 do tc.set(dx, y, 0x2502, C.divider, nil, nil) end -- vertical rule
@@ -208,6 +235,20 @@ local function draw(st)
     end
   end
 
+  -- the activity strip: a labelled divider, then the newest tool/log lines,
+  -- rolling in place -- the one fixed home for the "» ..." blue lines.
+  if sh > 0 then
+    local hdr = "\u{2500}\u{2500} activity " .. string.rep("\u{2500}", math.max(0, w - 12))
+    blit(0, body, { { text = hdr, fg = C.divider } }, w)
+    local n = #st.activity
+    local show = sh - 1
+    local start = math.max(1, n - show + 1)
+    for k = 0, show - 1 do
+      local line = st.activity[start + k]
+      if line then blit(0, body + 1 + k, { { text = line, fg = C.tool } }, w) end
+    end
+  end
+
   -- status row, then the input row with a block cursor
   fill_row(h - 2, w, C.bar_bg)
   blit(0, h - 2, status_runs(st), w)
@@ -217,6 +258,10 @@ local function draw(st)
   tc.set(cx, h - 1, 32, nil, C.cursor, nil)
 
   tc.flush()
+  if SNAP and tc.snapshot then
+    local f = io.open(SNAP, "w")
+    if f then f:write(tc.snapshot()); f:close() end
+  end
 end
 
 -- ---- swarm setup + turns ---------------------------------------------------
@@ -237,11 +282,21 @@ local function run_turn(st, text)
   st.scroll, st.running, st.t0, st.abort = 0, true, os.time(), false
   st.dirty, st.last_paint = true, 0
 
+  -- The coordinator's opts captured the ORIGINAL bog.log_tool (raw stdout) when
+  -- it was built, before M.run swapped in the capture -- so run_on would use that
+  -- and write tool lines straight to the alt screen, desyncing termctl's model
+  -- from the real terminal (its front buffer stays clean while the screen fills
+  -- with garbage). Force on_tool to the current capture so every tool call lands
+  -- in the activity strip instead.
+  local topts = {}
+  for k, v in pairs(st.coord.opts or {}) do topts[k] = v end
+  topts.on_tool = bog.log_tool
+
   local co = coroutine.create(function()
-    -- Assistant text streams into st.cur; a tool call or note (captured in M.run)
-    -- closes it, so the next chunk opens a new entry and the transcript reads in
-    -- order: text, tool, text. Never write here -- everything is an entry the
-    -- cell grid draws, or it would shred the frame.
+    -- Assistant text streams into st.cur; a tool call (captured in M.run) closes
+    -- it, so the next chunk opens a new entry and the conversation reads as clean
+    -- prose segments. Never write here -- everything is an entry the cell grid
+    -- draws, or it would shred the frame.
     bog.api.run_on(st.coord.session, text, function(chunk)
       if not st.cur then
         st.cur = { role = "assistant", text = "" }
@@ -249,7 +304,7 @@ local function run_turn(st, text)
       end
       st.cur.text = st.cur.text .. chunk
       st.dirty = true
-    end, st.coord.opts)
+    end, topts)
   end)
   bog.sched.add(st.coord.id, co)
 
@@ -296,37 +351,39 @@ function M.run()
   if not ok0 or not coord then tc.shutdown(); return false end
   bog.swarm_root = coord
 
-  local st = { coord = coord, entries = {}, box = Input.new{}, scroll = 0,
-               total = 0, running = false }
+  local st = { coord = coord, entries = {}, activity = {}, box = Input.new{},
+               scroll = 0, total = 0, running = false }
 
-  -- Route the agent's line logging into the transcript. bog.log_tool and bog.log
-  -- write raw bytes to stdout/stderr; in the cell-grid cTUI those land wherever
-  -- the cursor happens to sit and shred the frame -- the classic symptom being
-  -- tool-call lines smeared through the streamed text. Capture them as entries
-  -- the grid draws instead, and only the coordinator's: a sub-agent's calls
-  -- belong to the pane, not the main transcript (dropped here, not printed, so
-  -- they still cannot corrupt anything). A tool/note also closes the open
-  -- assistant run. Restored on exit, as dash.lua does for ltui.
+  -- Route the agent's line logging into the fixed activity strip, not the
+  -- conversation. bog.log_tool and bog.log write raw bytes to stdout/stderr; in
+  -- the cell-grid cTUI those land wherever the cursor happens to sit and shred
+  -- the frame -- the classic symptom being "» read: ..." tool lines smeared
+  -- through the streamed text. Captured here into a bounded rolling buffer that
+  -- draw() paints in one place, and only the coordinator's: a sub-agent's calls
+  -- belong to the pane (dropped here, not printed, so they cannot corrupt
+  -- anything either). A tool call also closes the open assistant run, so the
+  -- transcript reads as clean prose segments. Restored on exit (dash.lua does the
+  -- same for ltui).
   local saved_log_tool, saved_log = bog.log_tool, bog.log
   local function is_coord()
     local cur = bog.sched and bog.sched.current()
     return cur == nil or cur == st.coord.id
   end
-  local function push(role, text)
-    st.cur = nil
-    st.entries[#st.entries + 1] = { role = role, text = text }
-    st.scroll, st.dirty = 0, true
+  local function activity(line)
+    st.activity[#st.activity + 1] = line
+    if #st.activity > ACTIVITY_KEEP then table.remove(st.activity, 1) end
+    st.cur, st.dirty = nil, true
   end
   bog.log_tool = function(name, input)
     if not is_coord() then return end
     local preview = ""
     if type(input) == "table" then
       local hint = input.command or input.path or input.query or input.name or input.title
-      if hint then preview = ": " .. tostring(hint):gsub("%s+", " "):sub(1, 100) end
+      if hint then preview = ": " .. tostring(hint):gsub("%s+", " "):sub(1, 200) end
     end
-    push("tool", tostring(name) .. preview)
+    activity("\u{00BB} " .. tostring(name) .. preview) -- "» name: preview"
   end
-  bog.log = function(msg) if is_coord() then push("system", tostring(msg)) end end
+  bog.log = function(msg) if is_coord() then activity("\u{00B7} " .. tostring(msg)) end end
 
   local ok, err = pcall(function()
     draw(st)
