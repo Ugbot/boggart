@@ -630,3 +630,11 @@ foreach(suite test integration swarm mcp ltui sysfs bus jwriter worker proc sand
       $<TARGET_FILE:boggart> --eval tests/${suite}.lua
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
+
+# termctl (B0 of the cTUI, docs/cli-plan.md): the dependency-free full-screen
+# terminal layer. Compiled standalone and smoke-tested here so it stays
+# build-verified and regression-guarded before the cTUI that consumes it exists.
+# The smoke test degrades gracefully with no tty, so </dev/null it self-exits 0.
+add_executable(termctl_smoke src/termctl.c src/termctl_test.c)
+target_include_directories(termctl_smoke PRIVATE src)
+add_test(NAME termctl COMMAND sh -c "$<TARGET_FILE:termctl_smoke> </dev/null")
