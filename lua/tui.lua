@@ -47,9 +47,30 @@ local C = {
 
 -- ---- painting helpers ------------------------------------------------------
 
-local function blit(x, y, runs)
+-- Truncate a string to at most `cols` columns (one per codepoint, the same
+-- approximation termrender wraps by), so a run cannot bleed past its region.
+local function clip_cols(s, cols)
+  if cols <= 0 then return "" end
+  if not utf8 then return s:sub(1, cols) end
+  local n = utf8.len(s)
+  if not n or n <= cols then return s end
+  local off = utf8.offset(s, cols + 1)
+  return off and s:sub(1, off - 1) or s
+end
+
+-- Blit a run-line at (x,y), clipped to the exclusive right edge `maxx`. The clip
+-- is what keeps the transcript out of the agents pane (and everything off the
+-- divider): tc.puts alone only stops at the grid edge, so a line wider than its
+-- column would otherwise overprint the pane beside it.
+local function blit(x, y, runs, maxx)
   for _, r in ipairs(runs or {}) do
-    x = tc.puts(x, y, r.text or "", r.fg, r.bg, r.attr)
+    local text = r.text or ""
+    if maxx then
+      local room = maxx - x
+      if room <= 0 then break end
+      text = clip_cols(text, room)
+    end
+    x = tc.puts(x, y, text, r.fg, r.bg, r.attr)
   end
   return x
 end
@@ -161,7 +182,7 @@ local function draw(st)
   local top = math.max(0, #lines - body - st.scroll)
   for i = 0, body - 1 do
     local ln = lines[top + i + 1]
-    if ln then blit(0, i, ln) end
+    if ln then blit(0, i, ln, tw) end -- clipped to the transcript column
   end
 
   -- agents pane, right column
@@ -172,16 +193,16 @@ local function draw(st)
     if ok and prunes then
       for i, ln in ipairs(prunes) do
         if i > body then break end
-        blit(dx + 1, i - 1, ln)
+        blit(dx + 1, i - 1, ln, w)
       end
     end
   end
 
   -- status row, then the input row with a block cursor
   fill_row(h - 2, w, C.bar_bg)
-  blit(0, h - 2, status_runs(st))
+  blit(0, h - 2, status_runs(st), w)
   local iruns, cursor_col = st.box:runs(w)
-  blit(0, h - 1, iruns)
+  blit(0, h - 1, iruns, w)
   local cx = math.min(math.max(0, cursor_col or 0), w - 1)
   tc.set(cx, h - 1, 32, nil, C.cursor, nil)
 
