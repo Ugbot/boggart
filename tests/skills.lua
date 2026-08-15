@@ -81,8 +81,8 @@ ok(tools.registry.skills ~= nil, "skills tool registered")
 ok(tools.registry.define_skill ~= nil, "define_skill registered")
 ok(tools.registry.import_skill ~= nil, "import_skill registered")
 
-ok(tools.run("import_skill", { text = MD, name = "renamed" }):find("compiled to Lua"),
-   "import_skill tool compiles to Lua")
+ok(tools.run("import_skill", { text = MD, name = "renamed" }):find("Imported skill 'renamed'"),
+   "import_skill tool compiles markdown to a Lua skill")
 ok(skills.load("renamed") ~= nil, "renamed import is loadable")
 ok(tools.run("define_skill", { name = "hand-made", instructions = "do the thing",
      description = "d", tools = { "read" } }):find("Defined skill 'hand_made'"),
@@ -93,14 +93,14 @@ ok(tools.run("define_skill", { name = "1bad", instructions = "x" }):find("invali
 ok(tools.run("skills"):find("code_review"), "skills tool lists them")
 ok(tools.run("skills", { name = "nope" }):find("no skill named"), "skills tool reports unknown")
 
--- ---- skills that carry CODE (`provides`) -----------------------------------
+-- ---- skills that carry CODE (`provides`, a table keyed by tool name) --------
 -- shape validation
-ok(skills.validate({ provides = { { name = "x", body = "return '1'" } } }) == nil,
+ok(skills.validate({ provides = { x = { body = "return '1'" } } }) == nil,
    "provides with a body validates")
-ok(skills.validate({ provides = { { name = "x" } } }):find("exactly one"),
+ok(skills.validate({ provides = { x = {} } }):find("exactly one"),
    "provides entry needs exactly one of body/run")
-ok(skills.validate({ provides = { { name = "1bad", body = "x" } } }):find("name must match"),
-   "provides name must be an identifier")
+ok(skills.validate({ provides = { ["1bad"] = { body = "x" } } }):find("must match"),
+   "provides key must be an identifier")
 
 -- a BUILTIN skill carrying a real trusted `run` function (the selfmod demonstrator),
 -- materialized at tools load
@@ -112,23 +112,24 @@ ok(tools.run("skill__selfmod__word_count", { text = "a b c" }) == "3",
 -- a MODEL-authored skill carrying a sandboxed body, end to end
 local dmsg = tools.run("define_skill", {
   name = "counter", description = "counts words", instructions = "use words",
-  provides = { {
-    name = "words",
-    description = "count whitespace-separated words in args.text",
-    input_schema = { type = "object", properties = { text = { type = "string" } } },
-    body = "local n=0 for _ in tostring(args.text or ''):gmatch('%S+') do n=n+1 end return tostring(n)",
-  } },
+  provides = {
+    words = {
+      description = "count whitespace-separated words in args.text",
+      input_schema = { type = "object", properties = { text = { type = "string" } } },
+      body = "local n=0 for _ in tostring(args.text or ''):gmatch('%S+') do n=n+1 end return tostring(n)",
+    },
+  },
 })
 ok(dmsg:find("1 provided"), "define_skill accepts provides")
-ok(skills.load("counter").provides[1].name == "words", "provides round-trips in the skill file")
+ok(skills.load("counter").provides.words ~= nil, "provides round-trips keyed by name")
 
 local _, callow = skills.resolve({ "counter" })
-ok(callow.skill__counter__words, "resolve grants the namespaced provided tool")
+ok(callow["skill__counter__*"], "resolve grants the skill's namespace with a wildcard (like MCP)")
 ok(tools.registry.skill__counter__words ~= nil, "save re-materialized the provided tool")
 
 local snames = {}
 for _, sc in ipairs(tools.schemas_for(callow)) do snames[sc.name] = true end
-ok(snames.skill__counter__words, "provided tool appears in schemas_for(allow)")
+ok(snames.skill__counter__words, "provided tool appears in schemas_for(allow) via the wildcard")
 
 local dnames = {}
 for _, sc in ipairs(tools.schemas()) do dnames[sc.name] = true end
@@ -138,8 +139,40 @@ ok(tools.run("skill__counter__words", { text = "a b c d" }) == "4",
    "provided body runs (sandboxed)")
 
 ok(tools.run("define_skill", { name = "broken", instructions = "x",
-     provides = { { name = "oops", body = "this is not lua(" } } }):find("validation_error"),
+     provides = { oops = { body = "this is not lua(" } } }):find("validation_error"),
    "define_skill rejects an uncompilable provided body")
+
+-- ---- importing markdown WITH code (a `## Tools` section) --------------------
+local MDT = "---\nname: text-kit\ndescription: text helpers\n---\n"
+  .. "Use these for text.\n\n## Tools\n\n### shout\nUppercase args.text.\n\n"
+  .. "```lua\nreturn tostring(args.text or \"\"):upper()\n```\n"
+local sk2 = skills.parse_markdown(MDT)
+ok(sk2 and sk2.provides and sk2.provides.shout ~= nil, "## Tools section becomes provides.shout")
+ok(sk2.provides.shout.body:find("upper"), "the fenced lua becomes the tool body")
+ok(sk2.provides.shout.description:find("Uppercase"), "the prose becomes the tool description")
+ok(not sk2.instructions:find("## Tools"), "the Tools section is lifted out of the instructions")
+ok(tools.run("import_skill", { text = MDT }):find("1 provided tool"), "import reports the code it found")
+local _, tkallow = skills.resolve({ "text_kit" })
+ok(tkallow["skill__text_kit__*"], "an imported skill grants its namespace like any other")
+ok(tools.run("skill__text_kit__shout", { text = "hi" }) == "HI", "the imported provided tool runs")
+
+-- ---- DB-backed storage (store="db") ----------------------------------------
+pcall(function() if not bog.db then bog.store.open() end end)
+if bog.db then
+  local dbmsg = tools.run("define_skill", {
+    name = "dbskill", instructions = "lives in the db",
+    provides = { echo = { description = "echo args.text", body = "return tostring(args.text or '')" } },
+    store = "db",
+  })
+  ok(dbmsg:find("in the database"), "define_skill store=db reports DB storage")
+  ok(sys.stat(bog.userdir .. "/lua/skills/dbskill.lua") ~= "file", "no file is written for a db skill")
+  ok(skills.load("dbskill") ~= nil, "a db skill loads via M.load")
+  local dbsrc = {}
+  for _, r in ipairs(skills.list()) do dbsrc[r.name] = r.source end
+  ok(dbsrc.dbskill == "database", "list marks the db skill's source")
+  ok(tools.registry.skill__dbskill__echo ~= nil, "a db skill's provided tool materializes")
+  ok(tools.run("skill__dbskill__echo", { text = "yo" }) == "yo", "a db skill's provided tool runs")
+end
 
 sys.rmtree(bog.userdir)
 bog.userdir = saved_userdir

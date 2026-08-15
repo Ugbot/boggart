@@ -33,6 +33,21 @@ end
 function M.load(name)
   local ok, mod = pcall(require, "skills." .. name)
   if ok and type(mod) == "table" then return mod end
+  -- Fall back to a DB-stored skill (store="db"). Its source is the SAME pure-data
+  -- Lua as a file skill, so loading it is as safe as requiring a file. Positive-
+  -- cache the compiled table; M.save drops the entry on edit.
+  M._dbcache = M._dbcache or {}
+  if M._dbcache[name] then return M._dbcache[name] end
+  local okk, src = pcall(function()
+    return bog.store and bog.store.kv_get and bog.store.kv_get("skill:" .. name)
+  end)
+  if okk and type(src) == "string" and src ~= "" then
+    local chunk = load(src, "@skill:" .. name)
+    if chunk then
+      local sok, res = pcall(chunk)
+      if sok and type(res) == "table" then M._dbcache[name] = res; return res end
+    end
+  end
   return nil
 end
 
@@ -58,23 +73,29 @@ function M.validate(s)
   -- provides: the described table of callable tools the skill carries. Each entry
   -- has a name and exactly one of `body` (a Lua source string, sandboxed) or
   -- `run` (a function, trusted -- only meaningful in a builtin skill file).
+  -- provides is a TABLE KEYED BY TOOL NAME (like a described namespace); each
+  -- value is { description, input_schema, run|body }. This mirrors how MCP tools
+  -- are managed -- namespaced and registered as ordinary tools, granted with a
+  -- wildcard -- only here the namespace is skill__<skill>__<tool>.
   if s.provides ~= nil then
-    if type(s.provides) ~= "table" then return "'provides' must be a list of tool defs" end
-    for i, p in ipairs(s.provides) do
-      if type(p) ~= "table" then return "provides[" .. i .. "] must be a table" end
-      if type(p.name) ~= "string" or not p.name:match("^[%a_][%w_]*$") then
-        return "provides[" .. i .. "].name must match [A-Za-z_][A-Za-z0-9_]*"
+    if type(s.provides) ~= "table" then
+      return "'provides' must be a table of tool defs keyed by name"
+    end
+    for tname, p in pairs(s.provides) do
+      if type(tname) ~= "string" or not tname:match("^[%a_][%w_]*$") then
+        return "provides key '" .. tostring(tname) .. "' must match [A-Za-z_][A-Za-z0-9_]*"
       end
+      if type(p) ~= "table" then return "provides['" .. tname .. "'] must be a table" end
       local hasbody = type(p.body) == "string" and p.body ~= ""
       local hasrun = type(p.run) == "function"
       if hasbody == hasrun then -- both or neither
-        return "provides[" .. i .. "] needs exactly one of 'body' (string) or 'run' (function)"
+        return "provides['" .. tname .. "'] needs exactly one of 'body' (string) or 'run' (function)"
       end
       if p.description ~= nil and type(p.description) ~= "string" then
-        return "provides[" .. i .. "].description must be a string"
+        return "provides['" .. tname .. "'].description must be a string"
       end
       if p.input_schema ~= nil and type(p.input_schema) ~= "table" then
-        return "provides[" .. i .. "].input_schema must be a JSON object"
+        return "provides['" .. tname .. "'].input_schema must be a JSON object"
       end
     end
   end
@@ -99,6 +120,20 @@ function M.list()
       if n then
         if seen[n] then out[seen[n]].source = "overlay (shadows builtin)"
         else out[#out + 1] = { name = n, source = "overlay" } end
+      end
+    end
+  end
+  -- DB-stored skills (store="db"). A file/builtin of the same name shadows them
+  -- (M.load tries require first), so only surface DB skills without a file.
+  local okk, rows = pcall(function()
+    return bog.store and bog.store.kv_list and bog.store.kv_list("skill:")
+  end)
+  if okk and type(rows) == "table" then
+    for _, r in ipairs(rows) do
+      local n = tostring(r.key):match("^skill:(.+)$")
+      if n and not seen[n] then
+        out[#out + 1] = { name = n, source = "database" }
+        seen[n] = #out
       end
     end
   end
@@ -134,14 +169,12 @@ function M.resolve(names)
         instr[#instr + 1] = "## Skill: " .. n .. "\n" .. it
       end
       for _, t in ipairs(s.tools or {}) do allow[t] = true end
-      -- Grant this skill's own provided tools (namespaced skill__<skill>__<tool>).
-      -- resolve stays pure: it only grants NAMES; compilation into the registry is
-      -- the separate materialize step (lua/tools.lua), so a bad body can never
-      -- break an agent spawn -- the tool is simply absent, permission held.
-      for _, p in ipairs(s.provides or {}) do
-        if type(p) == "table" and type(p.name) == "string" then
-          allow["skill__" .. n .. "__" .. p.name] = true
-        end
+      -- Grant this skill's own provided tools with ONE wildcard over its namespace
+      -- -- exactly how a skill grants a whole MCP server (mcp__<server>__*). resolve
+      -- stays pure: it only grants; the separate materialize step (lua/tools.lua)
+      -- compiles the bodies, so a bad body can never break an agent spawn.
+      if type(s.provides) == "table" and next(s.provides) then
+        allow["skill__" .. n .. "__*"] = true
       end
     else
       unknown[#unknown + 1] = n
@@ -180,6 +213,42 @@ local function split_list(v)
   return #out > 0 and out or nil
 end
 
+-- Pull a "## Tools" section out of the markdown body into a `provides` map. Each
+-- "### <name>" subsection becomes a tool: its prose is the description, its fenced
+-- ```lua block is the body (sandboxed like any model-authored code). Returns
+-- (provides, body_without_the_tools_section). This is the markdown convention that
+-- lets an imported .md skill carry code, not just prose.
+local function extract_tools(body)
+  local hs, he = body:find("\n?##%s+[Tt]ools%s*\n")
+  if not hs then return {}, body end
+  local rest = body:sub(he + 1)
+  local nexth = rest:find("\n##%s+%S")           -- a later level-2 heading ends the section
+  local section = nexth and rest:sub(1, nexth - 1) or rest
+  local tail = nexth and rest:sub(nexth) or ""
+  local instructions = (body:sub(1, hs - 1) .. "\n" .. tail):gsub("^%s+", ""):gsub("%s+$", "")
+
+  local provides = {}
+  local i = 1
+  while true do
+    local ns, ne, nm = section:find("###%s+([%w_%- ]-)%s*\n", i)
+    if not ns then break end
+    local srest = section:sub(ne + 1)
+    local nn = srest:find("\n###%s")
+    local sub = nn and srest:sub(1, nn - 1) or srest
+    i = ne + (nn or #srest)
+    local lua = sub:match("```lua%s*\n(.-)\n```") or sub:match("```%s*\n(.-)\n```")
+    if lua and lua:match("%S") then
+      -- description = the prose in the subsection, with the code fence removed
+      local desc = sub:gsub("```.-```", ""):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+      local tname = M.normalize_name(nm)
+      if tname then
+        provides[tname] = { description = (desc ~= "" and desc) or tname, body = lua }
+      end
+    end
+  end
+  return provides, instructions
+end
+
 -- parse_markdown(text) -> skill_table, suggested_name
 function M.parse_markdown(text)
   if type(text) ~= "string" or not text:match("%S") then
@@ -195,8 +264,11 @@ function M.parse_markdown(text)
     desc = body:match("^#+%s*(.-)%s*\n") or body:match("^(.-)\n") or "imported skill"
   end
   local tools = split_list(meta["allowed-tools"] or meta.tools or meta.allowed_tools)
-  if body == "" then return nil, "skill document has no instructions" end
-  return { description = desc, instructions = body, tools = tools or {} }, name
+  -- A "## Tools" section becomes the skill's `provides` (code); the rest is prose.
+  local provides, instructions = extract_tools(body)
+  if instructions == "" then return nil, "skill document has no instructions" end
+  return { description = desc, instructions = instructions, tools = tools or {},
+           provides = provides }, name
 end
 
 -- Render a skill as a Lua module. This is the "turned into Lua" step: the result
@@ -231,22 +303,24 @@ function M.to_lua(name, skill, origin)
   -- util.serialize. A `run` function is not serializable, so a saved/round-tripped
   -- skill can only ever carry sandboxed bodies (raw closures live solely in the
   -- baked, in-repo skill files). This is the structural half of the trust boundary.
+  -- Keyed by name, sorted so the file is stable across saves.
   local provides = skill.provides or {}
-  local pd = {}
-  for _, p in ipairs(provides) do
-    if type(p.body) == "string" then
-      pd[#pd + 1] = "    {"
-      pd[#pd + 1] = "      name = " .. string.format("%q", p.name) .. ","
-      pd[#pd + 1] = "      description = " .. string.format("%q", p.description or p.name) .. ","
-      pd[#pd + 1] = "      input_schema = " ..
-        util.serialize(p.input_schema or { type = "object", properties = {} }) .. ","
-      pd[#pd + 1] = "      body = " .. string.format("%q", p.body) .. ","
-      pd[#pd + 1] = "    },"
-    end
+  local names = {}
+  for tname, p in pairs(provides) do
+    if type(p) == "table" and type(p.body) == "string" then names[#names + 1] = tname end
   end
-  if #pd > 0 then
+  table.sort(names)
+  if #names > 0 then
     parts[#parts + 1] = "  provides = {"
-    for _, l in ipairs(pd) do parts[#parts + 1] = l end
+    for _, tname in ipairs(names) do
+      local p = provides[tname]
+      parts[#parts + 1] = "    [" .. string.format("%q", tname) .. "] = {"
+      parts[#parts + 1] = "      description = " .. string.format("%q", p.description or tname) .. ","
+      parts[#parts + 1] = "      input_schema = " ..
+        util.serialize(p.input_schema or { type = "object", properties = {} }) .. ","
+      parts[#parts + 1] = "      body = " .. string.format("%q", p.body) .. ","
+      parts[#parts + 1] = "    },"
+    end
     parts[#parts + 1] = "  },"
   end
   parts[#parts + 1] = "}"
@@ -254,22 +328,34 @@ function M.to_lua(name, skill, origin)
   return table.concat(parts, "\n")
 end
 
--- Persist a skill as Lua under the overlay, and make it live immediately by
--- dropping the stale module from package.loaded.
-function M.save(name, skill, origin)
+-- Persist a skill as Lua, and make it live immediately. `store` is "file" (the
+-- default -- a Lua file under the overlay, editable + hot-reloadable) or "db"
+-- (the same Lua source in the SQLite kv store, under key skill:<name> -- portable,
+-- travels with the store, no stray files). Either way the payload is the SAME
+-- pure-data Lua the skill is compiled from, so the two backends are interchangeable.
+function M.save(name, skill, origin, store)
   local err = M.validate(skill)
   if err then return nil, err end
-  local dir = M.dir()
-  sys.mkdir_p(dir)
-  local path = dir .. "/" .. name .. ".lua"
   local src = M.to_lua(name, skill, origin)
-  -- Compile before writing: never persist a skill file that will not load.
+  -- Compile before persisting: never store a skill that will not load.
   local chunk, cerr = load(src, "@skill:" .. name)
   if not chunk then return nil, "generated skill does not compile: " .. tostring(cerr) end
-  local f, ferr = io.open(path, "w")
-  if not f then return nil, "cannot write " .. path .. ": " .. tostring(ferr) end
-  f:write(src)
-  f:close()
+
+  local where
+  if store == "db" then
+    if not (bog.store and bog.store.kv_set) then return nil, "the store is not open" end
+    bog.store.kv_set("skill:" .. name, src)
+    M._dbcache = M._dbcache or {}; M._dbcache[name] = nil -- drop the cached table
+    where = "Stored skill '" .. name .. "' in the database."
+  else
+    local dir = M.dir()
+    sys.mkdir_p(dir)
+    local path = dir .. "/" .. name .. ".lua"
+    local f, ferr = io.open(path, "w")
+    if not f then return nil, "cannot write " .. path .. ": " .. tostring(ferr) end
+    f:write(src); f:close()
+    where = "Written as Lua to " .. path
+  end
   package.loaded["skills." .. name] = nil
   -- Make provided tools live immediately: re-materialize this one skill (compiles
   -- new/changed bodies into the registry and prunes any it dropped). Guarded --
@@ -277,18 +363,18 @@ function M.save(name, skill, origin)
   -- covers that case.
   local ok, T = pcall(require, "tools")
   if ok and T and T.materialize_skill then pcall(T.materialize_skill, name) end
-  return path
+  return where
 end
 
--- import(text, name_hint, origin) -> name, path | nil, err
-function M.import(text, name_hint, origin)
+-- import(text, name_hint, origin, store) -> name, where | nil, err
+function M.import(text, name_hint, origin, store)
   local skill, name_or_err = M.parse_markdown(text)
   if not skill then return nil, name_or_err end
   local name = M.normalize_name(name_hint or "") or name_or_err
   if not name then return nil, "could not determine a skill name; pass one" end
-  local path, err = M.save(name, skill, origin)
-  if not path then return nil, err end
-  return name, path
+  local where, err = M.save(name, skill, origin, store)
+  if not where then return nil, err end
+  return name, where
 end
 
 -- ---- the tools the model is offered ----------------------------------------
@@ -325,56 +411,67 @@ M.tools = {
     description = "Author a skill and persist it as Lua: a name, a description, the "
       .. "instructions an agent following it should have, the tools it may use, and "
       .. "optionally `provides` -- its OWN callable tools, so a skill is a code "
-      .. "package, not just prose. Each provides entry is { name, description, "
-      .. "input_schema, body }, where body is Lua that receives `args` and returns a "
-      .. "string; it compiles through the same sandbox as define_tool and is offered "
-      .. "to any agent granted the skill as skill__<skill>__<tool>. define_tool's "
-      .. "counterpart for behaviour: promote a way of working AND the code it needs.",
+      .. "package, not just prose. `provides` is an object KEYED BY TOOL NAME; each "
+      .. "value is { description, input_schema, body } where body is Lua that receives "
+      .. "`args` and returns a string. Provided tools compile through the same sandbox "
+      .. "as define_tool and are offered to any agent granted the skill as "
+      .. "skill__<skill>__<tool> (granted with a wildcard, like an MCP server). Pass "
+      .. "store=\"db\" to persist into the database instead of a Lua file.",
     input_schema = { type = "object",
       properties = {
         name = { type = "string" },
         description = { type = "string" },
         instructions = { type = "string" },
         tools = { type = "array", items = { type = "string" } },
-        provides = { type = "array", items = { type = "object", properties = {
-          name = { type = "string" },
-          description = { type = "string" },
-          input_schema = { type = "object" },
-          body = { type = "string", description = "Lua body; receives `args`, returns a string" },
-        }, required = { "name", "body" } } },
+        provides = { type = "object", description = "tools keyed by name",
+          additionalProperties = { type = "object", properties = {
+            description = { type = "string" },
+            input_schema = { type = "object" },
+            body = { type = "string", description = "Lua body; receives `args`, returns a string" },
+          }, required = { "body" } } },
+        store = { type = "string", enum = { "file", "db" },
+          description = "where to persist (default file)" },
       }, required = { "name", "instructions" } },
     run = function(a)
       local name = M.normalize_name(a.name)
       if not name then return "Tool error: [validation_error] invalid skill name" end
       -- Compile-check each provided body up front, so a broken body is fixable
       -- input to define_skill (like tool_define), never a persisted dud.
-      local T = require("tools")
-      for _, p in ipairs(a.provides or {}) do
-        local ok, err = pcall(T.build_def, p.name, p.description or p.name, p.input_schema, p.body)
+      local T, nprov = require("tools"), 0
+      for tname, p in pairs(a.provides or {}) do
+        nprov = nprov + 1
+        if type(p) ~= "table" or type(p.body) ~= "string" then
+          return "Tool error: [validation_error] provides '" .. tostring(tname)
+            .. "' must be a table with a Lua 'body'"
+        end
+        local ok, err = pcall(T.build_def, tname, p.description or tname, p.input_schema, p.body)
         if not ok then
-          return "Tool error: [validation_error] provides '" .. tostring(p.name) .. "': "
+          return "Tool error: [validation_error] provides '" .. tostring(tname) .. "': "
             .. (tostring(err):gsub("^.-tool body compile error: ", ""))
         end
       end
       local skill = { description = a.description or name, instructions = a.instructions,
                       tools = a.tools or {}, provides = a.provides or {} }
-      local path, err = M.save(name, skill)
+      local path, err = M.save(name, skill, nil, a.store)
       if not path then return "Tool error: [validation_error] " .. tostring(err) end
-      return string.format("Defined skill '%s' (%d tools, %d provided). Written as Lua to %s",
-        name, #(a.tools or {}), #(a.provides or {}), path)
+      return string.format("Defined skill '%s' (%d tools, %d provided). %s",
+        name, #(a.tools or {}), nprov, path)
     end,
   },
 
   import_skill = {
     description = "Import a skill written as markdown (a SKILL.md with YAML frontmatter, "
-      .. "the ecosystem's format) by COMPILING it to a boggart Lua skill. Give a 'path' "
-      .. "to read, or the 'text' itself. After import it is an ordinary skill you can "
-      .. "edit and reload.",
+      .. "the ecosystem's format) by COMPILING it to a boggart Lua skill -- one substrate. "
+      .. "A `## Tools` section becomes the skill's code: each `### <name>` subsection with a "
+      .. "```lua fenced block becomes a provided tool (its prose is the description, the fence "
+      .. "is the body, compiled sandboxed). Give a 'path' to read or the 'text' itself; pass "
+      .. "store=\"db\" to keep it in the database. After import it is an ordinary editable skill.",
     input_schema = { type = "object",
       properties = {
         path = { type = "string", description = "path to a SKILL.md" },
         text = { type = "string", description = "the markdown itself" },
         name = { type = "string", description = "override the skill name" },
+        store = { type = "string", enum = { "file", "db" }, description = "where to persist (default file)" },
       } },
     run = function(a)
       local text, origin = a.text, "text"
@@ -386,9 +483,13 @@ M.tools = {
       if type(text) ~= "string" or text == "" then
         return "Tool error: [validation_error] import_skill needs 'path' or 'text'"
       end
-      local name, path = M.import(text, a.name, origin)
-      if not name then return "Tool error: [validation_error] " .. tostring(path) end
-      return string.format("Imported skill '%s', compiled to Lua at %s", name, path)
+      local name, where = M.import(text, a.name, origin, a.store)
+      if not name then return "Tool error: [validation_error] " .. tostring(where) end
+      local s = M.load(name)
+      local nprov = 0
+      for _ in pairs((s and s.provides) or {}) do nprov = nprov + 1 end
+      return string.format("Imported skill '%s' (%d provided tool%s). %s",
+        name, nprov, nprov == 1 and "" or "s", where)
     end,
   },
 }

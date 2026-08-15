@@ -458,19 +458,19 @@ local function full_skill_trust()
   return os.getenv("BOGGART_SKILL_TRUST") == "full" -- unset: env decides, default off
 end
 
-local function register_provided(qual, p, builtin)
+local function register_provided(qual, name, p, builtin)
   if type(p.run) == "function" then
     -- A raw closure is full-authority; only honour it from a builtin skill (an
     -- overlay file could have been model/human-written). It can only ever have
     -- reached us as live data on a required table, never through save/to_lua.
     if not builtin then return nil, "run function only allowed in a builtin skill" end
-    M.registry[qual] = { description = p.description or p.name,
+    M.registry[qual] = { description = p.description or name,
       input_schema = p.input_schema or { type = "object", properties = {} },
       run = p.run, skill_origin = true }
     return true
   end
   if type(p.body) == "string" then
-    local ok, def = pcall(M.register_body, qual, p.description or p.name,
+    local ok, def = pcall(M.register_body, qual, p.description or name,
                           p.input_schema, p.body, "session", full_skill_trust())
     if not ok then return nil, tostring(def) end
     def.skill_origin = true
@@ -480,6 +480,7 @@ local function register_provided(qual, p, builtin)
 end
 
 -- Materialize one skill's provides: (re)register changed entries, prune orphans.
+-- `provides` is a map keyed by tool name (matching MCP-style namespacing).
 function M.materialize_skill(name, builtin)
   local skills = require("skills") -- already loaded by the registry-assembly tail
   local s = skills.load(name)
@@ -487,18 +488,18 @@ function M.materialize_skill(name, builtin)
   local prefix = SKILL_PREFIX .. name .. "__"
   local want = {}
   if s and type(s.provides) == "table" then
-    for _, p in ipairs(s.provides) do
-      if type(p) == "table" and type(p.name) == "string" then
-        local qual = prefix .. p.name
+    for tname, p in pairs(s.provides) do
+      if type(tname) == "string" and type(p) == "table" then
+        local qual = prefix .. tname
         want[qual] = true
         local ex = M.registry[qual]
         -- dedup: rebuild only when the entry actually changed (body edited, or
         -- run<->body flipped). run closures differ every reload, so they always
         -- re-register -- cheap and idempotent.
         if not (ex and ex.skill_origin and ex.body == p.body and ex.run == p.run) then
-          local ok, reason = register_provided(qual, p, builtin)
+          local ok, reason = register_provided(qual, tname, p, builtin)
           if not ok then bog.log("skill " .. name .. " provides '"
-            .. tostring(p.name) .. "': " .. tostring(reason)) end
+            .. tostring(tname) .. "': " .. tostring(reason)) end
         end
       end
     end

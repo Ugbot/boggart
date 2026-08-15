@@ -13,8 +13,7 @@ return {
   -- (full authority) rather than a sandboxed body string. This one is pure -- it
   -- doubles as the live example the model reads with the `skills` tool.
   provides = {
-    {
-      name = "word_count",
+    word_count = {
       description = "Count the whitespace-separated words in args.text.",
       input_schema = { type = "object", properties = { text = { type = "string" } },
                        required = { "text" } },
