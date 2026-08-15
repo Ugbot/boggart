@@ -332,6 +332,13 @@ end
 local SPIN = { "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}",
                "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280F}" }
 
+-- The status line repaints in place with a carriage return (\r) every ~120ms.
+-- With the cursor visible that reads as a flicker -- it snaps to column 0 and
+-- back on every tick. So we hide the cursor for the duration of a turn's
+-- animation and restore it before the next prompt: the terminal's own cursor is
+-- meaningless while output streams, and this is what every solid TUI does.
+local CURSOR_HIDE, CURSOR_SHOW = "\27[?25l", "\27[?25h"
+
 -- A persistent stdin TTY handle for in-turn control keys. Created once and
 -- reused: closing a uv_tty bound to fd 0 can take the fd down with it, which
 -- would leave isocline (the between-turns line editor) with nothing to read. So
@@ -494,6 +501,7 @@ local function run_one_turn(text)
   -- ticks while the turn is in flight, repainting the activity line in place.
   local timer
   if tty then
+    io.write(CURSOR_HIDE); io.flush() -- steady cursor while the status line repaints
     timer = uv.new_timer()
     timer:start(120, 120, function()
       si = si + 1
@@ -528,6 +536,7 @@ local function run_one_turn(text)
   else
     io.write("\n")
   end
+  if tty then io.write(CURSOR_SHOW); io.flush() end -- restore the cursor for the prompt
   print_turn_error(ok and turn_err == nil, turn_err or (not ok and "scheduler error") or nil)
   bog.save_session() -- persist transcript for /resume and crash recovery
 end
