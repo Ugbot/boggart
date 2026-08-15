@@ -16,7 +16,7 @@
 
 #include "embedded.h"
 
-#define BOGGART_VERSION "0.2.0"
+#include "version.h"
 
 int luaopen_boggart_http(lua_State *L);
 int luaopen_boggart_sys(lua_State *L);

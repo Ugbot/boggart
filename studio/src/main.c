@@ -3,6 +3,7 @@
 #include "api/api.h"
 #include "renderer.h"
 #include "assets.h"
+#include "version.h" /* BOGGART_VERSION, shared with the CLI so they can't drift */
 
 /* boggart, embedded. See src/bogembed.c for why the agent shares this exact
  * lua_State rather than living in a subprocess. */
@@ -138,7 +139,7 @@ int main(int argc, char **argv) {
    * means `bog` exists by the time core.init() builds views, and boggart's own
    * overlay path (~/.boggart/lua) is set up independently of lite's. */
   boggart_open_libs(L);
-  if (boggart_boot(L, "embedded", "0.1.0") != 0) {
+  if (boggart_boot(L, "embedded", BOGGART_VERSION) != 0) {
     fprintf(stderr, "boggart-studio: failed to start the agent harness: %s\n",
             lua_tostring(L, -1));
     /* Not fatal: an editor that cannot reach a model is still an editor. */
