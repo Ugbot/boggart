@@ -412,17 +412,47 @@ local function plain(pieces, stop)
   return message_start() .. text_block(0, pieces) .. finish(stop or "end_turn")
 end
 
+-- One transport now (async), so the stub is http.begin: it hands the whole
+-- canned SSE back on the first req:take() and reports "done". next_status drives
+-- the error path -- a non-200 with an error body in the stream, exactly what the
+-- real transport sees. Turns run as scheduler coroutines via drive().
+local sched = require("sched")
+bog.sched = sched
 local queue, next_status = {}, nil
-http.request = function(opts)
+http.pump = function() return 0 end
+http.begin = function(opts)
+  assert(opts.url and opts.method == "POST", "stub: unexpected request shape")
+  local body, st
   if next_status then
-    local st = next_status
-    next_status = nil
-    return st, '{"error":{"message":"max_tokens: 999999 exceeds the limit"}}'
+    st, next_status = next_status, nil
+    body = '{"error":{"message":"max_tokens: 999999 exceeds the limit"}}'
+  else
+    body, st = table.remove(queue, 1), 200
+    if not body then error("stub: empty response queue (runaway loop?)") end
   end
-  local sse = table.remove(queue, 1)
-  if not sse then error("stub: empty response queue (runaway loop?)") end
-  opts.on_chunk(sse)
-  return 200, ""
+  local req = { chunks = { body }, idx = 0, st = st }
+  function req:take() self.idx = self.idx + 1; return self.chunks[self.idx] or "" end
+  function req:status()
+    if self.idx >= #self.chunks then return "done", self.st end
+    return "running"
+  end
+  function req:close() end
+  return req
+end
+
+-- Drive one turn (or compaction) to completion under the scheduler -- the same
+-- coroutine-on-the-loop shape production uses. Errors are re-raised so the
+-- error-path test still sees the throw.
+local function drive(fn)
+  local err
+  local co = coroutine.create(function()
+    local okc, e = pcall(fn)
+    if not okc then err = e end
+  end)
+  sched.actors, sched.by_id = {}, {}
+  sched.add(bog.session.id or 9000, co)
+  sched.run()
+  if err then error(err, 0) end
 end
 
 -- ---- session lifecycle -----------------------------------------------------
@@ -460,7 +490,7 @@ do
   bog.session.messages = {}
   queue = { plain({ "Hello", " there" }) }
   local streamed = {}
-  bog.api.run_turn("say hi", function(t) streamed[#streamed + 1] = t end)
+  drive(function() bog.api.run_turn("say hi", function(t) streamed[#streamed + 1] = t end) end)
 
   ok(start ~= nil, "the turn loop emits turn:start")
   eq(start and start.preview, "say hi", "turn:start carries a preview of the user text")
@@ -474,7 +504,7 @@ do
   bog.session.messages = {}
   queue = { plain({ "ok" }) }
   local long = string.rep("x", 5000)
-  bog.api.run_turn(long, nil)
+  drive(function() bog.api.run_turn(long, nil) end)
   eq(#start.preview, 200, "turn:start truncates the preview")
   eq(start.chars, 5000, "...and says how much it truncated")
 end
@@ -486,7 +516,7 @@ do
   events.on("turn:error", function(_, d) err = d end)
   bog.session.messages = {}
   next_status = 400 -- a request error: not retried, raised at once
-  local threw = not pcall(bog.api.run_turn, "this will fail", nil)
+  local threw = not pcall(drive, function() bog.api.run_turn("this will fail", nil) end)
   ok(threw, "the turn still raises for its caller")
   ok(err ~= nil, "a failing turn emits turn:error")
   eq(err and err.kind, bog.api.ERR.bad_request, "turn:error carries the typed kind")
@@ -510,7 +540,7 @@ do
       .. finish("tool_use"),
     plain({ "done" }),
   }
-  bog.api.run_turn("write a file", nil)
+  drive(function() bog.api.run_turn("write a file", nil) end)
 
   eq(before and before.name, "write", "tools.run emits tool:before")
   eq(before and before.input.path, target, "tool:before carries the arguments")
@@ -553,12 +583,14 @@ do
   }
   -- Exactly what the studio's approval gate and thread.lua's per-agent
   -- allowlist return: a permission_error result, with the tool never called.
-  bog.api.run_on(bog.session, "delete everything", nil, {
-    on_tool = function() end,
-    run_tool = function(name)
-      return "Tool error: [permission_error] the user rejected this " .. name .. " call."
-    end,
-  })
+  drive(function()
+    bog.api.run_on(bog.session, "delete everything", nil, {
+      on_tool = function() end,
+      run_tool = function(name)
+        return "Tool error: [permission_error] the user rejected this " .. name .. " call."
+      end,
+    })
+  end)
   ok(refused ~= nil, "a refused call emits tool:refused")
   eq(refused and refused.name, "bash", "tool:refused names the tool")
   ok(refused and refused.reason:find("rejected", 1, true) ~= nil, "...and why")
@@ -576,7 +608,8 @@ do
     { role = "user", content = "and the latest question" },
   }
   queue = { plain({ "Summary of what happened." }) }
-  eq(bog.api.compact(bog.session, {}), true, "compaction ran")
+  local compacted; drive(function() compacted = bog.api.compact(bog.session, {}) end)
+  eq(compacted, true, "compaction ran")
   ok(comp ~= nil, "api.compact emits context:compacted")
   ok(comp and comp.before > comp.after, "context:compacted reports sizes, not text")
   eq(comp and comp.session, bog.session.id, "...against the session it compacted")

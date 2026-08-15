@@ -1,14 +1,14 @@
 -- api.lua -- Anthropic Messages API client and the agent turn loop.
 --
--- Two transports share one SSE decoder:
---   * stream_once  -- blocking (http.request), used by the default single-agent
---     REPL/oneshot/headless path. Behaviour is unchanged from before.
---   * stream_async -- non-blocking (http.begin + coroutine.yield("io", req)),
---     used by swarm-mode agent threads so many turns run concurrently under the
---     cooperative scheduler.
+-- One transport: stream_async -- non-blocking (http.begin + yield("io", req)),
+-- driven by the cooperative scheduler. EVERY turn is a scheduler coroutine on
+-- the unified libuv loop -- REPL, one-shot, headless, cTUI and swarm alike --
+-- so a turn never blocks the loop and nothing ever blocks user input. (The old
+-- blocking stream_once + http.request path was retired once curl moved onto uv;
+-- see docs/async.md.)
 -- The turn loop is parameterized over a session object + opts, so the default
--- agent (bog.session, sync) and swarm agents (own session, async, own tools/
--- system) run the identical loop.
+-- agent (bog.session) and swarm agents (own session, own tools/system) run the
+-- identical loop.
 local json = require("json")
 local events = require("events")
 local M = {}
@@ -364,43 +364,7 @@ local function new_decoder(on_text)
   return { feed = feed, finish = finish }
 end
 
--- ---- blocking transport (default mode) -------------------------------------
-local function stream_once(body_tbl, on_text)
-  local body = json.encode(body_tbl)
-  for attempt = 1, M.RETRY.attempts do
-    -- A fresh decoder per attempt: a retry must not inherit half a stream.
-    local dec = new_decoder(attempt == 1 and on_text or on_text)
-    local status, resp = http.request{
-      url = endpoint(), method = "POST", headers = auth_headers(),
-      auth = true, body = body, on_chunk = dec.feed, timeout = 600,
-    }
-    dec.feed("\n")
-    local msg, stop, serr = dec.finish()
-
-    if status == 200 and not serr then return msg, stop end
-    if status == 401 or status == 403 then cached_headers = nil end
-
-    local kind, message, opts
-    if status == nil then
-      kind, message, opts = transport_error(resp)
-    elseif serr then
-      kind, message, opts = M.ERR.stream, serr, { retryable = true }
-    else
-      kind, message, opts = classify_status(status, resp)
-    end
-
-    if not opts.retryable or attempt == M.RETRY.attempts then
-      fail(kind, message, opts)
-    end
-    local delay = retry_delay(attempt)
-    bog.log(string.format("%s -- retrying in %dms (%d/%d)",
-      message, delay, attempt, M.RETRY.attempts - 1))
-    backoff_wait(delay, false)
-  end
-end
-M.stream_once = stream_once
-
--- ---- async transport (swarm mode; must run inside a scheduler coroutine) ----
+-- ---- the transport (always runs inside a scheduler coroutine) --------------
 local function stream_async_once(body, on_text)
   local dec = new_decoder(on_text)
   local raw = {}
@@ -630,7 +594,7 @@ end
 function M.compact(sess, opts)
   sess = sess or bog.session
   opts = opts or {}
-  local stream = opts.async and stream_async or stream_once
+  local stream = stream_async
   local system = opts.system or function() return bog.prompt.system() end
 
   if #sess.messages == 0 then return false end
@@ -687,7 +651,7 @@ end
 -- opts: { async, system=fn, tools=fn, run_tool=fn(name,input), on_tool=fn(name,input) }
 function M.run_on(sess, user_text, on_text, opts)
   opts = opts or {}
-  local stream = opts.async and stream_async or stream_once
+  local stream = stream_async
   local system = opts.system or function() return bog.prompt.system() end
   local tools_fn = opts.tools or function() return bog.tools.schemas() end
   local run_tool = opts.run_tool or bog.tools.run

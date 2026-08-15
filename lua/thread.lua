@@ -20,14 +20,13 @@ function M.at_capacity()
 end
 
 -- The tool/prompt policy an agent runs under. Shared by the lone agent and every
--- swarm actor: the only per-mode differences are the transport (`async`) and
--- whether spawning is permitted, both of which are data.
+-- swarm actor: they run the identical turn loop on the identical (async) transport
+-- -- the only per-agent difference is which tools/skills it may use, which is data.
 --
 -- An agent with no skills gets the whole registry, which is what keeps the
 -- default REPL behaving exactly as before: skills narrow, they never widen.
-function M.agent_opts(rec, async)
+function M.agent_opts(rec)
   return {
-    async = async or false,
     system = function() return bog.prompt.agent_system(rec) end,
     tools = function()
       if not rec.allow or next(rec.allow) == nil then return bog.tools.schemas() end
@@ -62,7 +61,7 @@ function M.session_agent(sess, skills)
     id = sess.id, skills = skills, allow = allow, instructions = instructions,
     may_spawn = not M.at_capacity(), session = sess,
   }
-  rec.opts = M.agent_opts(rec, false)
+  rec.opts = M.agent_opts(rec)
   sess.agent = rec
   return rec
 end
@@ -103,7 +102,7 @@ function M.new_agent(p)
     session = { id = id, model = model, messages = {}, max_tokens = 16000, compact_at = 400000 },
   }
   rec.may_spawn = not M.at_capacity()
-  rec.opts = M.agent_opts(rec, true)
+  rec.opts = M.agent_opts(rec)
   M.live = M.live + 1
   return rec
 end

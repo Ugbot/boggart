@@ -1,10 +1,12 @@
 -- integration.lua -- OFFLINE integration tests for the full agent turn loop
 -- in lua/api.lua. Run via `./boggart --eval tests/integration.lua`.
 --
--- No network is used: the C `http.request` binding is replaced with a Lua
--- stub that replays canned Anthropic SSE streams through the on_chunk
--- callback, split at hostile byte boundaries (including mid-`data:`-line) to
--- prove the chunk-boundary buffering in api.stream_once is correct.
+-- No network is used: the C `http.begin` binding is replaced with a Lua stub
+-- that replays canned Anthropic SSE streams one chunk per req:take(), split at
+-- hostile byte boundaries (including mid-`data:`-line) to prove the
+-- chunk-boundary buffering in api.stream_async is correct. There is one
+-- transport now (async), so each turn runs as a scheduler coroutine driven to
+-- completion here by run_turn_sync -- exactly how it runs in production.
 local json = require("json")
 local util = require("util")
 
@@ -100,16 +102,21 @@ local function plain_text_response(text_pieces, stop)
   return message_start() .. text_block(0, text_pieces) .. finish(stop or "end_turn")
 end
 
--- ---- the http.request stub ---------------------------------------------------
--- Pops the next canned SSE stream off a queue and feeds it to on_chunk in
--- small, deliberately awkward chunks; returns (200, "") like the C binding.
+-- ---- the http.begin stub ---------------------------------------------------
+-- Splits the next canned SSE stream into small, deliberately awkward chunks and
+-- hands them out one per req:take() -- the async transport's contract. The
+-- scheduler yields "io", we pump (a no-op here -- no real transfers), and the
+-- transport drains the chunks. Same hostile boundaries as before, so the
+-- chunk-boundary buffering is exercised identically.
+local sched = require("sched")
+bog.sched = sched
 local queue = {}          -- pending canned SSE bodies
 local requests = {}       -- decoded request bodies, for wire-shape asserts
 local mid_data_splits = 0 -- count of chunk boundaries that landed inside a data: line
 
-local function feed_chunked(sse, on_chunk)
+local function chunk_sse(sse)
   local sizes = { 7, 3, 29, 11, 41, 5, 17 }
-  local i, k = 1, 1
+  local chunks, i, k = {}, 1, 1
   while i <= #sse do
     local n = sizes[(k - 1) % #sizes + 1]
     local last = math.min(#sse, i + n - 1)
@@ -117,31 +124,53 @@ local function feed_chunked(sse, on_chunk)
     if last < #sse then
       local prev_nl = sse:sub(1, last):match("()\n[^\n]*$")
       local ls = prev_nl and (prev_nl + 1) or 1
-      -- a genuine mid-line split: the line starts at/before the boundary,
-      -- begins with "data:", and continues past the boundary
       if ls <= last and sse:sub(ls, ls + 4) == "data:"
           and sse:find("\n", last + 1, true) then
         mid_data_splits = mid_data_splits + 1
       end
     end
-    on_chunk(sse:sub(i, last))
+    chunks[#chunks + 1] = sse:sub(i, last)
     i = last + 1
     k = k + 1
   end
+  return chunks
 end
 
-http.request = function(opts)
+http.pump = function() return 0 end -- no real transfers; the stub feeds via take()
+http.begin = function(opts)
   assert(type(opts) == "table", "stub: opts must be a table")
   assert(opts.url and opts.method == "POST", "stub: unexpected request shape")
-  assert(type(opts.on_chunk) == "function", "stub: on_chunk missing")
-  local body = json.decode(opts.body)
-  requests[#requests + 1] = body
+  requests[#requests + 1] = json.decode(opts.body)
   local sse = table.remove(queue, 1)
   if not sse then
-    error("stub: http.request called with empty response queue (runaway loop?)")
+    error("stub: http.begin called with empty response queue (runaway loop?)")
   end
-  feed_chunked(sse, opts.on_chunk)
-  return 200, ""
+  local req = { chunks = chunk_sse(sse), idx = 0 }
+  function req:take()
+    self.idx = self.idx + 1
+    return self.chunks[self.idx] or ""
+  end
+  function req:status()
+    if self.idx >= #self.chunks then return "done", 200 end
+    return "running"
+  end
+  function req:close() end
+  return req
+end
+
+-- Drive one default-session turn to completion under the scheduler -- the same
+-- coroutine-on-the-loop shape every front end uses. Errors are re-raised so the
+-- error-path scenarios still see them.
+local function run_turn_sync(text, on_text)
+  local err
+  local co = coroutine.create(function()
+    local ok2, e = pcall(bog.api.run_turn, text, on_text)
+    if not ok2 then err = e end
+  end)
+  sched.actors, sched.by_id = {}, {}
+  sched.add(bog.session.id or 9000, co)
+  sched.run()
+  if err then error(err, 0) end
 end
 
 -- per-scenario reset
@@ -159,7 +188,7 @@ do
   queue[1] = plain_text_response({ "Hello", " from", " boggart", "!" })
 
   local got = {}
-  bog.api.run_turn("say hi", function(t) got[#got + 1] = t end)
+  run_turn_sync("say hi", function(t) got[#got + 1] = t end)
 
   eq(table.concat(got), "Hello from boggart!", "s1: on_text saw the concatenated text")
   eq(#bog.session.messages, 2, "s1: two messages (user, assistant)")
@@ -192,7 +221,7 @@ do
   queue[2] = plain_text_response({ "Done." })
 
   local got = {}
-  bog.api.run_turn("write hi to a file", function(t) got[#got + 1] = t end)
+  run_turn_sync("write hi to a file", function(t) got[#got + 1] = t end)
 
   -- the tool really ran
   eq(util.read_file(target), "hi", "s2: write tool actually wrote the file")
@@ -246,7 +275,7 @@ do
     .. finish("tool_use")
   queue[2] = plain_text_response({ "Both written." })
 
-  bog.api.run_turn("write two files", nil)
+  run_turn_sync("write two files", nil)
 
   eq(util.read_file(t1), "alpha", "s3: first tool ran")
   eq(util.read_file(t2), "beta", "s3: second tool ran")
@@ -275,7 +304,7 @@ do
     .. finish("tool_use")
   queue[2] = plain_text_response({ "Recovered." })
 
-  local threw = not pcall(bog.api.run_turn, "call a bogus tool", nil)
+  local threw = not pcall(run_turn_sync, "call a bogus tool", nil)
   ok(not threw, "s4: run_turn does not throw on unknown tool")
 
   local m = bog.session.messages
@@ -293,7 +322,7 @@ do
     .. tool_block(0, "toolu_s4_02", "write", { json.encode({ path = bog.userdir .. "/nope.txt" }) })
     .. finish("tool_use")
   queue[2] = plain_text_response({ "ok" })
-  bog.api.run_turn("bad args", nil)
+  run_turn_sync("bad args", nil)
   local tr2 = bog.session.messages[3].content[1]
   ok(tr2.content:sub(1, 11) == "Tool error:", "s4: bad-args tool returns Tool error:")
   eq(tr2.is_error, true, "s4: bad-args is_error=true")
@@ -323,7 +352,7 @@ do
     .. finish("tool_use")
   queue[2] = plain_text_response({ "done" })
 
-  bog.api.run_turn("split json", nil)
+  run_turn_sync("split json", nil)
 
   local tu = bog.session.messages[2].content[1]
   eq(tu.type, "tool_use", "s5: tool_use block assembled")
@@ -349,7 +378,7 @@ do
     .. "data: [DONE]\n\n"   -- OpenAI-style terminator some proxies append
 
   local got = {}
-  bog.api.run_turn("noise test", function(t) got[#got + 1] = t end)
+  run_turn_sync("noise test", function(t) got[#got + 1] = t end)
 
   eq(table.concat(got), "Still fine.", "s6: text intact despite ping/comment/empty-data noise")
   eq(#bog.session.messages, 2, "s6: clean [user, assistant] shape")

@@ -4,7 +4,8 @@
 -- What this pins down is that there is no longer a separate "single-agent path":
 -- skills resolve, tools filter and the prompt assembles through the same code
 -- for the session's own agent as for a spawned child, and the ONLY structural
--- difference is the cap (plus the transport it implies).
+-- difference is the cap. (There is one transport now -- every turn is an async
+-- scheduler coroutine on the unified loop -- so it is not even a difference.)
 local thread = require("thread")
 local skills = require("skills")
 local prompt = require("prompt")
@@ -35,7 +36,7 @@ local rec = thread.session_agent(sess, { "reviewer" })
 ok(rec.instructions:find("Only real defects"), "single agent resolves skill instructions")
 ok(rec.allow.read and rec.allow.bash and not rec.allow.write, "single agent gets the allowlist")
 ok(sess.agent == rec, "record attaches to the session")
-ok(rec.opts.async == false, "single agent uses the blocking transport")
+ok(rec.opts.async == nil, "no per-agent transport flag -- one async transport for all")
 
 -- the tool surface is genuinely narrowed
 local names = {}

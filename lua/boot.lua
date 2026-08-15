@@ -353,8 +353,8 @@ end
 -- The old path called the blocking transport (stream_once): the whole process
 -- sat in a socket read for the length of the turn, so a model that paused
 -- mid-generation froze the REPL outright -- no activity, no clean Ctrl-C. Here
--- the turn is an async transport (opts.async) driven as a scheduler coroutine,
--- so the uv loop keeps running: tokens stream in as they arrive, a uv timer
+-- the turn is the (async) transport driven as a scheduler coroutine, so the uv
+-- loop keeps running: tokens stream in as they arrive, a uv timer
 -- animates a "thinking" indicator through the initial latency and any pause, and
 -- the loop is alive to catch a signal. Tokens are streamed live (a scrolling
 -- terminal cannot re-flow printed text, so live beats post-hoc rendering);
@@ -400,7 +400,7 @@ local function run_one_turn(text)
       if tty then clear_status() end -- print tokens at a clean position
       started = true
       io.write(t); io.flush()
-    end, { async = true })
+    end)
     if not ok then turn_err = e end
   end)
   bog.sched.add(myid, co)

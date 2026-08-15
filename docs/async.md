@@ -74,5 +74,11 @@ was a violation of this one rule (`sched.run` → blocking `step(true)` →
    swarm dashboard (`dash.lua`) — convert next. The plain REPL / swarm / one-shot
    own no frame and correctly keep blocking `sched.run`.
 4. **stdin on uv** (termctl input → `uv_tty`); the frame wakes on a keypress.
-5. **Retire `stream_once`**; one-shot/headless drive the async actor to completion.
+5. ✅ **Retired `stream_once`** — one transport. `api.lua` calls `stream_async`
+   unconditionally; the blocking `http.request` path and the `opts.async` branch
+   are gone, and the now-meaningless `async` flag is stripped from `agent_opts`
+   and its callers. Every turn — REPL, one-shot, headless, cTUI, swarm — is a
+   scheduler coroutine on the unified loop. The offline turn-loop tests
+   (`integration`, `events`) now stub `http.begin` and drive turns under the
+   scheduler, matching production. (`http.request` C binding kept but unused.)
 6. **Blocking file IO → threadpool** (`util.read_file` → async `uv.fs`).
