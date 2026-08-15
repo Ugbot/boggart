@@ -328,5 +328,37 @@ do
   ok(#short == 1, "short code line is a single row")
 end
 
+-- ---- wide/CJK columns: layout measures DISPLAY cells, not codepoints --------
+-- A CJK ideograph is one codepoint but two columns. If the renderer sizes cells
+-- by codepoint count, every row carrying wide text drifts by one column per such
+-- character and the table shears apart. This asserts the columns stay flush by
+-- measuring true display width. Needs the C `sys.width` binding (utf8width.h);
+-- when it is absent (bare Lua harness) there is no oracle to measure with, so
+-- the case is skipped rather than asserted against a codepoint approximation.
+do
+  local sys = rawget(_G, "sys")
+  if sys and sys.width then
+    local tbl = table.concat({
+      "| 名前 | 説明 |",
+      "|------|------|",
+      "| alpha | 日本語のテキストです |",
+      "| ベータ | short |",
+    }, "\n")
+    local s = tr.entry({ role = "assistant", text = tbl }, { width = 40, color = false })
+    local widths, worst = {}, 0
+    for line in (s .. "\n"):gmatch("(.-)\n") do
+      if line ~= "" then
+        local w = sys.width(line)
+        widths[#widths + 1] = w
+        if w > worst then worst = w end
+      end
+    end
+    local flush = true
+    for i = 2, #widths do if widths[i] ~= widths[1] then flush = false end end
+    ok(flush, "CJK table: every row is the same display width (columns stay flush)")
+    ok(worst <= 40, "CJK table: rows fit the width in display cells (" .. worst .. " <= 40)")
+  end
+end
+
 io.write(string.format("\ntermrender: %d passed, %d failed\n", passed, failed))
 return failed == 0 and 0 or 1

@@ -104,21 +104,38 @@ local function painter(opts)
 end
 
 -- ---------------------------------------------------------------------------
--- Width-aware helpers. Wrapping counts display columns, not bytes, so a UTF-8
--- string measures by codepoints via the stdlib utf8 library (no dependency).
--- This is the same "cells, not bytes" lesson agentview documents at length; we
--- approximate a cell as one codepoint, which is exact for the Latin/code text a
--- REPL mostly shows and only loose for CJK/emoji width.
+-- Width-aware helpers. Wrapping and table layout count DISPLAY COLUMNS, not
+-- bytes and not codepoints: a CJK ideograph is one codepoint but occupies two
+-- cells, and an emoji likewise. Measuring by codepoints (utf8.len) makes table
+-- columns drift and wrapped lines overrun the margin for any non-Latin text.
+--
+-- The authoritative width tables (Unicode East-Asian-Width + emoji, Markus
+-- Kuhn's wcwidth rules) live in C as sys.width / sys.wtake (see src/lsys.c and
+-- src/utf8width.h) -- the SAME helpers dash.lua and the C renderer measure with,
+-- so every surface agrees. We bind them if present and keep a pure codepoint
+-- fallback (utf8.len) so the module still loads and renders Latin text correctly
+-- in a bare Lua harness where the C `sys` library is absent.
 -- ---------------------------------------------------------------------------
+local sys = rawget(_G, "sys")
+local sys_width = sys and sys.width
+local sys_wtake = sys and sys.wtake
+
 local function vis_len(s)
   if s == "" then return 0 end
+  if sys_width then return sys_width(s) end
   local n = utf8 and utf8.len(s)
   return n or #s
 end
 
--- First n codepoints of s, and the remainder.
+-- Longest prefix of s that fits in n display columns, and the remainder. A
+-- double-width character straddling the limit is left out whole, so the prefix
+-- may be one column short of n -- callers pad the shortfall.
 local function take(s, n)
   if n <= 0 then return "", s end
+  if sys_wtake then
+    local head = sys_wtake(s, n)
+    return head, s:sub(#head + 1)
+  end
   if not utf8 then return s:sub(1, n), s:sub(n + 1) end
   local off = utf8.offset(s, n + 1)
   if not off then return s, "" end

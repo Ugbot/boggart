@@ -15,6 +15,7 @@
  */
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #ifndef _WIN32
@@ -120,7 +121,24 @@ static void highlighter(ic_highlight_env_t *henv, const char *input, void *arg) 
 }
 
 /* term.size() -> width, height. The terminal's cell dimensions, so the renderer
- * can wrap and the status line can fill the row. 80x24 if it cannot be asked. */
+ * can wrap and the status line can fill the row. 80x24 if it cannot be asked.
+ *
+ * Precedence: a live tty (TIOCGWINSZ) first, then the COLUMNS/LINES environment
+ * as an override/fallback. The env matters in two cases the ioctl cannot serve:
+ * output piped to a file or another process (no tty, so ws.ws_col is 0), and a
+ * deliberate override (COLUMNS=100 boggart ...) used to render at a fixed width
+ * -- the same convention readline and isocline honour. An env value only counts
+ * when it parses to a positive integer, so an empty or junk COLUMNS is ignored
+ * rather than collapsing the width to zero. */
+static int env_dim(const char *name) {
+  const char *v = getenv(name);
+  if (!v || !*v) { return 0; }
+  char *end = NULL;
+  long n = strtol(v, &end, 10);
+  if (end == v || n <= 0 || n > 100000) { return 0; }
+  return (int) n;
+}
+
 static int l_size(lua_State *L) {
   int w = 80, h = 24;
 #ifndef _WIN32
@@ -130,6 +148,8 @@ static int l_size(lua_State *L) {
     h = ws.ws_row > 0 ? ws.ws_row : h;
   }
 #endif
+  int ec = env_dim("COLUMNS"); if (ec > 0) { w = ec; }
+  int er = env_dim("LINES");   if (er > 0) { h = er; }
   lua_pushinteger(L, w);
   lua_pushinteger(L, h);
   return 2;

@@ -378,6 +378,55 @@ local function run_one_turn(text)
   local started, si, turn_err, shown = false, 0, nil, false
   local abort, paused = false, false
   local function clear_status() if shown then io.write("\r\27[K"); shown = false end end
+
+  -- Column width, read FRESH each turn (not cached at start-up) so a terminal
+  -- resized between prompts -- or a COLUMNS override -- is honoured. term.size()
+  -- asks the tty via TIOCGWINSZ and falls back to COLUMNS/80 (src/lterm.c).
+  local width = 80
+  if term and term.size then local ok, w = pcall(term.size); if ok and w and w > 0 then width = w end end
+
+  -- Assistant text is rendered through termrender at the real terminal width
+  -- instead of echoed raw -- raw streaming dumped the model's markdown verbatim,
+  -- so tables never aligned and code ran past the margin. But rendering does NOT
+  -- mean buffering the whole turn: prose reflows fine line by line, so we stream
+  -- BLOCK by block. A markdown block (paragraph, list, table, fenced code) ends
+  -- at a blank line that is not inside a code fence; each completed block is
+  -- rendered and printed as it arrives, so output appears live. Only multi-line
+  -- constructs that need the whole block to lay out -- a table's columns, a
+  -- fence's gutter -- are held back until their closing blank line, which is
+  -- exactly what keeps them aligned. A partial line and any open block are
+  -- flushed at a tool marker (rounds complete before their tools run, see
+  -- api.run_on) and at turn end.
+  local line_buf = ""    -- bytes of the current, not-yet-terminated source line
+  local block = {}       -- completed source lines of the block being accumulated
+  local in_fence = false
+  local function render_block()
+    if #block == 0 then return end
+    local md = table.concat(block, "\n"); block = {}
+    if tty then clear_status() end
+    local ok, out = pcall(bog.termrender.assistant,
+      { role = "assistant", text = md }, { width = width, color = tty })
+    io.write(ok and out or md, "\n"); io.flush()
+  end
+  local function feed_line(line)
+    if line:match("^%s*```") then in_fence = not in_fence; block[#block + 1] = line
+    elseif not in_fence and line:match("^%s*$") then render_block()  -- blank => block end
+    else block[#block + 1] = line end
+  end
+  local function on_delta(t)
+    line_buf = line_buf .. t
+    local nl = line_buf:find("\n", 1, true)
+    while nl do
+      feed_line(line_buf:sub(1, nl - 1))
+      line_buf = line_buf:sub(nl + 1)
+      nl = line_buf:find("\n", 1, true)
+    end
+  end
+  local function flush_render()   -- emit any trailing partial line + open block
+    if line_buf ~= "" then feed_line(line_buf); line_buf = "" end
+    render_block()
+  end
+
   local function status()
     local ids = {}
     if bog.sched and bog.sched.actors then
@@ -392,15 +441,21 @@ local function run_one_turn(text)
         table.concat(ids, " "), paused and "resume" or "pause")
     elseif not started then
       return frame .. "  thinking\u{2026}"
+    elseif line_buf ~= "" or #block > 0 then
+      return frame .. "  responding\u{2026}"
     end
   end
 
   local co = coroutine.create(function()
     local ok, e = pcall(bog.api.run_on, S, text, function(t)
-      if tty then clear_status() end -- print tokens at a clean position
       started = true
-      io.write(t); io.flush()
-    end)
+      on_delta(t)                -- stream block by block, rendered at each boundary
+    end, {
+      on_tool = function(name, input)
+        flush_render()           -- emit the round's prose before its tool marker
+        bog.log_tool(name, input)
+      end,
+    })
     if not ok then turn_err = e end
   end)
   bog.sched.add(myid, co)
@@ -466,6 +521,7 @@ local function run_one_turn(text)
   end
   if timer then timer:stop(); timer:close() end
   if tty then clear_status() end
+  flush_render() -- emit the final round's prose (or a partial turn on abort)
   if abort then
     for _, a in ipairs(bog.sched.actors) do pcall(bog.sched.kill, a.id) end
     io.write(COL.dim, "  (cancelled)", COL.reset, "\n")
