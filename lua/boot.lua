@@ -159,6 +159,22 @@ function bog.resume_session(id)
   return true
 end
 
+-- `--resume [id]`: continue where you left off. With an id, that session; bare,
+-- the most recently updated one (sess_list is ORDER BY updated DESC). Loads it
+-- into bog.session in place of a fresh one. Returns the resumed session, or nil
+-- (flag not set, no sessions yet, or a bad id) so the caller can fall back to
+-- bog.new_session().
+function bog.resume_startup()
+  if not boggart.resume then return nil end
+  local id = boggart.resume_id and tonumber(boggart.resume_id)
+  if not id then
+    local recent = bog.store.sess_list(1)
+    id = recent and recent[1] and recent[1].id
+  end
+  if id and bog.resume_session(id) then return bog.session end
+  return nil
+end
+
 function bog.reload()
   local snap, snap_loaded = {}, {}
   for _, m in ipairs(CORE) do snap[m] = bog[m]; snap_loaded[m] = package.loaded[m] end
@@ -597,6 +613,13 @@ if bog.mode == "init" then return do_init() end
 if bog.mode == "reset" then return do_reset() end
 
 -- everything below needs the harness wired
+-- Expose json and the gold stdlib as real globals *before* wire(): wire
+-- requires tools.lua, which loads user tool files, and those bodies capture
+-- `gold` from the global at load time. Declaring it after wire() meant every
+-- file-backed tool ran with gold == nil. The declare at the end of this file
+-- (before strict.enable) is the worker/embedded-equivalent point; here it must
+-- come first so tool loading sees it.
+declare{ json = require("json"), gold = require("gold") }
 local ok, err = bog.try(wire)
 if not ok then
   io.stderr:write("boggart: failed to load harness:\n", err, "\n")
@@ -741,6 +764,13 @@ else
     local ok, tui = pcall(require, "tui")
     if ok and tui and tui.run() then return 0 end
   end
-  bog.new_session()
+  local resumed = bog.resume_startup()
+  if resumed then
+    io.write(string.format("resumed session %d (%d message%s)%s\n",
+      resumed.id, #resumed.messages, #resumed.messages == 1 and "" or "s",
+      (resumed.title and resumed.title ~= "") and (": " .. resumed.title) or ""))
+  else
+    bog.new_session()
+  end
   return do_repl()
 end
