@@ -21,6 +21,8 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include "uv.h"
+
 /* Credentials live in lauth.c and are attached here, so the key never enters
  * the Lua state: a request asks for auth with `auth = true` and the header is
  * built in C from the C-side store. */
@@ -28,6 +30,9 @@ const char *boggart_auth_header(void);
 
 #include "lua.h"
 #include "lauxlib.h"
+
+/* luv gives each interpreter state its own uv loop; async HTTP lives on it. */
+extern uv_loop_t *luv_loop(lua_State *L);
 
 typedef struct {
   lua_State *L;
@@ -186,19 +191,145 @@ static int l_http_request(lua_State *L) {
  * ---------------------------------------------------------------------- */
 #define API_TYPE_REQ "boggart.httpreq"
 
-static CURLM *g_multi = NULL;
+/* Async HTTP is on the uv loop, not a second reactor. Each interpreter's loop
+ * owns a curl_multi; curl's socket/timer callbacks register uv_poll / uv_timer
+ * handles, so running the loop (uv_run) advances transfers and delivers
+ * completions. http.pump is now a BOUNDED uv_run -- the same call that drives
+ * subprocesses and MCP -- so one loop-run waits on every kind of IO at once and
+ * a frame owner can wait bounded on all of it. There is no curl_multi_wait. */
+typedef struct hctx hctx;
 
 typedef struct {
   CURL *easy;
   struct curl_slist *hdrs;
   char *buf;          /* received bytes not yet taken by Lua */
   size_t len, cap;
-  int added;          /* currently in g_multi */
+  int added;          /* currently in a multi */
   int completed;      /* transfer finished */
   int oom;            /* buffer realloc failed */
   CURLcode result;
   long status;
+  hctx *ctx;          /* the loop-owned multi this handle belongs to */
 } httpreq;
+
+struct hctx {
+  CURLM *multi;
+  uv_loop_t *loop;
+  uv_timer_t timer;       /* curl's requested timeout */
+  uv_timer_t pump_timer;  /* bounds a pump()'s uv_run */
+  int running;            /* running_handles, for pump()'s return */
+};
+
+typedef struct {
+  uv_poll_t poll;
+  curl_socket_t sockfd;
+  hctx *ctx;
+} sockctx;
+
+/* Drain finished transfers into their httpreq, so status()/take() observe the
+ * completion the frame it happens. Called after every socket/timer action. */
+static void check_completions(hctx *ctx) {
+  CURLMsg *m;
+  int q;
+  while ((m = curl_multi_info_read(ctx->multi, &q))) {
+    if (m->msg != CURLMSG_DONE) continue;
+    httpreq *r = NULL;
+    curl_easy_getinfo(m->easy_handle, CURLINFO_PRIVATE, (char **)&r);
+    if (r) {
+      r->completed = 1;
+      r->result = m->data.result;
+      curl_easy_getinfo(m->easy_handle, CURLINFO_RESPONSE_CODE, &r->status);
+      if (r->added) { curl_multi_remove_handle(ctx->multi, m->easy_handle); r->added = 0; }
+    }
+  }
+}
+
+/* A curl socket became readable/writable: hand the event to curl. */
+static void on_uv_poll(uv_poll_t *p, int status, int events) {
+  sockctx *sc = (sockctx *)p->data;
+  int flags = 0;
+  if (events & UV_READABLE) flags |= CURL_CSELECT_IN;
+  if (events & UV_WRITABLE) flags |= CURL_CSELECT_OUT;
+  if (status < 0) flags |= CURL_CSELECT_ERR;
+  curl_multi_socket_action(sc->ctx->multi, sc->sockfd, flags, &sc->ctx->running);
+  check_completions(sc->ctx);
+}
+
+static void on_poll_close(uv_handle_t *h) { free(h->data); }
+
+/* curl tells us which sockets to watch; we mirror each as a uv_poll handle. */
+static int socket_cb(CURL *easy, curl_socket_t s, int what, void *userp, void *socketp) {
+  (void) easy;
+  hctx *ctx = (hctx *)userp;
+  sockctx *sc = (sockctx *)socketp;
+  if (what == CURL_POLL_REMOVE) {
+    if (sc) {
+      uv_poll_stop(&sc->poll);
+      curl_multi_assign(ctx->multi, s, NULL);
+      uv_close((uv_handle_t *)&sc->poll, on_poll_close); /* frees sc */
+    }
+    return 0;
+  }
+  if (!sc) {
+    sc = (sockctx *)calloc(1, sizeof(*sc));
+    if (!sc) return -1;
+    sc->ctx = ctx;
+    sc->sockfd = s;
+    uv_poll_init_socket(ctx->loop, &sc->poll, s);
+    sc->poll.data = sc;
+    curl_multi_assign(ctx->multi, s, sc);
+  }
+  int events = 0;
+  if (what == CURL_POLL_IN) events = UV_READABLE;
+  else if (what == CURL_POLL_OUT) events = UV_WRITABLE;
+  else if (what == CURL_POLL_INOUT) events = UV_READABLE | UV_WRITABLE;
+  uv_poll_start(&sc->poll, events, on_uv_poll);
+  return 0;
+}
+
+/* curl's timeout fired: let it drive whatever is due. */
+static void on_curl_timeout(uv_timer_t *t) {
+  hctx *ctx = (hctx *)t->data;
+  curl_multi_socket_action(ctx->multi, CURL_SOCKET_TIMEOUT, 0, &ctx->running);
+  check_completions(ctx);
+}
+
+static int timer_cb(CURLM *multi, long ms, void *userp) {
+  (void) multi;
+  hctx *ctx = (hctx *)userp;
+  if (ms < 0) uv_timer_stop(&ctx->timer);
+  else uv_timer_start(&ctx->timer, on_curl_timeout, (uint64_t)ms, 0);
+  return 0;
+}
+
+static void pump_stop_cb(uv_timer_t *t) { uv_stop((uv_loop_t *)t->data); }
+
+/* One hctx per interpreter/loop, kept in that state's registry. Created lazily,
+ * lives for the state -- as the old global multi did for the process. */
+static char g_hctx_key;
+
+static hctx *get_ctx(lua_State *L, int create) {
+  lua_rawgetp(L, LUA_REGISTRYINDEX, &g_hctx_key);
+  hctx *ctx = (hctx *)lua_touserdata(L, -1);
+  lua_pop(L, 1);
+  if (ctx || !create) return ctx;
+  ctx = (hctx *)calloc(1, sizeof(*ctx));
+  if (!ctx) { luaL_error(L, "http: out of memory"); return NULL; }
+  ctx->loop = luv_loop(L);
+  ctx->multi = curl_multi_init();
+  if (!ctx->multi) { free(ctx); luaL_error(L, "curl_multi_init failed"); return NULL; }
+  uv_timer_init(ctx->loop, &ctx->timer);
+  ctx->timer.data = ctx;
+  uv_timer_init(ctx->loop, &ctx->pump_timer);
+  ctx->pump_timer.data = ctx->loop;
+  curl_multi_setopt(ctx->multi, CURLMOPT_SOCKETFUNCTION, socket_cb);
+  curl_multi_setopt(ctx->multi, CURLMOPT_SOCKETDATA, ctx);
+  curl_multi_setopt(ctx->multi, CURLMOPT_TIMERFUNCTION, timer_cb);
+  curl_multi_setopt(ctx->multi, CURLMOPT_TIMERDATA, ctx);
+  lua_pushlightuserdata(L, ctx);
+  lua_rawsetp(L, LUA_REGISTRYINDEX, &g_hctx_key);
+  return ctx;
+}
 
 static size_t write_async(char *ptr, size_t size, size_t nmemb, void *ud) {
   httpreq *r = (httpreq *)ud;
@@ -218,10 +349,7 @@ static size_t write_async(char *ptr, size_t size, size_t nmemb, void *ud) {
 
 static int l_http_begin(lua_State *L) {
   luaL_checktype(L, 1, LUA_TTABLE);
-  if (!g_multi) {
-    g_multi = curl_multi_init();
-    if (!g_multi) return luaL_error(L, "curl_multi_init failed");
-  }
+  hctx *ctx = get_ctx(L, 1); /* this loop's curl_multi, created on first use */
 
   /* Create the handle userdata FIRST so any later raise cleans up via __gc. */
   httpreq *r = (httpreq *)lua_newuserdatauv(L, sizeof(httpreq), 0);
@@ -278,34 +406,32 @@ static int l_http_begin(lua_State *L) {
   curl_easy_setopt(r->easy, CURLOPT_ACCEPT_ENCODING, "");
   curl_easy_setopt(r->easy, CURLOPT_PRIVATE, r);
 
-  curl_multi_add_handle(g_multi, r->easy);
+  curl_multi_add_handle(ctx->multi, r->easy);
   r->added = 1;
+  r->ctx = ctx;
 
   lua_settop(L, ridx); /* leave the request userdata on top */
   return 1;
 }
 
+/* Advance transfers by running the loop for up to `ms`. Since curl now lives on
+ * the loop, this waits on curl sockets AND subprocesses AND timers together and
+ * returns the instant any of them moves -- the single bounded wait the whole
+ * design turns on. ms<=0 polls without blocking (a frame owner that has its own
+ * clock). Returns the running-handle count, unchanged from before. */
 static int l_http_pump(lua_State *L) {
   long ms = (long)luaL_optinteger(L, 1, 50);
-  if (!g_multi) { lua_pushinteger(L, 0); return 1; }
-  int running = 0;
-  curl_multi_wait(g_multi, NULL, 0, (int)ms, NULL);
-  curl_multi_perform(g_multi, &running);
-  CURLMsg *m;
-  int q;
-  while ((m = curl_multi_info_read(g_multi, &q))) {
-    if (m->msg == CURLMSG_DONE) {
-      httpreq *r = NULL;
-      curl_easy_getinfo(m->easy_handle, CURLINFO_PRIVATE, (char **)&r);
-      if (r) {
-        r->completed = 1;
-        r->result = m->data.result;
-        curl_easy_getinfo(m->easy_handle, CURLINFO_RESPONSE_CODE, &r->status);
-        if (r->added) { curl_multi_remove_handle(g_multi, m->easy_handle); r->added = 0; }
-      }
-    }
+  hctx *ctx = get_ctx(L, 0);
+  if (!ctx) { lua_pushinteger(L, 0); return 1; }
+  if (ms <= 0) {
+    uv_run(ctx->loop, UV_RUN_NOWAIT);
+  } else {
+    uv_timer_start(&ctx->pump_timer, pump_stop_cb, (uint64_t)ms, 0);
+    uv_run(ctx->loop, UV_RUN_ONCE);
+    uv_timer_stop(&ctx->pump_timer);
   }
-  lua_pushinteger(L, running);
+  check_completions(ctx);
+  lua_pushinteger(L, ctx->running);
   return 1;
 }
 
@@ -332,7 +458,7 @@ static int l_req_status(lua_State *L) {
 
 static int l_req_close(lua_State *L) {
   httpreq *r = (httpreq *)luaL_checkudata(L, 1, API_TYPE_REQ);
-  if (r->added && g_multi) { curl_multi_remove_handle(g_multi, r->easy); r->added = 0; }
+  if (r->added && r->ctx) { curl_multi_remove_handle(r->ctx->multi, r->easy); r->added = 0; }
   if (r->easy) { curl_easy_cleanup(r->easy); r->easy = NULL; }
   if (r->hdrs) { curl_slist_free_all(r->hdrs); r->hdrs = NULL; }
   if (r->buf) { free(r->buf); r->buf = NULL; r->len = r->cap = 0; }
