@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="boggart app icon">
+  <!-- rounded-square ground (corners transparent; SDL/OS shows it as the app icon) -->
+  <rect x="6" y="6" width="244" height="244" rx="54" fill="#EFE7F6"/>
+  <g transform="translate(128 132) scale(0.84) translate(-128 -132)">
+    <!-- legs -->
+    <g stroke="#241B3B" stroke-width="4" stroke-linejoin="round" stroke-linecap="round">
+      <rect x="78" y="206" width="16" height="30" rx="6" fill="#241B3B" transform="rotate(-10 86 210)"/>
+      <rect x="162" y="206" width="16" height="30" rx="6" fill="#241B3B" transform="rotate(10 170 210)"/>
+      <rect x="64" y="44" width="128" height="170" rx="12" fill="#6A4A97"/>
+    </g>
+    <rect x="121" y="54" width="14" height="150" fill="#17102B"/>
+    <rect x="134" y="54" width="52" height="150" rx="6" fill="#6A4A97" stroke="#241B3B" stroke-width="3" stroke-linejoin="round"/>
+    <rect x="144" y="66" width="34" height="126" rx="5" fill="#543A7B"/>
+    <circle cx="141" cy="129" r="5" fill="#241B3B"/>
+    <rect x="56" y="32" width="144" height="22" rx="8" fill="#6A4A97" stroke="#241B3B" stroke-width="4" stroke-linejoin="round"/>
+    <g transform="rotate(9 132 117)">
+      <line x1="132" y1="96" x2="134" y2="66" stroke="#241B3B" stroke-width="3.5" stroke-linecap="round"/>
+      <circle cx="134" cy="59" r="6.5" fill="#F6A42A" stroke="#241B3B" stroke-width="3"/>
+      <rect x="108" y="94" width="46" height="46" rx="18" fill="#F6A42A" stroke="#241B3B" stroke-width="3" stroke-linejoin="round"/>
+      <g stroke="none">
+        <circle cx="124" cy="115" r="7.5" fill="#F7EAD0"/>
+        <circle cx="143" cy="115" r="7.5" fill="#F7EAD0"/>
+        <circle cx="125" cy="116" r="3.6" fill="#241B3B"/>
+        <circle cx="144" cy="116" r="3.6" fill="#241B3B"/>
+        <circle cx="123.4" cy="113.2" r="1.5" fill="#FFFFFF"/>
+        <circle cx="142.4" cy="113.2" r="1.5" fill="#FFFFFF"/>
+        <ellipse cx="140" cy="128" rx="4.5" ry="2.8" fill="#EF9A8A"/>
+      </g>
+      <path d="M134 126 Q140 131 147 125" fill="none" stroke="#241B3B" stroke-width="2.4" stroke-linecap="round"/>
+    </g>
+    <rect x="66" y="54" width="55" height="150" rx="6" fill="#6A4A97" stroke="#241B3B" stroke-width="3" stroke-linejoin="round"/>
+    <rect x="76" y="66" width="35" height="126" rx="5" fill="#543A7B"/>
+    <circle cx="113" cy="129" r="5" fill="#241B3B"/>
+    <g stroke="#241B3B" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+      <rect x="110" y="150" width="22" height="17" rx="8" fill="#F6A42A"/>
+      <rect x="112" y="145" width="6.5" height="11" rx="3.2" fill="#F6A42A"/>
+      <rect x="120" y="145" width="6.5" height="11" rx="3.2" fill="#F6A42A"/>
+    </g>
+  </g>
+</svg>
