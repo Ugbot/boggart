@@ -25,11 +25,14 @@
  *    touched from the worker by uv_async_send only -- the one libuv call that
  *    is documented threadsafe.
  *
- * 3. Thread ownership of the C libs. The bus (lswarm.c), the mcp client
- *    (lmcp.c) and http's async CURLM multi (lhttp.c g_multi) are process
- *    globals owned by the main thread; a worker touching them is a data race,
- *    so worker states get erroring stubs for swarm, mcp, http.begin/pump and
- *    auth.set/clear (see deny_in_worker). db stays available: SQLite is built
+ * 3. Thread ownership of the C libs. The bus (lswarm.c) and the mcp client
+ *    (lmcp.c) are process globals owned by the main thread; a worker touching
+ *    them is a data race, so worker states get erroring stubs for swarm, mcp and
+ *    auth.set/clear (see deny_in_worker). http is NOT denied: curl's multi is now
+ *    per-loop (lhttp.c keys a CURLM off each state's luv loop), so a worker's
+ *    http.begin/pump own a private curl_multi on the worker's own loop -- N
+ *    threads, N loops, N multis -- which is what lets a worker run a model turn.
+ *    db stays available: SQLite is built
  *    THREADSAFE=2, safe with one connection per thread, and connections are
  *    per-userdata -- and the main state's bog.db is a Lua value, which by (1)
  *    cannot cross at all, so "never share the main connection" is structural,
@@ -534,11 +537,13 @@ static void wk_open_self(lua_State *L, worker *h) {
   if (h->has_arg) { slot_push_value(L, &h->arg); lua_setfield(L, -2, "arg"); }
   lua_setglobal(L, "worker");
 
-  /* hard part 3: the main thread owns these. */
+  /* hard part 3: the main thread owns these. NOT http: curl's multi is now
+   * per-loop (lhttp.c keys a CURLM off each state's luv loop), so a worker's
+   * http.begin/pump build and drive their OWN curl_multi on the worker's OWN
+   * loop -- N threads, N loops, N multis, no sharing. That is the whole point of
+   * making curl per-loop, and it is what lets a worker run a model turn. */
   deny_global(L, "swarm");
   deny_global(L, "mcp");
-  deny_field(L, "http", "begin");   /* async http shares one CURLM multi */
-  deny_field(L, "http", "pump");
   deny_field(L, "auth", "set");     /* cache + file writes; reads are fine */
   deny_field(L, "auth", "clear");
 

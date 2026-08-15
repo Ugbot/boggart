@@ -104,6 +104,8 @@ eq(ok7, true, "stopped worker exited by itself")
 eq(res7, "stop", "recv returned nil,'stop'")
 
 -- ---- the deny list: main-thread-owned capabilities error with a sentence ----
+-- http is NOT here: curl's multi is per-loop now (lhttp.c keys a CURLM off each
+-- state's luv loop), so a worker's http rides its OWN loop -- see below.
 local h8 = worker.spawn([[
   local errs = {}
   for name, fn in pairs({
@@ -111,7 +113,6 @@ local h8 = worker.spawn([[
     mcp   = function() return mcp.connect("nope") end,
     spawn = function() return worker.spawn("return 1") end,
     auth  = function() return auth.set("api_key", "k") end,
-    pump  = function() return http.pump(0) end,
   }) do
     local okc, e = pcall(fn)
     if not okc and tostring(e):find("main thread") then errs[#errs + 1] = name end
@@ -121,7 +122,20 @@ local h8 = worker.spawn([[
 ]])
 local ok8, res8 = worker.join(h8)
 eq(ok8, true, "deny-list worker ran")
-eq(res8, "auth,mcp,pump,spawn,swarm", "swarm/mcp/nested-spawn/auth.set/http.pump all denied")
+eq(res8, "auth,mcp,spawn,swarm", "swarm/mcp/nested-spawn/auth.set all denied")
+
+-- ---- http IS available in a worker: N threads, N loops, N curl multis --------
+-- http.pump(0) with no request in flight drives the worker's own loop and
+-- reports 0 running -- proving http is callable (not denied) and bound to the
+-- worker's loop, not the main thread's. (A live request needs the network; the
+-- point here is the capability and its per-loop ownership.)
+local h8b = worker.spawn([[
+  local running = http.pump(0)
+  return string.format("%s,%d", type(http.begin), running)
+]])
+local ok8b, res8b = worker.join(h8b)
+eq(ok8b, true, "worker-http worker ran")
+eq(res8b, "function,0", "http.begin/pump work in a worker on its own loop")
 
 -- ---- a worker may open its OWN db connection (THREADSAFE=2 discipline) ----
 local h9 = worker.spawn([[
