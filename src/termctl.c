@@ -13,6 +13,7 @@
 #include "termctl.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
@@ -70,6 +71,7 @@ static struct {
      * uv.run for keyboard AND http AND timers, instead of polling. */
     uv_poll_t        stdin_poll;
     int              attached;
+    int              saved_infl;  /* infd's O_NONBLOCK state before we attached  */
 } T;
 
 /* =====================================================================
@@ -81,6 +83,18 @@ static void raw_write(const char *s, size_t n) {
         ssize_t k = write(T.outfd, s, n);
         if (k < 0) {
             if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                /* The tty is non-blocking -- uv_poll set it so when stdin went on
+                 * the loop, and stdin/stdout share one file description, so a big
+                 * frame's write() can return short here. Wait for the tty to drain
+                 * and finish the write rather than dropping the tail (which would
+                 * leave the bottom of the screen -- status + input -- unpainted).
+                 * poll(2) is async-signal-safe, so this is fine on the signal path. */
+                struct pollfd pfd;
+                pfd.fd = T.outfd; pfd.events = POLLOUT; pfd.revents = 0;
+                if (poll(&pfd, 1, 2000) <= 0) break; /* dead tty: give up rather than hang */
+                continue;
+            }
             break;
         }
         s += k;
@@ -731,6 +745,12 @@ static void on_stdin_readable(uv_poll_t *h, int status, int events) {
 int tc_attach_loop(void *loop) {
     if (T.attached) return 0;
     if (!T.inited || T.eof) return -1;
+    /* uv_poll_init makes infd non-blocking, and stdin/stdout share one file
+     * description, so this also makes our output non-blocking. Remember the
+     * original flags so detach can put the tty back the way we found it -- else
+     * the shell inherits a non-blocking tty after boggart exits. raw_write
+     * already handles the EAGAIN this introduces. */
+    T.saved_infl = fcntl(T.infd, F_GETFL, 0);
     if (uv_poll_init(loop, &T.stdin_poll, T.infd) != 0) return -1;
     if (uv_poll_start(&T.stdin_poll, UV_READABLE, on_stdin_readable) != 0) return -1;
     T.attached = 1;
@@ -741,6 +761,7 @@ void tc_detach_loop(void) {
     if (!T.attached) return;
     uv_poll_stop(&T.stdin_poll);
     uv_close((uv_handle_t *)&T.stdin_poll, NULL);
+    if (T.saved_infl >= 0) fcntl(T.infd, F_SETFL, T.saved_infl); /* restore blocking */
     T.attached = 0;
 }
 
