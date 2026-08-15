@@ -578,6 +578,8 @@ local function status_line()
 end
 
 local function do_repl()
+  local tty = term and term.istty and term.istty()
+  io.write(require("logo").render(tty), "\n")
   io.write("boggart ", bog.version, "  model=", bog.session.model,
     "  (/help for commands)\n")
   -- Persist REPL history across sessions. isocline handles the file; linenoise

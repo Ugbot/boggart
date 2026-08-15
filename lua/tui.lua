@@ -50,6 +50,7 @@ local C = {
   cursor = "e1e1e6",
   divider = "202024",
   tool   = "7c86b8", -- the activity strip's muted blue
+  plum   = "9b7ad4", -- the logo wardrobe (a touch brighter so it reads on dark)
 }
 
 -- The tool/activity strip: a fixed, bounded, rolling region at the foot of the
@@ -99,10 +100,43 @@ local function fill_row(y, w, bg)
 end
 
 -- ---- transcript ------------------------------------------------------------
+-- The logo mascot renders verbatim (box-drawing must not reflow): one run-line
+-- per source line, walking each line so the robot glyphs come out amber and the
+-- wardrobe plum. Everything else goes through termrender.
+local ART_TOKENS = { "(•‿•)", "╰┘", "╷" }
+local function art_runs(line)
+  local runs, i = {}, 1
+  while i <= #line do
+    local hit
+    for _, tok in ipairs(ART_TOKENS) do
+      if line:sub(i, i + #tok - 1) == tok then
+        runs[#runs + 1] = { text = tok, fg = C.amber }; i = i + #tok; hit = true; break
+      end
+    end
+    if not hit then
+      local b = line:byte(i)
+      local clen = b < 0x80 and 1 or b < 0xE0 and 2 or b < 0xF0 and 3 or 4
+      local ch = line:sub(i, i + clen - 1)
+      local last = runs[#runs]
+      if last and last.fg == C.plum then last.text = last.text .. ch
+      else runs[#runs + 1] = { text = ch, fg = C.plum } end
+      i = i + clen
+    end
+  end
+  return runs
+end
+
 -- Each entry renders to run-lines via termrender.runs, cached on the entry by
 -- width and text length so a long backlog is not re-flowed on every keystroke
 -- and a streamed answer only re-renders the one entry that is still growing.
 local function entry_lines(e, width)
+  if e.role == "art" then
+    if e._art then return e._art end
+    local out = {}
+    for line in (e.text .. "\n"):gmatch("(.-)\n") do out[#out + 1] = art_runs(line) end
+    e._art = out
+    return out
+  end
   if e._rl and e._rw == width and e._rn == #(e.text or "") then return e._rl end
   local ok, lines = pcall(bog.termrender.runs, e, { width = width })
   if not ok or type(lines) ~= "table" then
@@ -384,6 +418,7 @@ function M.run()
 
   local st = { coord = coord, entries = {}, activity = {}, box = Input.new{},
                scroll = 0, total = 0, running = false, wake = uv.new_timer() }
+  st.entries[1] = { role = "art", text = require("logo").art } -- the mascot, on launch
 
   -- Route the agent's line logging into the fixed activity strip, not the
   -- conversation. bog.log_tool and bog.log write raw bytes to stdout/stderr; in
