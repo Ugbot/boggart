@@ -15,6 +15,7 @@
 -- Because it is Lua, `instructions` may also be a function(ctx) computing text
 -- per agent, which a static markdown file cannot express.
 local M = {}
+local util = require("util") -- for to_lua's pure-data serialization of provides
 
 -- A skill name becomes a module name (`skills.<name>`), so it must be a Lua
 -- identifier. Markdown skills conventionally use hyphens; normalise them.
@@ -54,6 +55,29 @@ function M.validate(s)
       end
     end
   end
+  -- provides: the described table of callable tools the skill carries. Each entry
+  -- has a name and exactly one of `body` (a Lua source string, sandboxed) or
+  -- `run` (a function, trusted -- only meaningful in a builtin skill file).
+  if s.provides ~= nil then
+    if type(s.provides) ~= "table" then return "'provides' must be a list of tool defs" end
+    for i, p in ipairs(s.provides) do
+      if type(p) ~= "table" then return "provides[" .. i .. "] must be a table" end
+      if type(p.name) ~= "string" or not p.name:match("^[%a_][%w_]*$") then
+        return "provides[" .. i .. "].name must match [A-Za-z_][A-Za-z0-9_]*"
+      end
+      local hasbody = type(p.body) == "string" and p.body ~= ""
+      local hasrun = type(p.run) == "function"
+      if hasbody == hasrun then -- both or neither
+        return "provides[" .. i .. "] needs exactly one of 'body' (string) or 'run' (function)"
+      end
+      if p.description ~= nil and type(p.description) ~= "string" then
+        return "provides[" .. i .. "].description must be a string"
+      end
+      if p.input_schema ~= nil and type(p.input_schema) ~= "table" then
+        return "provides[" .. i .. "].input_schema must be a JSON object"
+      end
+    end
+  end
   return nil
 end
 
@@ -82,6 +106,15 @@ function M.list()
   return out
 end
 
+-- A skill is "builtin" (trusted) only when it loads from the baked source with no
+-- overlay file shadowing it -- the trust boundary for a provided `run` function.
+function M.is_builtin(name)
+  for _, r in ipairs(M.list()) do
+    if r.name == name then return r.source == "builtin" end
+  end
+  return false
+end
+
 -- resolve(names) -> instructions_text, allow_set, unknown_names
 --
 -- The third return is the point: a misspelled skill name used to vanish -- the
@@ -101,6 +134,15 @@ function M.resolve(names)
         instr[#instr + 1] = "## Skill: " .. n .. "\n" .. it
       end
       for _, t in ipairs(s.tools or {}) do allow[t] = true end
+      -- Grant this skill's own provided tools (namespaced skill__<skill>__<tool>).
+      -- resolve stays pure: it only grants NAMES; compilation into the registry is
+      -- the separate materialize step (lua/tools.lua), so a bad body can never
+      -- break an agent spawn -- the tool is simply absent, permission held.
+      for _, p in ipairs(s.provides or {}) do
+        if type(p) == "table" and type(p.name) == "string" then
+          allow["skill__" .. n .. "__" .. p.name] = true
+        end
+      end
     else
       unknown[#unknown + 1] = n
     end
@@ -185,6 +227,28 @@ function M.to_lua(name, skill, origin)
   else
     parts[#parts + 1] = "  tools = {},"
   end
+  -- provides: emitted as PURE DATA -- `body` as a quoted string, schema via
+  -- util.serialize. A `run` function is not serializable, so a saved/round-tripped
+  -- skill can only ever carry sandboxed bodies (raw closures live solely in the
+  -- baked, in-repo skill files). This is the structural half of the trust boundary.
+  local provides = skill.provides or {}
+  local pd = {}
+  for _, p in ipairs(provides) do
+    if type(p.body) == "string" then
+      pd[#pd + 1] = "    {"
+      pd[#pd + 1] = "      name = " .. string.format("%q", p.name) .. ","
+      pd[#pd + 1] = "      description = " .. string.format("%q", p.description or p.name) .. ","
+      pd[#pd + 1] = "      input_schema = " ..
+        util.serialize(p.input_schema or { type = "object", properties = {} }) .. ","
+      pd[#pd + 1] = "      body = " .. string.format("%q", p.body) .. ","
+      pd[#pd + 1] = "    },"
+    end
+  end
+  if #pd > 0 then
+    parts[#parts + 1] = "  provides = {"
+    for _, l in ipairs(pd) do parts[#parts + 1] = l end
+    parts[#parts + 1] = "  },"
+  end
   parts[#parts + 1] = "}"
   parts[#parts + 1] = ""
   return table.concat(parts, "\n")
@@ -207,6 +271,12 @@ function M.save(name, skill, origin)
   f:write(src)
   f:close()
   package.loaded["skills." .. name] = nil
+  -- Make provided tools live immediately: re-materialize this one skill (compiles
+  -- new/changed bodies into the registry and prunes any it dropped). Guarded --
+  -- during early boot `tools` may not be wired yet; the load-time materialize
+  -- covers that case.
+  local ok, T = pcall(require, "tools")
+  if ok and T and T.materialize_skill then pcall(T.materialize_skill, name) end
   return path
 end
 
@@ -253,25 +323,45 @@ M.tools = {
 
   define_skill = {
     description = "Author a skill and persist it as Lua: a name, a description, the "
-      .. "instructions an agent following it should have, and the tools it may use. "
-      .. "define_tool's counterpart for behaviour rather than mechanism -- promote a "
-      .. "way of working that recurs, then name it when spawning sub-agents.",
+      .. "instructions an agent following it should have, the tools it may use, and "
+      .. "optionally `provides` -- its OWN callable tools, so a skill is a code "
+      .. "package, not just prose. Each provides entry is { name, description, "
+      .. "input_schema, body }, where body is Lua that receives `args` and returns a "
+      .. "string; it compiles through the same sandbox as define_tool and is offered "
+      .. "to any agent granted the skill as skill__<skill>__<tool>. define_tool's "
+      .. "counterpart for behaviour: promote a way of working AND the code it needs.",
     input_schema = { type = "object",
       properties = {
         name = { type = "string" },
         description = { type = "string" },
         instructions = { type = "string" },
         tools = { type = "array", items = { type = "string" } },
+        provides = { type = "array", items = { type = "object", properties = {
+          name = { type = "string" },
+          description = { type = "string" },
+          input_schema = { type = "object" },
+          body = { type = "string", description = "Lua body; receives `args`, returns a string" },
+        }, required = { "name", "body" } } },
       }, required = { "name", "instructions" } },
     run = function(a)
       local name = M.normalize_name(a.name)
       if not name then return "Tool error: [validation_error] invalid skill name" end
-      local skill = { description = a.description or name,
-                      instructions = a.instructions, tools = a.tools or {} }
+      -- Compile-check each provided body up front, so a broken body is fixable
+      -- input to define_skill (like tool_define), never a persisted dud.
+      local T = require("tools")
+      for _, p in ipairs(a.provides or {}) do
+        local ok, err = pcall(T.build_def, p.name, p.description or p.name, p.input_schema, p.body)
+        if not ok then
+          return "Tool error: [validation_error] provides '" .. tostring(p.name) .. "': "
+            .. (tostring(err):gsub("^.-tool body compile error: ", ""))
+        end
+      end
+      local skill = { description = a.description or name, instructions = a.instructions,
+                      tools = a.tools or {}, provides = a.provides or {} }
       local path, err = M.save(name, skill)
       if not path then return "Tool error: [validation_error] " .. tostring(err) end
-      return string.format("Defined skill '%s' (%d tools). Written as Lua to %s",
-        name, #(a.tools or {}), path)
+      return string.format("Defined skill '%s' (%d tools, %d provided). Written as Lua to %s",
+        name, #(a.tools or {}), #(a.provides or {}), path)
     end,
   },
 

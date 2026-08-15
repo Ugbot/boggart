@@ -417,6 +417,27 @@ function M.doctor()
     end
   end
 
+  -- skills -------------------------------------------------------------------
+  head("skills")
+  local trust = (bog.skill_trust == "full") and "full" or "sandboxed"
+  kv("code trust", trust .. (trust == "full"
+    and "  (model-authored skill code runs with FULL io/os/network)"
+    or "  (model-authored skill code is sandboxed + budgeted)"))
+  local nskills, nprov = 0, 0
+  local oks, sk = pcall(require, "skills")
+  if oks and sk and sk.list then
+    for _, r in ipairs(sk.list()) do
+      nskills = nskills + 1
+      local s = sk.load(r.name)
+      if s and type(s.provides) == "table" then nprov = nprov + #s.provides end
+    end
+  end
+  kv("available", plural(nskills, "skill") .. ", " .. plural(nprov, "provided tool"))
+  if trust == "full" then
+    warn("skill code trust is FULL: any Lua the model writes into a skill runs with full "
+      .. "authority. `/trust sandboxed` (or unset BOGGART_SKILL_TRUST) to sandbox it.")
+  end
+
   -- verdict ------------------------------------------------------------------
   local function numbered(i, s)
     -- Continuation lines line up under the text, not under the number.

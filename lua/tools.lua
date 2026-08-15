@@ -236,6 +236,31 @@ local function build_def(name, description, input_schema, body)
     run = runner,
   }
 end
+M.build_def = build_def -- exposed so skills can compile-check a provided body
+
+-- Compile a model-authored body and register it under `name`. The single route
+-- from a stored body string to a callable tool, shared with define_tool and
+-- load_scope so the sandbox lives in exactly one place. `trusted` (the skill
+-- full-power switch) compiles against the full _G with NO instruction/memory
+-- budget -- registered without a `.body`, so run_bounded is bypassed and the
+-- code runs exactly like an in-repo `run` function. Default is the sandbox.
+function M.register_body(name, description, input_schema, body, scope, trusted)
+  local def
+  if trusted then
+    local chunk, err = load("return function(args)\n" .. body .. "\nend",
+                            "@skill:" .. name, "t", _G)
+    if not chunk then error("tool body compile error: " .. tostring(err)) end
+    def = { description = description,
+            input_schema = input_schema or { type = "object", properties = {} },
+            run = chunk() } -- no .body: full authority, no budget
+  else
+    def = build_def(name, description, input_schema, body) -- sandboxed + budgeted
+  end
+  def.scope = scope or "session"
+  def.project = ""
+  M.registry[name] = def
+  return def
+end
 
 -- ---------------------------------------------------------------------------
 -- Scopes (paper §9)
@@ -415,6 +440,82 @@ local function load_user_tools()
   load_scope("project")
 end
 
+-- ---- skills that carry code (their `provides`) -----------------------------
+-- A skill may `provides` a described table of callable tools. We compile them
+-- into the registry here -- independent of any agent resolving the skill -- so
+-- they survive /reload exactly like tool files. Names are namespaced
+-- `skill__<skill>__<tool>` (parallel to mcp__server__tool) and excluded from the
+-- unrestricted default schemas(): a provided tool is meaningless without its
+-- skill, so it only appears for an agent the skill was granted to.
+--
+-- Trust (the hybrid, switchable): a BUILTIN (in-repo, reviewed) skill may carry a
+-- real `run` function -- full authority. A model/overlay skill carries a `body`
+-- STRING, sandboxed via build_def, UNLESS the full-power switch is on.
+local SKILL_PREFIX = "skill__"
+local function full_skill_trust()
+  if bog.skill_trust == "full" then return true end
+  if bog.skill_trust == "sandboxed" then return false end
+  return os.getenv("BOGGART_SKILL_TRUST") == "full" -- unset: env decides, default off
+end
+
+local function register_provided(qual, p, builtin)
+  if type(p.run) == "function" then
+    -- A raw closure is full-authority; only honour it from a builtin skill (an
+    -- overlay file could have been model/human-written). It can only ever have
+    -- reached us as live data on a required table, never through save/to_lua.
+    if not builtin then return nil, "run function only allowed in a builtin skill" end
+    M.registry[qual] = { description = p.description or p.name,
+      input_schema = p.input_schema or { type = "object", properties = {} },
+      run = p.run, skill_origin = true }
+    return true
+  end
+  if type(p.body) == "string" then
+    local ok, def = pcall(M.register_body, qual, p.description or p.name,
+                          p.input_schema, p.body, "session", full_skill_trust())
+    if not ok then return nil, tostring(def) end
+    def.skill_origin = true
+    return true
+  end
+  return nil, "entry has neither run nor body"
+end
+
+-- Materialize one skill's provides: (re)register changed entries, prune orphans.
+function M.materialize_skill(name, builtin)
+  local skills = require("skills") -- already loaded by the registry-assembly tail
+  local s = skills.load(name)
+  if builtin == nil then builtin = skills.is_builtin(name) end
+  local prefix = SKILL_PREFIX .. name .. "__"
+  local want = {}
+  if s and type(s.provides) == "table" then
+    for _, p in ipairs(s.provides) do
+      if type(p) == "table" and type(p.name) == "string" then
+        local qual = prefix .. p.name
+        want[qual] = true
+        local ex = M.registry[qual]
+        -- dedup: rebuild only when the entry actually changed (body edited, or
+        -- run<->body flipped). run closures differ every reload, so they always
+        -- re-register -- cheap and idempotent.
+        if not (ex and ex.skill_origin and ex.body == p.body and ex.run == p.run) then
+          local ok, reason = register_provided(qual, p, builtin)
+          if not ok then bog.log("skill " .. name .. " provides '"
+            .. tostring(p.name) .. "': " .. tostring(reason)) end
+        end
+      end
+    end
+  end
+  for rn, d in pairs(M.registry) do -- authoritative prune of dropped tools
+    if d and d.skill_origin and rn:sub(1, #prefix) == prefix and not want[rn] then
+      M.registry[rn] = nil
+    end
+  end
+end
+
+function M.materialize_skills()
+  for _, r in ipairs(require("skills").list()) do
+    M.materialize_skill(r.name, r.source == "builtin")
+  end
+end
+
 local function tool_define(a)
   local name = a.name
   if type(name) ~= "string" or not name:match("^[%a_][%w_]*$") then
@@ -485,16 +586,21 @@ function M.names()
   return ns
 end
 
--- The tool list sent to the API each turn.
+-- The tool list sent to the API each turn. Skill-provided tools (skill__*) are
+-- excluded from this unrestricted default -- they are meaningless without their
+-- skill's instructions, so they surface only via schemas_for() when an agent is
+-- actually granted the skill.
 function M.schemas()
   local out = {}
   for _, name in ipairs(M.names()) do
-    local d = M.registry[name]
-    out[#out + 1] = {
-      name = name,
-      description = d.description or "",
-      input_schema = d.input_schema or { type = "object", properties = {} },
-    }
+    if name:sub(1, #SKILL_PREFIX) ~= SKILL_PREFIX then
+      local d = M.registry[name]
+      out[#out + 1] = {
+        name = name,
+        description = d.description or "",
+        input_schema = d.input_schema or { type = "object", properties = {} },
+      }
+    end
   end
   return out
 end
@@ -1073,5 +1179,9 @@ for name, def in pairs(require("skillrouter").tools) do M.register(name, def) en
 
 -- model/user-defined tool files
 load_user_tools()
+
+-- skill-provided tools (a skill's `provides`): compiled into the registry after
+-- the tool files so they survive /reload the same way. See M.materialize_skills.
+M.materialize_skills()
 
 return M

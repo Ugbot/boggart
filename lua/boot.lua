@@ -40,6 +40,12 @@ bog.session = {
   compact_at = 400000,
 }
 
+-- How model-authored skill code (a skill's `provides` body) runs: "sandboxed"
+-- (default -- the define_tool capability sandbox + instruction/memory budget) or
+-- "full" (real Lua, full io/os/network, no budget). Built-in in-repo skills carry
+-- trusted `run` functions regardless. Env sets the default; `/trust` flips it.
+bog.skill_trust = (os.getenv("BOGGART_SKILL_TRUST") == "full") and "full" or "sandboxed"
+
 -- ---- logging (kept tiny; ds4/lite both keep this modest) ------------------
 local COL = { dim = "\27[2m", tool = "\27[36m", err = "\27[31m", reset = "\27[0m" }
 local function isatty() return true end -- best-effort; ANSI is harmless if piped
@@ -270,6 +276,21 @@ local function handle_command(line)
   elseif cmd == "reload" then
     local ok, err = bog.reload()
     io.write(ok and "reloaded.\n" or ("reload failed:\n" .. err .. "\n"))
+  elseif cmd == "trust" then
+    -- /trust [sandboxed|full] -- how model-authored skill code runs.
+    if rest == "full" or rest == "sandboxed" then
+      bog.skill_trust = rest
+      pcall(function() require("tools").materialize_skills() end) -- recompile at the new trust
+      if rest == "full" then
+        io.write(COL.err, "skill trust = FULL", COL.reset,
+          ": model-authored skill code now runs with full io/os/network, no budget.\n")
+      else
+        io.write("skill trust = sandboxed (model skill code is capability-limited + budgeted).\n")
+      end
+    else
+      io.write("skill trust = ", bog.skill_trust,
+        "   (/trust full  |  /trust sandboxed)\n")
+    end
   elseif cmd == "reset" then
     boggart.reset_target = rest ~= "" and rest or ""
     do_reset()

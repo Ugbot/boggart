@@ -93,6 +93,54 @@ ok(tools.run("define_skill", { name = "1bad", instructions = "x" }):find("invali
 ok(tools.run("skills"):find("code_review"), "skills tool lists them")
 ok(tools.run("skills", { name = "nope" }):find("no skill named"), "skills tool reports unknown")
 
+-- ---- skills that carry CODE (`provides`) -----------------------------------
+-- shape validation
+ok(skills.validate({ provides = { { name = "x", body = "return '1'" } } }) == nil,
+   "provides with a body validates")
+ok(skills.validate({ provides = { { name = "x" } } }):find("exactly one"),
+   "provides entry needs exactly one of body/run")
+ok(skills.validate({ provides = { { name = "1bad", body = "x" } } }):find("name must match"),
+   "provides name must be an identifier")
+
+-- a BUILTIN skill carrying a real trusted `run` function (the selfmod demonstrator),
+-- materialized at tools load
+ok(tools.registry.skill__selfmod__word_count ~= nil,
+   "builtin skill's provided run() is materialized")
+ok(tools.run("skill__selfmod__word_count", { text = "a b c" }) == "3",
+   "builtin provided function runs")
+
+-- a MODEL-authored skill carrying a sandboxed body, end to end
+local dmsg = tools.run("define_skill", {
+  name = "counter", description = "counts words", instructions = "use words",
+  provides = { {
+    name = "words",
+    description = "count whitespace-separated words in args.text",
+    input_schema = { type = "object", properties = { text = { type = "string" } } },
+    body = "local n=0 for _ in tostring(args.text or ''):gmatch('%S+') do n=n+1 end return tostring(n)",
+  } },
+})
+ok(dmsg:find("1 provided"), "define_skill accepts provides")
+ok(skills.load("counter").provides[1].name == "words", "provides round-trips in the skill file")
+
+local _, callow = skills.resolve({ "counter" })
+ok(callow.skill__counter__words, "resolve grants the namespaced provided tool")
+ok(tools.registry.skill__counter__words ~= nil, "save re-materialized the provided tool")
+
+local snames = {}
+for _, sc in ipairs(tools.schemas_for(callow)) do snames[sc.name] = true end
+ok(snames.skill__counter__words, "provided tool appears in schemas_for(allow)")
+
+local dnames = {}
+for _, sc in ipairs(tools.schemas()) do dnames[sc.name] = true end
+ok(not dnames.skill__counter__words, "provided tool is NOT in the unrestricted default schemas()")
+
+ok(tools.run("skill__counter__words", { text = "a b c d" }) == "4",
+   "provided body runs (sandboxed)")
+
+ok(tools.run("define_skill", { name = "broken", instructions = "x",
+     provides = { { name = "oops", body = "this is not lua(" } } }):find("validation_error"),
+   "define_skill rejects an uncompilable provided body")
+
 sys.rmtree(bog.userdir)
 bog.userdir = saved_userdir
 

@@ -94,6 +94,8 @@ M.commands = {
   { name = "sessions", help = "list recent saved sessions" },
   { name = "resume",   help = "resume a saved session", args = session_items },
   { name = "reload",   help = "hot-reload the harness Lua" },
+  { name = "trust",    help = "how model-authored skill code runs (sandboxed | full)",
+                       args = { "sandboxed", "full" } },
   { name = "reset",    help = "delete an overlay file (or all with no arg), then reload",
                        args = overlay_names },
   { name = "model",    help = "show the running model, or switch it", args = model_names },
