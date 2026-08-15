@@ -226,6 +226,11 @@ local function status_runs(st)
   runs[#runs + 1] = { text = string.format("\u{00B7} ctx %d%% ", math.floor(frac * 100 + 0.5)), fg = C.dim, bg = bg }
   runs[#runs + 1] = { text = string.format("\u{00B7} %d agent%s ", agents, agents == 1 and "" or "s"), fg = C.dim, bg = bg }
   if st.running then runs[#runs + 1] = { text = "\u{00B7} working\u{2026} (Ctrl-C) ", fg = C.amber, bg = bg } end
+  -- You can keep typing while a turn runs; Enter is held until it finishes. Say so
+  -- when there is composed text waiting, so a blocked Enter never feels broken.
+  if st.running and st.box and (st.box.line or "") ~= "" then
+    runs[#runs + 1] = { text = "\u{00B7} \u{21B5} held ", fg = C.tool, bg = bg }
+  end
   return runs
 end
 
@@ -364,9 +369,15 @@ local function run_turn(st, text)
   while bog.sched.count() > 0 do
     local ev = tc.poll(0)
     while ev.type == "key" do
-      if ev.key == "ctrl" and ev.char == "c" then st.abort = true end
-      if ev.key == "pageup" then st.scroll = st.scroll + page(st); st.dirty = true end
-      if ev.key == "pagedown" then st.scroll = math.max(0, st.scroll - page(st)); st.dirty = true end
+      -- The input field stays LIVE while the turn runs: you can keep composing
+      -- your next message and nothing you type is lost. Only submission is held
+      -- -- Enter is withheld from the box (so it neither sends nor clears), and
+      -- the text is waiting for you the moment the turn finishes. Ctrl-C aborts,
+      -- PageUp/Down scroll the transcript; every other key edits the field.
+      if ev.key == "ctrl" and ev.char == "c" then st.abort = true
+      elseif ev.key == "pageup" then st.scroll = st.scroll + page(st); st.dirty = true
+      elseif ev.key == "pagedown" then st.scroll = math.max(0, st.scroll - page(st)); st.dirty = true
+      elseif ev.key ~= "enter" then st.box:key(ev); st.dirty = true end
       ev = tc.poll(0)
     end
     if st.abort then break end
