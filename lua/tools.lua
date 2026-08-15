@@ -680,6 +680,14 @@ function M.run(name, input)
   -- A tool returning 50,000 lines has defeated the purpose (paper §14): spill
   -- to a file and hand back a head plus the path, exactly as bash and read do.
   if type(res) ~= "string" then res = tostring(res) end
+  -- Scrub tool output to valid UTF-8 centrally, so EVERY tool is covered, not
+  -- just the ones that obviously touch raw bytes (bash/read/cat). A tool result
+  -- that is not valid UTF-8 -- a binary `cat`, a subprocess emitting Latin-1, a
+  -- truncated multibyte read -- would otherwise pass raw through json.encode
+  -- (which escapes only control/quote/backslash) into the request body and make
+  -- the Messages API reject the whole turn with HTTP 400. Do it before the size
+  -- cap below, since replacing a bad byte with U+FFFD changes the length.
+  res = util.to_valid_utf8(res)
   if #res > M.LIMITS.result_bytes then
     local shaped = util.shape_result(res, { max_bytes = 6000, head_lines = 100 })
     res = M.err(M.ERR.too_large,

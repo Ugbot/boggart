@@ -11,6 +11,7 @@
 -- identical loop.
 local json = require("json")
 local events = require("events")
+local util = require("util")
 local M = {}
 
 local cached_headers = nil
@@ -390,7 +391,13 @@ end
 -- Same policy as the sync path. The backoff yields rather than sleeping, so a
 -- rate-limited agent does not stop the others from working.
 local function stream_async(body_tbl, on_text)
-  local body = json.encode(body_tbl)
+  -- Belt-and-suspenders: the primary fix scrubs content at ingest, but a
+  -- session resumed from the store that was written *before* that fix could
+  -- still carry invalid bytes. Scrubbing the fully-encoded body once here
+  -- guarantees the outbound request is always valid UTF-8 no matter its
+  -- provenance. It is a no-op (a single O(n) scan, no allocation) whenever the
+  -- body is already valid, which after the ingest scrub is the normal case.
+  local body = util.to_valid_utf8(json.encode(body_tbl))
   for attempt = 1, M.RETRY.attempts do
     local msg, stop, serr, status, terr, raw = stream_async_once(body, on_text)
     if status == 200 and not serr then return msg, stop end
@@ -657,8 +664,13 @@ function M.run_on(sess, user_text, on_text, opts)
   local run_tool = opts.run_tool or bog.tools.run
   local on_tool = opts.on_tool or bog.log_tool
 
+  -- Scrub to valid UTF-8 at INGEST -- the moment content joins the transcript --
+  -- so ill-formed bytes never enter sess.messages or the store, and therefore
+  -- cannot re-break the turn, a later turn, a --resume, or compaction. The JSON
+  -- encoder passes bytes >= 0x80 through raw, so a single invalid byte here (a
+  -- pasted binary, a file dropped in as text) would otherwise HTTP-400 the turn.
   if user_text ~= nil then
-    sess.messages[#sess.messages + 1] = { role = "user", content = user_text }
+    sess.messages[#sess.messages + 1] = { role = "user", content = util.to_valid_utf8(user_text) }
   end
 
   events.emit("turn:start", {
@@ -769,6 +781,12 @@ function M.run_on(sess, user_text, on_text, opts)
         local content
         if ok then content = res else content = "Tool error: " .. tostring(res) end
         if type(content) ~= "string" then content = tostring(content) end
+        -- Scrub at ingest regardless of which run_tool produced this: the
+        -- default bog.tools.run already scrubs, but an overridden run_tool
+        -- (swarm gates, tests) or the raise path above might not, and this is
+        -- the single point every tool_result must pass through before it
+        -- becomes transcript. Cheap no-op on already-valid content.
+        content = util.to_valid_utf8(content)
         -- A refused call never reaches tools.M.run -- the gate returns instead
         -- of calling it -- so tool:refused cannot come from there. Every gate
         -- in the tree (the studio's approval prompt, thread.lua's per-agent

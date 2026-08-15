@@ -49,6 +49,84 @@ function M.serialize(v)
   return ser(v, "")
 end
 
+-- UTF-8 sanitizer -------------------------------------------------------------
+--
+-- Scrub a byte string to well-formed UTF-8, replacing every ill-formed sequence
+-- with U+FFFD (EF BF BD). Valid ASCII and valid 2/3/4-byte sequences -- emoji,
+-- CJK, accents -- pass through byte-for-byte. O(n), single pass, and it returns
+-- the input string *unchanged* (no allocation) when it is already valid, so the
+-- overwhelmingly common case is just a scan.
+--
+-- Why this exists: the JSON encoder (lua/json.lua) escapes only control bytes,
+-- backslash and quote and passes every byte >= 0x80 through raw. A tool result
+-- that is not valid UTF-8 -- `cat` on a binary file, a subprocess writing Latin-1
+-- or a truncated multibyte read -- therefore lands verbatim in the request body,
+-- and the Messages API rejects the ENTIRE turn with HTTP 400 "invalid unicode
+-- code point". One bad byte from one tool must never kill a turn, so invalid
+-- bytes are scrubbed the moment content is assembled into the transcript.
+--
+-- The validity rules are the ones the Unicode standard (Table 3-7) makes
+-- well-formed: reject C0/C1 (0xC0-0xC1, overlong 2-byte), the E0/ED/F0/F4 lead
+-- bytes get tightened continuation ranges so overlong 3/4-byte forms, the
+-- surrogate range U+D800-U+DFFF, and code points > U+10FFFF are all rejected,
+-- and any lead byte >= 0xF5 or stray continuation (0x80-0xBF) is invalid.
+local REPL = "\239\191\189" -- U+FFFD, three bytes
+function M.to_valid_utf8(s)
+  if type(s) ~= "string" then return s end
+  local n = #s
+  local byte, sub = string.byte, string.sub
+  local i, seg_start, out = 1, 1, nil
+
+  while i <= n do
+    local c = byte(s, i)
+    if c < 0x80 then
+      i = i + 1 -- ASCII, always fine
+    else
+      -- Expected total length, plus the *tightened* range for the second byte
+      -- that rejects overlong forms and surrogates. Bytes 3/4 are 0x80..0xBF.
+      local len, lo, hi
+      if c >= 0xC2 and c <= 0xDF then len, lo, hi = 2, 0x80, 0xBF
+      elseif c == 0xE0        then len, lo, hi = 3, 0xA0, 0xBF -- no overlong
+      elseif c >= 0xE1 and c <= 0xEC then len, lo, hi = 3, 0x80, 0xBF
+      elseif c == 0xED        then len, lo, hi = 3, 0x80, 0x9F -- no surrogates
+      elseif c >= 0xEE and c <= 0xEF then len, lo, hi = 3, 0x80, 0xBF
+      elseif c == 0xF0        then len, lo, hi = 4, 0x90, 0xBF -- no overlong
+      elseif c >= 0xF1 and c <= 0xF3 then len, lo, hi = 4, 0x80, 0xBF
+      elseif c == 0xF4        then len, lo, hi = 4, 0x80, 0x8F -- <= U+10FFFF
+      -- else: 0x80-0xBF stray continuation, 0xC0/0xC1 overlong, >= 0xF5
+      end
+
+      local valid = false
+      if len and i + len - 1 <= n then
+        local b2 = byte(s, i + 1)
+        if b2 >= lo and b2 <= hi then
+          valid = true
+          for k = 2, len - 1 do
+            local bk = byte(s, i + k)
+            if bk < 0x80 or bk > 0xBF then valid = false; break end
+          end
+        end
+      end
+
+      if valid then
+        i = i + len
+      else
+        -- One ill-formed byte -> one U+FFFD; resume at the very next byte, so a
+        -- bad lead byte does not consume the (possibly valid) bytes after it.
+        out = out or {}
+        if i > seg_start then out[#out + 1] = sub(s, seg_start, i - 1) end
+        out[#out + 1] = REPL
+        i = i + 1
+        seg_start = i
+      end
+    end
+  end
+
+  if not out then return s end -- fast path: nothing was ill-formed
+  if n >= seg_start then out[#out + 1] = sub(s, seg_start, n) end
+  return table.concat(out)
+end
+
 -- File helpers ----------------------------------------------------------------
 function M.read_file(path)
   local f, err = io.open(path, "rb")

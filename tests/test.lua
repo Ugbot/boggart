@@ -39,6 +39,67 @@ do
   eq(json.encode({ 1, 2 }), "[1,2]", "array encode")
 end
 
+-- ---- UTF-8 sanitizer + turn-assembly robustness ----
+-- Regression: a tool_result that is not valid UTF-8 (e.g. `cat` on a binary)
+-- passed raw through json.encode into the request body and made the Messages
+-- API reject the whole turn with HTTP 400 "invalid unicode code point". Content
+-- is now scrubbed to valid UTF-8 (U+FFFD for ill-formed bytes) at ingest.
+do
+  local REPL = "\239\191\189" -- U+FFFD
+  local emoji = "\240\159\152\128"        -- U+1F600, valid 4-byte
+  local cjko  = "\228\184\173\230\150\135" -- "中文", valid 3-byte x2
+
+  -- valid multibyte survives byte-for-byte
+  eq(util.to_valid_utf8(emoji), emoji, "emoji preserved unchanged")
+  eq(util.to_valid_utf8(cjko), cjko, "CJK preserved unchanged")
+  eq(util.to_valid_utf8("plain ascii"), "plain ascii", "ascii preserved unchanged")
+
+  -- lone bad bytes -> replacement chars; utf8.len confirms well-formedness
+  local bad1 = util.to_valid_utf8("\255\254")
+  eq(bad1, REPL .. REPL, "0xff 0xfe -> two U+FFFD")
+  ok(utf8.len(bad1) ~= nil, "scrubbed 0xff/0xfe is valid utf8")
+
+  -- lone surrogate encoded as bytes (ED A0 80 = U+D800) is rejected
+  local sur = util.to_valid_utf8("a\237\160\128b")
+  ok(utf8.len(sur) ~= nil and sur:sub(1,1) == "a" and sur:sub(-1) == "b",
+     "lone surrogate bytes scrubbed, surrounding ascii kept")
+  ok(not sur:find("\237"), "no raw surrogate lead byte remains")
+
+  -- truncated 3-byte sequence at end-of-string
+  local trunc = util.to_valid_utf8("ok\228\184")
+  eq(trunc, "ok" .. REPL .. REPL, "truncated 3-byte -> replacement")
+
+  -- mixed: valid emoji + CJK survive, invalid bytes between them are scrubbed
+  local mixed = util.to_valid_utf8(emoji .. "\255" .. cjko)
+  eq(mixed, emoji .. REPL .. cjko, "valid multibyte survives around a bad byte")
+  ok(utf8.len(mixed) ~= nil, "mixed result is valid utf8")
+
+  -- idempotent
+  eq(util.to_valid_utf8(mixed), mixed, "sanitizer is idempotent")
+
+  -- the actual failure mode: a scrubbed tool_result JSON-encodes to a body that
+  -- is valid UTF-8 (the API's requirement), whereas the raw bytes would not.
+  local raw_result = "canon_search char_sheet: \255\254 name" .. emoji
+  ok(utf8.len(raw_result) == nil, "raw bad tool output is NOT valid utf8")
+  local scrubbed = util.to_valid_utf8(raw_result)
+  local body = json.encode({ role = "user", content = {
+    { type = "tool_result", tool_use_id = "x", content = scrubbed } } })
+  ok(utf8.len(body) ~= nil, "encoded request body is valid utf8")
+  ok(json.decode(body).content[1].content:find(REPL), "bad bytes became U+FFFD in body")
+  ok(json.decode(body).content[1].content:find(emoji), "emoji survived into body")
+
+  -- end-to-end through the tool registry: a session tool that emits raw bytes
+  -- comes back scrubbed, so no tool can inject invalid UTF-8 into a turn.
+  bog.tools.run("define_tool", {
+    name = "emit_bad_bytes", description = "returns non-utf8 bytes", scope = "session",
+    lua = "return 'pre \\255\\254 post'",
+  })
+  local tout = bog.tools.run("emit_bad_bytes", {})
+  ok(utf8.len(tout) ~= nil, "tool output centrally scrubbed to valid utf8")
+  ok(not tout:find("\255"), "no raw 0xff in tool output")
+  ok(tout:find("pre ") and tout:find(" post"), "tool output text preserved")
+end
+
 -- ---- serialize round-trips through Lua load ----
 do
   local schema = { type = "object", properties = { x = { type = "string" } }, required = { "x" } }
