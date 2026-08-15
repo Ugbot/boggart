@@ -59,21 +59,20 @@ was a violation of this one rule (`sched.run` → blocking `step(true)` →
 
 ## Sequence (each step ships and is checkable)
 
-1. **curl_multi ↔ libuv, per-loop** (`src/lhttp.c`): `CURLMOPT_SOCKETFUNCTION` →
+1. ✅ **curl_multi ↔ libuv, per-loop** (`src/lhttp.c`): `CURLMOPT_SOCKETFUNCTION` →
    `uv_poll` per curl fd; `CURLMOPT_TIMERFUNCTION` → one `uv_timer`; events →
-   `curl_multi_socket_action`; completions as today. Keep `http.pump` as a thin
-   `uv.run` shim so nothing else changes yet.
-2. **`sched.frame{budget_ms, paint}`** + scheduler `"io"`-wait via the unified
-   loop; delete `curl_multi_wait`.
-3. **cTUI + studio adopt `sched.frame`**; delete both hand-cranks (incl. the
-   interim `tui.lua` poll loop).
+   `curl_multi_socket_action`; completions as today. `http.pump` is now a thin
+   bounded `uv.run` over the unified loop. *(commit a1ba9e4)*
+2. ✅ **`sched.frame(budget_ms)`** — steps the swarm non-blocking, waits **bounded**
+   (≤ budget) on the unified loop, resumes whoever moved. `M.step`'s `"io"`-wait
+   already rides the same loop; the second reactor (`curl_multi_wait`) is gone.
+3. ✅ **cTUI adopts `sched.frame`** — `run_turn` is a bounded poll loop (input via
+   `tc.poll(0)`, paint throttled on `uv.hrtime`, `sched.frame(16)` per frame). The
+   blocking `sched.run`+`should_stop` hand-crank is deleted. Verified live: a turn
+   streams and returns to the prompt; a mid-stream Ctrl-C interrupts in ~0.15s.
+   *Remaining frame-owners on the old pattern:* the SDL studio (C) and the `--tui`
+   swarm dashboard (`dash.lua`) — convert next. The plain REPL / swarm / one-shot
+   own no frame and correctly keep blocking `sched.run`.
 4. **stdin on uv** (termctl input → `uv_tty`); the frame wakes on a keypress.
 5. **Retire `stream_once`**; one-shot/headless drive the async actor to completion.
 6. **Blocking file IO → threadpool** (`util.read_file` → async `uv.fs`).
-
-## Interim (staged, uncommitted)
-
-`tui.lua`'s turn loop is already changed from blocking `sched.run` to a bounded
-poll loop — the stopgap that removes the unbounded freeze. It is exactly what
-step 3 deletes. Either commit it so the cTUI is usable during the refactor, or
-discard it and let step 3 land the real thing.

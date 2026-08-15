@@ -31,7 +31,14 @@ local uv = require("uv")
 -- message each chunk (quadratic over a long answer). Instead paint at most ~30fps
 -- and only when something changed, with a slower heartbeat so the agents pane's
 -- elapsed clock still ticks while a turn sits waiting on the network.
-local FRAME_MS, HEARTBEAT_MS = 33, 250
+-- Paint at most ~30fps (FRAME_MS) and only when something changed, with a slower
+-- heartbeat so the agents pane's clock still ticks while a turn waits on the
+-- network. WAIT_MS is the frame loop's bounded IO wait: it never blocks longer,
+-- so input is serviced ~60x/sec and can never be stalled. now_ms is uv.hrtime
+-- (the real monotonic clock) NOT uv.now (the loop's cached time, which stalls
+-- when the loop is not pumped -- the throttle must keep advancing regardless).
+local FRAME_MS, HEARTBEAT_MS, WAIT_MS = 33, 250, 16
+local function now_ms() return uv.hrtime() // 1000000 end
 
 -- The studio palette (style.lua), the same hexes termrender and the status bar
 -- use, so the chrome matches the content.
@@ -292,12 +299,13 @@ local function run_turn(st, text)
   for k, v in pairs(st.coord.opts or {}) do topts[k] = v end
   topts.on_tool = bog.log_tool
 
+  local turn_err
   local co = coroutine.create(function()
     -- Assistant text streams into st.cur; a tool call (captured in M.run) closes
     -- it, so the next chunk opens a new entry and the conversation reads as clean
     -- prose segments. Never write here -- everything is an entry the cell grid
     -- draws, or it would shred the frame.
-    bog.api.run_on(st.coord.session, text, function(chunk)
+    local tok, terr = pcall(bog.api.run_on, st.coord.session, text, function(chunk)
       if not st.cur then
         st.cur = { role = "assistant", text = "" }
         st.entries[#st.entries + 1] = st.cur
@@ -305,33 +313,40 @@ local function run_turn(st, text)
       st.cur.text = st.cur.text .. chunk
       st.dirty = true
     end, topts)
+    if not tok then turn_err = terr end
   end)
   bog.sched.add(st.coord.id, co)
 
-  local ok, err = pcall(bog.sched.run, {
-    should_stop = function()
-      -- Input every step (responsive); paint throttled (see FRAME_MS above).
-      local ev = tc.poll(0)
-      if ev.type == "key" then
-        if ev.key == "ctrl" and ev.char == "c" then st.abort = true end
-        if ev.key == "pageup" then st.scroll = st.scroll + page(st); st.dirty = true end
-        if ev.key == "pagedown" then st.scroll = math.max(0, st.scroll - page(st)); st.dirty = true end
-      end
-      if st.abort then return true end
-      local dt = uv.now() - st.last_paint
-      if dt >= FRAME_MS and (st.dirty or dt >= HEARTBEAT_MS) then
-        st.dirty, st.last_paint = false, uv.now()
-        draw(st)
-      end
-      return false
-    end,
-  })
+  -- The cTUI OWNS the frame loop, so it drives the swarm non-blocking and never
+  -- lets it block on IO (that was every freeze). Each frame: read input, paint if
+  -- due, then sched.frame -- which waits BOUNDED (<= WAIT_MS) on the unified loop
+  -- (curl + subprocesses + timers, now one reactor) and resumes whatever moved.
+  -- Input is serviced ~60x/sec and can never be stalled.
+  st.dirty, st.last_paint = true, 0
+  while bog.sched.count() > 0 do
+    local ev = tc.poll(0)
+    while ev.type == "key" do
+      if ev.key == "ctrl" and ev.char == "c" then st.abort = true end
+      if ev.key == "pageup" then st.scroll = st.scroll + page(st); st.dirty = true end
+      if ev.key == "pagedown" then st.scroll = math.max(0, st.scroll - page(st)); st.dirty = true end
+      ev = tc.poll(0)
+    end
+    if st.abort then break end
+
+    local dt = now_ms() - st.last_paint
+    if dt >= FRAME_MS and (st.dirty or dt >= HEARTBEAT_MS) then
+      st.dirty, st.last_paint = false, now_ms()
+      draw(st)
+    end
+
+    if not bog.sched.frame(WAIT_MS) then break end
+  end
 
   if st.abort then
     for _, a in ipairs(bog.sched.actors) do pcall(bog.sched.kill, a.id) end
     st.entries[#st.entries + 1] = { role = "system", text = "(interrupted)" }
-  elseif not ok then
-    st.entries[#st.entries + 1] = { role = "error", text = tostring(err) }
+  elseif turn_err then
+    st.entries[#st.entries + 1] = { role = "error", text = tostring(turn_err) }
   end
   pcall(bog.store.thread_save, st.coord.id,
     { messages = st.coord.session.messages, status = "idle" })

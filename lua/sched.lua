@@ -190,6 +190,9 @@ function M.step(block)
 end
 
 -- Run until every actor has finished (one-shot / per-turn drain), or should_stop.
+-- This is the BLOCKING drive -- step(true) may sleep in the loop until IO. Right
+-- for a CLI that owns no frame (one-shot, --headless, the between-turns REPL);
+-- WRONG for anything that must paint, which is what M.frame is for.
 function M.run(opts)
   opts = opts or {}
   M.fatal, M.idle = nil, 0
@@ -198,6 +201,22 @@ function M.run(opts)
     if M.fatal then break end
     if not M.step(true) then break end
   end
+end
+
+-- Advance the swarm one frame's worth, for a caller that OWNS a frame loop (the
+-- cTUI, the studio). It waits BOUNDED -- up to `budget_ms` on the unified loop
+-- (curl + subprocesses + timers, all one reactor now), returning the instant any
+-- of them moves -- then resumes whatever became ready. It never blocks longer
+-- than the budget, which is the whole guarantee behind "never block user input".
+-- budget_ms = 0 polls without waiting (a caller whose own clock -- SDL vsync --
+-- paces the frame). Returns true while actors remain. The caller does its own
+-- input and paint around this; here we only move the swarm.
+function M.frame(budget_ms)
+  if #M.actors == 0 then return false end
+  budget_ms = budget_ms or 0
+  if budget_ms > 0 then require("http").pump(budget_ms) end -- bounded uv_run on all IO
+  M.step(false)                                             -- resume the ready, non-blocking
+  return not M.fatal and #M.actors > 0
 end
 
 return M
