@@ -638,5 +638,6 @@ endforeach()
 # build-verified and regression-guarded before the cTUI that consumes it exists.
 # The smoke test degrades gracefully with no tty, so </dev/null it self-exits 0.
 add_executable(termctl_smoke src/termctl.c src/termctl_test.c)
-target_include_directories(termctl_smoke PRIVATE src)
+target_include_directories(termctl_smoke PRIVATE src ${VENDOR}/libuv/include)
+target_link_libraries(termctl_smoke PRIVATE uv_a)
 add_test(NAME termctl COMMAND sh -c "$<TARGET_FILE:termctl_smoke> </dev/null")

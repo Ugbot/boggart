@@ -159,6 +159,16 @@ void tc_flush(void);
  * up/down, insert/delete, F1-F12, SGR + X10 mouse) and ctrl-<letter>. */
 tc_event tc_poll(int timeout_ms);
 
+/* ---- uv integration ----------------------------------------------------- */
+
+/* Put stdin on a libuv loop (passed as void* to keep this header uv-free). The
+ * loop's uv.run then wakes the instant a key is pressed, so a front end can
+ * sleep in ONE uv.run for keyboard AND http AND timers instead of polling.
+ * After attaching, tc_poll stops polling the fd itself -- it only parses what
+ * the loop's callback has buffered. Idempotent; returns 0 on success. */
+int  tc_attach_loop(void *loop);
+void tc_detach_loop(void);
+
 /* ---- utility ------------------------------------------------------------ */
 
 /* Minimal, self-contained display width: 0 for combining/zero-width, 2 for

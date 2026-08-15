@@ -31,7 +31,12 @@
 #include "lua.h"
 #include "lauxlib.h"
 
+#include "uv.h"
 #include "termctl.h"
+
+/* Each interpreter's libuv loop (defined in the uv binding; also used by
+ * lhttp.c). Declared after lua.h so lua_State is a known type. */
+extern uv_loop_t *luv_loop(lua_State *L);
 
 /* ---- colour: hex "rrggbb" -> nearest xterm-256 index -------------------- */
 
@@ -324,6 +329,19 @@ static int l_snapshot(lua_State *L) {
   return 1;
 }
 
+/* tc.attach() -> ok: put stdin on this interpreter's uv loop, so a caller can
+ * sleep in uv.run for keyboard, http and timers at once (see termctl.h). */
+static int l_attach(lua_State *L) {
+  int ok = tc_attach_loop(luv_loop(L)) == 0;
+  lua_pushboolean(L, ok);
+  return 1;
+}
+static int l_detach(lua_State *L) {
+  (void) L;
+  tc_detach_loop();
+  return 0;
+}
+
 static const luaL_Reg tc_lib[] = {
   {"init",     l_init},
   {"shutdown", l_shutdown},
@@ -334,6 +352,8 @@ static const luaL_Reg tc_lib[] = {
   {"puts",     l_puts},
   {"flush",    l_flush},
   {"poll",     l_poll},
+  {"attach",   l_attach},
+  {"detach",   l_detach},
   {NULL, NULL},
 };
 

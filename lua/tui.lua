@@ -32,12 +32,11 @@ local uv = require("uv")
 -- and only when something changed, with a slower heartbeat so the agents pane's
 -- elapsed clock still ticks while a turn sits waiting on the network.
 -- Paint at most ~30fps (FRAME_MS) and only when something changed, with a slower
--- heartbeat so the agents pane's clock still ticks while a turn waits on the
--- network. WAIT_MS is the frame loop's bounded IO wait: it never blocks longer,
--- so input is serviced ~60x/sec and can never be stalled. now_ms is uv.hrtime
--- (the real monotonic clock) NOT uv.now (the loop's cached time, which stalls
--- when the loop is not pumped -- the throttle must keep advancing regardless).
-local FRAME_MS, HEARTBEAT_MS, WAIT_MS = 33, 250, 16
+-- heartbeat (HEARTBEAT_MS): a repeating uv timer wakes the loop that often so the
+-- agents pane's clock keeps ticking even while a turn waits on the network with
+-- no other traffic. now_ms is uv.hrtime (the real monotonic clock) NOT uv.now
+-- (the loop's cached time, which stalls between loop runs).
+local FRAME_MS, HEARTBEAT_MS = 33, 250
 local function now_ms() return uv.hrtime() // 1000000 end
 
 -- The studio palette (style.lua), the same hexes termrender and the status bar
@@ -317,12 +316,17 @@ local function run_turn(st, text)
   end)
   bog.sched.add(st.coord.id, co)
 
-  -- The cTUI OWNS the frame loop, so it drives the swarm non-blocking and never
-  -- lets it block on IO (that was every freeze). Each frame: read input, paint if
-  -- due, then sched.frame -- which waits BOUNDED (<= WAIT_MS) on the unified loop
-  -- (curl + subprocesses + timers, now one reactor) and resumes whatever moved.
-  -- Input is serviced ~60x/sec and can never be stalled.
+  -- The turn is just the swarm running on the one uv loop, and this is the
+  -- classic event-loop body: drain input, resume whoever the last wait made
+  -- ready, paint if due, then SLEEP in a single uv.run("once"). That wait wakes
+  -- the instant ANY handle fires -- an http socket delivering a token (stdin is
+  -- on the loop too, so a keypress wakes it just the same; the heartbeat timer
+  -- guarantees the agent clock still ticks while a slow child streams). No
+  -- fixed quantum: the stream flows at full socket speed, and input is never
+  -- more than one event away. resume_ready only touches coroutines; the loop
+  -- does the waiting -- so nothing here polls.
   st.dirty, st.last_paint = true, 0
+  st.wake:start(HEARTBEAT_MS, HEARTBEAT_MS, function() end) -- wake to tick the clock
   while bog.sched.count() > 0 do
     local ev = tc.poll(0)
     while ev.type == "key" do
@@ -333,14 +337,18 @@ local function run_turn(st, text)
     end
     if st.abort then break end
 
+    bog.sched.resume_ready()               -- advance the swarm (coroutines only)
+    if bog.sched.count() == 0 then break end
+
     local dt = now_ms() - st.last_paint
     if dt >= FRAME_MS and (st.dirty or dt >= HEARTBEAT_MS) then
       st.dirty, st.last_paint = false, now_ms()
       draw(st)
     end
 
-    if not bog.sched.frame(WAIT_MS) then break end
+    uv.run("once")                         -- sleep until the next event
   end
+  st.wake:stop()
 
   if st.abort then
     for _, a in ipairs(bog.sched.actors) do pcall(bog.sched.kill, a.id) end
@@ -359,6 +367,14 @@ end
 function M.run()
   if not (tc and tc.init and tc.init()) then return false end
 
+  -- Put stdin on the uv loop: from here a keypress is a uv callback like an http
+  -- socket or a timer, so the whole cTUI can sleep in ONE uv.run and wake the
+  -- instant anything happens -- keyboard, a streamed token, the clock. This is
+  -- what makes the event-loop body below correct (and what every Node TUI does:
+  -- raw stdin is a libuv handle, never polled). If it fails there is no terminal
+  -- we can drive that way, so fall back to the scrolling REPL.
+  if not tc.attach() then tc.shutdown(); return false end
+
   local ok0, coord = pcall(function()
     setup_swarm()
     return bog.thread.new_agent{ agent = "coordinator", title = "coordinator", model = bog.session.model }
@@ -367,7 +383,7 @@ function M.run()
   bog.swarm_root = coord
 
   local st = { coord = coord, entries = {}, activity = {}, box = Input.new{},
-               scroll = 0, total = 0, running = false }
+               scroll = 0, total = 0, running = false, wake = uv.new_timer() }
 
   -- Route the agent's line logging into the fixed activity strip, not the
   -- conversation. bog.log_tool and bog.log write raw bytes to stdout/stderr; in
@@ -400,34 +416,45 @@ function M.run()
   end
   bog.log = function(msg) if is_coord() then activity("\u{00B7} " .. tostring(msg)) end end
 
+  -- The between-turns prompt is the same event loop as a turn, just with no
+  -- actors running: drain every buffered key, act on it, then sleep in a single
+  -- uv.run("once") until the next keypress wakes us (stdin is on the loop). No
+  -- poll timeout, no spin -- the process is genuinely asleep between keystrokes.
   local ok, err = pcall(function()
     draw(st)
-    while true do
-      local ev = tc.poll(100)
-      if ev.type == "resize" then
-        draw(st)
-      elseif ev.type == "key" then
-        if ev.key == "ctrl" and ev.char == "q" then break end
-        if ev.key == "pageup" then
-          st.scroll = math.min(st.total, st.scroll + page(st)); draw(st)
-        elseif ev.key == "pagedown" then
-          st.scroll = math.max(0, st.scroll - page(st)); draw(st)
-        else
-          local action, value = st.box:key(ev)
-          if action == "cancel" then
-            break
-          elseif action == "submit" then
-            if value and value:match("%S") then run_turn(st, value) end
-            draw(st)
+    local quit = false
+    while not quit do
+      local ev = tc.poll(0)
+      while ev.type ~= "none" do
+        if ev.type == "resize" then
+          draw(st)
+        elseif ev.type == "key" then
+          if ev.key == "ctrl" and ev.char == "q" then quit = true; break end
+          if ev.key == "pageup" then
+            st.scroll = math.min(st.total, st.scroll + page(st)); draw(st)
+          elseif ev.key == "pagedown" then
+            st.scroll = math.max(0, st.scroll - page(st)); draw(st)
           else
-            draw(st)
+            local action, value = st.box:key(ev)
+            if action == "cancel" then
+              quit = true; break
+            elseif action == "submit" then
+              if value and value:match("%S") then run_turn(st, value) end
+              draw(st)
+            else
+              draw(st)
+            end
           end
         end
+        ev = tc.poll(0)
       end
+      if quit then break end
+      uv.run("once") -- sleep until a keypress (or leftover loop handle) wakes us
     end
   end)
 
   bog.log_tool, bog.log = saved_log_tool, saved_log -- restore before leaving the alt screen
+  if st.wake then pcall(function() st.wake:stop(); st.wake:close() end) end
   tc.shutdown()
   if not ok then io.stderr:write("tui: ", tostring(err), "\n") end
   return true

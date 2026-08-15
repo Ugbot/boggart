@@ -22,6 +22,7 @@
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
+#include "uv.h"
 
 /* ------------------------------------------------------------------ cell -- */
 /* Fields are compared explicitly (never memcmp) so struct padding cannot
@@ -61,6 +62,14 @@ static struct {
     int              eof;                /* stdin reached EOF                */
 
     volatile sig_atomic_t resized;       /* SIGWINCH flag                    */
+
+    /* When attached to a uv loop, stdin is a poll handle on that loop: its
+     * callback reads bytes into inbuf and, by firing, wakes whatever uv.run the
+     * front end is asleep in. tc_poll then stops owning the fd -- it only parses
+     * what the callback has buffered. This is what lets the cTUI sleep in ONE
+     * uv.run for keyboard AND http AND timers, instead of polling. */
+    uv_poll_t        stdin_poll;
+    int              attached;
 } T;
 
 /* =====================================================================
@@ -695,6 +704,46 @@ static void nap_ms(int ms) {
     nanosleep(&ts, NULL);
 }
 
+/* Read whatever is available on stdin into inbuf, non-blocking. In raw mode
+ * (VMIN=0/VTIME=0) read() returns 0 to mean "nothing right now", which is NOT
+ * EOF -- so this never sets T.eof. The unattached tc_poll path, which reads only
+ * after poll() reports the fd readable, keeps its own genuine-EOF detection. */
+static void inbuf_fill(void) {
+    int space = (int)sizeof(T.inbuf) - T.inlen;
+    if (space <= 0) return; /* full: tc_poll will parse and drain it first */
+    ssize_t got = read(T.infd, T.inbuf + T.inlen, (size_t)space);
+    if (got > 0) T.inlen += (int)got;
+}
+
+/* uv callback: stdin is readable. Buffer the bytes; parsing into events happens
+ * in tc_poll, which the front end calls after uv.run returns. Firing this at all
+ * is what wakes the front end's uv.run the instant a key is pressed. */
+static void on_stdin_readable(uv_poll_t *h, int status, int events) {
+    (void)h; (void)events;
+    if (status < 0) return;
+    inbuf_fill();
+}
+
+/* Put stdin on `loop`. After this, tc_poll no longer polls the fd itself -- the
+ * callback owns the read and the caller sleeps in that loop's uv.run. Idempotent.
+ * Returns 0 on success. Safe to call with a non-tty stdin (EOF path still works;
+ * we simply do not attach so the reader stays synchronous). */
+int tc_attach_loop(void *loop) {
+    if (T.attached) return 0;
+    if (!T.inited || T.eof) return -1;
+    if (uv_poll_init(loop, &T.stdin_poll, T.infd) != 0) return -1;
+    if (uv_poll_start(&T.stdin_poll, UV_READABLE, on_stdin_readable) != 0) return -1;
+    T.attached = 1;
+    return 0;
+}
+
+void tc_detach_loop(void) {
+    if (!T.attached) return;
+    uv_poll_stop(&T.stdin_poll);
+    uv_close((uv_handle_t *)&T.stdin_poll, NULL);
+    T.attached = 0;
+}
+
 tc_event tc_poll(int timeout_ms) {
     tc_event ev;
     memset(&ev, 0, sizeof(ev));
@@ -719,6 +768,19 @@ tc_event tc_poll(int timeout_ms) {
             return ev;
         }
         /* incomplete: fall through to read more (unless at EOF) */
+    }
+
+    /* Attached: the uv callback owns the fd read and the caller does the waiting
+     * in uv.run. Here we never poll or block -- we parse what has been buffered
+     * and return (NONE if nothing complete yet). One more opportunistic read
+     * covers bytes that arrived between the callback and now. */
+    if (T.attached) {
+        if (!T.eof) inbuf_fill();
+        if (T.inlen > 0) {
+            int used = parse_one(&ev);
+            if (used > 0) inbuf_consume(used);
+        }
+        return ev;
     }
 
     if (T.eof) {
@@ -816,6 +878,7 @@ int tc_init(void) {
 
 void tc_shutdown(void) {
     if (!T.inited) return;
+    tc_detach_loop();
     restore_tty();
     free(T.front);
     free(T.back);

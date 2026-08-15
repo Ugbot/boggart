@@ -111,57 +111,17 @@ function M.kill(id)
   return true
 end
 
--- One scheduler iteration: advance the engines, resume whoever can, notice
--- quiescence. Split out of M.run so something that already owns a frame loop
--- can drive the swarm a slice at a time -- studio/data/core/swarmview.lua
--- calls step(false) once per frame and must never block, while the CLI calls
--- step(true) and is allowed to sleep inside libuv until something happens.
---
--- Returns false when stepping again would be pointless: the actor set has
--- drained, a fatal condition was diagnosed, or everything left is wedged.
-function M.step(block)
-  if #M.actors == 0 then return false end
-
-  -- Two things can be in flight: HTTP (curl_multi, via http.pump) and
-  -- anything on the libuv loop -- subprocesses from lua/proc.lua, MCP stdio
-  -- pipes, timers. Both must be advanced every iteration, or an actor
-  -- waiting on one starves while the other is serviced.
-  local io_wait, proc_wait, runnable, paused = false, false, false, false
-  for _, a in ipairs(M.actors) do
-    if a.paused then paused = true
-    elseif a.status == "io" then io_wait = true
-    elseif a.status == "proc" then proc_wait = true
-    elseif a.status == "runnable" then runnable = true
-    elseif a.status == "recv" and swarm.pending(a.id) > 0 then runnable = true end
-  end
-
-  -- Whether we may *block* here is the whole question. If any actor can make
-  -- progress right now, blocking would starve it -- so advance both engines
-  -- without waiting. Only when every actor is parked on something external
-  -- is it correct to sleep, and then we let the wait happen inside libuv
-  -- (uv.run("once") returns the instant a handle fires) rather than burning
-  -- a fixed 50ms, so a child's output is picked up immediately.
-  --
-  -- A caller that owns a frame loop never gets to make that trade: a 50ms
-  -- http.pump is three dropped frames and uv.run("once") is unbounded, so it
-  -- polls both engines and comes back next frame.
-  if not block then
-    if proc_wait then uv.run("nowait") end
-    if io_wait then http.pump(0) end
-  elseif runnable then
-    if proc_wait then uv.run("nowait") end
-    if io_wait then http.pump(0) end
-  elseif proc_wait then
-    uv.run("once")
-    if io_wait then http.pump(0) end
-  elseif io_wait then
-    http.pump(50)
-    uv.run("nowait")
-  end
-
-  local did = false
+-- Resume every actor that can move *right now*: a runnable one, a recv-blocked
+-- one that has mail waiting, and every io/proc actor (each drains whatever the
+-- loop has already buffered for it, then re-parks if there is no more). This
+-- touches only coroutines -- it never runs the uv loop. Advancing the loop
+-- (draining ready IO, or sleeping until the next event) is the driver's job,
+-- because only the driver knows whether it is allowed to block. Returns whether
+-- any actor ran.
+local function resume_sweep()
   local snap = {}
   for _, a in ipairs(M.actors) do snap[#snap + 1] = a end
+  local did = false
   for _, a in ipairs(snap) do
     if M.by_id[a.id] and not a.paused then
       if a.status == "runnable" or a.status == "io" or a.status == "proc" then
@@ -171,28 +131,78 @@ function M.step(block)
       end
     end
   end
+  return did
+end
 
-  -- Quiescence guard: if nothing progressed and nothing is in flight, every
-  -- remaining actor is blocked on mail that will never come. Bail rather than
-  -- spin forever. A paused actor is not evidence of that -- it is a human
-  -- holding the swarm still, and it can be resumed.
-  if not did and not io_wait and not proc_wait and not paused then
+-- What is the actor set waiting on, after a sweep? runnable => someone can run
+-- without any new IO (a fresh coroutine, or recv with mail already queued);
+-- in_flight => someone is parked on a live uv handle (an http socket, a child, an
+-- MCP pipe) that will fire a callback when it progresses.
+local function classify()
+  local runnable, in_flight, paused = false, false, false
+  for _, a in ipairs(M.actors) do
+    if a.paused then paused = true
+    elseif a.status == "io" or a.status == "proc" then in_flight = true
+    elseif a.status == "runnable" then runnable = true
+    elseif a.status == "recv" and swarm.pending(a.id) > 0 then runnable = true end
+  end
+  return runnable, in_flight, paused
+end
+M.classify = classify
+
+-- One scheduler iteration. The whole point is the *order*: resume first, decide
+-- to sleep second. Draining a just-completed request before we ever consider
+-- blocking is what stops us from sleeping forever on a socket that already
+-- closed. Then:
+--   * someone still runnable  -> drain ready IO without sleeping and come back
+--     (so a CPU-bound actor never starves an io peer of loop time);
+--   * nobody runnable, IO in flight -> sleep in ONE unbounded uv.run("once"):
+--     it returns the instant any handle fires, so a stream flows at full socket
+--     speed with zero CPU while idle -- no fixed quantum, no polling;
+--   * nobody runnable, nothing in flight -> the set is wedged on mail that will
+--     never come; count it and bail.
+-- block=false is for a caller that owns its own loop/frame (the studio's SDL
+-- clock, the cTUI's uv.run): never sleep here, just drain what is ready.
+--
+-- All IO -- http (curl-on-uv), subprocesses, MCP, timers -- lives on the one
+-- loop, so "advance IO" is simply running that loop; there is no separate pump.
+function M.step(block)
+  if #M.actors == 0 then return false end
+
+  if not block then
+    -- The caller will block elsewhere. Drain whatever the loop has ready, then
+    -- resume, so this frame's arrivals reach their actors this frame.
+    uv.run("nowait")
+    if resume_sweep() then M.idle = 0 end
+    return not M.fatal and #M.actors > 0
+  end
+
+  resume_sweep()
+  if #M.actors == 0 or M.fatal then return false end
+
+  local runnable, in_flight, paused = classify()
+  if runnable then
+    uv.run("nowait")   -- someone can run; service IO without sleeping, loop again
+    M.idle = 0
+  elseif in_flight then
+    uv.run("once")     -- nothing runnable; sleep until a uv handle wakes us
+    M.idle = 0
+  elseif not paused then
     M.idle = M.idle + 1
     if M.idle > 3 then
       bog.log("scheduler idle with " .. #M.actors .. " blocked agent(s); stopping")
       return false
     end
-  else
-    M.idle = 0
   end
 
   return not M.fatal and #M.actors > 0
 end
 
 -- Run until every actor has finished (one-shot / per-turn drain), or should_stop.
--- This is the BLOCKING drive -- step(true) may sleep in the loop until IO. Right
--- for a CLI that owns no frame (one-shot, --headless, the between-turns REPL);
--- WRONG for anything that must paint, which is what M.frame is for.
+-- The blocking drive: step(true) sleeps in the unified loop until IO. Right for
+-- any caller that owns no frame -- the CLI one-shot, --headless, the between-turns
+-- REPL, swarm mode. A caller that must also paint or read keys drives its own
+-- loop instead (see lua/tui.lua): same resume_sweep, its own uv.run.
 function M.run(opts)
   opts = opts or {}
   M.fatal, M.idle = nil, 0
@@ -203,20 +213,8 @@ function M.run(opts)
   end
 end
 
--- Advance the swarm one frame's worth, for a caller that OWNS a frame loop (the
--- cTUI, the studio). It waits BOUNDED -- up to `budget_ms` on the unified loop
--- (curl + subprocesses + timers, all one reactor now), returning the instant any
--- of them moves -- then resumes whatever became ready. It never blocks longer
--- than the budget, which is the whole guarantee behind "never block user input".
--- budget_ms = 0 polls without waiting (a caller whose own clock -- SDL vsync --
--- paces the frame). Returns true while actors remain. The caller does its own
--- input and paint around this; here we only move the swarm.
-function M.frame(budget_ms)
-  if #M.actors == 0 then return false end
-  budget_ms = budget_ms or 0
-  if budget_ms > 0 then require("http").pump(budget_ms) end -- bounded uv_run on all IO
-  M.step(false)                                             -- resume the ready, non-blocking
-  return not M.fatal and #M.actors > 0
-end
+-- Resume all ready actors without touching the loop -- the primitive a caller
+-- that owns the loop (the cTUI) uses between its own uv.run and its paint.
+function M.resume_ready() return resume_sweep() end
 
 return M

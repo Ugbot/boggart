@@ -21,17 +21,28 @@ user input.
 3. **Refactor first, verify after.** Build the curl↔uv integration now; prove it
    with real DeepSeek runs + the `tc.snapshot` hook. (No trickle-server harness
    up front — owner's call.)
-4. **One shared frame driver.** `sched.frame{ budget_ms, paint }`: step the swarm
-   non-blocking, run the unified loop **bounded** to the budget (waking on any
-   IO), then paint. cTUI passes ~16ms (it owns the clock); studio passes 0 (SDL
-   vsync is its clock); a CLI one-shot passes "block-until-done", no paint. This
-   deletes the studio's ad-hoc `step(false)` and the cTUI's hand-crank.
+4. **~~One shared frame driver.~~ SUPERSEDED — one event loop.** The frame-driver
+   idea (`sched.frame{budget_ms}`: a `uv_run` *bounded* to a paint budget, called
+   once per painted frame) was wrong twice over: it *polls* the loop at the paint
+   rate, so a stream is throttled to ~1 resume per frame instead of full socket
+   speed; and it makes the UI own the block, which is why input fought the stream
+   on real terminals. The correct model is the plain event loop everyone else
+   runs (Node's raw stdin is a libuv handle, never polled): **everything is a
+   handle on one loop, the scheduler sleeps in a single unbounded `uv.run("once")`
+   and wakes when any handle fires.** The scheduler resumes **first**, then sleeps
+   only when nothing is runnable (draining a just-completed request before the
+   sleep is what stops us waiting forever on a socket that already closed). No
+   `sched.frame`; no fixed quantum.
 5. **One transport.** Retire `stream_once` and the `opts.async` branch; every turn
    is an actor on the loop. One-shot/`--headless` is that same actor run to
-   completion with a blocking budget.
-6. **stdin on the loop.** Re-plumb termctl input onto a `uv_tty`, so a keypress
-   *wakes* the bounded wait (~0ms input latency). Belt-and-suspenders on top of
-   the bounded-loop guarantee.
+   completion (`sched.run`, which sleeps in the same unbounded `uv.run`).
+6. **stdin on the loop — load-bearing, not polish.** termctl puts stdin on the uv
+   loop (`tc.attach()` → `uv_poll` on fd 0); a keypress is a callback that wakes
+   the one `uv.run`. This is what *lets* the cTUI sleep in a single unbounded
+   `uv.run` and still get keys instantly — without it we were forced back into
+   polling. `tc.poll` in attached mode stops owning the fd; it only parses what
+   the callback buffered. A repeating heartbeat `uv_timer` wakes the loop ~4×/s so
+   the agent clock ticks even when a slow child sends no traffic.
 7. **Blocking IO → the uv threadpool.** A slow synchronous op (a big file read)
    must not block the loop. Move blocking file IO (`util.read_file`, today
    `io.open`) onto libuv's async `fs`/threadpool (`uv.fs_*`, `uv.queue_work`);
@@ -40,11 +51,12 @@ user input.
 
 ## The invariant that makes it "never block input"
 
-The frame driver's wait is **always bounded** — `uv.run` with a frame-deadline
-timer, **never** `uv.run("once")` unbounded. Input is therefore serviced every
-frame (≤16ms), and with stdin on the loop, instantly. Every "freeze" we chased
-was a violation of this one rule (`sched.run` → blocking `step(true)` →
-`uv.run("once")`).
+**Everything waits in one place: a single unbounded `uv.run("once")` with stdin,
+http sockets, subprocesses and a heartbeat timer all handles on that loop.** A
+keypress, a streamed token, or the clock tick each wake it immediately; nothing
+polls, and the process is genuinely asleep in between. Every "freeze" we chased
+was a violation of *having one loop*: HTTP off the loop (the original two-reactor
+freeze), or the loop driven by a bounded paint quantum (the throughput throttle).
 
 ## What stays / goes / is new
 
@@ -52,10 +64,12 @@ was a violation of this one rule (`sched.run` → blocking `step(true)` →
   transport's *shape*, `step(block)`. The studio's per-frame model — we generalise
   what already works there.
 - **Goes:** `g_multi` global + `curl_multi_wait` (a second reactor); `http.pump`
-  (becomes a thin `uv.run` shim in transition, then removed); `stream_once` +
-  the `opts.async` branch; the studio's and cTUI's hand-cranked pumps.
-- **New:** per-loop `CURLM` on uv; `sched.frame{budget_ms, paint}`; `uv_tty`
-  input in termctl; async file IO via the threadpool.
+  as the scheduler's wait (running the loop pumps curl now); `stream_once` +
+  the `opts.async` branch; the cTUI's `sched.frame` bounded-poll hand-crank.
+- **New:** per-loop `CURLM` on uv; the scheduler's resume-first + unbounded
+  `uv.run("once")` drive (`resume_ready`/`classify`); stdin on the loop
+  (`tc.attach` → `uv_poll` on fd 0) with a heartbeat `uv_timer`; async file IO via
+  the threadpool (still to do).
 
 ## Sequence (each step ships and is checkable)
 
@@ -63,17 +77,23 @@ was a violation of this one rule (`sched.run` → blocking `step(true)` →
    `uv_poll` per curl fd; `CURLMOPT_TIMERFUNCTION` → one `uv_timer`; events →
    `curl_multi_socket_action`; completions as today. `http.pump` is now a thin
    bounded `uv.run` over the unified loop. *(commit a1ba9e4)*
-2. ✅ **`sched.frame(budget_ms)`** — steps the swarm non-blocking, waits **bounded**
-   (≤ budget) on the unified loop, resumes whoever moved. `M.step`'s `"io"`-wait
-   already rides the same loop; the second reactor (`curl_multi_wait`) is gone.
-3. ✅ **cTUI adopts `sched.frame`** — `run_turn` is a bounded poll loop (input via
-   `tc.poll(0)`, paint throttled on `uv.hrtime`, `sched.frame(16)` per frame). The
-   blocking `sched.run`+`should_stop` hand-crank is deleted. Verified live: a turn
-   streams and returns to the prompt; a mid-stream Ctrl-C interrupts in ~0.15s.
-   *Remaining frame-owners on the old pattern:* the SDL studio (C) and the `--tui`
-   swarm dashboard (`dash.lua`) — convert next. The plain REPL / swarm / one-shot
-   own no frame and correctly keep blocking `sched.run`.
-4. **stdin on uv** (termctl input → `uv_tty`); the frame wakes on a keypress.
+2. ✅ **Scheduler drives the loop, not a pump.** `M.step`/`M.run` resume-first,
+   then sleep in a single **unbounded** `uv.run("once")` when nothing is runnable
+   (`resume_ready`/`classify` are the primitives). curl-on-uv means running the
+   loop *is* pumping http, so `http.pump` is gone from the scheduler entirely. A
+   real swarm run proves full throughput: a 600-word child completes in ~14s via
+   `sched.run`, vs the ~68s the old bounded-frame path took.
+3. ✅ **cTUI is a plain event loop** (`lua/tui.lua`) — no `sched.frame`. Body:
+   drain input (`tc.poll(0)`), `sched.resume_ready()`, paint if due, then sleep in
+   `uv.run("once")`. The between-turns prompt is the same loop with no actors.
+   Verified live: same 600-word task completes in ~16.6s (parity with the one-shot),
+   the agent clock ticks during a turn, and a mid-stream Ctrl-C interrupts in ~0.15s.
+   *(`sched.frame` deleted; `dash.lua` and the SDL studio still to convert.)*
+4. ✅ **stdin on uv** — termctl `tc.attach()` puts fd 0 on the loop as a `uv_poll`;
+   `tc.poll` in attached mode only parses buffered bytes. This is what makes step 3's
+   single `uv.run` sleep correct: a keypress wakes it instantly. A heartbeat
+   `uv_timer` keeps the clock ticking. (`termctl.c`/`termctl.h`/`ltermctl.c`;
+   `termctl_smoke` now links `uv_a`.)
 5. ✅ **Retired `stream_once`** — one transport. `api.lua` calls `stream_async`
    unconditionally; the blocking `http.request` path and the `opts.async` branch
    are gone, and the now-meaningless `async` flag is stripped from `agent_opts`
