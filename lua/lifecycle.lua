@@ -110,8 +110,10 @@ function M.welcome()
     out[#out + 1] = "You have credentials set, so you are ready to go. Try: boggart \"hello\""
   else
     out[#out + 1] = "One thing left -- point it at a model:"
-    out[#out + 1] = "  /auth key sk-ant-...            store an Anthropic API key, or"
-    out[#out + 1] = "  /auth url http://127.0.0.1:8000 use a local OpenAI/Anthropic-shaped server"
+    out[#out + 1] = "  /auth key sk-ant-...             store an Anthropic API key, or"
+    out[#out + 1] = "  /auth url http://127.0.0.1:8000  a local Anthropic-shaped server (e.g. ds4)"
+    out[#out + 1] = "  /auth url http://127.0.0.1:8080 + /auth wire openai   a local OpenAI server"
+    out[#out + 1] = "                                    (llama.cpp / vLLM / LM Studio), then /model <id>"
     out[#out + 1] = "(ANTHROPIC_API_KEY in the environment works too, and wins over both.)"
   end
   out[#out + 1] = ""

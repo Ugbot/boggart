@@ -36,6 +36,16 @@ function M.agent_opts(rec)
       if rec.allow and next(rec.allow) ~= nil and not bog.tools.allowed(rec.allow, name) then
         return "Tool error: tool '" .. name .. "' is not permitted for this agent"
       end
+      -- Optional approval gate for spawned sub-agents. The studio shell sets
+      -- bog.approve to make sub-agents honour the coordinator's permission mode
+      -- (they used to run write/edit/bash unattended). The CLI leaves it nil, so
+      -- this is a no-op there. May run under the scheduler.
+      if bog.approve then
+        local ok, why = bog.approve(name, input, rec.id)
+        if ok == false then
+          return "Tool error: [permission_error] " .. (why or "rejected by approval gate")
+        end
+      end
       return bog.tools.run(name, input)
     end,
     on_tool = bog.log_tool,

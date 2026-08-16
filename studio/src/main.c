@@ -10,6 +10,7 @@
 void boggart_open_libs(lua_State *L);
 int  boggart_boot(lua_State *L, const char *mode, const char *version);
 lua_State *boggart_newstate(void);
+void boggart_http_shutdown(lua_State *L); /* src/lhttp.c: close raw uv handles before lua_close */
 
 #ifdef _WIN32
   #include <windows.h>
@@ -210,6 +211,10 @@ int main(int argc, char **argv) {
     "end)");
 
 
+  /* Close our raw curl-on-libuv handles before lua_close() runs luv's loop_gc,
+   * or it type-confuses on their non-luv handle->data and faults at exit -- the
+   * same exit crash the CLI had. See boggart_http_shutdown in src/lhttp.c. */
+  boggart_http_shutdown(L);
   lua_close(L);
   SDL_DestroyWindow(window);
 

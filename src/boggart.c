@@ -19,6 +19,7 @@
 #include "version.h"
 
 int luaopen_boggart_http(lua_State *L);
+void boggart_http_shutdown(lua_State *L); /* src/lhttp.c: close raw uv handles before lua_close */
 int luaopen_boggart_sys(lua_State *L);
 int luaopen_boggart_db(lua_State *L);
 int luaopen_boggart_swarm(lua_State *L);
@@ -255,6 +256,10 @@ int main(int argc, char **argv) {
   } else if (lua_isinteger(L, -1)) {
     status = (int)lua_tointeger(L, -1);
   }
+  /* Close our raw curl-on-libuv handles before lua_close() runs luv's loop_gc,
+   * which would otherwise type-confuse on their non-luv handle->data and fault
+   * at exit (the exit-139 crash). See boggart_http_shutdown in src/lhttp.c. */
+  boggart_http_shutdown(L);
   lua_close(L);
   return status;
 }

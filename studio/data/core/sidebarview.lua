@@ -32,6 +32,10 @@ function SidebarView:new()
   self.sessions = {}
   self.hits = {}
   self.last_refresh = 0
+  self.confirm_delete = nil   -- the session id armed for deletion, if any
+  self.search = ""            -- the search box text; "" shows plain recents
+  self.results = {}           -- store.sess_search rows for the current query
+  self.searching = false      -- the box has focus and is taking keystrokes
 end
 
 function SidebarView:get_name() return "Sidebar" end
@@ -100,6 +104,76 @@ function SidebarView:refresh(force)
   self.sessions = (ok and rows) or {}
 end
 
+-- Run the FTS query behind the box. Kept off the draw path -- it is a SQLite
+-- query, so it runs when the text changes, not once per frame. An empty query
+-- means "show recents", so results is emptied and draw falls back to sessions.
+function SidebarView:set_search(text)
+  self.search = text or ""
+  self.confirm_delete = nil
+  if self.search == "" then
+    self.results = {}
+  else
+    local ok, rows = pcall(bog.store.sess_search, self.search, 40)
+    self.results = (ok and rows) or {}
+  end
+  core.redraw = true
+end
+
+-- Put the caret in the search box. The command routes here, and so does a click
+-- on the field. Search is a chat-tab thing, so switch there first; then take
+-- focus so on_text_input/on_key_pressed start arriving.
+function SidebarView:focus_search()
+  if self.tab ~= "chat" then self:set_tab("chat") end
+  self.searching = true
+  core.set_active_view(self)
+  core.redraw = true
+end
+
+-- Typed characters land here only while the box holds focus; every other key
+-- (backspace, escape, return) is a stroke and arrives via on_key_pressed.
+function SidebarView:on_text_input(text)
+  if not self.searching then return end
+  self:set_search(self.search .. text)
+end
+
+-- Editing keys for the search box. keymap hands a view the strokes no command
+-- claimed (see keymap.on_key_pressed), and none of the doc:* editing commands
+-- match while the rail -- not a DocView -- is focused, so backspace/escape/
+-- return fall through to here. The full stroke is passed, so plain keys are
+-- distinguishable from chords.
+function SidebarView:on_key_pressed(stroke)
+  if not self.searching then return false end
+  if stroke == "escape" then
+    self.searching = false
+    if self.search ~= "" then self:set_search("") end
+    if core.last_active_view then core.set_active_view(core.last_active_view) end
+    core.redraw = true
+    return true
+  elseif stroke == "backspace" then
+    local q = self.search
+    if q ~= "" then
+      -- Drop one whole UTF-8 character, not one byte.
+      local n = utf8.len(q)
+      if n and n > 0 then
+        self:set_search(q:sub(1, (utf8.offset(q, n) or #q) - 1))
+      else
+        self:set_search(q:sub(1, -2))
+      end
+    end
+    return true
+  elseif stroke == "return" or stroke == "keypad enter" then
+    -- Open the top hit, the same way clicking its row would.
+    local rows = (self.search ~= "" and self.results) or self.sessions
+    local s = rows and rows[1]
+    if s then
+      self.searching = false
+      require("core.studio").open_session(s.id)
+    end
+    return true
+  end
+  return false
+end
+
 function SidebarView:update()
   -- The same ceiling the drag honours, applied every frame. Only the drag
   -- enforced it, so a window made narrow after the fact kept the width it was
@@ -113,6 +187,11 @@ function SidebarView:update()
     self:move_towards(self.size, "x", dest)
   end
   self:refresh()
+
+  -- Focus is single-owner: once anything else takes it (a session opened, the
+  -- composer clicked) the box stops swallowing keystrokes. The query text is
+  -- left intact, so the results stay on screen until cleared with escape or ×.
+  if self.searching and core.active_view ~= self then self.searching = false end
 
   -- The segmented control follows what is actually on screen. Opening a file
   -- from the tree, from ctrl+p or from a tool all put you in code; the control
@@ -237,8 +316,49 @@ function SidebarView:draw()
       { label = "New", action = function() command.perform("agent:new-session") end })
   y = y + bh + vpad * 1.5
 
-  -- ---- Recents ------------------------------------------------------------
-  common.draw_text(font, style.dim, "Recents", "left", x, y, w, lh)
+  -- ---- Search -------------------------------------------------------------
+  -- One flat field, the height of the buttons but recessed. Typing swaps
+  -- Recents for live FTS results; an empty box falls back to Recents. The whole
+  -- field is a hit that takes focus; the × clears the query. Registering the ×
+  -- hit BEFORE the field's is what lets a click on it win the overlap, the same
+  -- rule the row delete relies on -- widgets.hit answers with the first rect.
+  local sh = bh
+  local focused = self.searching and core.active_view == self
+  renderer.draw_rect(x, y, w, sh, style.background)
+  renderer.draw_rect(x, y + sh - 1, w, 1, focused and style.accent or style.divider)
+  local q = self.search or ""
+  local placeholder = (q == "")
+  local cxw = font:get_width("×") + pad
+  local shown = fit(font, placeholder and "Search chats" or q, w - pad * 2 - cxw)
+  common.draw_text(font, placeholder and style.dim or style.text, shown,
+    "left", x + pad / 2, y, w, sh)
+  -- A still caret -- the rail keeps no per-frame timer and does not want one --
+  -- sitting just after the query while the box is focused.
+  if focused then
+    local cx = x + pad / 2 + (placeholder and 0 or font:get_width(shown))
+    renderer.draw_rect(cx, y + (sh - lh) / 2 + 2, math.max(1, SCALE), lh - 4,
+      style.caret or style.text)
+  end
+  if not placeholder then
+    local chov = self.mouse and widgets.inside(
+      { x = x + w - cxw, y = y, w = cxw, h = sh }, self.mouse.x, self.mouse.y)
+    common.draw_text(font, chov and style.text or style.dim, "×",
+      "left", x + w - cxw + pad / 2, y, cxw, sh)
+    add({ x = x + w - cxw, y = y, w = cxw, h = sh },
+        { id = "search-clear",
+          action = function() self:set_search(""); self:focus_search() end })
+  end
+  add({ x = x, y = y, w = w, h = sh },
+      { id = "search", action = function() self:focus_search() end })
+  y = y + sh + vpad * 1.5
+
+  -- ---- Recents / Results --------------------------------------------------
+  -- One list, two sources: search results while a query is live, plain recents
+  -- otherwise. The row draw and open path below are identical for both, so a
+  -- hit opens exactly like a recent does.
+  local rows = (self.search ~= "" and self.results) or self.sessions
+  common.draw_text(font, style.dim, self.search ~= "" and "Results" or "Recents",
+    "left", x, y, w, lh)
   y = y + lh
 
   -- Where the footer starts. The list used to run to the bottom of the VIEW,
@@ -254,11 +374,14 @@ function SidebarView:draw()
   -- the clamp pinned the scroll at zero and the rows past the fold could not
   -- be reached at all -- with no scrollbar to say they were there.
   local list_top = y
-  local n = #self.sessions
+  local n = #rows
   local first = math.max(1, math.floor(self.scroll.y / lh) + 1)
   local current = bog.session and bog.session.id
+  if n == 0 and self.search ~= "" then
+    common.draw_text(font, style.dim, "No matches", "left", x + pad / 2, y, w, lh)
+  end
   for i = first, n do
-    local s = self.sessions[i]
+    local s = rows[i]
     y = list_top + (i - first) * lh
     if y + lh > footer_top then break end
     local title = tostring(s.title or "")
@@ -269,12 +392,42 @@ function SidebarView:draw()
     if active or hov then
       renderer.draw_rect(x, y, w, lh, active and style.selection or style.line_highlight)
     end
-    local label = fit(font, title, w - pad * 2)
+    -- Room kept for the × at all times, so the title does not reflow the instant
+    -- the row is hovered and the delete target does not jump under the cursor.
+    local xw = font:get_width("×") + pad
+    local label = fit(font, title, w - pad * 2 - xw)
     common.draw_text(font, active and style.text or style.dim, label,
       "left", x + pad / 2, y, w, lh)
+
+    -- Delete, guarded. The × shows on hover, or stays as "×?" on the row armed
+    -- for deletion; the first click arms this row, a second click on it confirms,
+    -- and opening any row disarms it. Registered BEFORE the row's open hit so a
+    -- click on the × lands on it first -- widgets.hit answers with the first rect
+    -- containing the point, so the destructive target has to be registered first.
+    local armed = (self.confirm_delete == s.id)
+    if hov or armed then
+      local dhov = self.mouse and widgets.inside(
+        { x = x + w - xw, y = y, w = xw, h = lh }, self.mouse.x, self.mouse.y)
+      common.draw_text(font,
+        armed and (style.error or style.text) or (dhov and style.text or style.dim),
+        armed and "×?" or "×", "left", x + w - xw + pad / 2, y, xw, lh)
+      add({ x = x + w - xw, y = y, w = xw, h = lh }, {
+        id = "del" .. tostring(s.id),
+        action = function()
+          if self.confirm_delete == s.id then
+            self.confirm_delete = nil
+            require("core.studio").delete_session(s.id)
+          else
+            self.confirm_delete = s.id      -- arm; the next click on × confirms
+          end
+          core.redraw = true
+        end,
+      })
+    end
     add({ x = x, y = y, w = w, h = lh }, {
       id = "sess" .. tostring(s.id),
       action = function()
+        self.confirm_delete = nil           -- a stray delete never survives an open
         local studio = require "core.studio"
         studio.open_session(s.id)
       end,
@@ -298,5 +451,15 @@ function SidebarView:draw()
 
   self:draw_scrollbar()
 end
+
+-- Registered from here, not studio.lua, so the rail owns its own command. The
+-- sidebar instance is built later (studio.setup), so it is looked up at call
+-- time rather than captured now.
+command.add(nil, {
+  ["agent:search-sessions"] = function()
+    local sb = core.studio and core.studio.sidebar
+    if sb then sb:focus_search() end
+  end,
+})
 
 return SidebarView

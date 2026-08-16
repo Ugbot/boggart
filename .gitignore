@@ -19,6 +19,10 @@ src/vendor/sqlite/sqlite3.o
 
 # stray run artifacts
 error.txt
+# llm-station MCP runtime stores (tracker / skills-live), written under the repo
+.llm-station/
+# a stray literal-tilde dir from a path that wasn't ~-expanded
+/~/
 
 # release packaging (.github/workflows/release.yml stages here, and running
 # those steps by hand to debug them should not dirty the tree)

@@ -231,6 +231,8 @@ function DocView:on_mouse_pressed(button, x, y, clicks)
   if item and button == "left" then
     if item.action == "revert" then
       self:revert_mark(item.mark)
+    elseif item.action == "accept" then
+      self:accept_mark(item.mark)
     else
       self:select_mark(item.mark)
     end
@@ -362,15 +364,30 @@ function DocView:draw_line_marks(idx, at, x, y)
   end
 
   if m.data and m.data.revert then
-    local w = widgets.width(font, "revert")
     local hover = self.mark_hover
-    local rect = { x = tx, y = y, w = w, h = lh }
+    -- Revert and accept sit side by side: the two answers to "what about this
+    -- change?" are a pair, so they are drawn as a pair. Accept is the quieter
+    -- of the two -- it only lifts the decoration, never the text -- so it takes
+    -- the calm "good" tone against revert's "warn", the same inversion the two
+    -- words carry.
+    local rw = widgets.width(font, "revert")
+    local rect = { x = tx, y = y, w = rw, h = lh }
     widgets.button(font, "revert", tx, y, {
-      w = w, h = lh, tone = style.warn,
+      w = rw, h = lh, tone = style.warn,
       hover = hover and widgets.inside(rect, hover.x, hover.y),
     })
     rect.item = { mark = m, action = "revert" }
     self.mark_hits[#self.mark_hits + 1] = rect
+    tx = tx + rw + style.padding.x * 0.5
+
+    local aw = widgets.width(font, "accept")
+    local arect = { x = tx, y = y, w = aw, h = lh }
+    widgets.button(font, "accept", tx, y, {
+      w = aw, h = lh, tone = style.good,
+      hover = hover and widgets.inside(arect, hover.x, hover.y),
+    })
+    arect.item = { mark = m, action = "accept" }
+    self.mark_hits[#self.mark_hits + 1] = arect
   end
 end
 
@@ -540,6 +557,41 @@ function DocView:revert_mark(m)
 end
 
 
+-- Accept is the calm twin of revert: it keeps the agent's text and only clears
+-- the hunk's marks, so it cannot fail on a buffer that has moved on. The line
+-- named is the head of the span, taken before the marks go.
+function DocView:accept_mark(m)
+  local first = self:mark_span(m)
+  local ok, err = marks.accept(self.doc, m)
+  if ok then
+    core.log("kept the agent's change at line %d", first or m.line)
+  else
+    core.log("cannot accept: %s", err)
+  end
+  core.redraw = true
+end
+
+
+-- The head mark of the hunk under the caret -- the one carrying the recorded
+-- text and the controls -- or nil. Anywhere inside a hunk will do: a mark that
+-- is not itself the head is followed to the head of its group, because standing
+-- on line four of a six-line change and being told there is nothing here would
+-- be a lie. Returns the head (or nil) and the caret line, so the caller can name
+-- the line it found nothing on.
+function DocView:head_at_caret()
+  local line = self.doc:get_selection()
+  local here = (marks.get(self.doc, line) or {})[1]
+  if not here then return nil, line end
+  if here.data and here.data.revert then return here, line end
+  if here.group then
+    for _, m in ipairs(marks.all(self.doc)) do
+      if m.group == here.group and m.data and m.data.revert then return m, line end
+    end
+  end
+  return nil, line
+end
+
+
 -- Walk to the next or previous annotation. `dir` is 1 or -1.
 function DocView:goto_mark(dir)
   local line = self.doc:get_selection()
@@ -557,37 +609,65 @@ function DocView:goto_mark(dir)
 end
 
 
+-- The caret-driven hunk actions, shared by their command names below. Each
+-- finds the head of the hunk under the caret and hands it to the matching
+-- view method; a caret sitting on no hunk is told so, on the line it is on.
+local function accept_at_caret()
+  local dv = core.active_view
+  local found, line = dv:head_at_caret()
+  if not found then
+    core.log("no agent change to accept at line %d", line)
+    return
+  end
+  dv:accept_mark(found)
+end
+
+local function revert_at_caret()
+  local dv = core.active_view
+  local found, line = dv:head_at_caret()
+  if not found then
+    core.log("no agent change to revert at line %d", line)
+    return
+  end
+  dv:revert_mark(found)
+end
+
+
 -- These are registered here rather than in core/commands/doc.lua because they
 -- are the view's, not the document's: walking to the next annotation is a thing
 -- you do to a buffer you are looking at, and the drawing and the navigation
 -- should not be able to drift into two different files.
+--
+-- marks:next / marks:prev are the plain names the keymap binds. The older
+-- -change / -hunk spellings are kept beside them so that nothing already
+-- reaching for one -- keymap.lua binds alt+n/alt+p/alt+r to them -- breaks.
 command.add(DocView, {
+  ["marks:next"] = function() core.active_view:goto_mark(1) end,
+  ["marks:prev"] = function() core.active_view:goto_mark(-1) end,
   ["marks:next-change"] = function() core.active_view:goto_mark(1) end,
   ["marks:previous-change"] = function() core.active_view:goto_mark(-1) end,
 
-  ["marks:revert-change"] = function()
-    local dv = core.active_view
-    local line = dv.doc:get_selection()
-    -- Anywhere inside a hunk will do: find the mark under the caret, then the
-    -- head of its group, which is the one carrying the recorded text. Standing
-    -- on line four of a six-line change and being told there is nothing to
-    -- revert would be a lie.
-    local here = (marks.get(dv.doc, line) or {})[1]
-    local found
-    if here then
-      if here.data and here.data.revert then
-        found = here
-      elseif here.group then
-        for _, m in ipairs(marks.all(dv.doc)) do
-          if m.group == here.group and m.data and m.data.revert then found = m end
-        end
-      end
+  ["marks:accept-hunk"] = accept_at_caret,
+  ["marks:revert-hunk"] = revert_at_caret,
+  ["marks:revert-change"] = revert_at_caret,
+
+  ["marks:accept-all"] = function()
+    local n = marks.accept_all(core.active_view.doc)
+    core.log("kept %d agent mark%s", n, n == 1 and "" or "s")
+    core.redraw = true
+  end,
+
+  -- Revert-all refuses per hunk exactly as the button does: a hunk the buffer
+  -- has been edited on is counted among those left, never overwritten.
+  ["marks:revert-all"] = function()
+    local done, refused = marks.revert_all(core.active_view.doc)
+    if refused > 0 then
+      core.log("reverted %d change%s; left %d the buffer has changed since",
+        done, done == 1 and "" or "s", refused)
+    else
+      core.log("reverted %d agent change%s", done, done == 1 and "" or "s")
     end
-    if not found then
-      core.log("no agent change to revert at line %d", line)
-      return
-    end
-    dv:revert_mark(found)
+    core.redraw = true
   end,
 
   ["marks:clear-changes"] = function()
@@ -596,6 +676,18 @@ command.add(DocView, {
     core.redraw = true
   end,
 })
+
+
+-- The bindings live here, next to the commands they name, for the same reason
+-- the commands do: a chord and the thing it runs should not be able to drift
+-- into two files. alt+down / alt+up are free -- the arrows are spoken for under
+-- ctrl and shift but never under alt -- and "down to the next change, up to the
+-- previous" is the direction the eye already reads a diff in. alt+n / alt+p in
+-- keymap.lua reach the same jump under the older marks:*-change names.
+keymap.add {
+  ["alt+down"] = "marks:next",
+  ["alt+up"] = "marks:prev",
+}
 
 
 return DocView

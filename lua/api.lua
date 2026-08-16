@@ -30,8 +30,29 @@ local cached_headers = nil
 -- base_url and model are configuration and live in the C-side credential store
 -- (src/lauth.c) alongside the key, which Lua cannot read. auth.base_url()
 -- already applies the environment-wins precedence.
+-- Which wire protocol the endpoint speaks. Both a local ds4-server (Anthropic
+-- Messages) and a local llama.cpp (OpenAI chat-completions) resolve to the
+-- "local" provider, so the address alone can't tell them apart -- this is an
+-- explicit setting (auth.wire / `/auth wire` / ANTHROPIC_WIRE), defaulting to
+-- Anthropic so nothing existing changes.
+local function wire()
+  local ok, w = pcall(auth.wire)
+  return (ok and w) or "anthropic"
+end
+M.wire = wire
+
 local function endpoint()
   local base = auth.base_url()
+  if wire() == "openai" then
+    -- OpenAI-compatible: POST <base>/v1/chat/completions. Accept a bare origin,
+    -- a base already ending in /v1, or the full path, so the user doesn't have
+    -- to remember the exact suffix.
+    if not base or base == "" then base = "https://api.openai.com" end
+    base = base:gsub("/+$", "")
+    if base:match("/chat/completions$") then return base end
+    if base:match("/v1$") then return base .. "/chat/completions" end
+    return base .. "/v1/chat/completions"
+  end
   if not base or base == "" then return "https://api.anthropic.com/v1/messages" end
   base = base:gsub("/+$", "")
   -- Accept either a bare origin or a full messages URL, so callers do not have
@@ -213,7 +234,12 @@ end
 
 local function auth_headers()
   if cached_headers then return cached_headers end
-  local h = { "anthropic-version: 2023-06-01", "content-type: application/json" }
+  -- OpenAI-compatible servers reject/ignore the anthropic-version header; send
+  -- only content-type. A local llama.cpp wants no credential at all, which the
+  -- base_url branch below already handles.
+  local h = wire() == "openai"
+    and { "content-type: application/json" }
+    or { "anthropic-version: 2023-06-01", "content-type: application/json" }
   -- Note what is NOT here: the key. auth.has_key() answers the only question
   -- this code has, and lhttp.c attaches the header itself from the C-side
   -- store when a request sets `auth = true`. The secret never enters the Lua
@@ -253,7 +279,8 @@ local function auth_headers()
         fatal = true,
         hint = "Set one of these once and boggart will remember it:\n"
           .. "  /auth key sk-...                 store an Anthropic API key\n"
-          .. "  /auth url http://127.0.0.1:8000  store a local endpoint (e.g. ds4-server)\n"
+          .. "  /auth url http://127.0.0.1:8000  store a local Anthropic endpoint (e.g. ds4-server)\n"
+          .. "  /auth url http://127.0.0.1:8080 + /auth wire openai   a local OpenAI server (llama.cpp)\n"
           .. "\nOr for this shell only:\n"
           .. "  export ANTHROPIC_API_KEY=sk-...\n"
           .. "  export ANTHROPIC_BASE_URL=http://127.0.0.1:8000\n"
@@ -369,9 +396,224 @@ local function new_decoder(on_text)
   return { feed = feed, finish = finish }
 end
 
+-- ---- OpenAI wire adapter ---------------------------------------------------
+-- boggart's transcript is Anthropic content-blocks everywhere. To talk to a
+-- local OpenAI-compatible server (llama.cpp / vLLM / LM Studio) we translate
+-- ONLY at the wire boundary: encode the request body on the way out, decode the
+-- SSE on the way back into the same block shape the Anthropic decoder produces.
+-- The agent loop, tools, marks and transcript never learn a second format.
+
+-- Anthropic content is a string or a list of blocks; pull the plain text out.
+local function text_of(content)
+  if type(content) == "string" then return content end
+  if type(content) ~= "table" then return "" end
+  local parts = {}
+  for _, b in ipairs(content) do
+    if type(b) == "string" then parts[#parts + 1] = b
+    elseif type(b) == "table" and b.type == "text" and b.text then parts[#parts + 1] = b.text end
+  end
+  return table.concat(parts)
+end
+
+-- Anthropic accepts loose JSON-schema type names in tool definitions; OpenAI
+-- servers (llama.cpp's grammar converter especially) validate strictly and 400
+-- on anything non-standard. Normalise every `type` in a tool's schema to the
+-- canonical JSON-schema name, deep-copying so the shared tool definitions the
+-- Anthropic path uses are never mutated.
+local SCHEMA_TYPE = {
+  bool = "boolean", boolean = "boolean",
+  int = "integer", integer = "integer", long = "integer",
+  float = "number", double = "number", number = "number", num = "number",
+  str = "string", string = "string", text = "string",
+  dict = "object", object = "object", map = "object",
+  list = "array", array = "array",
+  null = "null", ["nil"] = "null", none = "null",
+}
+local function norm_schema(s)
+  if type(s) ~= "table" then return s end
+  local out = {}
+  for k, v in pairs(s) do
+    if k == "type" and type(v) == "string" then
+      out[k] = SCHEMA_TYPE[v:lower()] or v
+    elseif k == "type" and type(v) == "table" then
+      local t = {}
+      for i, x in ipairs(v) do t[i] = (type(x) == "string" and (SCHEMA_TYPE[x:lower()] or x)) or x end
+      out[k] = t
+    elseif type(v) == "table" then
+      out[k] = norm_schema(v)
+    else
+      out[k] = v
+    end
+  end
+  -- An array with no `items` is legal JSON-schema and Anthropic tolerates it,
+  -- but strict OpenAI templates choke: gpt-oss's Jinja does `{% if
+  -- param_spec.type == "array" %}{% if param_spec['items'] %}`, and a missing
+  -- `items` makes minja throw "Function is not a bool value" -> HTTP 500 on the
+  -- whole request. Supply a permissive default so every array is renderable.
+  if out.type == "array" and type(out.items) ~= "table" then
+    out.items = { type = "string" }
+  end
+  return out
+end
+
+local function to_openai_body(body)
+  local msgs = {}
+  local systext = text_of(body.system)
+  if systext ~= "" then msgs[#msgs + 1] = { role = "system", content = systext } end
+
+  for _, m in ipairs(body.messages or {}) do
+    if type(m.content) == "string" then
+      msgs[#msgs + 1] = { role = m.role, content = m.content }
+    else
+      local textparts, tool_calls, tool_results = {}, {}, {}
+      for _, b in ipairs(m.content or {}) do
+        if b.type == "text" then
+          textparts[#textparts + 1] = b.text or ""
+        elseif b.type == "tool_use" then
+          tool_calls[#tool_calls + 1] = {
+            id = b.id, type = "function",
+            ["function"] = { name = b.name, arguments = json.encode(b.input or {}) },
+          }
+        elseif b.type == "tool_result" then
+          -- Each tool result is its own message keyed by the call id -- the
+          -- OpenAI shape for "here is what that function returned".
+          tool_results[#tool_results + 1] = {
+            role = "tool", tool_call_id = b.tool_use_id, content = text_of(b.content),
+          }
+        end
+        -- `thinking` blocks are dropped: there is no assistant-reasoning input slot.
+      end
+      if m.role == "assistant" then
+        local msg = { role = "assistant", content = table.concat(textparts) }
+        if #tool_calls > 0 then msg.tool_calls = tool_calls end
+        msgs[#msgs + 1] = msg
+      else
+        -- A user turn's tool_results answer the previous assistant's tool_calls,
+        -- so they must come first, then any actual user text.
+        for _, tr in ipairs(tool_results) do msgs[#msgs + 1] = tr end
+        local t = table.concat(textparts)
+        if t ~= "" then msgs[#msgs + 1] = { role = "user", content = t } end
+      end
+    end
+  end
+
+  local out = {
+    model = body.model, max_tokens = body.max_tokens,
+    messages = msgs, stream = body.stream and true or false,
+  }
+  if body.stream then out.stream_options = { include_usage = true } end
+  if body.temperature then out.temperature = body.temperature end
+  if body.tools and #body.tools > 0 then
+    local tools = {}
+    for _, t in ipairs(body.tools) do
+      tools[#tools + 1] = { type = "function", ["function"] = {
+        name = t.name, description = t.description,
+        parameters = norm_schema(t.input_schema) or { type = "object" },
+      } }
+    end
+    out.tools = tools
+  end
+  return out
+end
+
+-- Decode an OpenAI chat-completions SSE stream into the same (assistant_message,
+-- stop_reason, stream_err) the Anthropic decoder returns. delta.content -> text,
+-- delta.reasoning_content -> a thinking block (qwen3 streams its reasoning
+-- separately), delta.tool_calls -> tool_use blocks (name + JSON args arrive in
+-- fragments, accumulated by index).
+local function new_openai_decoder(on_text)
+  local text, thinking, tool_acc = "", "", {}
+  local stop_reason, stream_err, buf = nil, nil, ""
+  local usage = { input_tokens = 0, output_tokens = 0,
+                  cache_read_input_tokens = 0, cache_creation_input_tokens = 0 }
+  local FINISH = { stop = "end_turn", length = "max_tokens",
+                   tool_calls = "tool_use", content_filter = "end_turn" }
+
+  local function handle(evt)
+    if type(evt) ~= "table" then return end
+    if type(evt.usage) == "table" then
+      if type(evt.usage.prompt_tokens) == "number" then usage.input_tokens = evt.usage.prompt_tokens end
+      if type(evt.usage.completion_tokens) == "number" then usage.output_tokens = evt.usage.completion_tokens end
+    end
+    if evt.error then
+      stream_err = "api stream error: " .. (type(evt.error) == "table" and evt.error.message or tostring(evt.error))
+      return
+    end
+    local ch = evt.choices and evt.choices[1]
+    if not ch then return end
+    local d = ch.delta or {}
+    if type(d.content) == "string" and d.content ~= "" then
+      text = text .. d.content
+      if on_text then on_text(d.content) end
+    end
+    if type(d.reasoning_content) == "string" and d.reasoning_content ~= "" then
+      thinking = thinking .. d.reasoning_content
+    end
+    if type(d.tool_calls) == "table" then
+      for _, tc in ipairs(d.tool_calls) do
+        local i = (tc.index or 0) + 1
+        local acc = tool_acc[i]
+        if not acc then acc = { id = nil, name = "", args = "" }; tool_acc[i] = acc end
+        if tc.id then acc.id = tc.id end
+        local fn = tc["function"]
+        if fn then
+          if fn.name then acc.name = acc.name .. fn.name end
+          if fn.arguments then acc.args = acc.args .. fn.arguments end
+        end
+      end
+    end
+    if ch.finish_reason then stop_reason = FINISH[ch.finish_reason] or "end_turn" end
+  end
+
+  local function feed(chunk)
+    buf = buf .. chunk
+    while true do
+      local nl = buf:find("\n", 1, true)
+      if not nl then break end
+      local line = buf:sub(1, nl - 1):gsub("\r$", "")
+      buf = buf:sub(nl + 1)
+      if line:sub(1, 6) == "data: " then
+        local data = line:sub(7)
+        if data ~= "" and data ~= "[DONE]" then
+          local ok, evt = pcall(json.decode, data)
+          if ok then handle(evt) end
+        end
+      end
+    end
+  end
+
+  local function finish()
+    local content = {}
+    if thinking ~= "" then content[#content + 1] = { type = "thinking", thinking = thinking } end
+    if text ~= "" then content[#content + 1] = { type = "text", text = text } end
+    local maxi = 0; for i in pairs(tool_acc) do if i > maxi then maxi = i end end
+    local had_tool = false
+    for i = 1, maxi do
+      local acc = tool_acc[i]
+      if acc and acc.name ~= "" then
+        local ok, parsed = pcall(json.decode, acc.args ~= "" and acc.args or "{}")
+        content[#content + 1] = {
+          type = "tool_use", id = acc.id or ("call_" .. i), name = acc.name,
+          input = (ok and type(parsed) == "table") and parsed or {},
+        }
+        had_tool = true
+      end
+    end
+    if #content == 0 then content[1] = { type = "text", text = "" } end
+    -- If the model emitted tool calls, the Anthropic-side stop_reason MUST be
+    -- tool_use or run_tool_round never fires -- force it regardless of what
+    -- finish_reason the server sent (some send "stop" alongside tool_calls).
+    if had_tool then stop_reason = "tool_use" end
+    if not stop_reason then stop_reason = "end_turn" end
+    return { role = "assistant", content = content, usage = usage }, stop_reason, stream_err
+  end
+
+  return { feed = feed, finish = finish }
+end
+
 -- ---- the transport (always runs inside a scheduler coroutine) --------------
-local function stream_async_once(body, on_text)
-  local dec = new_decoder(on_text)
+local function stream_async_once(body, on_text, openai)
+  local dec = openai and new_openai_decoder(on_text) or new_decoder(on_text)
   local raw = {}
   local req = http.begin{
     url = endpoint(), method = "POST", headers = auth_headers(), auth = true,
@@ -401,9 +643,10 @@ local function stream_async(body_tbl, on_text)
   -- guarantees the outbound request is always valid UTF-8 no matter its
   -- provenance. It is a no-op (a single O(n) scan, no allocation) whenever the
   -- body is already valid, which after the ingest scrub is the normal case.
-  local body = util.to_valid_utf8(json.encode(body_tbl))
+  local openai = wire() == "openai"
+  local body = util.to_valid_utf8(json.encode(openai and to_openai_body(body_tbl) or body_tbl))
   for attempt = 1, M.RETRY.attempts do
-    local msg, stop, serr, status, terr, raw = stream_async_once(body, on_text)
+    local msg, stop, serr, status, terr, raw = stream_async_once(body, on_text, openai)
     if status == 200 and not serr then return msg, stop end
     if status == 401 or status == 403 then cached_headers = nil end
 
@@ -448,6 +691,30 @@ M.CONTEXT = {
   ["deepseek-v4-flash"] = 100000,
   ["deepseek-v4-pro"] = 100000,
 }
+
+-- Token pricing, USD per 1,000,000 tokens, as { match, input, output }. These
+-- are ESTIMATES, for showing an approximate $ spend next to the token counts --
+-- not billing-accurate, and they drift as vendors change their prices. Matched
+-- by model-id substring in order (first hit wins), so "claude-opus-5" and
+-- "claude-opus-4-8" both land on the opus row; `default` catches anything not
+-- listed. Easy to extend: add a row, keep the list small and specific-first.
+--
+-- A LOCAL endpoint is your own server (see M.status().is_local), so its cost is
+-- $0 -- M.cost returns nil for it, letting the UI say "local" instead of a
+-- bogus price. Cache reads bill at roughly a tenth of the input rate, which
+-- M.cost applies to the accumulated cached-token total.
+M.PRICING = {
+  { "claude-opus",   5.0,  25.0 },  -- Opus 5 / Opus 4.x
+  { "claude-sonnet", 3.0,  15.0 },  -- Sonnet 5 / Sonnet 4.x
+  { "claude-haiku",  1.0,   5.0 },  -- Haiku 4.5
+  { "claude-fable", 10.0,  50.0 },  -- Fable 5 (most capable)
+  { "deepseek",      0.30,  1.20 }, -- DeepSeek v4 -- order-of-magnitude estimate
+  default = { 3.0, 15.0 },          -- unknown remote model: assume Sonnet-class
+}
+
+-- Cache-read (prompt-cache hit) input tokens bill at about a tenth of fresh
+-- input on the vendors boggart talks to.
+M.CACHE_READ_RATIO = 0.1
 
 -- Providers that speak the Messages API.
 --
@@ -587,6 +854,39 @@ function M.context_fraction(sess)
   sess = sess or bog.session
   local used = M.context_used(sess)
   return used / M.context_limit(sess), used
+end
+
+-- The { input, output } price (USD per 1M tokens) for a model id, matched by
+-- substring against M.PRICING with a sane default. Estimate, not a quote.
+local function price_for(model)
+  model = tostring(model or ""):lower()
+  for _, row in ipairs(M.PRICING) do
+    if model:find(row[1], 1, true) then return row[2], row[3] end
+  end
+  return M.PRICING.default[1], M.PRICING.default[2]
+end
+M.price_for = price_for
+
+-- Estimated USD spent so far on a session, from its accumulated token usage
+-- (sess.usage.input / output / cached, as run_on records them). Returns nil for
+-- a LOCAL endpoint -- your own server has no per-token cost, so the UI can show
+-- "local" rather than a fake $0.00 -- and 0 when nothing has been billed yet.
+-- This is an ESTIMATE off M.PRICING: a ballpark for "what am I spending?", not
+-- an invoice. Purely additive and side-effect-free, so it is safe to call from
+-- the status bar every frame and never touches the request/stream path. The CLI
+-- shares this file, so it can print the same figure.
+function M.cost(sess)
+  sess = sess or bog.session
+  -- is_local is a property of the endpoint/provider, not the session, so
+  -- status() (which reads the live config) is the right source of truth.
+  local ok, st = pcall(M.status)
+  if ok and st and st.is_local then return nil end
+  local u = sess and sess.usage
+  if not u then return 0 end
+  local pin, pout = price_for((sess and sess.model) or (st and st.model))
+  return ((u.input  or 0) * pin
+        + (u.output or 0) * pout
+        + (u.cached or 0) * pin * M.CACHE_READ_RATIO) / 1e6
 end
 
 -- maybe_compact(sess?, opts?) -- defaults to the single-agent session + sync.

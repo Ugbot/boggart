@@ -53,12 +53,12 @@ local TRANSCRIPT_LINES = 400
 -- three-letter forms a terminal row has space for; a window has space for the
 -- sentence, and "io" meaning "parked on an HTTP request" is not guessable.
 --
--- "waiting on approval" cannot occur today. Swarm agents are built by
--- lua/thread.lua, which installs no approval gate, and lua/sched.lua treats an
--- unrecognised yield as runnable -- so nothing ever reports it. It is listed
--- because that is the word the engine would report if a gate were added, and a
--- roster that rendered a blank for a real status would be worse than one that
--- is ready for it.
+-- "waiting on approval" is now a state a sub-agent can really be in. The swarm
+-- approval gate (shell/agent/approval.lua) parks a worker whose gated tool
+-- needs a yes/no and registers the request in bog.approvals; state_of reads
+-- that registry and reports this word, because lua/sched.lua classes the gate's
+-- "approve" yield as runnable and would otherwise say "running". The request
+-- itself, with Approve/Reject, is drawn in the roster and the detail pane.
 local STATE = {
   run      = { "running",             "good"    },
   io       = { "waiting on io",       "link"    },
@@ -76,6 +76,10 @@ local STATE = {
 
 function SwarmView:new()
   SwarmView.super.new(self)
+  -- A scroll surface for the shell's spine: typing() is already false here (this
+  -- is no DocView and no composer), so j/k/Ctrl-d/u reach it -- see
+  -- on_spine_scroll, which turns them into roster movement.
+  self.scrollable = true
   self.hits = {}
   self.journal = {}        -- bus entries, oldest first (newest last on screen)
   self.transcripts = {}    -- id -> persisted transcript lines, for dead agents
@@ -238,9 +242,23 @@ end
 
 function SwarmView:state_of(rec)
   if self.killed[rec.id] then return "stopped" end
+  -- A sub-agent parked on the approval gate re-yields "approve" every sweep, so
+  -- the scheduler still reports it "runnable" and dash would say "run". The gate
+  -- is the truth here: if it is holding a request for this agent, the agent is
+  -- waiting on approval, whatever the scheduler thinks it is doing.
+  if self:pending_for(rec.id) then return "approve" end
   local a = bog.sched and bog.sched.by_id and bog.sched.by_id[rec.id]
   if a and a.paused then return "paused" end
   return dash.status_word(rec)
+end
+
+-- The outstanding approval request for one agent, or nil. bog.approvals is set
+-- by the studio's swarm gate (shell/agent/approval.lua) and is absent in the
+-- CLI, so this is nil-safe by construction.
+function SwarmView:pending_for(id)
+  local a = bog.approvals
+  local rec = a and a.get and a.get(id)
+  if rec and rec.decision == nil then return rec end
 end
 
 local function state_word(s)
@@ -339,6 +357,24 @@ function SwarmView:on_key_pressed(key)
   if key == "escape" and self:live() then self:stop(); return true end
 end
 
+-- The spine's j/k/Ctrl-d/u, mapped onto the roster instead of a pixel scroll.
+-- The dashboard is fixed panes over a process-global swarm -- there is no single
+-- scrollable body to pan -- so "down" means "the next agent", which is what a
+-- keyboard reader actually wants here. gg/G arrive as ±1e9 and select_delta
+-- clamps them to the ends. This is what the spine calls once the view is
+-- scrollable and not classified as typing.
+function SwarmView:on_spine_scroll(lines)
+  self:select_delta(lines)
+end
+
+-- The wheel moves the selection too, for the same reason on_spine_scroll does:
+-- there is no pixel body to pan, so a wheel notch is "next / previous agent".
+-- Overriding it also keeps the base View from banking a dead scroll offset now
+-- that this view is scrollable but never draws from self.scroll.
+function SwarmView:on_mouse_wheel(y)
+  self:select_delta(y > 0 and -1 or 1)
+end
+
 -- ---------------------------------------------------------------------------
 -- Drawing
 -- ---------------------------------------------------------------------------
@@ -435,7 +471,17 @@ function SwarmView:draw_roster(font, charw, x, y, lh, voff, cols, rows)
       cell(font, charw, x, y + voff, C.time, dash.mmss(el), quiet, 6)
       cell(font, charw, x, y + voff, C.out, dash.human(rec.bytes), quiet, 6)
     end
-    cell(font, charw, x, y + voff, C.act, dash.activity(rec), style.text, cols - C.act)
+    -- A row waiting on approval says so where its activity would be, in warn,
+    -- so the request is legible from the index without opening the detail pane.
+    -- The state column already reads "waiting on approval"; this is the what.
+    local pend = self:pending_for(rec.id)
+    if pend then
+      cell(font, charw, x, y + voff, C.act,
+        "approve? " .. pend.name .. " " .. (pend.summary or ""):gsub("%s+", " "),
+        style.warn, cols - C.act)
+    else
+      cell(font, charw, x, y + voff, C.act, dash.activity(rec), style.text, cols - C.act)
+    end
     local id = rec.id
     self.hits[#self.hits + 1] = {
       x = x, y = y, w = self.size.x - (x - self.position.x) * 2, h = lh,
@@ -537,9 +583,33 @@ function SwarmView:draw_detail(font, charw, x, y, lh, voff, cols, rows)
     rec.tools or 0, (rec.tools or 0) == 1 and "" or "s"), style.dim, cols)
   y = y + lh
 
+  -- The interactive approval surface. A sub-agent whose gated tool needs a
+  -- yes/no parks in shell/agent/approval.lua and registers the request here;
+  -- this is where it is read and answered. Approve lets the call through,
+  -- Reject returns the model a permission error, and "Approve all" grants this
+  -- agent a blanket allow so it stops asking. The decision resolves the parked
+  -- coroutine within a frame or two -- the gate is polling for exactly this.
+  local pend = self:pending_for(rec.id)
+  if pend then
+    cell(font, charw, x, y + voff, 0, string.format("wants to run '%s': %s",
+      pend.name, ((pend.summary or ""):gsub("%s+", " "))), style.warn, cols)
+    y = y + lh
+    local items = {
+      { label = "Approve", tone = style.good,
+        action = function() bog.approvals.decide(rec.id, "approve") end },
+      { label = "Reject", tone = style.error,
+        action = function() bog.approvals.decide(rec.id, "reject") end },
+      { label = "Approve all", action = function() bog.approvals.decide(rec.id, "always") end },
+    }
+    for _, hit in ipairs(widgets.row(font, items, x, y, self.mouse)) do
+      self.hits[#self.hits + 1] = hit
+    end
+    y = y + widgets.height(font)
+    rows = rows - math.ceil(widgets.height(font) / lh) - 1
+  end
+
   -- Per-actor controls, and only the ones the engine actually has: pause and
-  -- kill are lua/sched.lua's, and there is nothing here to approve because
-  -- swarm agents have no approval gate (see STATE above).
+  -- kill are lua/sched.lua's; approval, when one is pending, is the block above.
   local a = bog.sched and bog.sched.by_id and bog.sched.by_id[rec.id]
   if a then
     local items = {
@@ -705,14 +775,25 @@ function SwarmView:draw()
 end
 
 function SwarmView.open()
-  local node = core.root_view:get_primary_node()
-  if instance and node:get_node_for_view(instance) then
-    node:set_active_view(instance)
+  -- Singleton, reused wherever it lives -- see studio.open_settings for why the
+  -- search is over the whole root and not just the primary node. A workspace can
+  -- stash a view OUT of the live tree, and get_node_for_view scoped to the
+  -- primary node would miss it, so a cross-workspace reopen built a SECOND
+  -- roster over the one process-global swarm. Search the whole root: bring a
+  -- found instance forward, re-home a stashed one, and construct only when there
+  -- is no instance at all.
+  if instance then
+    local node = core.root_view.root_node:get_node_for_view(instance)
+    if node then
+      node:set_active_view(instance)
+    else
+      core.root_view:get_primary_node():add_view(instance)
+    end
     core.set_active_view(instance)
     return instance
   end
   instance = SwarmView()
-  node:add_view(instance)
+  core.root_view:get_primary_node():add_view(instance)
   core.set_active_view(instance)
   return instance
 end

@@ -407,6 +407,66 @@ function marks.revert(doc, m)
 end
 
 -- ---------------------------------------------------------------------------
+-- Keeping one hunk
+-- ---------------------------------------------------------------------------
+
+-- Accept the hunk this mark heads: keep every character the agent wrote and
+-- only take the decoration away. The exact inverse of revert -- revert puts the
+-- old text back and then clears the marks; accept clears the marks and leaves
+-- the text precisely as it stands. Because it never touches the buffer there is
+-- nothing here to guess and nothing to refuse: "stop drawing this" is safe
+-- whatever the buffer now says, which is why accept carries none of revert's
+-- has-it-changed check.
+function marks.accept(doc, m)
+  if type(m) == "number" then m = marks.by_id(doc, m) end
+  if not m then return false, "no mark here" end
+  -- The whole hunk lifts off, not just the head line: accepting a change clears
+  -- its wash from every line it covered -- the same span revert clears.
+  local group = m.group or (m.data and m.data.group)
+  local gone = group and marks.clear_group(doc, group) or marks.clear(doc, m.id)
+  if gone == 0 then return false, "nothing to accept" end
+  return true
+end
+
+-- ---------------------------------------------------------------------------
+-- Accepting or reverting everything
+-- ---------------------------------------------------------------------------
+
+-- Accept every hunk at once: the same safe, text-preserving clear as `accept`,
+-- over the whole file. This is `clear` named for what it means to the reviewer
+-- -- "I have read these, keep them" -- so the call site reads as the decision
+-- it is rather than as wiping a store.
+function marks.accept_all(doc)
+  return marks.clear(doc)
+end
+
+-- Revert every hunk that still safely can be. Each is put through the same
+-- per-hunk `revert`, so each carries its own has-the-buffer-changed check: a
+-- hunk edited since the agent wrote it is left standing, marks and all, rather
+-- than guessed at. Revert-all must never become the loophole that overwrites an
+-- edit the per-hunk button would have refused.
+--
+-- Bottom-up, on the same reasoning as `from_edit`: a real buffer edit low in
+-- the file cannot move a line number above it, so each head's recorded line is
+-- still valid when its turn comes. The head ids are gathered first, before the
+-- first revert reindexes the store out from under a live iteration. Returns how
+-- many were reverted and how many were refused.
+function marks.revert_all(doc)
+  local heads = {}
+  for _, m in ipairs(marks.all(doc)) do
+    if m.data and m.data.revert then heads[#heads + 1] = m.id end
+  end
+  local done, refused = 0, 0
+  for i = #heads, 1, -1 do
+    local m = marks.by_id(doc, heads[i])
+    if m then
+      if marks.revert(doc, m) then done = done + 1 else refused = refused + 1 end
+    end
+  end
+  return done, refused
+end
+
+-- ---------------------------------------------------------------------------
 -- Binding a store to a document
 -- ---------------------------------------------------------------------------
 

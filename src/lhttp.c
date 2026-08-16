@@ -331,6 +331,35 @@ static hctx *get_ctx(lua_State *L, int create) {
   return ctx;
 }
 
+/* Neutralise the raw curl-on-libuv handles this module leaves on luv's shared
+ * loop, to be called from C right before lua_close(). lua_close() runs luv's
+ * loop_gc, which uv_walks the loop and uv_closes every open handle through
+ * luv_close_cb -- and that cb casts handle->data to a luv_handle_t*. Our two
+ * ctx timers carry non-luv data (the ctx and the loop pointer, set in get_ctx),
+ * so that cast is a type confusion and lua_rawgeti() on the garbage ref faults:
+ * a use-after-free at process exit (SIGSEGV / exit 139). We can't hand luv our
+ * timers to free (they're embedded in the calloc'd ctx, not luv_handle_t), but
+ * luv_close_cb early-returns on a NULL data -- so we stop the timers and NULL
+ * their data, and loop_gc then closes them as harmless no-ops. We deliberately
+ * do NOT free the ctx (loop_gc still touches &ctx->timer while closing) nor
+ * curl_multi_cleanup (its poll sockets reference the multi); leaking both at
+ * exit is fine. Idempotent, and a no-op when no HTTP was ever done.
+ *
+ * Known gap: a poll socket still open for an in-flight request at exit carries
+ * non-luv data too (sockctx*) and would fault the same way; a normal exit has
+ * none (completed transfers already closed their polls). Tracking live polls to
+ * neutralise them as well is the follow-up if that edge case ever bites. */
+void boggart_http_shutdown(lua_State *L) {
+  hctx *ctx = get_ctx(L, 0);
+  if (!ctx) return;
+  uv_timer_stop(&ctx->timer);
+  uv_timer_stop(&ctx->pump_timer);
+  ctx->timer.data = NULL;
+  ctx->pump_timer.data = NULL;
+  lua_pushnil(L);
+  lua_rawsetp(L, LUA_REGISTRYINDEX, &g_hctx_key);
+}
+
 static size_t write_async(char *ptr, size_t size, size_t nmemb, void *ud) {
   httpreq *r = (httpreq *)ud;
   size_t n = size * nmemb;

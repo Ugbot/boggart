@@ -99,6 +99,8 @@ M.commands = {
   { name = "reset",    help = "delete an overlay file (or all with no arg), then reload",
                        args = overlay_names },
   { name = "model",    help = "show the running model, or switch it", args = model_names },
+  { name = "endpoint", help = "saved endpoint presets: list, save <name>, <name> to switch, rm <name>" },
+  { name = "agents",   help = "live fleet status: how many agents are running and what each is doing" },
   { name = "until",    help = "run turns until a goal is met, or the budget is spent" },
   { name = "new",      help = "start a fresh conversation (new saved session)" },
   { name = "dispatch", help = "optional auto-routing: hand different-enough requests to a specialist",

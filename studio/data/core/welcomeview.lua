@@ -219,6 +219,16 @@ function WelcomeView:new()
   self.model_chosen = (okm and stored and stored ~= "") and true or false
   self.model = (self.model_chosen and stored)
     or (bog and bog.session and bog.session.model) or nil
+
+  -- Which shape the local endpoint speaks. It matters because the two wires go
+  -- to different paths -- /v1/messages for anthropic, /v1/chat/completions for
+  -- openai -- and a local OpenAI server pointed at with the wrong wire fails on
+  -- a request it never saw the right form of. A stored choice is respected on
+  -- reopen; a fresh local route defaults to "openai" at apply(), because the
+  -- /v1/models catalogue this screen fetches IS the OpenAI route and answering
+  -- it strongly implies the rest of that shape.
+  local okw, wire = pcall(auth.wire)
+  self.wire = (okw and wire) or nil
 end
 
 function WelcomeView:get_name() return "Welcome" end
@@ -371,6 +381,16 @@ end
 function WelcomeView:apply()
   if self.route == "local" and not auth.base_url() then
     auth.set("base_url", DEFAULT_LOCAL)
+  end
+  -- The wire is written down with everything else, so the value the test proves
+  -- is the value the next request goes out under. The local route defaults to
+  -- "openai" (see :new()); the Anthropic route says "anthropic" out loud rather
+  -- than leaving a wire left over from a previous local attempt, so switching
+  -- back is clean.
+  if self.route == "local" then
+    auth.set("wire", self.wire or "openai")
+  elseif self.route == "api" then
+    auth.set("wire", "anthropic")
   end
   if self.model and self.model ~= "" then
     auth.set("model", self.model)
@@ -715,6 +735,22 @@ function WelcomeView:draw()
       editing and "enter to save, esc to cancel, tab for the next field" or f.hint, w),
       "left", x, y, w, lh)
     y = y + lh
+
+    -- The endpoint's shape, as a two-way toggle: /v1/models answering is a
+    -- strong hint but not proof (some anthropic-shaped servers proxy it), so the
+    -- choice is offered rather than assumed, defaulting to OpenAI where the
+    -- catalogue fetched. apply() is where it is written; see :new() for the
+    -- default.
+    if f.key == "base_url" then
+      local wire = self.wire or "openai"
+      y = y + vpad / 2
+      y = row({
+        { label = "OpenAI-shaped", active = (wire == "openai"),
+          action = function() self.wire, self.result = "openai", nil end },
+        { label = "Anthropic-shaped", active = (wire == "anthropic"),
+          action = function() self.wire, self.result = "anthropic", nil end },
+      }, x, y, right)
+    end
 
     -- Models as buttons: from the endpoint itself where there is one, and from
     -- what this build knows about where there is not.

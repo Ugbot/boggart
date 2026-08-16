@@ -81,6 +81,25 @@ function studio.attach()
   -- must still be a chat window.
   core.try(studio.setup_swarm)
 
+  -- Land the user back where they left off. On every launch after the first,
+  -- resume the most recent conversation into the AgentView rather than opening a
+  -- blank one -- like Claude/ChatGPT desktop. The welcome screen (below) owns the
+  -- first run and must start empty, so this defers to it, the two agreeing by
+  -- asking WelcomeView the same question. core.try because a store that cannot be
+  -- read must still leave you with a chat window.
+  core.try(function()
+    if require("core.welcomeview").is_first_run() then return end
+    -- --resume, if it was passed, chooses the session; without the flag
+    -- resume_startup returns nil and we fall back to the newest row in the store.
+    -- Either way we only repaint once a transcript has actually loaded.
+    if not (bog.resume_startup and bog.resume_startup()) then
+      local recent = bog.store.sess_list(1)
+      local id = recent and recent[1] and recent[1].id
+      if id then bog.resume_session(id) end
+    end
+    if bog.session and bog.session.id then view:repaint(bog.session.messages) end
+  end)
+
   -- A new install opens on the welcome screen instead of an empty conversation
   -- it has no credentials to run. The view decides for itself whether this is a
   -- first run and does nothing on every launch after it; core.try because an
@@ -326,6 +345,26 @@ function studio.open_session(id)
   if studio.sidebar then studio.sidebar:refresh(true) end
 end
 
+-- Delete a session from the store. If it is the one on screen there is nothing
+-- left to show, so a fresh conversation takes its place; the sidebar re-reads
+-- either way. The confirm-guard lives at the call sites (a second click on the
+-- sidebar's ×, a y/n on the command) -- by the time we are here the decision is
+-- already made.
+function studio.delete_session(id)
+  if not id then return end
+  bog.store.sess_delete(id)
+  if bog.session and bog.session.id == id then
+    -- Deliberately no save first: the row is gone, and saving would resurrect
+    -- it. Start clean, exactly as agent:new-session does.
+    bog.new_session()
+    local v = studio.open_agent()
+    v.entries = {}
+    v:push("system", "new session " .. tostring(bog.session.id))
+  end
+  if bog.events then pcall(bog.events.emit, "session:deleted", { id = id }) end
+  if studio.sidebar then studio.sidebar:refresh(true) end
+end
+
 function studio.toggle_agent()
   local v = studio.agent_view()
   if v and core.active_view == v then
@@ -400,6 +439,18 @@ function studio.status_items()
     out[#out + 1] = string.format("  %s in / %s out",
       human_tokens((u.input or 0) + (u.cached or 0)), human_tokens(u.output))
   end
+
+  -- Money: the same "spend" signal the provider badge already carries, made
+  -- literal. Remote shows an estimated $ in the warn colour -- the one number
+  -- here that is actual dollars. Local shows nothing: api.cost() returns nil for
+  -- your own server, so there is no fake price to warn about.
+  if bog.api and bog.api.cost then
+    local okc, dollars = pcall(bog.api.cost, bog.session)
+    if okc and dollars and dollars > 0 then
+      out[#out + 1] = style.warn or style.accent
+      out[#out + 1] = string.format("  ~$%.4f", dollars)
+    end
+  end
   if bog.api and bog.api.context_fraction then
     local frac, used = bog.api.context_fraction(bog.session)
     if used > 0 then
@@ -449,14 +500,23 @@ end
 -- One settings view, opened as a tab beside the conversation so it can be
 -- closed like anything else.
 function studio.open_settings()
-  local node = core.root_view:get_primary_node()
-  if studio.settings and node:get_node_for_view(studio.settings) then
-    node:set_active_view(studio.settings)
+  -- One settings view, ever. Reuse the singleton wherever it lives: an inactive
+  -- workspace stashes its views OUT of the live Node tree, so searching only the
+  -- primary node would miss a stashed instance and build a duplicate. Search the
+  -- whole root -- if found in a node, bring it forward; if stashed (no node),
+  -- re-home it into the current primary node instead of constructing a new one.
+  if studio.settings then
+    local node = core.root_view.root_node:get_node_for_view(studio.settings)
+    if node then
+      node:set_active_view(studio.settings)
+    else
+      core.root_view:get_primary_node():add_view(studio.settings)
+    end
     core.set_active_view(studio.settings)
     return studio.settings
   end
   studio.settings = SettingsView()
-  node:add_view(studio.settings)
+  core.root_view:get_primary_node():add_view(studio.settings)
   core.set_active_view(studio.settings)
   return studio.settings
 end
@@ -469,14 +529,21 @@ function studio.open_swarm() return SwarmView.open() end
 -- its MCP servers. A tab beside the conversation, like settings, because it is
 -- a place you look at rather than a command you have to know the name of.
 function studio.open_library()
-  local node = core.root_view:get_primary_node()
-  if studio.library and node:get_node_for_view(studio.library) then
-    node:set_active_view(studio.library)
+  -- Singleton, reused wherever it lives -- see open_settings for why the search
+  -- is over the whole root and why a stashed instance is re-homed rather than
+  -- duplicated across workspaces.
+  if studio.library then
+    local node = core.root_view.root_node:get_node_for_view(studio.library)
+    if node then
+      node:set_active_view(studio.library)
+    else
+      core.root_view:get_primary_node():add_view(studio.library)
+    end
     core.set_active_view(studio.library)
     return studio.library
   end
   studio.library = LibraryView()
-  node:add_view(studio.library)
+  core.root_view:get_primary_node():add_view(studio.library)
   core.set_active_view(studio.library)
   return studio.library
 end
@@ -484,15 +551,22 @@ end
 -- One workflow builder, opened as a tab beside the conversation. Refreshed on
 -- reopen because the files can change under it -- by hand, or by the agent.
 function studio.open_workflows()
-  local node = core.root_view:get_primary_node()
-  if studio.workflows and node:get_node_for_view(studio.workflows) then
+  -- Singleton, reused wherever it lives -- see open_settings for the whole-root
+  -- search and the re-home-instead-of-duplicate rule. Refresh on every reopen,
+  -- live or re-homed, because the files can change under it.
+  if studio.workflows then
     studio.workflows:refresh()
-    node:set_active_view(studio.workflows)
+    local node = core.root_view.root_node:get_node_for_view(studio.workflows)
+    if node then
+      node:set_active_view(studio.workflows)
+    else
+      core.root_view:get_primary_node():add_view(studio.workflows)
+    end
     core.set_active_view(studio.workflows)
     return studio.workflows
   end
   studio.workflows = WorkflowView()
-  node:add_view(studio.workflows)
+  core.root_view:get_primary_node():add_view(studio.workflows)
   core.set_active_view(studio.workflows)
   return studio.workflows
 end
@@ -508,17 +582,24 @@ end
 studio.panels = {}
 
 function studio.open_panel(name)
-  local node = core.root_view:get_primary_node()
+  -- One instance per panel name, reused wherever it lives -- see open_settings
+  -- for the whole-root search and the re-home-instead-of-duplicate rule. Reload
+  -- on every reopen, live or re-homed.
   local existing = studio.panels[name]
-  if existing and node:get_node_for_view(existing) then
+  if existing then
     existing:reload()
-    node:set_active_view(existing)
+    local node = core.root_view.root_node:get_node_for_view(existing)
+    if node then
+      node:set_active_view(existing)
+    else
+      core.root_view:get_primary_node():add_view(existing)
+    end
     core.set_active_view(existing)
     return existing
   end
   local view = PanelView(name)
   studio.panels[name] = view
-  node:add_view(view)
+  core.root_view:get_primary_node():add_view(view)
   core.set_active_view(view)
   return view
 end
@@ -675,6 +756,25 @@ local function prompt(label, submit, default)
   core.command_view:enter(label, submit, function() return {} end, nil, default)
 end
 
+-- The recents as a fuzzy list -- "id  date  title", newest first -- for the
+-- session commands that need you to point at one. Same label shape as
+-- agent:resume-session, so the palette reads the same whichever verb you reach
+-- for. on_pick(id) runs once a row is chosen.
+local function session_picker(label, on_pick)
+  local rows = bog.store.sess_list(30)
+  local items, byname = {}, {}
+  for _, s in ipairs(rows) do
+    local it = string.format("%d  %s  %s", s.id,
+      os.date("%m-%d %H:%M", s.updated), s.title or "(untitled)")
+    items[#items + 1] = it
+    byname[it] = s.id
+  end
+  core.command_view:enter(label, function(text, item)
+    local id = byname[item or text]
+    if id then on_pick(id) end
+  end, function(text) return common.fuzzy_match(items, text) end)
+end
+
 -- The clipboard verbs are predicated on the conversation being focused, so
 -- they take the stroke when it is ours and leave it alone when it is not.
 command.add(function() return core.active_view == studio.agent_view() end, {
@@ -802,8 +902,18 @@ command.add(nil, {
       studio.say("No usage recorded in this session yet.")
       return
     end
-    studio.say("%d turns | %d input (+%d cached) | %d output | last request %d tokens",
-      u.turns, u.input or 0, u.cached or 0, u.output or 0, u.last_input or 0)
+    -- Cost is an ESTIMATE from api.PRICING; a local endpoint has no per-token
+    -- price, so cost() returns nil and we say "local" rather than print $0.00.
+    local money = ""
+    if bog.api and bog.api.cost then
+      local okc, dollars = pcall(bog.api.cost, bog.session)
+      if okc then
+        money = dollars and string.format(" | ~$%.4f (est.)", dollars)
+          or " | local (no per-token cost)"
+      end
+    end
+    studio.say("%d turns | %d input (+%d cached) | %d output | last request %d tokens%s",
+      u.turns, u.input or 0, u.cached or 0, u.output or 0, u.last_input or 0, money)
   end,
 
   -- ---- configuration ------------------------------------------------------
@@ -872,6 +982,38 @@ command.add(nil, {
       end
     end, function(text)
       return common.fuzzy_match(items, text)
+    end)
+  end,
+
+  ["agent:delete-session"] = function()
+    session_picker("Delete session:", function(id)
+      -- Confirm-guard: a delete cannot be undone, so make it a second,
+      -- deliberate keystroke rather than one stray Enter on a fuzzy match.
+      prompt("Delete session " .. id .. "? [y]es / [n]o:", function(ans)
+        if ans:sub(1, 1):lower() == "y" then studio.delete_session(id) end
+      end, "n")
+    end)
+  end,
+
+  ["agent:rename-session"] = function()
+    session_picker("Rename session:", function(id)
+      -- The active conversation's live copy, or the stored one for any other:
+      -- either way sess_save is handed the existing model and messages, so a
+      -- rename changes only the title (titles are otherwise auto-set from the
+      -- first message and never editable).
+      local s = (bog.session and bog.session.id == id) and bog.session
+        or bog.store.sess_load(id)
+      if not s then return end
+      prompt("New title:", function(title)
+        title = (title:gsub("^%s+", ""):gsub("%s+$", ""))
+        if title == "" then return end
+        bog.store.sess_save(id, title, s.model, s.messages)
+        -- Keep bog.session in step so the footer and the next save do not put
+        -- the old title back.
+        if bog.session and bog.session.id == id then bog.session.title = title end
+        if studio.sidebar then studio.sidebar:refresh(true) end
+        core.log("renamed session %d", id)
+      end, s.title or "")
     end)
   end,
 

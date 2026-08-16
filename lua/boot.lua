@@ -297,7 +297,7 @@ local function handle_command(line)
     bog.reload()
   elseif cmd == "auth" then
     local what, val = rest:match("^(%S*)%s*(.*)$")
-    local MAP = { key = "api_key", url = "base_url", model = "model" }
+    local MAP = { key = "api_key", url = "base_url", model = "model", wire = "wire" }
     if what == "" or what == "show" then
       -- Credentials live in C (src/lauth.c); the key is write-only from here,
       -- so this shows a mask the C side produces rather than the value.
@@ -307,12 +307,15 @@ local function handle_command(line)
         src == "environment" and "  (from ANTHROPIC_API_KEY)" or ""))
       io.write(string.format("  url    %s\n", auth.base_url() or "(unset)"))
       io.write(string.format("  model  %s\n", auth.model() or "(unset)"))
+      io.write(string.format("  wire   %s\n", auth.wire() or "anthropic (default)"))
       io.write("environment overrides anything stored here.\n")
-      io.write("  /auth key <k> | /auth url <u> | /auth model <m> | /auth clear [what]\n")
+      io.write("  /auth key <k> | /auth url <u> | /auth model <m> | /auth wire <openai|anthropic> | /auth clear [what]\n")
     elseif what == "clear" then
       if val ~= "" and MAP[val] then auth.clear(MAP[val]); io.write("cleared ", val, "\n")
       else auth.clear(); io.write("cleared all stored credentials\n") end
       bog.api.forget_auth()
+    elseif what == "wire" and val ~= "" and val ~= "openai" and val ~= "anthropic" then
+      io.write("usage: /auth wire <openai|anthropic>\n")
     elseif MAP[what] then
       if val == "" then io.write("usage: /auth ", what, " <value>\n")
       else
@@ -327,12 +330,90 @@ local function handle_command(line)
       io.write("usage: /auth [show] | /auth key <k> | /auth url <u> | /auth model <m> | /auth clear\n")
     end
   elseif cmd == "model" then
-    if rest ~= "" then bog.session.model = rest end
+    -- `/model <name>` applies a saved endpoint preset when the name matches one
+    -- (so `/model gpt-oss` <-> `/model ds4` switches whole servers); otherwise it
+    -- sets the model id on the current endpoint.
+    if rest ~= "" then
+      local presets = require("presets")
+      if presets.load()[rest] then presets.apply(rest); io.write("switched to preset '", rest, "'\n")
+      else bog.session.model = rest end
+    end
     local s = bog.api.status()
     local where = s.is_local and ("local  " .. s.host)
       or (s.provider .. "  (remote)")
     io.write(string.format("model     %s\nrunning   %s\nendpoint  %s\n",
       s.model, where, s.endpoint))
+  elseif cmd == "endpoint" or cmd == "preset" then
+    local sub, arg = rest:match("^(%S*)%s*(.*)$")
+    local presets = require("presets")
+    if sub == "" or sub == "list" then
+      local names, t = presets.list()
+      local cur = auth.base_url()
+      io.write("endpoint presets (", #names, "):\n")
+      for _, n in ipairs(names) do
+        local p = t[n]
+        io.write(string.format("  %-14s %-26s wire=%-9s model=%s%s\n", n,
+          p.url or "(anthropic cloud)", p.wire or "anthropic", p.model or "?",
+          (p.url == cur) and "  *" or ""))
+      end
+      if #names == 0 then io.write("  (none yet)\n") end
+      io.write("  /endpoint save <name>   store the current url+wire+model\n")
+      io.write("  /endpoint <name>        switch to it   |   /endpoint rm <name>\n")
+    elseif sub == "save" then
+      if arg == "" then io.write("usage: /endpoint save <name>\n")
+      else
+        local p = presets.put(arg)
+        io.write(string.format("saved '%s' = %s  wire=%s  model=%s\n", arg,
+          p.url or "(anthropic cloud)", p.wire, p.model or "?"))
+      end
+    elseif sub == "rm" or sub == "remove" or sub == "delete" then
+      io.write(presets.remove(arg) and ("removed '" .. arg .. "'\n")
+        or ("no such preset: " .. arg .. "\n"))
+    else
+      local p = presets.apply(sub)
+      if p then
+        bog.api.forget_auth()
+        io.write(string.format("switched to '%s': %s  wire=%s  model=%s\n", sub,
+          p.url or "(anthropic cloud)", p.wire or "anthropic", p.model or "?"))
+      else
+        io.write("no such preset: ", sub, "  (/endpoint list)\n")
+      end
+    end
+  elseif cmd == "agents" or cmd == "fleet" or cmd == "swarm" then
+    -- Live fleet status. The scheduler's actors ARE the agents (the coordinator
+    -- plus any spawned sub-agents); the store carries their title + model. When
+    -- nothing is mid-turn there are no actors, which is the honest answer.
+    local actors = (bog.sched and bog.sched.actors) or {}
+    if #actors == 0 then
+      io.write("no agents running.\n")
+    else
+      local meta = {}
+      pcall(function()
+        for _, r in ipairs(bog.store.thread_list(true) or {}) do meta[r.id] = r end
+      end)
+      -- io/proc/runnable = doing work (a request in flight or ready to run);
+      -- recv = idle, waiting on a bus message. paused / approve? are user-gated.
+      local WORKING = { io = true, proc = true, runnable = true }
+      local nwork, nwait, npause, napprove = 0, 0, 0, 0
+      local out = {}
+      for _, a in ipairs(actors) do
+        local ap = bog.approvals and bog.approvals.get and bog.approvals.get(a.id)
+        local state
+        if a.paused then state, npause = "paused", npause + 1
+        elseif ap and ap.decision == nil then state, napprove = "approve?", napprove + 1
+        elseif WORKING[a.status] then state, nwork = "working", nwork + 1
+        else state, nwait = "waiting", nwait + 1 end
+        local m = meta[a.id] or {}
+        out[#out + 1] = string.format("  %-10s %-9s %-16s %s%s",
+          tostring(a.id):sub(1, 10), state, tostring(m.model or "-"),
+          m.title and ('"' .. tostring(m.title):gsub("%s+", " "):sub(1, 40) .. '"') or "",
+          m.parent_id and ("  \u{2514} child of " .. tostring(m.parent_id):sub(1, 8)) or "")
+      end
+      io.write(string.format("agents: %d total  --  %d working, %d waiting, %d paused%s\n",
+        #actors, nwork, nwait, npause,
+        napprove > 0 and string.format(", %d awaiting approval", napprove) or ""))
+      for _, line in ipairs(out) do io.write(line, "\n") end
+    end
   elseif cmd == "until" then
     -- /until <task>                    -- run until the model judges it done
     -- /until <shell-check> :: <task>   -- run until the shell command exits 0

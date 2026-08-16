@@ -135,6 +135,29 @@ function SettingsView:fields()
       end,
     },
     {
+      key = "wire",
+      label = "Wire protocol",
+      -- Two names, never empty: an unset wire is the Anthropic default, and the
+      -- field says "anthropic" rather than NOT_SET because there is no third
+      -- state to leave it in. The choice decides which shape the endpoint above
+      -- is talked to in -- /v1/messages for anthropic, /v1/chat/completions for
+      -- openai -- so it belongs directly under it.
+      value = auth.wire() or "anthropic",
+      hint = "openai = local llama.cpp / OpenAI-compatible server; anthropic = Claude / ds4",
+      set = function(v)
+        -- Refused rather than stored, like the endpoint above: a wire that is
+        -- neither name would be a request translated by nobody, and the failure
+        -- would surface later as a shape the server could not parse.
+        local wire = v:lower()
+        if wire ~= "anthropic" and wire ~= "openai" then
+          return nil, ("%q is not a wire -- type anthropic or openai"):format(v)
+        end
+        auth.set("wire", wire)
+        if bog.api.forget_auth then bog.api.forget_auth() end
+        return "wire: " .. wire
+      end,
+    },
+    {
       key = "model",
       label = "Model",
       -- The session's model, not the stored one, because the session is what

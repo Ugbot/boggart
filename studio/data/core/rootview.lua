@@ -220,8 +220,18 @@ function Node:get_divider_overlapping_point(px, py)
 end
 
 
+-- Whether this leaf shows a tab strip. A content leaf always shows one -- even
+-- when it holds a single view -- so what is open is always named and closable,
+-- like a real editor. It is withheld from docked panels (locked nodes) and from
+-- the EmptyView splash placeholder, neither of which has a tab to show.
+function Node:should_show_tabs()
+  if self.type ~= "leaf" or self.locked then return false end
+  return #self.views > 1 or not self.active_view:is(EmptyView)
+end
+
+
 function Node:get_tab_overlapping_point(px, py)
-  if #self.views == 1 then return nil end
+  if not self:should_show_tabs() then return nil end
   local x, y, w, h = self:get_tab_rect(1)
   if px >= x and py >= y and px < x + w * #self.views and py < y + h then
     return math.floor((px - x) / w) + 1
@@ -309,7 +319,7 @@ end
 function Node:update_layout()
   if self.type == "leaf" then
     local av = self.active_view
-    if #self.views > 1 then
+    if self:should_show_tabs() then
       local _, _, _, th = self:get_tab_rect(1)
       av.position.x, av.position.y = self.position.x, self.position.y + th
       av.size.x, av.size.y = self.size.x, self.size.y - th
@@ -375,7 +385,7 @@ end
 
 function Node:draw()
   if self.type == "leaf" then
-    if #self.views > 1 then
+    if self:should_show_tabs() then
       self:draw_tabs()
     end
     local pos, size = self.active_view.position, self.active_view.size
@@ -566,5 +576,9 @@ function RootView:draw()
   end
 end
 
+
+-- Exposed so the shell can put an empty leaf back to the splash placeholder when
+-- a workspace has no views (studio/data/shell isolates views per workspace).
+RootView.EmptyView = EmptyView
 
 return RootView

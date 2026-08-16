@@ -36,6 +36,7 @@ local ROLE = {
   diff      = { prefix = "",   color = "text" },
   error     = { prefix = "!! ", color = "error" },
   system    = { prefix = "·  ", color = "dim" },
+  thinking  = { prefix = "",   color = "dim" },
 }
 
 -- Tools that change the world. These are what an approval gate is for; read,
@@ -70,6 +71,13 @@ function AgentView:new()
   self.tool_policy = {}        -- name -> "allow" | "ask" | "deny", overrides mode
   self.pending = nil           -- { name, input, diff, path, decision }
   self.history, self.hpos = {}, 0
+
+  -- The composer's modal context, in the neovim sense -- distinct from
+  -- self.mode above, which is the approval policy. "insert" is a text field
+  -- (every key types, current behaviour); "normal" turns the whole panel into a
+  -- viewport the shell's spine can browse with j/k/gg/G. Escape leaves insert,
+  -- and i/a/o/c/: (or a click, or the send key) return to it.
+  self.edit_mode = "insert"
 
   -- Input state: a line array plus a caret, so this behaves like a text field
   -- rather than a string you can only backspace through.
@@ -200,6 +208,14 @@ function AgentView:repaint(messages)
         elseif b.type == "text" then
           if (b.text or ""):match("%S") then
             self:push(m.role == "user" and "user" or "assistant", b.text)
+          end
+        elseif b.type == "thinking" then
+          -- The model's reasoning (extended-thinking, or an OpenAI server's
+          -- reasoning_content). It can run to paragraphs, so it lands collapsed
+          -- -- a "thought" header you click to expand -- rather than burying the
+          -- answer under the working.
+          if (b.thinking or ""):match("%S") then
+            self:push("thinking", b.thinking, { collapsed = true })
           end
         elseif b.type == "tool_use" then
           self:push("tool", (b.name or "?") .. " " .. brief(b.input), b.name)
@@ -343,7 +359,9 @@ function AgentView:submit(text)
             if h then hint = ": " .. tostring(h):gsub("%s+", " "):sub(1, 90) end
           end
           self:close_stream()
-          self:push("tool", name .. hint)
+          -- Keep the entry: run_tool hangs the tool's OUTPUT on it the moment
+          -- the call returns, so a live turn shows what happened, not just a name.
+          self.live_tool = self:push("tool", name .. hint)
         end,
 
         -- The approval gate. Yielding here suspends the whole turn mid-tool,
@@ -368,6 +386,14 @@ function AgentView:submit(text)
           if policy == "ask" then
             local rec = self:request_approval(name, input)
             if rec then
+              -- Show the full diff at the DECISION point, not after. You should
+              -- be able to read exactly what a write/edit will do before saying
+              -- yes -- the core Cursor review loop. It used to be pushed only
+              -- once approved, so you approved on the one-line summary and saw
+              -- the change too late to stop it.
+              if rec.diff and rec.path then
+                self:push("diff", "", { diff = rec.diff, path = rec.path })
+              end
               self.pending = rec
               self.status = "waiting for approval"
               while rec.decision == nil do coroutine.yield("approve") end
@@ -379,9 +405,6 @@ function AgentView:submit(text)
                 return "Tool error: [permission_error] the user rejected this "
                   .. name .. " call. Do not retry it; ask what to do instead."
               end
-              if rec.diff and rec.path then
-                self:push("diff", "", { diff = rec.diff, path = rec.path })
-              end
             end
           end
           -- What the file said before the tool touched it, so the marks can be
@@ -391,7 +414,18 @@ function AgentView:submit(text)
           local was = (name == "write" or name == "edit") and input.path
             and bog.util.read_file(input.path) or nil
 
-          local out = bog.tools.run(name, input)
+          -- pcall so a raising tool still records its error inline on the entry
+          -- rather than vanishing into the harness's catch. The harness treats a
+          -- returned "Tool error: ..." string exactly as it would a raise, so
+          -- catching here changes nothing the model sees.
+          local ok, out = pcall(bog.tools.run, name, input)
+          if not ok then out = "Tool error: " .. tostring(out) end
+          if self.live_tool then
+            self.live_tool.output = type(out) == "string" and out or tostring(out)
+            self.live_tool.tool_ok = not (type(out) == "string" and out:find("^Tool error:"))
+            self.live_tool = nil
+            core.redraw = true
+          end
           if name == "write" or name == "edit" then
             self.dirty_path, self.dirty_was = input.path, was
           end
@@ -469,6 +503,7 @@ function AgentView:send()
   local t = self:input_text():gsub("^%s+", ""):gsub("%s+$", "")
   if t == "" then return end
   self:set_input("")
+  self:set_edit_mode("insert")   -- sending is composing; land ready to type again
   self:submit(self:expand_mentions(t))
 end
 
@@ -636,7 +671,36 @@ function AgentView:clamp_caret()
   end
 end
 
+-- Switch the composer's modal context. Kept separate from set_mode (approval)
+-- on purpose: they share the word "mode" but nothing else, and folding them
+-- would let a normal-mode toggle rewrite the approval policy.
+function AgentView:set_edit_mode(m)
+  if m ~= "insert" and m ~= "normal" then return end
+  if self.edit_mode == m then return end
+  self.edit_mode = m
+  -- A one-line affordance in the status bar, the same place the leader menu
+  -- announces itself. The border colour (draw()) carries it while you look at
+  -- the panel; this carries it at the moment of the switch.
+  if core.status_view and core.status_view.show_message then
+    if m == "normal" then
+      core.status_view:show_message("N", style.accent,
+        "normal -- j/k scroll, gg/G ends, i/a/o/c or : to edit")
+    else
+      core.status_view:show_message("i", style.dim, "insert -- esc for normal mode")
+    end
+  end
+  core.redraw = true
+end
+
 function AgentView:on_text_input(text)
+  -- Normal mode: the composer is a viewport, not a field. A keystroke that means
+  -- "start writing" (i/a/o/c, or : for a command) drops back to insert; the
+  -- spine's motions (j/k/gg/G) are claimed before they reach here, and anything
+  -- else is swallowed rather than typed into the draft.
+  if self.edit_mode == "normal" then
+    if text:match("^[iaoc:]$") then self:set_edit_mode("insert") end
+    return
+  end
   -- Typing over a selection replaces it, which is what every text field does
   -- and therefore what fingers expect; without it the new text lands beside
   -- the highlighted text and the selection silently survives.
@@ -765,25 +829,63 @@ function AgentView:on_key_pressed(key)
     core.redraw = true
     return true
 
+  -- Shift+motion extends a keyboard selection in the composer. Without this the
+  -- ONLY way to select was a mouse drag, so a keyboard user could never cmd+c /
+  -- cmd+x typed text. The anchor drops on the first shift-move and is kept across
+  -- further shift-moves; a plain motion (below) collapses it.
+  elseif key == "shift+left" then
+    self.sel_anchor = self.sel_anchor or { cy = self.cy, cx = self.cx }
+    if self.cx > 1 then self.cx = self:prev_char(self.lines[self.cy], self.cx)
+    elseif self.cy > 1 then self.cy = self.cy - 1; self.cx = #self.lines[self.cy] + 1 end
+    core.redraw = true; return true
+
+  elseif key == "shift+right" then
+    self.sel_anchor = self.sel_anchor or { cy = self.cy, cx = self.cx }
+    if self.cx <= #self.lines[self.cy] then self.cx = self:next_char(self.lines[self.cy], self.cx)
+    elseif self.cy < #self.lines then self.cy = self.cy + 1; self.cx = 1 end
+    core.redraw = true; return true
+
+  elseif key == "shift+up" then
+    self.sel_anchor = self.sel_anchor or { cy = self.cy, cx = self.cx }
+    if self.cy > 1 then self.cy = self.cy - 1; self:clamp_caret() end
+    core.redraw = true; return true
+
+  elseif key == "shift+down" then
+    self.sel_anchor = self.sel_anchor or { cy = self.cy, cx = self.cx }
+    if self.cy < #self.lines then self.cy = self.cy + 1; self:clamp_caret() end
+    core.redraw = true; return true
+
+  elseif key == "shift+home" then
+    self.sel_anchor = self.sel_anchor or { cy = self.cy, cx = self.cx }
+    self.cx = 1; core.redraw = true; return true
+
+  elseif key == "shift+end" then
+    self.sel_anchor = self.sel_anchor or { cy = self.cy, cx = self.cx }
+    self.cx = #self.lines[self.cy] + 1; core.redraw = true; return true
+
   -- Caret motion steps whole characters. Stepping bytes let the caret settle
   -- inside a codepoint, where backspace would delete half of one and the drawn
   -- line -- which splices the caret glyph in at that offset -- became invalid
-  -- UTF-8 for the renderer.
+  -- UTF-8 for the renderer. A plain motion also collapses any shift-selection.
   elseif key == "left" then
+    self.sel_anchor = nil
     if self.cx > 1 then self.cx = self:prev_char(self.lines[self.cy], self.cx)
     elseif self.cy > 1 then self.cy = self.cy - 1; self.cx = #self.lines[self.cy] + 1 end
     core.redraw = true; return true
 
   elseif key == "right" then
+    self.sel_anchor = nil
     if self.cx <= #self.lines[self.cy] then
       self.cx = self:next_char(self.lines[self.cy], self.cx)
     elseif self.cy < #self.lines then self.cy = self.cy + 1; self.cx = 1 end
     core.redraw = true; return true
 
-  elseif key == "home" or key == "ctrl+a" then
+  elseif key == "home" then
+    self.sel_anchor = nil
     self.cx = 1; core.redraw = true; return true
 
   elseif key == "end" or key == "ctrl+e" then
+    self.sel_anchor = nil
     self.cx = #self.lines[self.cy] + 1; core.redraw = true; return true
 
   elseif key == "ctrl+u" then
@@ -825,7 +927,13 @@ function AgentView:on_key_pressed(key)
     return true
 
   elseif key == "escape" then
-    self:cancel()
+    -- A turn in flight is what Escape cancels first (the system hint promises
+    -- "esc cancels"). With nothing to interrupt -- the pending gate and any
+    -- selection were handled above, and we are not busy -- Escape is instead the
+    -- neovim "leave insert" gesture: drop into normal mode so the spine's
+    -- motions can browse the transcript.
+    if self.busy then self:cancel()
+    else self:set_edit_mode("normal") end
     return true
   end
 end
@@ -1087,7 +1195,30 @@ end
 -- exactly what this cache exists to avoid.
 function AgentView:layout(e, cols)
   local c = e._layout
-  if c and c.cols == cols and c.text == e.text then return c.rows end
+  if c and c.cols == cols and c.text == e.text
+     and c.out == e.output and c.collapsed == e.collapsed then return c.rows end
+
+  -- Thinking collapses to a one-line "thought" header (click to expand): a
+  -- model's reasoning can dwarf its answer, so it must not bury the reply, but
+  -- it should still be there to read.
+  if e.role == "thinking" then
+    local rows = {}
+    local words = select(2, (e.text or ""):gsub("%S+", ""))
+    local head = e.collapsed and ("\u{25b8} thought (" .. words .. " words)") or "\u{25be} thought"
+    for _, row in ipairs(wrap_tokens({ { style.dim, head } }, cols)) do
+      row.thinking_head = true
+      rows[#rows + 1] = row
+    end
+    if not e.collapsed then
+      for line in ((e.text or "") .. "\n"):gmatch("(.-)\n") do
+        for _, row in ipairs(wrap_tokens({ { style.dim, line } }, cols)) do
+          rows[#rows + 1] = row
+        end
+      end
+    end
+    e._layout = { cols = cols, text = e.text, out = e.output, collapsed = e.collapsed, rows = rows }
+    return rows
+  end
 
   local r = ROLE[e.role] or ROLE.assistant
   local base = style[r.color] or style.text
@@ -1095,6 +1226,11 @@ function AgentView:layout(e, cols)
   local in_code, syn, state = false, nil, nil
   local fence_len = 0
   local first = true
+  -- Per code block: accumulate the raw lines and remember the first drawn row,
+  -- so the draw loop can hang a "copy" button on the block (the defining
+  -- affordance of a coding chat -- otherwise the only way to lift a snippet is a
+  -- careful drag-select). Finalised onto the first row when the fence closes.
+  local code_lines, code_first = nil, nil
 
   for line in (e.text .. "\n"):gmatch("(.-)\n") do
     local fence, lang = line:match("^%s*(```+)%s*([%w_+#%-]*)")
@@ -1106,8 +1242,15 @@ function AgentView:layout(e, cols)
       -- The fence is markup, not content. Every chat UI worth using shows the
       -- block, not the backticks that delimit it; a band behind the code says
       -- the same thing without spending three rows on punctuation.
-      if in_code then in_code, syn, state, fence_len = false, nil, nil, 0
-      else in_code, syn, state, fence_len = true, syntax_for(lang), nil, #fence end
+      if in_code then
+        in_code, syn, state, fence_len = false, nil, nil, 0
+        -- Fence closed: finalise the block's copy text onto its first row.
+        if code_first then code_first.copy_block = table.concat(code_lines or {}, "\n") end
+        code_lines, code_first = nil, nil
+      else
+        in_code, syn, state, fence_len = true, syntax_for(lang), nil, #fence
+        code_lines, code_first = {}, nil
+      end
     elseif in_code and syn then
       -- The newline matters. Several of lite's patterns are anchored to it --
       -- Lua's line comment is "%-%-.-\n" -- because a DocView's lines keep
@@ -1121,13 +1264,17 @@ function AgentView:layout(e, cols)
         if text ~= "" then toks[#toks + 1] = { style.syntax[type] or style.text, text } end
       end
       if #toks == 0 then toks[1] = { style.text, "" } end
+      if code_lines then code_lines[#code_lines + 1] = line end
       for _, row in ipairs(fit(toks, cols)) do
         row.code = true
+        if code_lines and not code_first then code_first = row end
         rows[#rows + 1] = row
       end
     elseif in_code then
+      if code_lines then code_lines[#code_lines + 1] = line end
       for _, row in ipairs(fit({ { style.text, line } }, cols)) do
         row.code = true
+        if code_lines and not code_first then code_first = row end
         rows[#rows + 1] = row
       end
     elseif line:match("^%s*[-*_][-*_ ]*$") and #line:gsub("%s", "") >= 3 then
@@ -1168,7 +1315,33 @@ function AgentView:layout(e, cols)
     first = false
   end
 
-  e._layout = { cols = cols, text = e.text, rows = rows }
+  -- Tool entries carry their result inline: the whole point of watching a turn
+  -- is seeing what a call RETURNED, not just that it ran (and not only after a
+  -- session resume). Rendered in the code band, monospace; capped so a huge log
+  -- or file read can't flood the transcript, with a tail note of what was elided.
+  -- Error output (a raised or "Tool error:" result) draws in the error colour.
+  if e.role == "tool" and e.output and e.output ~= "" and not e.collapsed then
+    local MAX = 24
+    local out_col = (e.tool_ok == false) and style.error or style.dim
+    local body = e.output:gsub("\r\n", "\n"):gsub("\n$", "")
+    local total = 0
+    for line in (body .. "\n"):gmatch("(.-)\n") do
+      total = total + 1
+      if total <= MAX then
+        for _, row in ipairs(fit({ { out_col, line } }, cols)) do
+          row.code = true
+          rows[#rows + 1] = row
+        end
+      end
+    end
+    if total > MAX then
+      for _, row in ipairs(fit({ { style.dim, ("  … +%d more lines"):format(total - MAX) } }, cols)) do
+        rows[#rows + 1] = row
+      end
+    end
+  end
+
+  e._layout = { cols = cols, text = e.text, out = e.output, collapsed = e.collapsed, rows = rows }
   return rows
 end
 
@@ -1303,6 +1476,7 @@ function AgentView:on_mouse_pressed(button, x, y, clicks)
   -- The composer is checked first: its rows overlap the region the transcript
   -- hit-test would otherwise claim, and a click in the box means the box.
   if self:in_composer(x, y) then
+    self:set_edit_mode("insert")      -- clicking into the draft is editing it
     local cy, cx = self:composer_pos_at(x, y)
     if cy then
       self:clear_selection()          -- one selection at a time
@@ -1600,6 +1774,35 @@ function AgentView:draw()
             if row.code then
               renderer.draw_rect(x - pad / 2, y, w + pad, lh, style.background2)
             end
+            if row.copy_block then
+              -- A copy affordance at the block's top-right: the fast path for
+              -- lifting a snippet, brightening on hover, flips to "copied" after
+              -- a click. Registered as a hit so on_mouse_pressed dispatches it.
+              local label = (self.copied_block == row.copy_block) and "copied" or "copy"
+              local bw = font:get_width(label) + pad
+              local bx = x + w - bw
+              local hov = self.mouse and widgets.inside(
+                { x = bx, y = y, w = bw, h = lh }, self.mouse.x, self.mouse.y)
+              local rct = widgets.button(font, label, bx, y,
+                { w = bw, hover = hov, tone = style.dim })
+              rct.item = { label = "copy-code", action = function()
+                system.set_clipboard(row.copy_block)
+                self.copied_block = row.copy_block
+                core.redraw = true
+              end }
+              self.hits[#self.hits + 1] = rct
+            end
+            if row.thinking_head then
+              -- The whole header row toggles the thought open/closed.
+              self.hits[#self.hits + 1] = {
+                x = ex, y = y, w = w, h = lh,
+                item = { label = "toggle-think", action = function()
+                  e.collapsed = not e.collapsed
+                  e._layout = nil
+                  core.redraw = true
+                end },
+              }
+            end
             -- What is on screen, in the coordinates selection works in.
             -- Recorded rather than recomputed, so hit-testing cannot disagree
             -- with the layout it is testing against.
@@ -1723,8 +1926,12 @@ function AgentView:draw()
   local bx, bw = x - pad / 2, w + pad
   renderer.draw_rect(bx, iy + vpad, bw, composer_h - vpad * 2, style.background2)
   -- A border rather than a fill change, so focus is visible without the box
-  -- appearing to change size.
-  local border = focused and style.accent or style.divider
+  -- appearing to change size. Normal mode borrows the warn colour, the same
+  -- signal the approval bar uses, so "the composer is not taking text right now"
+  -- reads at a glance without a label.
+  local border = focused
+    and (self.edit_mode == "normal" and (style.warn or style.accent) or style.accent)
+    or style.divider
   renderer.draw_rect(bx, iy + vpad, bw, 1, border)
   renderer.draw_rect(bx, iy + composer_h - vpad - 1, bw, 1, border)
   renderer.draw_rect(bx, iy + vpad, 1, composer_h - vpad * 2, border)
@@ -1772,7 +1979,9 @@ function AgentView:draw()
     end
 
     local shown = line
-    if i == self.cy and not self.busy and focused then
+    -- No text caret in normal mode: nothing you type lands here, so a caret
+    -- would promise an insertion point that is not listening.
+    if i == self.cy and not self.busy and focused and self.edit_mode ~= "normal" then
       shown = line:sub(1, self.cx - 1) .. "|" .. line:sub(self.cx)
     end
     if i == 1 and line == "" and #self.lines == 1 and not self.busy then

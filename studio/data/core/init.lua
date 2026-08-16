@@ -611,10 +611,21 @@ function core.init()
   -- defaults. Failing to load must not stop the editor coming up -- an editor
   -- that cannot reach a model is still an editor.
   if bog then
-    core.studio = core.try(require, "core.studio") and require "core.studio" or nil
-    -- Build the window before plugins load, so the file tree docks beside the
-    -- chat list rather than replacing it.
-    if core.studio then core.try(core.studio.attach) end
+    -- The ground-up shell (menu bar + switchable AGENT/EDIT/FLEET workspaces +
+    -- an app-wide neovim spine + the ember theme) is now the DEFAULT studio; it
+    -- supersedes the old single-primary-node composition. The old one is kept as
+    -- an opt-in fallback (BOGGART_STUDIO_LEGACY=1) until the shell has enough
+    -- real-world miles to retire it outright. Both reuse the same engine and
+    -- primitives; only the window composition differs.
+    -- The new shell is still WIP (opt in with BOGGART_STUDIO_SHELL=1); the
+    -- proven composition stays the default until the shell actually works.
+    if os.getenv("BOGGART_STUDIO_SHELL") then
+      core.shell = core.try(require, "shell") and require "shell" or nil
+      if core.shell then core.try(core.shell.attach) end
+    else
+      core.studio = core.try(require, "core.studio") and require "core.studio" or nil
+      if core.studio then core.try(core.studio.attach) end
+    end
   end
   -- Modal (neovim-style) editing. Loaded unconditionally so its commands and
   -- the `vim:toggle` binding always exist; it stays dormant until

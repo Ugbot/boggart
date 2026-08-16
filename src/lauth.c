@@ -44,6 +44,11 @@
  * and are readable from Lua so the endpoint and model can be resolved there. */
 static char g_base_url[AUTH_MAX];
 static char g_model[AUTH_MAX];
+/* Wire protocol for the endpoint: "" / "anthropic" (the default -- POST
+ * /v1/messages) or "openai" (POST /v1/chat/completions). Lets boggart talk to a
+ * local OpenAI-compatible server (llama.cpp, vLLM, LM Studio) directly, since a
+ * base URL alone can't say which shape a self-hosted server speaks. */
+static char g_wire[AUTH_MAX];
 
 /* Credentials, one per provider.
  *
@@ -151,6 +156,7 @@ static void set_field(const char *k, const char *v) {
   }
   else if (strcmp(k, "base_url") == 0) snprintf(g_base_url, AUTH_MAX, "%s", v);
   else if (strcmp(k, "model") == 0) snprintf(g_model, AUTH_MAX, "%s", v);
+  else if (strcmp(k, "wire") == 0) snprintf(g_wire, AUTH_MAX, "%s", v);
 }
 
 static void auth_load(void) {
@@ -193,6 +199,7 @@ static void auth_save(void) {
   }
   if (g_base_url[0]) fprintf(f, "base_url=%s\n", g_base_url);
   if (g_model[0])    fprintf(f, "model=%s\n", g_model);
+  if (g_wire[0])     fprintf(f, "wire=%s\n", g_wire);
   fclose(f);
   /* Owner-only, always -- the write above may have created it with the
    * process umask, which is commonly 0644. */
@@ -242,7 +249,8 @@ const char *boggart_auth_header(void) {
 static int l_set(lua_State *L) {
   const char *k = luaL_checkstring(L, 1);
   const char *v = luaL_checkstring(L, 2);
-  if (strcmp(k, "api_key") != 0 && strcmp(k, "base_url") != 0 && strcmp(k, "model") != 0) {
+  if (strcmp(k, "api_key") != 0 && strcmp(k, "base_url") != 0 && strcmp(k, "model") != 0
+      && strcmp(k, "wire") != 0) {
     lua_pushnil(L);
     lua_pushfstring(L, "unknown setting: %s", k);
     return 2;
@@ -263,7 +271,7 @@ static int l_clear(lua_State *L) {
     for (int i = 0; i < AUTH_MAX_PROVIDERS; i++) {
       g_keys[i].name[0] = g_keys[i].value[0] = '\0';
     }
-    g_base_url[0] = g_model[0] = '\0';
+    g_base_url[0] = g_model[0] = g_wire[0] = '\0';
   }
   else set_field(k, "");
   auth_save();
@@ -347,6 +355,17 @@ static int l_model(lua_State *L) {
   return 1;
 }
 
+/* auth.wire() -> "openai" | "anthropic" | nil. The wire protocol the endpoint
+ * speaks; ANTHROPIC_WIRE overrides the stored value for a one-off. */
+static int l_wire(lua_State *L) {
+  auth_load();
+  const char *env = getenv("ANTHROPIC_WIRE");
+  if (env && *env) lua_pushstring(L, env);
+  else if (g_wire[0]) lua_pushstring(L, g_wire);
+  else lua_pushnil(L);
+  return 1;
+}
+
 static int l_path(lua_State *L) {
   auth_path();
   lua_pushstring(L, g_path);
@@ -360,6 +379,7 @@ static const luaL_Reg auth_lib[] = {
   {"masked", l_masked},
   {"base_url", l_base_url},
   {"model", l_model},
+  {"wire", l_wire},
   {"path", l_path},
   {"provider", l_provider},
   {NULL, NULL},

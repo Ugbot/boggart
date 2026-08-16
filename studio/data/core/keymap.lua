@@ -19,6 +19,15 @@ local modkey_map = {
   ["right alt"]   = "altgr",
   ["left gui"]    = "cmd",
   ["right gui"]   = "cmd",
+  -- macOS: SDL_GetKeyName reports the Command and Option keys as "left/right
+  -- command" and "left/right option", NOT the "gui"/"alt" names above. Without
+  -- these, keymap.modkeys.cmd/alt never got set on a Mac, so EVERY Cmd- and
+  -- Option- shortcut (copy/paste/cut/select-all included) silently arrived as a
+  -- bare key and did nothing. This is the fix for "the text view stuff is borked".
+  ["left command"]  = "cmd",
+  ["right command"] = "cmd",
+  ["left option"]   = "alt",
+  ["right option"]  = "altgr",
 }
 
 local modkeys = { "cmd", "ctrl", "alt", "altgr", "shift" }
@@ -32,6 +41,10 @@ local function key_to_stroke(k)
   end
   return stroke .. k
 end
+-- Exposed so the shell's modal spine (studio/data/shell/modal.lua) can compute
+-- the same stroke when it wraps on_key_pressed to capture Ctrl-w / g / leader.
+keymap.key_to_stroke = key_to_stroke
+keymap.is_modkey = function(k) return modkey_map[k] ~= nil end
 
 
 function keymap.add(map, overwrite)

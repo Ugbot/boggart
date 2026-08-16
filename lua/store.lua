@@ -120,6 +120,84 @@ local function import_legacy(db)
   db:run("INSERT OR REPLACE INTO meta(key,value) VALUES('legacy_imported','1')")
 end
 
+-- ---- session search index (FTS5) -------------------------------------------
+-- Modelled on skills_fts below, with one deliberate difference: skills_fts is a
+-- throwaway cache the router rebuilds wholesale from the live Lua module set,
+-- whereas sessions are durable data with no such source to rebuild from. So
+-- this index is maintained incrementally -- every write path re-indexes just
+-- the row it touched (fts_index_session), and open() seeds it once from any
+-- sessions that predate the feature (backfill_sessions_fts). A regular (not
+-- external-content) fts5 table is used so a row can be replaced with an
+-- ordinary DELETE ... WHERE rowid=?; the rowid IS the session id, which is what
+-- lets sess_search join straight back to sessions and return sess_list's shape.
+--
+-- Tradeoff, the other option being "rebuild the whole index on each search":
+-- the sidebar calls sess_search on every keystroke, and a full rebuild there
+-- would re-read every transcript blob per letter typed. Two tiny writes per
+-- save keeps search itself O(matches); the price is that the four save paths
+-- (sess_create/save, thread_create/save) must remember to call
+-- fts_index_session, and sess_delete to drop the row.
+local SESSIONS_FTS = "CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts "
+  .. "USING fts5(title, body)"
+
+-- Flatten a transcript into searchable text. Message shapes vary (bare
+-- strings, {role, content=string}, content arrays of typed parts), so rather
+-- than assume one, walk the decoded structure and keep every string VALUE it
+-- holds -- keys are skipped, so "role"/"content" themselves never match. The
+-- byte budget stops a pathological pasted-log transcript from bloating the row.
+local function collect_text(v, out, budget)
+  if budget[1] <= 0 then return end
+  local t = type(v)
+  if t == "string" then
+    out[#out + 1] = v
+    budget[1] = budget[1] - #v
+  elseif t == "table" then
+    for _, item in pairs(v) do collect_text(item, out, budget) end
+  end
+end
+
+-- messages may arrive as the JSON string stored in the column or as an
+-- already-decoded table (the thread writers hand us the latter).
+local function sess_body(messages)
+  local msgs = messages
+  if type(msgs) == "string" then
+    local ok, decoded = pcall(json.decode, msgs)
+    msgs = ok and decoded or nil
+  end
+  if type(msgs) ~= "table" then return "" end
+  local out = {}
+  collect_text(msgs, out, { 256 * 1024 })
+  return table.concat(out, " ")
+end
+
+-- Re-index one session by id, reading its current title/messages back from the
+-- row so the result is right no matter which columns the caller changed. A
+-- regular fts5 table takes a plain DELETE, so "replace" is delete-then-insert.
+local function fts_index_session(id)
+  if not id then return end
+  local r = bog.db:query("SELECT id,title,messages FROM sessions WHERE id=?", { id })
+  local s = r[1]
+  if not s then return end
+  bog.db:run("DELETE FROM sessions_fts WHERE rowid=?", { id })
+  bog.db:run("INSERT INTO sessions_fts(rowid,title,body) VALUES(?,?,?)",
+    { id, s.title or "", sess_body(s.messages) })
+end
+
+-- One-time seed for sessions written before this index existed, guarded by a
+-- meta flag so later opens skip the whole-table scan. Runs for the CLI too --
+-- that is what makes search work everywhere, not just the studio. Cost is a
+-- single pass over existing transcripts on the first open after upgrade.
+local function backfill_sessions_fts(conn)
+  if conn:query("SELECT value FROM meta WHERE key='sessions_fts_backfilled'")[1] then return end
+  conn:exec(SESSIONS_FTS)
+  conn:run("DELETE FROM sessions_fts")
+  for _, s in ipairs(conn:query("SELECT id,title,messages FROM sessions")) do
+    conn:run("INSERT INTO sessions_fts(rowid,title,body) VALUES(?,?,?)",
+      { s.id, s.title or "", sess_body(s.messages) })
+  end
+  conn:run("INSERT OR REPLACE INTO meta(key,value) VALUES('sessions_fts_backfilled','1')")
+end
+
 -- The schema version recorded in a database, or nil if it has none (a store
 -- from before this key, or one created seconds ago). Takes a connection rather
 -- than using bog.db so `doctor` can ask the same question of a store it has
@@ -262,6 +340,11 @@ function M.open()
   bog.db:run("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",
     { tostring(M.SCHEMA_VERSION) })
   import_legacy(bog.db)
+  -- Session full-text index: ensure the table, then seed it once from sessions
+  -- that predate it (see backfill_sessions_fts). Additive -- an older boggart
+  -- that meets this table just ignores it.
+  bog.db:exec(SESSIONS_FTS)
+  backfill_sessions_fts(bog.db)
   -- `announced` because open() is idempotent and may be called again in the
   -- same process (the studio, a reload); the install happened only once.
   if M.state and (M.state.first_run or M.state.recovered) and not M.state.announced then
@@ -377,14 +460,17 @@ end
 function M.sess_create(title, model)
   local r = bog.db:run("INSERT INTO sessions(title,model,created,updated,messages) VALUES(?,?,?,?, '[]')",
     { title, model, now(), now() })
+  fts_index_session(r.rowid)
   return r.rowid
 end
 
 function M.sess_save(id, title, model, messages)
   local ok, encoded = pcall(json.encode, messages)
   if not ok then encoded = "[]" end
-  return bog.db:run("UPDATE sessions SET title=?, model=?, updated=?, messages=? WHERE id=?",
+  local res = bog.db:run("UPDATE sessions SET title=?, model=?, updated=?, messages=? WHERE id=?",
     { title, model, now(), encoded, id })
+  fts_index_session(id)
+  return res
 end
 
 function M.sess_load(id)
@@ -402,7 +488,27 @@ function M.sess_list(limit)
     { limit or 20 })
 end
 
-function M.sess_delete(id) return bog.db:run("DELETE FROM sessions WHERE id=?", { id }) end
+function M.sess_delete(id)
+  bog.db:run("DELETE FROM sessions_fts WHERE rowid=?", { id })
+  return bog.db:run("DELETE FROM sessions WHERE id=?", { id })
+end
+
+-- Full-text search over session titles and transcripts, best match first. Rows
+-- come back in the exact shape sess_list returns (id, title, model, updated) so
+-- the sidebar can render a hit identically to a recent and open it the same
+-- way. Title is weighted above body via bm25; an empty or word-less query falls
+-- through to plain recents. bm25() is smaller-is-better, hence ascending.
+function M.sess_search(query, limit)
+  if not query or query:match("^%s*$") then return M.sess_list(limit or 40) end
+  local fq = fts_query(query)
+  if not fq then return {} end
+  return bog.db:query(
+    "SELECT s.id AS id, s.title AS title, s.model AS model, s.updated AS updated "
+    .. "FROM sessions_fts f JOIN sessions s ON s.id = f.rowid "
+    .. "WHERE sessions_fts MATCH ? ORDER BY bm25(sessions_fts, 5.0, 1.0), s.updated DESC "
+    .. "LIMIT ?",
+    { fq, limit or 40 })
+end
 
 -- ---- threads / agents (a session row + swarm columns) ----------------------
 -- opts: { parent_id?, title?, model?, spec? (table), status? }
@@ -413,6 +519,7 @@ function M.thread_create(opts)
     .. "VALUES(?,?,?,?, '[]', ?, ?, '[]', ?)",
     { opts.title, opts.model, now(), now(), opts.parent_id,
       opts.status or "running", opts.spec and json.encode(opts.spec) or nil })
+  fts_index_session(r.rowid)
   return r.rowid
 end
 
@@ -431,7 +538,9 @@ function M.thread_save(id, fields)
   if fields.spec ~= nil then put("spec", json.encode(fields.spec)) end
   put("updated", now())
   vals[#vals + 1] = id
-  return bog.db:run("UPDATE sessions SET " .. table.concat(sets, ", ") .. " WHERE id=?", vals)
+  local res = bog.db:run("UPDATE sessions SET " .. table.concat(sets, ", ") .. " WHERE id=?", vals)
+  fts_index_session(id)
+  return res
 end
 
 local function decode_or(s, default)

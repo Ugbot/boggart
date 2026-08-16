@@ -26,6 +26,9 @@ local dirs = {
   root .. "/studio/data/core/commands",
   root .. "/studio/data/core/doc",
   root .. "/studio/data/plugins",
+  root .. "/studio/data/shell",             -- the new ground-up shell (P0+)
+  root .. "/studio/data/shell/workspaces",
+  root .. "/studio/data/shell/agent",
 }
 
 local files = {}
