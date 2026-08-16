@@ -35,7 +35,7 @@ function M.add(id, co)
   return a
 end
 
-local function remove(a, reason)
+local function remove(a, reason, detail)
   M.by_id[a.id] = nil
   for i, x in ipairs(M.actors) do
     if x == a then table.remove(M.actors, i); break end
@@ -45,7 +45,10 @@ local function remove(a, reason)
   -- alike. Without it a crashed agent would hold a file forever and its peers
   -- would route around a claim nobody is honouring.
   if bog and bog.claims then pcall(bog.claims.release_all, a.id) end
-  events.emit("swarm:actor_stopped", { id = a.id, reason = reason or "done" })
+  -- `detail` carries the crash reason (a boggart_error message or a raw error),
+  -- so a UI can say WHY an agent died -- otherwise a fan-out that collapses on,
+  -- say, a bad API key just looks like "0 agents" with no explanation.
+  events.emit("swarm:actor_stopped", { id = a.id, reason = reason or "done", detail = detail })
 end
 
 local function resume(a)
@@ -61,20 +64,23 @@ local function resume(a)
   if bog then bog.current_agent = nil end
   if not ok then
     local err = kind -- on failure the second return value is the error
+    local detail
     if type(err) == "table" and err.boggart_error then
       -- A diagnosed condition rather than a crash. Say so in those terms, and
       -- if it is fatal (no credentials, unreachable endpoint) stop the whole
       -- run: every other agent is about to fail identically, and N copies of
       -- the same explanation helps nobody.
+      detail = err.message
       bog.log(string.format("agent %s: %s", tostring(a.id), err.message))
       if err.fatal and not M.fatal then
         M.fatal = err
         for _, other in ipairs(M.actors) do other.status = "stopping" end
       end
     else
+      detail = tostring(err)
       bog.log(string.format("agent %s crashed: %s", tostring(a.id), tostring(err)))
     end
-    remove(a, "crashed")
+    remove(a, "crashed", detail)
     return
   end
   if coroutine.status(a.co) == "dead" then
@@ -187,7 +193,14 @@ function M.step(block)
   elseif in_flight then
     uv.run("once")     -- nothing runnable; sleep until a uv handle wakes us
     M.idle = 0
-  elseif not paused then
+  elseif paused then
+    -- Everything runnable is paused. Do NOT busy-return true (the caller would
+    -- spin at 100% CPU): sleep until a uv handle -- a resume/abort keypress on
+    -- the loop, or an in-flight socket -- wakes us. The paused actors are still
+    -- here, so the run does not end; it just idles cheaply until resumed.
+    uv.run("once")
+    M.idle = 0
+  else
     M.idle = M.idle + 1
     if M.idle > 3 then
       bog.log("scheduler idle with " .. #M.actors .. " blocked agent(s); stopping")

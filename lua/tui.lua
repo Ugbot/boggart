@@ -321,8 +321,42 @@ local function page(st) local _, h = tc.size(); return math.max(1, h - 3) end
 -- Run one turn under the scheduler. The coordinator streams into a live entry;
 -- the should_stop hook paints one frame per iteration and lets the user scroll
 -- or interrupt (Ctrl-C) while the fleet works.
+-- Slash commands (/exit, /auth, /model, /help, ...). These run through the very
+-- same handler the scrolling REPL uses, so the cTUI is not a second-class front
+-- end that silently sends "/exit" to the model. handle_command writes its output
+-- with io.write/print, which in a cell-grid TUI would shred the frame -- so we
+-- capture that output (stripped of ANSI) into a system entry instead. Returns
+-- "quit" for /exit and /quit.
+local function slash(st, line)
+  local cmd = line:match("^/(%S+)")
+  if cmd == "exit" or cmd == "quit" then return "quit" end
+  if not bog.handle_command then
+    st.entries[#st.entries + 1] = { role = "system", text = "commands are unavailable" }
+    return
+  end
+  local buf = {}
+  local real_write, real_print = io.write, print
+  io.write = function(...)
+    for i = 1, select("#", ...) do buf[#buf + 1] = tostring((select(i, ...))) end
+  end
+  print = function(...)
+    local t = {}
+    for i = 1, select("#", ...) do t[#t + 1] = tostring((select(i, ...))) end
+    buf[#buf + 1] = table.concat(t, "\t") .. "\n"
+  end
+  local ok, brk = pcall(bog.handle_command, line)
+  io.write, print = real_write, real_print
+  local out = table.concat(buf):gsub("\27%[[%d;]*m", ""):gsub("%s+$", "")
+  if not ok then out = "command error: " .. tostring(brk) end
+  if out ~= "" then st.entries[#st.entries + 1] = { role = "system", text = out } end
+  st.dirty = true
+  return brk == true and "quit" or nil
+end
+
+-- text == nil resumes an interrupted turn (finish its tool round, then run on)
+-- instead of starting a new one.
 local function run_turn(st, text)
-  st.entries[#st.entries + 1] = { role = "user", text = text }
+  if text ~= nil then st.entries[#st.entries + 1] = { role = "user", text = text } end
   st.cur = nil -- the first assistant chunk opens a fresh entry, after any tool call
   st.scroll, st.running, st.t0, st.abort = 0, true, os.time(), false
   st.dirty, st.last_paint = true, 0
@@ -369,15 +403,30 @@ local function run_turn(st, text)
   while bog.sched.count() > 0 do
     local ev = tc.poll(0)
     while ev.type == "key" do
-      -- The input field stays LIVE while the turn runs: you can keep composing
-      -- your next message and nothing you type is lost. Only submission is held
-      -- -- Enter is withheld from the box (so it neither sends nor clears), and
-      -- the text is waiting for you the moment the turn finishes. Ctrl-C aborts,
-      -- PageUp/Down scroll the transcript; every other key edits the field.
+      -- The input field stays LIVE while the turn runs: you can keep composing,
+      -- and now you can SEND too. Enter queues the line onto the coordinator's
+      -- inbox (api.run_on folds it into the next request, so it steers the
+      -- agent mid-turn) rather than being withheld. Ctrl-C aborts, Ctrl-P
+      -- pauses/resumes the sub-agents, PageUp/Down scroll; every other key edits.
       if ev.key == "ctrl" and ev.char == "c" then st.abort = true
+      elseif ev.key == "ctrl" and ev.char == "p" then
+        st.paused = not st.paused
+        for _, a in ipairs(bog.sched.actors) do
+          if a.id ~= st.coord.id then pcall(bog.sched.pause, a.id, st.paused) end
+        end
+        st.dirty = true
       elseif ev.key == "pageup" then st.scroll = st.scroll + page(st); st.dirty = true
       elseif ev.key == "pagedown" then st.scroll = math.max(0, st.scroll - page(st)); st.dirty = true
-      elseif ev.key ~= "enter" then st.box:key(ev); st.dirty = true end
+      elseif ev.key == "enter" then
+        local action, value = st.box:key(ev)
+        if action == "submit" and value and value:match("%S") then
+          st.coord.session.inbox = st.coord.session.inbox or {}
+          st.coord.session.inbox[#st.coord.session.inbox + 1] = value
+          st.entries[#st.entries + 1] = { role = "user", text = value }
+          st.cur = nil        -- a following assistant chunk opens a fresh entry
+          st.dirty = true
+        end
+      else st.box:key(ev); st.dirty = true end
       ev = tc.poll(0)
     end
     if st.abort then break end
@@ -397,10 +446,20 @@ local function run_turn(st, text)
 
   if st.abort then
     for _, a in ipairs(bog.sched.actors) do pcall(bog.sched.kill, a.id) end
-    st.entries[#st.entries + 1] = { role = "system", text = "(interrupted)" }
+    local resumable = bog.api.incomplete_turn and bog.api.incomplete_turn(st.coord.session)
+    st.entries[#st.entries + 1] = { role = "system",
+      text = resumable and "(interrupted — Enter to resume, or type to abandon)"
+                        or "(interrupted)" }
   elseif turn_err then
     st.entries[#st.entries + 1] = { role = "error", text = tostring(turn_err) }
   end
+  st.paused = false
+  -- On cancel, make only the IN-FLIGHT tool safe (finalize_pending: a tool that
+  -- was mid-execution becomes interrupted so it is never blindly re-run). Tools
+  -- that never started are left unanswered ON PURPOSE, so the turn stays
+  -- RESUMABLE -- durable checkpointing already saved every completed result.
+  -- Enter on an empty box resumes; typing a new message abandons and repairs.
+  if st.abort then pcall(bog.api.finalize_pending, st.coord.session) end
   pcall(bog.store.thread_save, st.coord.id,
     { messages = st.coord.session.messages, status = "idle" })
   st.running = false
@@ -430,6 +489,21 @@ function M.run()
   local st = { coord = coord, entries = {}, activity = {}, box = Input.new{},
                scroll = 0, total = 0, running = false, wake = uv.new_timer() }
   st.entries[1] = { role = "art", text = require("logo").art } -- the mascot, on launch
+
+  -- Make a collapsing fan-out visible. A sub-agent that dies (a bad key, an
+  -- unreachable endpoint, a crash) is removed from the scheduler and the fleet
+  -- count drops -- so without this a fleet that spawns three and instantly
+  -- loses all three just reads as "0 agents", as if nothing happened. Surface
+  -- the death, with its reason, as an error entry. The coordinator's own crash
+  -- is the turn error (shown separately), so skip it here. Handlers run in a
+  -- one-shot coroutine and must not yield -- appending an entry is pure Lua.
+  local crash_sub = bog.events and bog.events.on and
+    bog.events.on("swarm:actor_stopped", function(_, ev)
+      if not ev or ev.reason ~= "crashed" or ev.id == st.coord.id then return end
+      local why = (ev.detail and ev.detail ~= "") and (": " .. tostring(ev.detail)) or ""
+      st.entries[#st.entries + 1] = { role = "error", text = "agent #" .. tostring(ev.id) .. " failed" .. why }
+      st.dirty = true
+    end)
 
   -- Route the agent's line logging into the fixed activity strip, not the
   -- conversation. bog.log_tool and bog.log write raw bytes to stdout/stderr; in
@@ -485,7 +559,13 @@ function M.run()
             if action == "cancel" then
               quit = true; break
             elseif action == "submit" then
-              if value and value:match("%S") then run_turn(st, value) end
+              if value and value:sub(1, 1) == "/" and value:match("^/%a") then
+                if slash(st, value) == "quit" then quit = true; break end
+              elseif value and value:match("%S") then
+                run_turn(st, value)                       -- new prompt (abandons any interrupted turn)
+              elseif bog.api.incomplete_turn and bog.api.incomplete_turn(st.coord.session) then
+                run_turn(st, nil)                         -- empty Enter resumes the interrupted turn
+              end
               draw(st)
             else
               draw(st)
@@ -500,6 +580,7 @@ function M.run()
   end)
 
   bog.log_tool, bog.log = saved_log_tool, saved_log -- restore before leaving the alt screen
+  if crash_sub and bog.events and bog.events.off then pcall(bog.events.off, crash_sub) end
   if st.wake then pcall(function() st.wake:stop(); st.wake:close() end) end
   tc.shutdown()
   if not ok then io.stderr:write("tui: ", tostring(err), "\n") end

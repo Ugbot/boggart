@@ -39,6 +39,13 @@ function M.agent_opts(rec)
       return bog.tools.run(name, input)
     end,
     on_tool = bog.log_tool,
+    -- Durable checkpoint: persist this agent's transcript to its thread row
+    -- after each assistant message / tool result, so an interrupted turn can be
+    -- resumed instead of restarted.
+    checkpoint = function()
+      pcall(bog.store.thread_save, rec.id,
+        { messages = rec.session.messages, status = "running" })
+    end,
   }
 end
 

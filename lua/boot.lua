@@ -349,6 +349,12 @@ local function handle_command(line)
       if not r.met and r.detail then io.write(tostring(r.detail):sub(1, 300), "\n") end
       bog.save_session()
     end
+  elseif cmd == "dispatch" then
+    -- /dispatch [on|off] -- optional auto-routing: hand a request that is
+    -- "different enough" to a specialist sub-agent (lua/dispatch.lua).
+    if rest == "on" or rest == "off" then bog.dispatch.set(rest == "on") end
+    io.write("auto-dispatch = ", bog.dispatch.enabled() and "on" or "off",
+      "   (/dispatch on | /dispatch off)\n")
   elseif cmd == "new" then
     bog.new_session()
     io.write("started new session ", tostring(bog.session.id), ".\n")
@@ -357,6 +363,9 @@ local function handle_command(line)
   end
   return false
 end
+-- Exposed so the cTUI can run the same slash commands the scrolling REPL does
+-- (it captures the io.write output into the frame). Returns true for /exit|/quit.
+bog.handle_command = handle_command
 
 local function print_turn_error(ok, err)
   if ok then return end
@@ -403,9 +412,11 @@ end
 -- the loop is alive to catch a signal. Tokens are streamed live (a scrolling
 -- terminal cannot re-flow printed text, so live beats post-hoc rendering);
 -- termrender stays wired into the cTUI, which repaints each frame.
+-- text == nil resumes an interrupted turn (finish its tool round, then run on)
+-- rather than starting a new one.
 local function run_one_turn(text)
   local S = bog.session
-  if not S.title or S.title == "" then S.title = text:gsub("%s+", " "):sub(1, 60) end
+  if text and (not S.title or S.title == "") then S.title = text:gsub("%s+", " "):sub(1, 60) end
   -- The runtime, stood up once: the turn runs as a scheduler coroutine that can
   -- spawn a fleet of more, and the whole tree drains on the same uv loop.
   bog.activate_agents()
@@ -569,6 +580,10 @@ local function run_one_turn(text)
   flush_render() -- emit the final round's prose (or a partial turn on abort)
   if abort then
     for _, a in ipairs(bog.sched.actors) do pcall(bog.sched.kill, a.id) end
+    -- Heal a dangling tool_use / bare user turn the kill may have left, so the
+    -- next turn and any --resume start from a sendable transcript rather than a
+    -- permanent HTTP 400.
+    pcall(bog.api.repair_history, S)
     io.write(COL.dim, "  (cancelled)", COL.reset, "\n")
   else
     io.write("\n")
@@ -720,7 +735,13 @@ if not boggart.model then
   if m and m ~= "" then bog.session.model = m end
 end
 
-if bog.mode ~= "eval" then bog.try(bog.mcphost.load) end
+bog.llmstation = require("llmstation")
+if bog.mode ~= "eval" then
+  bog.try(bog.mcphost.load)
+  -- Best-effort: if a local LLM Station is installed, expose its deterministic
+  -- code-intelligence tools over MCP. Dormant (a no-op) when it is not.
+  bog.try(bog.llmstation.autostart)
+end
 
 -- The agent layer, in every mode: everything is a swarm, and a lone agent is a
 -- swarm whose fanout is capped at one. Skills, agent specs and the agent record
@@ -733,6 +754,8 @@ if bog.mode ~= "eval" then bog.try(bog.mcphost.load) end
 bog.skills = require("skills")
 bog.agents = require("agents")
 bog.thread = require("thread")
+bog.skillrouter = require("skillrouter") -- FTS5 skill search (also feeds dispatch)
+bog.dispatch = require("dispatch")       -- optional auto-routing heuristic
 bog.thread.max_agents = tonumber(os.getenv("BOGGART_MAX_AGENTS"))
   or (bog.mode == "swarm" and 16 or 1)
 
@@ -792,6 +815,13 @@ else
     io.write(string.format("resumed session %d (%d message%s)%s\n",
       resumed.id, #resumed.messages, #resumed.messages == 1 and "" or "s",
       (resumed.title and resumed.title ~= "") and (": " .. resumed.title) or ""))
+    -- If the session was interrupted mid-tool (a crash or Ctrl-C during a tool
+    -- call), finish that tool round and continue the turn before prompting --
+    -- durable checkpointing means the work already done is on disk to build on.
+    if bog.api.incomplete_turn and bog.api.incomplete_turn(resumed) then
+      io.write(COL.dim, "continuing an interrupted turn...", COL.reset, "\n")
+      pcall(run_one_turn, nil)
+    end
   else
     bog.new_session()
   end

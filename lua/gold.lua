@@ -5,6 +5,7 @@
 -- to overlay and evolve any of it under ~/.boggart/lua/gold/.
 return {
   str = require("gold.str"),   -- string helpers
+  re = require("gold.re"),     -- real regular expressions (POSIX ERE, C-backed)
   tbl = require("gold.tbl"),   -- table/list helpers
   fs = require("gold.fs"),     -- filesystem helpers
   pp = require("gold.pp"),     -- pretty-print / inspect

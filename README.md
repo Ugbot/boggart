@@ -150,6 +150,11 @@ echo "task" | ./boggart --headless   # scriptable: prompt on stdin, reply on std
 ./boggart-studio          # the desktop app; ./boggart-studio <dir> opens a project
 ```
 
+The studio's code editor has an optional **neovim-style modal layer** (modes,
+motions, operators, text objects, `:` ex-commands, search, dot-repeat,
+visual-block and multi-cursor) — off by default, enabled with `config.vim_mode`,
+the `vim:toggle` command, or `:set vim`. See [docs/vim.md](docs/vim.md).
+
 These are not separate programs — they are **interfaces onto one swarm runtime**.
 Every turn runs as a libuv-driven scheduler coroutine that may spawn more, so a
 plain `boggart` chat is simply a swarm whose fan-out starts at one and grows when

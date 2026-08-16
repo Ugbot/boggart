@@ -101,6 +101,8 @@ M.commands = {
   { name = "model",    help = "show the running model, or switch it", args = model_names },
   { name = "until",    help = "run turns until a goal is met, or the budget is spent" },
   { name = "new",      help = "start a fresh conversation (new saved session)" },
+  { name = "dispatch", help = "optional auto-routing: hand different-enough requests to a specialist",
+                       args = { "on", "off" } },
   { name = "quit",     help = "exit" },
 }
 

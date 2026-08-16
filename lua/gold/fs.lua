@@ -62,4 +62,28 @@ function M.walk(dir, fn)
   end
 end
 
+-- Shell glob, C-backed (sys.glob -> POSIX glob). Returns a (possibly empty)
+-- array of matching paths: gold.fs.glob("src/*.c"), gold.fs.glob("~/x/**")…
+function M.glob(pattern)
+  return sys.glob(pattern) or {}
+end
+
+-- Every file under `dir` whose basename matches the Lua/ERE test, recursively.
+-- `match` may be a plain function(name)->bool, or a string treated as a POSIX
+-- regex over the basename (via gold.re). Returns an array of full paths.
+function M.find(dir, match)
+  local test = match
+  if type(match) == "string" then
+    local re = require("gold.re")
+    test = function(name) return re.test(name, match) end
+  end
+  local out = {}
+  M.walk(dir, function(full, kind)
+    if kind == "file" and (not test or test(M.basename(full))) then
+      out[#out + 1] = full
+    end
+  end)
+  return out
+end
+
 return M

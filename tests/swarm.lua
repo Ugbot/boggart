@@ -187,6 +187,29 @@ do
   eq(swarm.pending(888), 0, "processed message is not redelivered")
 end
 
+-- ===== a crashed actor reports WHY (so a collapsing fan-out is not silent) ==
+do
+  local events = require("events")
+  bog.sched.actors, bog.sched.by_id = {}, {}
+  local seen = {}
+  local h = events.on("swarm:actor_stopped", function(_, ev) seen[ev.id] = ev end)
+
+  bog.sched.add(9001, coroutine.create(function() error("kaboom") end))       -- raw crash
+  bog.sched.add(9002, coroutine.create(function()                              -- diagnosed error
+    error(setmetatable({ boggart_error = true, message = "HTTP 401 rejected" }, {}), 0)
+  end))
+  bog.sched.add(9003, coroutine.create(function() return end))                 -- clean finish
+  bog.sched.resume_ready()
+  events.off(h)
+
+  eq(seen[9001] and seen[9001].reason, "crashed", "crashed actor reports reason=crashed")
+  ok(seen[9001].detail and seen[9001].detail:find("kaboom"), "crash carries the raw error text")
+  eq(seen[9002].reason, "crashed", "diagnosed-error actor also reports crashed")
+  eq(seen[9002].detail, "HTTP 401 rejected", "crash carries the diagnosed message (e.g. a 401)")
+  eq(seen[9003].reason, "done", "a clean finish reports reason=done")
+  eq(seen[9003].detail, nil, "a clean finish carries no crash detail")
+end
+
 os.getenv = real_getenv
 if bog.db then bog.db:close() end
 sys.rmtree(bog.userdir) -- not a shell command: cmd.exe has no rm

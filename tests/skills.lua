@@ -174,6 +174,31 @@ if bog.db then
   ok(tools.run("skill__dbskill__echo", { text = "yo" }) == "yo", "a db skill's provided tool runs")
 end
 
+-- ---- fallback skills: backups granted for graceful degradation -------------
+ok(skills.validate({ instructions = "i", fallback = "base" }) == nil, "fallback string validates")
+ok(skills.validate({ instructions = "i", fallback = { "a", "b" } }) == nil, "fallback list validates")
+ok(skills.validate({ fallback = 5 }):find("skill name"), "fallback of the wrong type is rejected")
+
+-- to_lua round-trips the fallback field
+local fsrc = skills.to_lua("pref", { description = "d", instructions = "i", tools = {}, fallback = "base" })
+ok(load(fsrc) and load(fsrc)().fallback == "base", "to_lua round-trips a fallback")
+
+-- resolve grants BOTH the preferred and the fallback skill's tools
+do
+  local dir = bog.userdir .. "/lua/skills/"
+  local f1 = io.open(dir .. "base_search.lua", "w")
+  f1:write('return { description="d", instructions="use grep", tools={"bash"} }'); f1:close()
+  local f2 = io.open(dir .. "rich_search.lua", "w")
+  f2:write('return { description="d", instructions="prefer station", '
+    .. 'tools={"mcp__llm-station__bm25"}, fallback="base_search" }'); f2:close()
+
+  local instr, allow = skills.resolve({ "rich_search" })
+  ok(allow["mcp__llm-station__bm25"], "resolve grants the preferred (rich) tool")
+  ok(allow["bash"], "resolve also grants the fallback skill's tools")
+  ok(instr:find("prefer station") and not instr:find("use grep"),
+     "a fallback contributes tools, not a second instruction block")
+end
+
 sys.rmtree(bog.userdir)
 bog.userdir = saved_userdir
 

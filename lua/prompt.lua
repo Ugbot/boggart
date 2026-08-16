@@ -80,6 +80,12 @@ Working discipline:
   or edit files with tools, then summarize briefly.
 - Large command/file output is auto-saved to a temp file and you are shown a
   head plus its path; read that path for more rather than re-running.
+- For ad-hoc text/file work (regex across files, parsing, tallying, restructuring
+  data) reach for the `lua` tool, NOT `bash` with python/awk/sed. The runtime is
+  Lua-native and self-contained, so it is faster and needs nothing installed, and
+  everything is already in scope: gold.re (real POSIX regex: match/gmatch/all/
+  gsub/find/test), gold.fs (read/write/glob/find/walk), gold.str, gold.tbl, json,
+  sys. Shell out only for genuinely external programs (git, build tools, etc.).
 - Save durable facts (user preferences, project decisions) with the remember
   tool so they persist across sessions. Your current memory index is below.
 - Preserve the integrity of the user's system unless they explicitly ask

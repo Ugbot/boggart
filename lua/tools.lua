@@ -13,6 +13,48 @@ function M.register(name, def)
   M.registry[name] = def
 end
 
+-- Register a tool `name` that dispatches to the first AVAILABLE tool in a
+-- fallback chain. "Available" = the target is registered right now -- an MCP
+-- server that is down, a skill that was not granted, or a binary that is not
+-- installed all make their tools simply absent. This is how a stable logical
+-- name ("code_search") can PREFER a rich implementation
+-- (mcp__llm-station__bm25_search) and fall back to a built-in (bash grep) when
+-- it is not there, so the model calls one name and gets the best available.
+--
+-- `chain` is an ordered list; each entry is either a tool name (args passed
+-- through unchanged) or { tool = name, adapt = function(args) -> args } to remap
+-- arguments when the fallback's schema differs. Fallback also triggers if a
+-- present target answers with tool_not_found or an MCP "not connected" error.
+function M.register_fallback(name, description, input_schema, chain)
+  M.register(name, {
+    description = description,
+    input_schema = input_schema or { type = "object", properties = {} },
+    fallback_chain = chain, -- introspectable by `tools`/doctor
+    run = function(args)
+      local tried, last = {}, nil
+      for _, c in ipairs(chain) do
+        local target = type(c) == "table" and c.tool or c
+        if target ~= name and M.registry[target] then
+          tried[#tried + 1] = target
+          local a = (type(c) == "table" and c.adapt) and c.adapt(args) or args
+          local res = M.run(target, a)
+          -- Keep falling back only when the target was effectively unavailable;
+          -- a real result (or a genuine tool error) is returned as-is.
+          if type(res) == "string"
+             and (res:find("^Tool error: %[tool_not_found%]")
+                  or res:find("is not connected", 1, true)) then
+            last = res
+          else
+            return res
+          end
+        end
+      end
+      return last or ("Tool error: [tool_not_found] no available implementation for '"
+        .. name .. "' (chain: " .. table.concat(tried, ", ") .. ")")
+    end,
+  })
+end
+
 -- ---- default tools ---------------------------------------------------------
 
 local function tool_read(a)
@@ -865,6 +907,76 @@ M.register("list", {
     properties = { path = { type = "string", description = "directory (default '.')" } },
   },
   run = tool_list,
+})
+
+-- The Lua-native answer to `python3 -c '...'`: run a snippet in-process and get
+-- its result, without shelling out. Prefer this for ad-hoc file/text work --
+-- the runtime IS Lua, so it is faster, dependency-free, and every capability is
+-- already here: `gold.re` (real POSIX regex), `gold.fs` (read/write/glob/find/
+-- walk), `gold.str`/`gold.tbl`, `sys`, `json`. Runs in the same capable-but-
+-- isolated sandbox generated tools use (it cannot clobber harness globals) and
+-- is bounded by an instruction budget so a runaway loop cannot wedge the turn.
+local function tool_lua(a)
+  local code = type(a) == "table" and a.code or nil
+  if type(code) ~= "string" or code == "" then
+    return "Tool error: lua expects { code = \"<lua source>\" }"
+  end
+  local out = {}
+  local env = tool_env()
+  env.print = function(...)
+    local n, parts = select("#", ...), {}
+    for i = 1, n do parts[i] = tostring((select(i, ...))) end
+    out[#out + 1] = table.concat(parts, "\t")
+  end
+  env.io = { write = function(...)
+    for i = 1, select("#", ...) do out[#out + 1] = tostring((select(i, ...))) end
+  end }
+  -- Accept either an expression ("gold.fs.glob('*.c')") or a statement block;
+  -- try the expression form first so a bare value is returned without `return`.
+  local chunk, err = load("return " .. code, "@lua", "t", env)
+  if not chunk then chunk, err = load(code, "@lua", "t", env) end
+  if not chunk then return "Tool error: lua compile: " .. tostring(err) end
+
+  local budget = 0
+  local function guard()
+    budget = budget + 1
+    if budget > 4000 then error("lua: instruction budget exceeded (possible runaway loop)", 0) end
+  end
+  debug.sethook(guard, "", 100000) -- ~4e8 instructions before it trips
+  local packed = table.pack(pcall(chunk))
+  debug.sethook()
+
+  if not packed[1] then return "Tool error: " .. tostring(packed[2]) end
+  local rets = {}
+  for i = 2, packed.n do
+    local v = packed[i]
+    if type(v) == "table" then
+      local okj, s = pcall(json.encode, v)
+      rets[#rets + 1] = okj and s or tostring(v)
+    else
+      rets[#rets + 1] = tostring(v)
+    end
+  end
+  local ret = table.concat(rets, "\t")
+  local printed = table.concat(out, "\n")
+  if ret ~= "" and printed ~= "" then return printed .. "\n" .. ret end
+  if ret ~= "" then return ret end
+  if printed ~= "" then return printed end
+  return "(no output)"
+end
+M.register("lua", {
+  description = "Run a Lua snippet in-process and return its value (or printed output). "
+    .. "PREFER THIS over shelling out to python/awk/sed for ad-hoc file and text "
+    .. "work -- the runtime is Lua-native and self-contained. In scope: gold.re "
+    .. "(real regex: match/gmatch/all/gsub/find/test), gold.fs (read/write/glob/"
+    .. "find/walk), gold.str, gold.tbl, gold.json, sys, json. Give an expression "
+    .. "or a statement block; a returned value or print() output becomes the result.",
+  input_schema = {
+    type = "object",
+    properties = { code = { type = "string", description = "Lua source to execute" } },
+    required = { "code" },
+  },
+  run = tool_lua,
 })
 -- Inspecting what has been learned, and whether it was worth it (paper §17/§24).
 local function tool_tools(a)

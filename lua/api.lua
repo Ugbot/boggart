@@ -124,7 +124,11 @@ local function classify_status(status, body)
   if status == 401 or status == 403 then
     return M.ERR.auth, "The API rejected our credentials (HTTP " .. status .. ").", {
       fatal = true,
-      hint = "Check ANTHROPIC_API_KEY, or re-run `ant auth login`.\n" ..
+      -- Provider-agnostic recovery: `/auth key <k>` works in the REPL and the
+      -- cTUI alike and takes effect immediately (no restart). The env var only
+      -- helps the default Anthropic endpoint.
+      hint = "Fix it with `/auth key <your-key>` (or `/auth show` to inspect).\n" ..
+             "For the default Anthropic endpoint you can also set ANTHROPIC_API_KEY.\n" ..
              "Detail: " .. detail,
     }
   elseif status == 404 then
@@ -654,6 +658,212 @@ function M.compact(sess, opts)
 end
 
 -- ---- the turn loop ---------------------------------------------------------
+-- Make a session's message list valid to send. Two ways a turn dies mid-flight
+-- and leaves it un-sendable, each of which the API answers with a permanent
+-- HTTP 400 (it 400s every subsequent turn too, since the broken history
+-- persists to the store and to --resume):
+--
+--   1. Cancelled between issuing tool calls and writing their results (Ctrl-C
+--      during a slow tool): a trailing assistant `tool_use` with no matching
+--      `tool_result`. We fill each unanswered id with a synthetic
+--      "[interrupted]" result so the conversation reads as "the tools were
+--      cancelled" rather than becoming permanently unsendable.
+--   2. Two `user` messages in a row (cancelled mid-stream before the assistant
+--      replied, then a new prompt): the API requires alternation. We coalesce
+--      adjacent user messages into one turn.
+--
+-- Idempotent; a no-op on already-valid history. Runs at the top of every turn
+-- (so a corrupted session self-heals) and at each front end's cancel site (so
+-- the *saved* transcript is clean immediately).
+-- Convert any in-flight (`pending`) tool-result markers into interrupted
+-- results. A tool checkpointed as "about to run" but never checkpointed with a
+-- result was executing when the process died: its side effect may be half
+-- applied, so it must be answered as interrupted rather than re-run.
+local function finalize_pending(sess)
+  local changed = false
+  for _, m in ipairs(sess.messages or {}) do
+    if m.role == "user" and type(m.content) == "table" then
+      for _, b in ipairs(m.content) do
+        if b.type == "tool_result" and b.pending then
+          b.content = "[interrupted]"; b.is_error = true; b.pending = nil
+          changed = true
+        end
+      end
+    end
+  end
+  return changed
+end
+M.finalize_pending = finalize_pending
+
+function M.repair_history(sess)
+  local msgs = sess and sess.messages
+  if type(msgs) ~= "table" then return false end
+  local changed = finalize_pending(sess)
+
+  -- (1) answer any dangling tool_use
+  local i = 1
+  while i <= #msgs do
+    local m = msgs[i]
+    if m.role == "assistant" and type(m.content) == "table" then
+      local pending = {}
+      for _, b in ipairs(m.content) do
+        if b.type == "tool_use" then pending[#pending + 1] = b.id end
+      end
+      if #pending > 0 then
+        local nxt = msgs[i + 1]
+        local have = {}
+        if nxt and nxt.role == "user" and type(nxt.content) == "table" then
+          for _, b in ipairs(nxt.content) do
+            if b.type == "tool_result" and b.tool_use_id then have[b.tool_use_id] = true end
+          end
+        end
+        local results = {}
+        for _, id in ipairs(pending) do
+          if not have[id] then
+            results[#results + 1] = {
+              type = "tool_result", tool_use_id = id,
+              content = "[interrupted]", is_error = true,
+            }
+          end
+        end
+        if #results > 0 then
+          if nxt and nxt.role == "user" and type(nxt.content) == "string" then
+            local text = nxt.content
+            nxt.content = results
+            if text ~= "" then nxt.content[#nxt.content + 1] = { type = "text", text = text } end
+          elseif nxt and nxt.role == "user" and type(nxt.content) == "table" then
+            for k = #results, 1, -1 do table.insert(nxt.content, 1, results[k]) end
+          else
+            table.insert(msgs, i + 1, { role = "user", content = results })
+          end
+          changed = true
+        end
+      end
+    end
+    i = i + 1
+  end
+
+  -- (2) coalesce consecutive same-role user messages into one turn
+  i = 2
+  while i <= #msgs do
+    local prev, cur = msgs[i - 1], msgs[i]
+    if prev.role == "user" and cur.role == "user" then
+      local function as_blocks(c)
+        if type(c) == "table" then return c end
+        return (c ~= nil and c ~= "") and { { type = "text", text = c } } or {}
+      end
+      local merged = as_blocks(prev.content)
+      for _, b in ipairs(as_blocks(cur.content)) do merged[#merged + 1] = b end
+      prev.content = merged
+      table.remove(msgs, i)
+      changed = true
+    else
+      i = i + 1
+    end
+  end
+
+  return changed
+end
+
+-- Append a user turn, merging into a trailing user message rather than creating
+-- two user messages in a row (which the API rejects). Used for the opening
+-- prompt and for mid-turn injected input alike, so both keep role alternation.
+local function append_user(sess, text)
+  text = util.to_valid_utf8(text)
+  local last = sess.messages[#sess.messages]
+  if last and last.role == "user" then
+    if type(last.content) == "string" then
+      last.content = (last.content ~= "" and (last.content .. "\n\n") or "") .. text
+    elseif type(last.content) == "table" then
+      last.content[#last.content + 1] = { type = "text", text = text }
+    else
+      last.content = text
+    end
+  else
+    sess.messages[#sess.messages + 1] = { role = "user", content = text }
+  end
+end
+M.append_user = append_user
+
+-- Run (or finish) the tool calls an assistant message asks for, writing each
+-- result into a single following user message and CHECKPOINTING around every
+-- one -- an intent marker before it runs (so a crash mid-tool is recoverable)
+-- and the result after. Resumable: a tool that already has a result is not
+-- re-run, so a turn interrupted after tool 2 of 5 continues at tool 3 without
+-- repeating the first two (which may have had side effects). `idx` is the
+-- assistant message's index in sess.messages. Returns true if it had tools.
+local function run_tool_round(sess, msg, idx, run_tool, on_tool, checkpoint)
+  local uses = {}
+  for _, b in ipairs(msg.content) do
+    if b.type == "tool_use" then uses[#uses + 1] = b end
+  end
+  if #uses == 0 then return false end
+
+  local rmsg = sess.messages[idx + 1]
+  if not (rmsg and rmsg.role == "user" and type(rmsg.content) == "table") then
+    rmsg = { role = "user", content = {} }
+    table.insert(sess.messages, idx + 1, rmsg)
+  end
+  local resulted = {}
+  for _, b in ipairs(rmsg.content) do
+    if b.type == "tool_result" and not b.pending then resulted[b.tool_use_id] = true end
+  end
+
+  for _, b in ipairs(uses) do
+    if not resulted[b.id] then
+      -- intent checkpoint: this tool is about to run
+      local block = { type = "tool_result", tool_use_id = b.id, content = "", pending = true }
+      rmsg.content[#rmsg.content + 1] = block
+      checkpoint()
+
+      if on_tool then on_tool(b.name, b.input) end
+      local ok, res = pcall(run_tool, b.name, b.input)
+      local content = ok and res or ("Tool error: " .. tostring(res))
+      if type(content) ~= "string" then content = tostring(content) end
+      content = util.to_valid_utf8(content)
+      if events.any("tool:refused")
+          and content:find("^Tool error: %[permission_error%]") then
+        events.emit("tool:refused", { name = b.name, reason = content })
+      end
+      -- result checkpoint: finalise the marker in place
+      block.content = content
+      block.is_error = (content:sub(1, 11) == "Tool error:") or nil
+      block.pending = nil
+      checkpoint()
+    end
+  end
+  return true
+end
+
+-- True (plus the assistant message's index) if the session's last exchange is
+-- an unfinished tool round: the final assistant message asked for tools that
+-- have no non-pending result yet -- i.e. a turn that was interrupted.
+function M.incomplete_turn(sess)
+  local msgs = sess and sess.messages
+  if type(msgs) ~= "table" then return false end
+  for i = #msgs, 1, -1 do
+    local m = msgs[i]
+    if m.role == "assistant" then
+      if type(m.content) ~= "table" then return false end
+      local ids, any = {}, false
+      for _, b in ipairs(m.content) do
+        if b.type == "tool_use" then ids[b.id] = true; any = true end
+      end
+      if not any then return false end
+      local resulted = {}
+      local nxt = msgs[i + 1]
+      if nxt and nxt.role == "user" and type(nxt.content) == "table" then
+        for _, b in ipairs(nxt.content) do
+          if b.type == "tool_result" and not b.pending then resulted[b.tool_use_id] = true end
+        end
+      end
+      for id in pairs(ids) do if not resulted[id] then return true, i end end
+      return false
+    end
+  end
+  return false
+end
+
 -- run_on(sess, user_text, on_text, opts): run one user turn to completion.
 -- opts: { async, system=fn, tools=fn, run_tool=fn(name,input), on_tool=fn(name,input) }
 function M.run_on(sess, user_text, on_text, opts)
@@ -663,6 +873,10 @@ function M.run_on(sess, user_text, on_text, opts)
   local tools_fn = opts.tools or function() return bog.tools.schemas() end
   local run_tool = opts.run_tool or bog.tools.run
   local on_tool = opts.on_tool or bog.log_tool
+  -- Durable checkpoint: persist the transcript after the assistant message and
+  -- after every tool result, so a crash/cancel loses at most the tool that was
+  -- in flight. Front ends pass save_session / thread_save; default is a no-op.
+  local checkpoint = opts.checkpoint or function() end
 
   -- Scrub to valid UTF-8 at INGEST -- the moment content joins the transcript --
   -- so ill-formed bytes never enter sess.messages or the store, and therefore
@@ -670,7 +884,22 @@ function M.run_on(sess, user_text, on_text, opts)
   -- encoder passes bytes >= 0x80 through raw, so a single invalid byte here (a
   -- pasted binary, a file dropped in as text) would otherwise HTTP-400 the turn.
   if user_text ~= nil then
-    sess.messages[#sess.messages + 1] = { role = "user", content = util.to_valid_utf8(user_text) }
+    -- A new prompt means the user has moved on: heal (abandon) any interrupted
+    -- tool round rather than resume it, then start the new turn. Without this
+    -- the API 400s here and on every turn after -- the "cancel -> 400 loop".
+    append_user(sess, user_text)
+    M.repair_history(sess)
+  else
+    -- No new prompt: this is a resume/continue. Finish an interrupted tool
+    -- round in place -- in-flight tools become interrupted (not re-run), tools
+    -- that never started are executed now -- so the turn picks up where the
+    -- crash/cancel left it instead of discarding the work already done.
+    local incomplete, idx = M.incomplete_turn(sess)
+    if incomplete then
+      finalize_pending(sess)
+      run_tool_round(sess, sess.messages[idx], idx, run_tool, on_tool, checkpoint)
+      checkpoint()
+    end
   end
 
   events.emit("turn:start", {
@@ -712,7 +941,39 @@ function M.run_on(sess, user_text, on_text, opts)
     end
   end
 
+  -- OPTIONAL auto-dispatch: if this fresh request is "different enough" from what
+  -- this agent does (see lua/dispatch.lua), hand the whole turn to a specialist
+  -- sub-agent and return its answer, instead of answering here. Off by default,
+  -- and never for a resumed turn (user_text == nil) or a delegated child
+  -- (dispatch.depth > 0), which would recurse.
+  if user_text ~= nil and bog.dispatch and bog.dispatch.enabled()
+     and bog.dispatch.depth == 0 then
+    local cur_skills = (sess.agent and sess.agent.skills) or sess.skills or {}
+    local a = bog.dispatch.assess(user_text, cur_skills, sess)
+    if a.delegate and #a.skills > 0 then
+      sink("[dispatch] routing to a " .. tostring(a.match) .. " specialist (" .. a.reason .. ")\n")
+      local text, ok = bog.dispatch.delegate(user_text, a.skills, nil)
+      if text then
+        sink(text)
+        local msg = { role = "assistant", content = { { type = "text", text = text } } }
+        sess.messages[#sess.messages + 1] = msg
+        stop_reason = "delegated"
+        return msg, "delegated"
+      end
+      -- delegation unavailable/failed: fall through and answer locally
+    end
+  end
+
   while true do
+    -- Mid-turn steering: anything the user submitted while the turn was running
+    -- is queued on sess.inbox and folded in here, so it rides the next request
+    -- alongside the pending tool results. Merge-aware, so roles still alternate.
+    if sess.inbox and #sess.inbox > 0 then
+      local pending = sess.inbox
+      sess.inbox = {}
+      for _, t in ipairs(pending) do append_user(sess, t) end
+    end
+
     M.maybe_compact(sess, opts)
 
     local body = {
@@ -767,42 +1028,14 @@ function M.run_on(sess, user_text, on_text, opts)
       msg.usage = nil
     end
     sess.messages[#sess.messages + 1] = msg
+    checkpoint() -- the assistant message (maybe carrying tool_use) is now durable
 
-    local tool_uses = {}
-    for _, b in ipairs(msg.content) do
-      if b.type == "tool_use" then tool_uses[#tool_uses + 1] = b end
-    end
+    -- Run its tools with per-result checkpointing (see run_tool_round). Every
+    -- tool_result is scrubbed to valid UTF-8 and refusals are surfaced there,
+    -- so this is still the single ingest point for tool output.
+    local had_tools = run_tool_round(sess, msg, #sess.messages, run_tool, on_tool, checkpoint)
 
-    if #tool_uses > 0 then
-      local results = {}
-      for _, b in ipairs(tool_uses) do
-        if on_tool then on_tool(b.name, b.input) end
-        local ok, res = pcall(run_tool, b.name, b.input)
-        local content
-        if ok then content = res else content = "Tool error: " .. tostring(res) end
-        if type(content) ~= "string" then content = tostring(content) end
-        -- Scrub at ingest regardless of which run_tool produced this: the
-        -- default bog.tools.run already scrubs, but an overridden run_tool
-        -- (swarm gates, tests) or the raise path above might not, and this is
-        -- the single point every tool_result must pass through before it
-        -- becomes transcript. Cheap no-op on already-valid content.
-        content = util.to_valid_utf8(content)
-        -- A refused call never reaches tools.M.run -- the gate returns instead
-        -- of calling it -- so tool:refused cannot come from there. Every gate
-        -- in the tree (the studio's approval prompt, thread.lua's per-agent
-        -- allowlist) already spells refusal as this exact result, so testing it
-        -- once here covers all of them and needs no new hook.
-        if events.any("tool:refused")
-            and content:find("^Tool error: %[permission_error%]") then
-          events.emit("tool:refused", { name = b.name, reason = content })
-        end
-        local is_err = content:sub(1, 11) == "Tool error:"
-        results[#results + 1] = {
-          type = "tool_result", tool_use_id = b.id, content = content,
-          is_error = is_err or nil,
-        }
-      end
-      sess.messages[#sess.messages + 1] = { role = "user", content = results }
+    if had_tools then
       if stop ~= "tool_use" then return msg, stop end
     elseif stop == "refusal" then
       if on_text then on_text("\n[request refused by safety policy]\n") end
@@ -825,7 +1058,22 @@ function M.run_turn(user_text, on_text)
     local ok, rec = pcall(bog.thread.session_agent, sess)
     if ok then opts = rec.opts end
   end
+  -- Checkpoint the default session to the store after each assistant message /
+  -- tool result, so an interrupted turn survives to be resumed.
+  opts = opts or {}
+  if opts.checkpoint == nil then
+    local merged = { checkpoint = function() pcall(bog.save_session) end }
+    setmetatable(merged, { __index = opts })
+    opts = merged
+  end
   return M.run_on(sess, user_text, on_text, opts)
+end
+
+-- Continue a turn that was interrupted mid-tool (no new prompt): finish the
+-- unfinished tool round, then run to completion. A no-op-through-to-normal-run
+-- if the session is already complete. Used by --resume and the cTUI on load.
+function M.resume_turn(sess, on_text, opts)
+  return M.run_on(sess, nil, on_text, opts)
 end
 
 return M

@@ -21,6 +21,16 @@
 #include <string.h>
 #include <time.h>
 
+/* POSIX regex + glob back the fast text/file helpers (sys.re_*, sys.glob) that
+ * gold wraps. They are not in the Lua stdlib and Lua patterns are far weaker
+ * than ERE, so this is where "call a C function instead of reimplementing it in
+ * Lua" pays off. Not available on Windows; the bindings degrade to an error
+ * there and gold falls back to Lua patterns. */
+#ifndef _WIN32
+#include <regex.h>
+#include <glob.h>
+#endif
+
 #include "uv.h"
 
 #include "lua.h"
@@ -618,8 +628,175 @@ static int l_wtake(lua_State *L) {
   return 2;
 }
 
+/* ---- POSIX regex + glob (sys.re_find, sys.re_gsub, sys.glob) --------------
+ *
+ * Real extended regular expressions and shell globbing, in C, so gold does not
+ * have to fake them in Lua patterns. On Windows these libc facilities are
+ * absent, so each returns (nil, err) and gold's wrapper falls back.            */
+#ifndef _WIN32
+#define BOG_MAXGROUPS 64
+
+static int bog_reflags(const char *f) {
+  int flags = REG_EXTENDED;
+  for (; f && *f; f++) {
+    if (*f == 'i')      flags |= REG_ICASE;
+    else if (*f == 'm') flags |= REG_NEWLINE; /* ^/$ match at line breaks */
+  }
+  return flags;
+}
+
+/* sys.re_find(subject, pattern[, flags[, init]]) -> s, e, cap1, ... | nil
+ *                                                 | nil, err  (bad pattern)
+ * Byte offsets are 1-based and inclusive, like string.find. `init` resumes the
+ * search (used by gold.re.gmatch); when > 1, ^ does not anchor at that point. */
+static int l_re_find(lua_State *L) {
+  size_t slen;
+  const char *s = luaL_checklstring(L, 1, &slen);
+  const char *pat = luaL_checkstring(L, 2);
+  const char *flags = luaL_optstring(L, 3, "");
+  lua_Integer init = luaL_optinteger(L, 4, 1);
+  if (init < 1) init = 1;
+  if ((size_t)(init - 1) > slen) { lua_pushnil(L); return 1; }
+
+  regex_t re;
+  int rc = regcomp(&re, pat, bog_reflags(flags));
+  if (rc != 0) {
+    char buf[256];
+    regerror(rc, &re, buf, sizeof buf);
+    lua_pushnil(L);
+    lua_pushstring(L, buf);
+    return 2;
+  }
+  size_t ngroups = re.re_nsub + 1;
+  if (ngroups > BOG_MAXGROUPS) ngroups = BOG_MAXGROUPS;
+  regmatch_t m[BOG_MAXGROUPS];
+  const char *base = s + (init - 1);
+  int eflags = (init > 1) ? REG_NOTBOL : 0;
+  rc = regexec(&re, base, ngroups, m, eflags);
+  if (rc != 0) { regfree(&re); lua_pushnil(L); return 1; }
+
+  lua_Integer off = init - 1;
+  lua_pushinteger(L, off + m[0].rm_so + 1);
+  lua_pushinteger(L, off + m[0].rm_eo);
+  int nret = 2;
+  for (size_t i = 1; i < ngroups; i++) {
+    if (m[i].rm_so < 0) lua_pushnil(L);
+    else lua_pushlstring(L, base + m[i].rm_so, (size_t)(m[i].rm_eo - m[i].rm_so));
+    nret++;
+  }
+  regfree(&re);
+  return nret;
+}
+
+/* sys.re_gsub(subject, pattern, repl[, flags[, max]]) -> result, count | nil,err
+ * `repl` supports \0..\9 backreferences and \\ for a literal backslash. `max`
+ * < 0 replaces all. Operates on NUL-terminated text (POSIX regexec's limit). */
+static int l_re_gsub(lua_State *L) {
+  size_t slen, rlen;
+  const char *s = luaL_checklstring(L, 1, &slen);
+  const char *pat = luaL_checkstring(L, 2);
+  const char *repl = luaL_checklstring(L, 3, &rlen);
+  const char *flags = luaL_optstring(L, 4, "");
+  lua_Integer maxn = luaL_optinteger(L, 5, -1);
+
+  regex_t re;
+  int rc = regcomp(&re, pat, bog_reflags(flags));
+  if (rc != 0) {
+    char buf[256];
+    regerror(rc, &re, buf, sizeof buf);
+    lua_pushnil(L);
+    lua_pushstring(L, buf);
+    return 2;
+  }
+  size_t ngroups = re.re_nsub + 1;
+  if (ngroups > BOG_MAXGROUPS) ngroups = BOG_MAXGROUPS;
+  regmatch_t m[BOG_MAXGROUPS];
+
+  luaL_Buffer B;
+  luaL_buffinit(L, &B);
+  const char *cur = s, *end = s + slen;
+  long count = 0;
+  int eflags = 0;
+  while (maxn < 0 || count < maxn) {
+    rc = regexec(&re, cur, ngroups, m, eflags);
+    if (rc != 0) break;
+    luaL_addlstring(&B, cur, (size_t)m[0].rm_so);
+    for (size_t i = 0; i < rlen; i++) {
+      if (repl[i] == '\\' && i + 1 < rlen) {
+        char c = repl[i + 1];
+        if (c >= '0' && c <= '9') {
+          size_t g = (size_t)(c - '0');
+          if (g < ngroups && m[g].rm_so >= 0)
+            luaL_addlstring(&B, cur + m[g].rm_so, (size_t)(m[g].rm_eo - m[g].rm_so));
+          i++; continue;
+        }
+        if (c == '\\') { luaL_addchar(&B, '\\'); i++; continue; }
+      }
+      luaL_addchar(&B, repl[i]);
+    }
+    count++;
+    regoff_t adv = m[0].rm_eo;
+    if (m[0].rm_eo == m[0].rm_so) { /* empty match: emit one char, don't loop */
+      if (cur + m[0].rm_eo < end) luaL_addchar(&B, cur[m[0].rm_eo]);
+      adv = m[0].rm_eo + 1;
+    }
+    if (cur + adv > end) { cur = end; break; }
+    cur += adv;
+    eflags = REG_NOTBOL;
+    if (cur >= end) break;
+  }
+  luaL_addlstring(&B, cur, (size_t)(end - cur));
+  luaL_pushresult(&B);
+  lua_pushinteger(L, count);
+  regfree(&re);
+  return 2;
+}
+
+/* sys.glob(pattern) -> { path, ... }  (empty table if nothing matches)
+ *                    | nil, err */
+static int l_glob(lua_State *L) {
+  const char *pat = luaL_checkstring(L, 1);
+  glob_t g;
+  int rc = glob(pat, 0, NULL, &g);
+  if (rc == GLOB_NOMATCH) { lua_newtable(L); globfree(&g); return 1; }
+  if (rc != 0) {
+    globfree(&g);
+    lua_pushnil(L);
+    lua_pushstring(L, rc == GLOB_NOSPACE ? "glob: out of memory"
+                    : rc == GLOB_ABORTED ? "glob: read error" : "glob: error");
+    return 2;
+  }
+  lua_newtable(L);
+  for (size_t i = 0; i < g.gl_pathc; i++) {
+    lua_pushstring(L, g.gl_pathv[i]);
+    lua_rawseti(L, -2, (int)(i + 1));
+  }
+  globfree(&g);
+  return 1;
+}
+#else /* _WIN32 */
+static int l_re_find(lua_State *L) {
+  (void)L; lua_pushnil(L);
+  lua_pushstring(L, "sys.re_find: POSIX regex not available on Windows");
+  return 2;
+}
+static int l_re_gsub(lua_State *L) {
+  (void)L; lua_pushnil(L);
+  lua_pushstring(L, "sys.re_gsub: POSIX regex not available on Windows");
+  return 2;
+}
+static int l_glob(lua_State *L) {
+  (void)L; lua_pushnil(L);
+  lua_pushstring(L, "sys.glob: POSIX glob not available on Windows");
+  return 2;
+}
+#endif
+
 static const luaL_Reg sys_lib[] = {
   {"listdir", l_listdir},
+  {"re_find", l_re_find},
+  {"re_gsub", l_re_gsub},
+  {"glob", l_glob},
   {"mkdir_p", l_mkdir_p},
   {"stat", l_stat},
   {"home", l_home},

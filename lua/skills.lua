@@ -70,6 +70,19 @@ function M.validate(s)
       end
     end
   end
+  -- fallback: another skill (or list of skills) whose tools are granted as
+  -- backups when this one's preferred tools are unavailable.
+  if s.fallback ~= nil then
+    if type(s.fallback) == "table" then
+      for i, f in ipairs(s.fallback) do
+        if type(f) ~= "string" or f == "" then
+          return "fallback[" .. i .. "] must be a non-empty skill name"
+        end
+      end
+    elseif type(s.fallback) ~= "string" then
+      return "'fallback' must be a skill name or a list of skill names"
+    end
+  end
   -- provides: the described table of callable tools the skill carries. Each entry
   -- has a name and exactly one of `body` (a Lua source string, sandboxed) or
   -- `run` (a function, trusted -- only meaningful in a builtin skill file).
@@ -155,11 +168,36 @@ end
 -- The third return is the point: a misspelled skill name used to vanish -- the
 -- agent silently ran without the tools it asked for, which is the hardest kind
 -- of failure to notice. Callers surface `unknown` instead.
+-- Grant a skill's tool allow-list + its provided-tools namespace wildcard.
+local function grant_tools(s, n, allow)
+  for _, t in ipairs(s.tools or {}) do allow[t] = true end
+  -- Grant this skill's own provided tools with ONE wildcard over its namespace
+  -- -- exactly how a skill grants a whole MCP server (mcp__<server>__*). resolve
+  -- stays pure: it only grants; the separate materialize step (lua/tools.lua)
+  -- compiles the bodies, so a bad body can never break an agent spawn.
+  if type(s.provides) == "table" and next(s.provides) then
+    allow["skill__" .. n .. "__*"] = true
+  end
+end
+
 function M.resolve(names)
   local instr, allow, unknown = {}, {}, {}
-  for _, n in ipairs(names or {}) do
+  local seen = {}
+
+  -- A skill may name FALLBACK skills (`fallback = "x"` or `{ "x", "y" }`). Their
+  -- tools are also granted, as backups: if a preferred tool is absent (an MCP
+  -- server that is down, a binary not installed), the agent still has a built-in
+  -- path. A fallback contributes TOOLS, not a second set of instructions the
+  -- model would have to reconcile. Cycles and repeats are guarded by `seen`.
+  local function fold(n, is_fallback)
+    if seen[n] then return end
+    seen[n] = true
     local s = M.load(n)
-    if s then
+    if not s then
+      if not is_fallback then unknown[#unknown + 1] = n end
+      return
+    end
+    if not is_fallback then
       local it = s.instructions
       if type(it) == "function" then
         local ok, res = pcall(it)
@@ -168,18 +206,14 @@ function M.resolve(names)
       if type(it) == "string" and it ~= "" then
         instr[#instr + 1] = "## Skill: " .. n .. "\n" .. it
       end
-      for _, t in ipairs(s.tools or {}) do allow[t] = true end
-      -- Grant this skill's own provided tools with ONE wildcard over its namespace
-      -- -- exactly how a skill grants a whole MCP server (mcp__<server>__*). resolve
-      -- stays pure: it only grants; the separate materialize step (lua/tools.lua)
-      -- compiles the bodies, so a bad body can never break an agent spawn.
-      if type(s.provides) == "table" and next(s.provides) then
-        allow["skill__" .. n .. "__*"] = true
-      end
-    else
-      unknown[#unknown + 1] = n
     end
+    grant_tools(s, n, allow)
+    local fb = s.fallback
+    if type(fb) == "string" then fold(fb, true)
+    elseif type(fb) == "table" then for _, f in ipairs(fb) do fold(f, true) end end
   end
+
+  for _, n in ipairs(names or {}) do fold(n, false) end
   return table.concat(instr, "\n\n"), allow, unknown
 end
 
@@ -298,6 +332,15 @@ function M.to_lua(name, skill, origin)
     parts[#parts + 1] = "  tools = { " .. table.concat(q, ", ") .. " },"
   else
     parts[#parts + 1] = "  tools = {},"
+  end
+  -- fallback skills (backup tool sources), if declared
+  local fb = skill.fallback
+  if type(fb) == "string" then
+    parts[#parts + 1] = "  fallback = " .. string.format("%q", fb) .. ","
+  elseif type(fb) == "table" and #fb > 0 then
+    local q = {}
+    for i, f in ipairs(fb) do q[i] = string.format("%q", f) end
+    parts[#parts + 1] = "  fallback = { " .. table.concat(q, ", ") .. " },"
   end
   -- provides: emitted as PURE DATA -- `body` as a quoted string, schema via
   -- util.serialize. A `run` function is not serializable, so a saved/round-tripped

@@ -173,6 +173,20 @@ local function run_turn_sync(text, on_text)
   if err then error(err, 0) end
 end
 
+-- Drive run_on on an arbitrary session/opts to completion under the scheduler
+-- (for the durability scenarios, which use throwaway sessions + a spy checkpoint).
+local function run_on_sync(sess, text, opts, on_text)
+  local err
+  local co = coroutine.create(function()
+    local ok2, e = pcall(bog.api.run_on, sess, text, on_text, opts)
+    if not ok2 then err = e end
+  end)
+  sched.actors, sched.by_id = {}, {}
+  sched.add(sess.id or 9000, co)
+  sched.run()
+  if err then error(err, 0) end
+end
+
 -- per-scenario reset
 local function begin_scenario()
   bog.session.messages = {}
@@ -384,6 +398,163 @@ do
   eq(#bog.session.messages, 2, "s6: clean [user, assistant] shape")
   eq(#bog.session.messages[2].content, 1, "s6: one text block, ping created no block")
   eq(bog.session.messages[2].content[1].text, "Still fine.", "s6: block text correct")
+end
+
+-- ==========================================================================
+-- Scenario 7: a turn cancelled mid-tool leaves a dangling tool_use. The next
+-- turn must REPAIR it (synthetic tool_result) instead of 400ing forever.
+-- ==========================================================================
+do
+  begin_scenario()
+  -- the corrupted transcript a Ctrl-C during a slow tool leaves behind:
+  -- assistant asked for a tool, the kill happened before the result was written
+  bog.session.messages = {
+    { role = "user", content = "do a thing" },
+    { role = "assistant", content = {
+        { type = "text", text = "working" },
+        { type = "tool_use", id = "toolu_dangle", name = "read", input = { path = "x" } },
+    } },
+  }
+  queue[1] = plain_text_response({ "recovered" })
+  run_turn_sync("never mind, hi", nil)
+
+  local m = requests[1].messages
+  eq(m[2].role, "assistant", "s7: assistant tool_use preserved")
+  eq(m[3].role, "user", "s7: a user turn follows the tool_use (alternation kept)")
+  eq(m[3].content[1].type, "tool_result", "s7: synthetic tool_result inserted")
+  eq(m[3].content[1].tool_use_id, "toolu_dangle", "s7: result answers the dangling id")
+  eq(m[3].content[1].is_error, true, "s7: marked interrupted/error")
+  eq(m[3].content[2].type, "text", "s7: the new prompt rides the same user turn")
+  eq(m[3].content[2].text, "never mind, hi", "s7: new prompt text preserved")
+  local last = bog.session.messages[#bog.session.messages]
+  eq(last.content[1].text, "recovered", "s7: turn recovered instead of 400ing")
+end
+
+-- ==========================================================================
+-- Scenario 8: cancelled mid-stream (no assistant reply) leaves a trailing user
+-- message; the next prompt must coalesce, not create two user turns (a 400).
+-- ==========================================================================
+do
+  begin_scenario()
+  bog.session.messages = { { role = "user", content = "first prompt (never answered)" } }
+  queue[1] = plain_text_response({ "ok" })
+  run_turn_sync("second prompt", nil)
+
+  local m = requests[1].messages
+  eq(#m, 1, "s8: consecutive user prompts coalesced into one message")
+  eq(m[1].role, "user", "s8: single user turn sent")
+  ok(m[1].content:find("first prompt") and m[1].content:find("second prompt"),
+     "s8: both prompts present in the merged turn")
+end
+
+-- ==========================================================================
+-- Scenario 9: mid-turn input injection -- text submitted while the turn runs is
+-- queued on sess.inbox and folded into the NEXT request during the tool round.
+-- ==========================================================================
+do
+  begin_scenario()
+  bog.session.inbox = nil
+  queue[1] = message_start()
+    .. text_block(0, { "reading" })
+    .. tool_block(1, "toolu_inj", "read", { json.encode({ path = bog.userdir .. "/nope" }) })
+    .. finish("tool_use")
+  queue[2] = plain_text_response({ "after" })
+
+  local injected = false
+  run_turn_sync("do a read", function(_)
+    if not injected then -- simulate the user hitting Enter mid-turn
+      bog.session.inbox = bog.session.inbox or {}
+      bog.session.inbox[#bog.session.inbox + 1] = "stop and summarize"
+      injected = true
+    end
+  end)
+
+  local m2 = requests[2].messages
+  local last = m2[#m2]
+  eq(last.role, "user", "s9: 2nd request ends with a user turn")
+  local saw = false
+  for _, b in ipairs(last.content) do
+    if b.type == "text" and b.text:find("summarize") then saw = true end
+  end
+  ok(saw, "s9: injected steering text rode the next request alongside the tool result")
+  ok(#bog.session.inbox == 0, "s9: the inbox was drained")
+end
+
+-- ==========================================================================
+-- Scenario 10: durable checkpointing -- the checkpoint hook fires after the
+-- assistant message and around every tool call (intent + result).
+-- ==========================================================================
+do
+  begin_scenario()
+  local target = bog.userdir .. "/s10.txt"
+  queue[1] = message_start()
+    .. tool_block(0, "toolu_s10", "write", { json.encode({ path = target, content = "x" }) })
+    .. finish("tool_use")
+  queue[2] = plain_text_response({ "ok" })
+
+  local sess = { id = 9100, model = bog.session.model, messages = {}, max_tokens = 16000 }
+  local ck = 0
+  run_on_sync(sess, "write x", { checkpoint = function() ck = ck + 1 end }, nil)
+  -- round1 assistant + tool intent + tool result + round2 assistant = 4
+  eq(ck, 4, "s10: checkpoint fired per assistant msg and around the tool call")
+  eq(util.read_file(target), "x", "s10: the tool actually ran")
+end
+
+-- ==========================================================================
+-- Scenario 11: resume a turn interrupted BEFORE a tool started -- the tool must
+-- run now and the turn continue to completion.
+-- ==========================================================================
+do
+  begin_scenario()
+  local target = bog.userdir .. "/s11.txt"
+  local sess = { id = 9101, model = bog.session.model, max_tokens = 16000, messages = {
+    { role = "user", content = "write it" },
+    { role = "assistant", content = {
+        { type = "tool_use", id = "toolu_s11", name = "write",
+          input = { path = target, content = "resumed" } },
+    } },
+  } }
+  queue[1] = plain_text_response({ "done after resume" })
+
+  run_on_sync(sess, nil, {}, nil) -- nil user_text == resume/continue
+
+  eq(util.read_file(target), "resumed", "s11: the never-started tool ran on resume")
+  local m = sess.messages
+  eq(m[3].role, "user", "s11: tool_result user turn inserted")
+  eq(m[3].content[1].type, "tool_result", "s11: result block present")
+  eq(m[3].content[1].tool_use_id, "toolu_s11", "s11: result answers the tool_use")
+  eq(m[3].content[1].is_error, nil, "s11: tool succeeded on resume")
+  eq(m[#m].content[1].text, "done after resume", "s11: turn ran to completion")
+end
+
+-- ==========================================================================
+-- Scenario 12: resume a turn interrupted WHILE a tool was in flight -- the
+-- in-flight tool (a `pending` marker) must NOT re-run (its side effect may be
+-- half-applied); it is answered as interrupted and the turn continues.
+-- ==========================================================================
+do
+  begin_scenario()
+  local target = bog.userdir .. "/s12.txt"
+  local sess = { id = 9102, model = bog.session.model, max_tokens = 16000, messages = {
+    { role = "user", content = "do it" },
+    { role = "assistant", content = {
+        { type = "tool_use", id = "toolu_s12", name = "write",
+          input = { path = target, content = "SHOULD NOT WRITE" } },
+    } },
+    { role = "user", content = {
+        { type = "tool_result", tool_use_id = "toolu_s12", content = "", pending = true },
+    } },
+  } }
+  queue[1] = plain_text_response({ "acknowledged" })
+
+  run_on_sync(sess, nil, {}, nil)
+
+  eq(sys.stat(target), nil, "s12: the in-flight tool was NOT re-run (no file written)")
+  local tr = sess.messages[3].content[1]
+  eq(tr.pending, nil, "s12: pending marker finalized")
+  eq(tr.content, "[interrupted]", "s12: in-flight tool answered as interrupted")
+  eq(tr.is_error, true, "s12: marked as error")
+  eq(sess.messages[#sess.messages].content[1].text, "acknowledged", "s12: turn continued")
 end
 
 -- ---- meta: the chunker really did split inside data: lines ------------------
