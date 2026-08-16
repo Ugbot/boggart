@@ -103,6 +103,12 @@ M.commands = {
   { name = "new",      help = "start a fresh conversation (new saved session)" },
   { name = "dispatch", help = "optional auto-routing: hand different-enough requests to a specialist",
                        args = { "on", "off" } },
+  -- common git tasks: run directly, fall back to the model on failure
+  { name = "status",   help = "git status (short)" },
+  { name = "diff",     help = "git diff of the working tree" },
+  { name = "commit",   help = "stage all + commit (with a message, or let the model write one)" },
+  { name = "push",     help = "git push; hands a rejection to the agent to resolve" },
+  { name = "sync",     help = "git pull --rebase; hands conflicts to the agent" },
   { name = "quit",     help = "exit" },
 }
 

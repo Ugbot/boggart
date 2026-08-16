@@ -349,6 +349,14 @@ local function handle_command(line)
       if not r.met and r.detail then io.write(tostring(r.detail):sub(1, 300), "\n") end
       bog.save_session()
     end
+  elseif cmd == "status" or cmd == "diff" or cmd == "commit"
+      or cmd == "push" or cmd == "sync" then
+    -- Common git tasks as slash commands: run git directly, and only fall back
+    -- to the model when it fails (see lua/gitcmd.lua). A { run = prompt } return
+    -- asks the REPL/cTUI turn driver to hand the failure to the agent.
+    local r = require("gitcmd").run(cmd, rest)
+    if r and r.run then return { run = r.run } end
+    if r and r.text and r.text ~= "" then io.write(r.text, "\n") end
   elseif cmd == "dispatch" then
     -- /dispatch [on|off] -- optional auto-routing: hand a request that is
     -- "different enough" to a specialist sub-agent (lua/dispatch.lua).
@@ -638,7 +646,9 @@ local function do_repl()
     if line == nil then io.write("\n"); break end
     if line ~= "" then sys.add_history(line) end
     if line:sub(1, 1) == "/" then
-      if handle_command(line) then break end
+      local r = handle_command(line)
+      if r == true then break
+      elseif type(r) == "table" and r.run then run_one_turn(r.run) end -- model fallback
     elseif line:match("%S") then
       run_one_turn(line)
     end

@@ -29,7 +29,8 @@ check(help:find("@path", 1, true), "help mentions @path references")
 -- ---- the registry is exactly the intended set ------------------------------
 local want = { help = true, tools = true, auth = true, doctor = true,
   memory = true, sessions = true, resume = true, reload = true, reset = true,
-  trust = true, model = true, ["until"] = true, new = true, dispatch = true, quit = true }
+  trust = true, model = true, ["until"] = true, new = true, dispatch = true,
+  status = true, diff = true, commit = true, push = true, sync = true, quit = true }
 for _, c in ipairs(C.commands) do
   check(want[c.name], "unexpected command in registry: /" .. c.name)
   want[c.name] = nil

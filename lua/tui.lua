@@ -350,7 +350,11 @@ local function slash(st, line)
   if not ok then out = "command error: " .. tostring(brk) end
   if out ~= "" then st.entries[#st.entries + 1] = { role = "system", text = out } end
   st.dirty = true
-  return brk == true and "quit" or nil
+  if brk == true then return "quit" end
+  -- A command may ask (via a { run = prompt } return) to hand a failure to the
+  -- agent -- e.g. a git push that was rejected. Pass it up to be run as a turn.
+  if type(brk) == "table" and brk.run then return brk end
+  return nil
 end
 
 -- text == nil resumes an interrupted turn (finish its tool round, then run on)
@@ -560,7 +564,9 @@ function M.run()
               quit = true; break
             elseif action == "submit" then
               if value and value:sub(1, 1) == "/" and value:match("^/%a") then
-                if slash(st, value) == "quit" then quit = true; break end
+                local s = slash(st, value)
+                if s == "quit" then quit = true; break
+                elseif type(s) == "table" and s.run then run_turn(st, s.run) end -- model fallback
               elseif value and value:match("%S") then
                 run_turn(st, value)                       -- new prompt (abandons any interrupted turn)
               elseif bog.api.incomplete_turn and bog.api.incomplete_turn(st.coord.session) then
