@@ -411,14 +411,26 @@ function DocView:draw_line_body(idx, x, y)
   -- ...and the annotations after it
   if at then self:draw_line_marks(idx, at, x, y) end
 
-  -- draw caret if it overlaps this line
+  -- draw caret if it overlaps this line. In a modal (vim) mode the caret is a
+  -- steady block over the character; the usual blinking bar otherwise.
+  local shape = core.vim_caret and core.vim_caret(self)
+  local block = shape == "block"
   if line == idx and core.active_view == self
-  and self.blink_timer < blink_period / 2
+  and (block or self.blink_timer < blink_period / 2)
   and system.window_has_focus() then
     local lh = self:get_line_height()
     local x1 = x + self:get_col_x_offset(line, col)
-    renderer.draw_rect(x1, y, style.caret_width, lh, style.caret)
+    local w = style.caret_width
+    if block then
+      w = self:get_col_x_offset(line, col + 1) - self:get_col_x_offset(line, col)
+      if w <= 1 then w = self:get_font():get_width(" ") end
+    end
+    renderer.draw_rect(x1, y, w, lh, style.caret)
   end
+
+  -- modal (vim) overlays: visual-block column + extra multi-cursor carets.
+  -- Same coordinate basis as the caret/selection above (plain x).
+  if core.vim_overlay then core.vim_overlay(self, idx, x, y) end
 end
 
 

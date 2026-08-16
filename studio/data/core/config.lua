@@ -16,5 +16,8 @@ config.line_height = 1.2
 config.indent_size = 2
 config.tab_type = "soft"
 config.line_limit = 80
+-- neovim-style modal editing (studio/data/core/vim.lua). Off by default; the
+-- module always loads so `vim:toggle` / `:set vim` can turn it on at runtime.
+config.vim_mode = false
 
 return config

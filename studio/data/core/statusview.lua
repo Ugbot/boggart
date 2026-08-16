@@ -105,7 +105,7 @@ function StatusView:get_items()
     local line, col = dv.doc:get_selection()
     local dirty = dv.doc:is_dirty()
 
-    return {
+    local left = {
       dirty and style.accent or style.text, style.icon_font, "f",
       style.dim, style.font, self.separator2, style.text,
       dv.doc.filename and style.text or style.dim, dv.doc:get_name(),
@@ -117,7 +117,17 @@ function StatusView:get_items()
       style.text,
       self.separator,
       string.format("%d%%", math.floor(line / #dv.doc.lines * 100)),
-    }, self:with_studio({
+    }
+
+    -- Prepend the modal editing mode chip, when vim mode is on.
+    local vs = core.vim_status and core.vim_status(dv)
+    if vs then
+      vs[#vs + 1] = self.separator
+      for i = 1, #left do vs[#vs + 1] = left[i] end
+      left = vs
+    end
+
+    return left, self:with_studio({
       style.icon_font, "g",
       style.font, style.dim, self.separator2, style.text,
       #dv.doc.lines, " lines",

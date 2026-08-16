@@ -616,6 +616,10 @@ function core.init()
     -- chat list rather than replacing it.
     if core.studio then core.try(core.studio.attach) end
   end
+  -- Modal (neovim-style) editing. Loaded unconditionally so its commands and
+  -- the `vim:toggle` binding always exist; it stays dormant until
+  -- config.vim_mode is true. Loaded before plugins so a plugin can override it.
+  core.try(require, "core.vim")
   local got_plugin_error = not core.load_plugins()
   local got_user_error = not core.try(require, "user")
   local got_project_error = not core.load_project_module()
