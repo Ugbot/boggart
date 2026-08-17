@@ -176,7 +176,10 @@ local function agent_snapshot(st)
   for _, a in ipairs(sched.actors) do
     out[#out + 1] = {
       id = a.id,
-      label = labels[a.id] or (a.id == st.coord.id and "coordinator") or ("agent-" .. a.id),
+      -- The coordinator is labelled by its ROLE here whatever its stored title
+      -- is: the session title now names the conversation (for the chat list),
+      -- so the roster must not inherit it and read as "agent: lets get back...".
+      label = (a.id == st.coord.id and "coordinator") or labels[a.id] or ("agent-" .. a.id),
       status = STATUS[a.status] or "run",
       elapsed = st.t0 and (now - st.t0) or nil,
       note = claim[a.id],
@@ -360,7 +363,18 @@ end
 -- text == nil resumes an interrupted turn (finish its tool round, then run on)
 -- instead of starting a new one.
 local function run_turn(st, text)
-  if text ~= nil then st.entries[#st.entries + 1] = { role = "user", text = text } end
+  if text ~= nil then
+    st.entries[#st.entries + 1] = { role = "user", text = text }
+    -- Name the conversation from its first real message. The coordinator session
+    -- is created titled by its ROLE ("coordinator") for the fleet roster; that
+    -- made every saved TUI chat show as "coordinator" in the session list, which
+    -- read as "nothing saved". Do it once, on the first turn (before run_on
+    -- appends this message), and persist so /sessions and resume can find it.
+    local sess = st.coord.session
+    if #(sess.messages or {}) == 0 then
+      pcall(bog.store.thread_save, st.coord.id, { title = text:gsub("%s+", " "):sub(1, 60) })
+    end
+  end
   st.cur = nil -- the first assistant chunk opens a fresh entry, after any tool call
   st.scroll, st.running, st.t0, st.abort = 0, true, os.time(), false
   st.dirty, st.last_paint = true, 0
@@ -406,7 +420,12 @@ local function run_turn(st, text)
   st.wake:start(HEARTBEAT_MS, HEARTBEAT_MS, function() end) -- wake to tick the clock
   while bog.sched.count() > 0 do
     local ev = tc.poll(0)
-    while ev.type == "key" do
+    while ev.type ~= "none" do
+      -- Mouse wheel scrolls the transcript (64 = up, 65 = down), even mid-turn.
+      if ev.type == "mouse" then
+        if ev.button == 64 then st.scroll = math.min(st.total, st.scroll + 3); st.dirty = true
+        elseif ev.button == 65 then st.scroll = math.max(0, st.scroll - 3); st.dirty = true end
+      elseif ev.type == "key" then
       -- The input field stays LIVE while the turn runs: you can keep composing,
       -- and now you can SEND too. Enter queues the line onto the coordinator's
       -- inbox (api.run_on folds it into the next request, so it steers the
@@ -419,7 +438,7 @@ local function run_turn(st, text)
           if a.id ~= st.coord.id then pcall(bog.sched.pause, a.id, st.paused) end
         end
         st.dirty = true
-      elseif ev.key == "pageup" then st.scroll = st.scroll + page(st); st.dirty = true
+      elseif ev.key == "pageup" then st.scroll = math.min(st.total, st.scroll + page(st)); st.dirty = true
       elseif ev.key == "pagedown" then st.scroll = math.max(0, st.scroll - page(st)); st.dirty = true
       elseif ev.key == "enter" then
         local action, value = st.box:key(ev)
@@ -431,6 +450,7 @@ local function run_turn(st, text)
           st.dirty = true
         end
       else st.box:key(ev); st.dirty = true end
+      end
       ev = tc.poll(0)
     end
     if st.abort then break end
@@ -552,6 +572,10 @@ function M.run()
       while ev.type ~= "none" do
         if ev.type == "resize" then
           draw(st)
+        elseif ev.type == "mouse" then
+          -- Wheel scrolls the transcript (64 = up, 65 = down).
+          if ev.button == 64 then st.scroll = math.min(st.total, st.scroll + 3); draw(st)
+          elseif ev.button == 65 then st.scroll = math.max(0, st.scroll - 3); draw(st) end
         elseif ev.type == "key" then
           if ev.key == "ctrl" and ev.char == "q" then quit = true; break end
           if ev.key == "pageup" then

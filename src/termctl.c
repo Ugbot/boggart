@@ -569,7 +569,12 @@ static int parse_one(tc_event *ev) {
                     return 1;
                 }
                 ev->type = TCEV_MOUSE;
-                ev->mbutton = (b[3] - 32) & 0x03;
+                {   /* Bit 0x40 marks the wheel; masking it off (& 0x03) turned a
+                     * scroll into a phantom left/middle click. Report the wheel
+                     * distinctly: 64 = up, 65 = down. */
+                    int code = (int)b[3] - 32;
+                    ev->mbutton = (code & 0x40) ? 64 + (code & 0x01) : (code & 0x03);
+                }
                 ev->mx = (int)b[4] - 33;
                 ev->my = (int)b[5] - 33;
                 if (ev->mx < 0) ev->mx = 0;
@@ -603,7 +608,8 @@ static int parse_one(tc_event *ev) {
                     }
                 }
                 ev->type = TCEV_MOUSE;
-                ev->mbutton = bt & 0x03;
+                /* 64 = wheel up, 65 = wheel down (bit 0x40); other buttons 0-2. */
+                ev->mbutton = (bt & 0x40) ? 64 + (bt & 0x01) : (bt & 0x03);
                 ev->mx = mx > 0 ? mx - 1 : 0;
                 ev->my = my > 0 ? my - 1 : 0;
                 return fin + 1;
