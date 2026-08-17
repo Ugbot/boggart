@@ -241,6 +241,11 @@ local function tool_env()
   local env = {
     -- capabilities (C-backed, policy included)
     sys = sys, db = db, json = json, gold = gold,
+    -- data: a JSON key/value store under ~/.boggart/data (see lua/data.lua). The
+    -- channel for sharing state across the sandbox boundary -- a skill's
+    -- instructions data.put() the rules once, a provided checker tool data.get()s
+    -- them, so writer and enforcer never drift.
+    data = require("data"),
     -- composition: call any other registered tool, built-in or generated (§7)
     tools = { call = function(n, a) return M.run(n, a) end,
               names = function() return M.names() end },

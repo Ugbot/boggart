@@ -112,6 +112,32 @@ function M.validate(s)
       end
     end
   end
+
+  -- verify: names a tool (usually one this skill `provides`) that CHECKS the
+  -- skill's outcome -- the mechanical "did it actually work?" pass. resolve()
+  -- appends a standard "run it before you finish, and fix what it flags" nudge
+  -- to the skill's instructions, so verification is a first-class part of a
+  -- skill rather than prose each one hand-writes. String = the tool name;
+  -- { tool = <name>, nudge? = <custom text> } to override the wording.
+  if s.verify ~= nil then
+    local v = s.verify
+    local vtool = (type(v) == "string" and v) or (type(v) == "table" and v.tool)
+    if type(vtool) ~= "string" or vtool == "" then
+      return "'verify' must be a tool name (string) or { tool = <name>, nudge? = <text> }"
+    end
+    if type(v) == "table" and v.nudge ~= nil and type(v.nudge) ~= "string" then
+      return "verify.nudge must be a string"
+    end
+    -- The named tool must be one the skill actually carries, so the agent can
+    -- call it: either a provided tool or something in the granted tools list.
+    local known = type(s.provides) == "table" and s.provides[vtool] ~= nil
+    if not known and type(s.tools) == "table" then
+      for _, t in ipairs(s.tools) do if t == vtool then known = true break end end
+    end
+    if not known then
+      return "verify tool '" .. vtool .. "' is not in this skill's provides or tools"
+    end
+  end
   return nil
 end
 
@@ -206,6 +232,18 @@ function M.resolve(names)
       if type(it) == "string" and it ~= "" then
         instr[#instr + 1] = "## Skill: " .. n .. "\n" .. it
       end
+      -- Verification is first-class: if the skill names a verify tool, tell the
+      -- agent to run it on its own output and fix what it reports before it can
+      -- call the work done -- the same discipline every skill should share.
+      local v = s.verify
+      if v then
+        local vtool = (type(v) == "string" and v) or v.tool
+        local nudge = (type(v) == "table" and v.nudge)
+          or ("Before you report this skill's work as done, run `" .. vtool
+              .. "` on your output and FIX everything it flags; re-run until it "
+              .. "passes. Never claim success on an unverified result.")
+        instr[#instr + 1] = "### Verify \u{2014} " .. n .. "\n" .. nudge
+      end
     end
     grant_tools(s, n, allow)
     local fb = s.fallback
@@ -215,6 +253,48 @@ function M.resolve(names)
 
   for _, n in ipairs(names or {}) do fold(n, false) end
   return table.concat(instr, "\n\n"), allow, unknown
+end
+
+-- lint(name) -> { name, ok, issues, has_checker, has_verify }. Checks a skill
+-- against the canonical template (docs/skills-and-tools.md): a real description,
+-- instructions, and -- the point -- that a skill which PROVIDES a checker also
+-- names it as `verify`, and that `verify` names a tool the skill actually
+-- carries. Pure-capability skills (no checker) legitimately have no verify.
+local CHECKER_PAT = { "check", "verify", "audit", "lint", "validate", "^test", "score", "grade" }
+local function looks_like_checker(tname)
+  for _, p in ipairs(CHECKER_PAT) do if tname:match(p) then return true end end
+  return false
+end
+function M.lint(name)
+  local s = M.load(name)
+  if not s then return { name = name, ok = false, issues = { "skill not found" } } end
+  local issues = {}
+  if type(s.description) ~= "string" or #s.description < 12 then
+    issues[#issues + 1] = "description missing or too terse (say WHAT it is and WHEN to use it)"
+  end
+  local it = s.instructions
+  if type(it) == "function" then local ok, r = pcall(it); it = ok and r or "" end
+  if type(it) ~= "string" or not it:match("%S") then
+    issues[#issues + 1] = "instructions missing or empty"
+  end
+  local checker
+  if type(s.provides) == "table" then
+    for tname in pairs(s.provides) do if looks_like_checker(tname) then checker = checker or tname end end
+  end
+  local vtool = (type(s.verify) == "string" and s.verify)
+             or (type(s.verify) == "table" and s.verify.tool) or nil
+  if checker and not vtool then
+    issues[#issues + 1] = "provides a checker ('" .. checker .. "') but has no `verify` slot"
+  end
+  if vtool then
+    local ok = type(s.provides) == "table" and s.provides[vtool] ~= nil
+    if not ok and type(s.tools) == "table" then
+      for _, t in ipairs(s.tools) do if t == vtool then ok = true break end end
+    end
+    if not ok then issues[#issues + 1] = "verify names '" .. vtool .. "' which the skill neither provides nor grants" end
+  end
+  return { name = name, ok = #issues == 0, issues = issues,
+           has_checker = checker ~= nil, has_verify = vtool ~= nil }
 end
 
 -- ---- importing: markdown (SKILL.md) -> a Lua skill --------------------------
@@ -301,8 +381,12 @@ function M.parse_markdown(text)
   -- A "## Tools" section becomes the skill's `provides` (code); the rest is prose.
   local provides, instructions = extract_tools(body)
   if instructions == "" then return nil, "skill document has no instructions" end
+  -- `verify: <tool>` frontmatter makes outcome-checking first-class (usually one
+  -- of the ## Tools this document provides); resolve appends the standard nudge.
+  local verify = meta.verify
+  if verify == "" then verify = nil end
   return { description = desc, instructions = instructions, tools = tools or {},
-           provides = provides }, name
+           provides = provides, verify = verify }, name
 end
 
 -- Render a skill as a Lua module. This is the "turned into Lua" step: the result
@@ -341,6 +425,14 @@ function M.to_lua(name, skill, origin)
     local q = {}
     for i, f in ipairs(fb) do q[i] = string.format("%q", f) end
     parts[#parts + 1] = "  fallback = { " .. table.concat(q, ", ") .. " },"
+  end
+  -- verify: the outcome-check tool (string), or { tool, nudge } for custom wording.
+  local vf = skill.verify
+  if type(vf) == "string" then
+    parts[#parts + 1] = "  verify = " .. string.format("%q", vf) .. ","
+  elseif type(vf) == "table" and type(vf.tool) == "string" then
+    parts[#parts + 1] = "  verify = { tool = " .. string.format("%q", vf.tool)
+      .. (vf.nudge and (", nudge = " .. string.format("%q", vf.nudge)) or "") .. " },"
   end
   -- provides: emitted as PURE DATA -- `body` as a quoted string, schema via
   -- util.serialize. A `run` function is not serializable, so a saved/round-tripped
@@ -428,8 +520,24 @@ M.tools = {
       .. "from. A skill bundles instructions plus the tools an agent is allowed to use; "
       .. "name them when you spawn a sub-agent.",
     input_schema = { type = "object",
-      properties = { name = { type = "string", description = "show one skill in full" } } },
+      properties = { name = { type = "string", description = "show one skill in full" },
+        lint = { type = "boolean", description = "instead of listing, report each skill's "
+          .. "conformance to the skill template (docs/skills-and-tools.md): description, "
+          .. "instructions, and whether a skill that provides a checker names it as `verify`" } } },
     run = function(a)
+      if a.lint then
+        local names = {}
+        if type(a.name) == "string" and a.name ~= "" then names = { a.name }
+        else for _, r in ipairs(M.list()) do names[#names + 1] = r.name end; table.sort(names) end
+        local out = {}
+        for _, n in ipairs(names) do
+          local r = M.lint(n)
+          out[#out + 1] = string.format("%-4s %-16s %s", r.ok and "OK" or "FAIL", n,
+            (#r.issues > 0) and table.concat(r.issues, "; ")
+              or (r.has_verify and "[verify]" or (r.has_checker and "[checker]" or "")))
+        end
+        return table.concat(out, "\n")
+      end
       if type(a.name) == "string" and a.name ~= "" then
         local s = M.load(a.name)
         if not s then return "Tool error: [tool_not_found] no skill named '" .. a.name .. "'" end
@@ -459,7 +567,14 @@ M.tools = {
       .. "`args` and returns a string. Provided tools compile through the same sandbox "
       .. "as define_tool and are offered to any agent granted the skill as "
       .. "skill__<skill>__<tool> (granted with a wildcard, like an MCP server). Pass "
-      .. "store=\"db\" to persist into the database instead of a Lua file.",
+      .. "`verify` = the name of a check tool (usually one you provide) to make outcome "
+      .. "verification a first-class part of the skill. A provided tool's body can share "
+      .. "state with a skill's instructions via the `data` capability (data.put/get over "
+      .. "~/.boggart/data), e.g. the rules live once and both the writer and the checker "
+      .. "read them -- the single-source pattern. Pass store=\"db\" to persist into the "
+      .. "database instead of a Lua file. Follow the canonical anatomy in "
+      .. "docs/skills-and-tools.md (run the `skills` tool with lint=true to check "
+      .. "conformance).",
     input_schema = { type = "object",
       properties = {
         name = { type = "string" },
@@ -472,6 +587,11 @@ M.tools = {
             input_schema = { type = "object" },
             body = { type = "string", description = "Lua body; receives `args`, returns a string" },
           }, required = { "body" } } },
+        verify = { type = "string", description = "name of a tool (usually one this "
+          .. "skill `provides`) that CHECKS the skill's outcome -- the mechanical "
+          .. "'did it actually work?' pass. boggart appends a standard 'run it and fix "
+          .. "everything it flags before you finish' nudge to the instructions, so "
+          .. "verification is part of the skill, not prose you rewrite each time." },
         store = { type = "string", enum = { "file", "db" },
           description = "where to persist (default file)" },
       }, required = { "name", "instructions" } },
@@ -494,7 +614,7 @@ M.tools = {
         end
       end
       local skill = { description = a.description or name, instructions = a.instructions,
-                      tools = a.tools or {}, provides = a.provides or {} }
+                      tools = a.tools or {}, provides = a.provides or {}, verify = a.verify }
       local path, err = M.save(name, skill, nil, a.store)
       if not path then return "Tool error: [validation_error] " .. tostring(err) end
       return string.format("Defined skill '%s' (%d tools, %d provided). %s",
