@@ -239,7 +239,16 @@ const char *boggart_auth_header(void) {
   const char *key = env ? env : ((stored && stored[0]) ? stored : NULL);
   if (!key) return NULL;
   static char hdr[AUTH_MAX + 32];
-  snprintf(hdr, sizeof(hdr), "x-api-key: %s", key);
+  /* OpenAI-shaped wires (chat-completions and the Responses API) authenticate
+   * with a Bearer token; Anthropic uses x-api-key. The wire is env-overridable,
+   * matching auth.wire()'s precedence. */
+  const char *wire = getenv("ANTHROPIC_WIRE");
+  if (!wire || !*wire) wire = g_wire;
+  if (wire && (strcmp(wire, "openai") == 0 || strcmp(wire, "responses") == 0)) {
+    snprintf(hdr, sizeof(hdr), "authorization: Bearer %s", key);
+  } else {
+    snprintf(hdr, sizeof(hdr), "x-api-key: %s", key);
+  }
   return hdr;
 }
 

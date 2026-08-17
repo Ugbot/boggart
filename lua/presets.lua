@@ -44,7 +44,16 @@ end
 -- Snapshot the CURRENT endpoint config under `name`.
 function M.put(name)
   local t = M.load()
-  t[name] = { url = auth.base_url(), wire = auth.wire() or "anthropic", model = auth.model() }
+  t[name] = { url = auth.base_url(), wire = auth.wire() or "anthropic", model = auth.model(),
+              effort = bog.session and bog.session.effort or nil }
+  M.save(t)
+  return t[name]
+end
+
+-- Define a preset explicitly (used to seed known endpoints).
+function M.set(name, spec)
+  local t = M.load()
+  t[name] = { url = spec.url, wire = spec.wire or "anthropic", model = spec.model, effort = spec.effort }
   M.save(t)
   return t[name]
 end
@@ -65,7 +74,16 @@ function M.apply(name)
   auth.set("base_url", p.url or "")
   auth.set("wire", p.wire or "anthropic")
   auth.set("model", p.model or "")
-  if bog.session and p.model and p.model ~= "" then bog.session.model = p.model end
+  -- Set the model on the session a turn actually runs on (the coordinator in the
+  -- cTUI/swarm, else bog.session) -- not just bog.session -- so the request body
+  -- carries the switched model and not the coordinator's stale one.
+  if p.model and p.model ~= "" then
+    if bog.set_model then bog.set_model(p.model)
+    elseif bog.session then bog.session.model = p.model end
+  end
+  local active = bog.active_session and bog.active_session() or bog.session
+  if active then active.effort = p.effort end          -- carry the preset's effort (or clear it)
+  if bog.session then bog.session.effort = p.effort end
   bog.api.forget_auth()
   return p
 end

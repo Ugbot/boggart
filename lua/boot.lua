@@ -139,6 +139,24 @@ local function wire()
 end
 
 -- Session lifecycle (persisted in the SQLite store; bog.db survives reloads).
+-- The session a turn actually runs on. In the cTUI/swarm the chat is a
+-- coordinator agent with its OWN session (bog.swarm_root.session); in the studio
+-- and the plain REPL it is bog.session. `/model`, `/auth model` and preset
+-- switches must mutate THAT session -- otherwise the status bar (which reads the
+-- persisted auth.model()) shows the new model while the request body keeps the
+-- coordinator's stale one, and the API rejects the mismatch (HTTP 400).
+function bog.active_session()
+  local root = bog.swarm_root
+  return (root and root.session) or bog.session
+end
+function bog.set_model(m)
+  if not m or m == "" then return end
+  local s = bog.active_session()
+  if s then s.model = m end
+  if bog.session then bog.session.model = m end   -- keep the default seed in sync
+  if auth and auth.set then pcall(auth.set, "model", m) end  -- persist for restart / new agents
+end
+
 function bog.new_session()
   local S = bog.session
   S.messages = {}
@@ -309,13 +327,13 @@ local function handle_command(line)
       io.write(string.format("  model  %s\n", auth.model() or "(unset)"))
       io.write(string.format("  wire   %s\n", auth.wire() or "anthropic (default)"))
       io.write("environment overrides anything stored here.\n")
-      io.write("  /auth key <k> | /auth url <u> | /auth model <m> | /auth wire <openai|anthropic> | /auth clear [what]\n")
+      io.write("  /auth key <k> | /auth url <u> | /auth model <m> | /auth wire <openai|anthropic|responses> | /auth clear [what]\n")
     elseif what == "clear" then
       if val ~= "" and MAP[val] then auth.clear(MAP[val]); io.write("cleared ", val, "\n")
       else auth.clear(); io.write("cleared all stored credentials\n") end
       bog.api.forget_auth()
-    elseif what == "wire" and val ~= "" and val ~= "openai" and val ~= "anthropic" then
-      io.write("usage: /auth wire <openai|anthropic>\n")
+    elseif what == "wire" and val ~= "" and val ~= "openai" and val ~= "anthropic" and val ~= "responses" then
+      io.write("usage: /auth wire <openai|anthropic|responses>\n")
     elseif MAP[what] then
       if val == "" then io.write("usage: /auth ", what, " <value>\n")
       else
@@ -324,7 +342,7 @@ local function handle_command(line)
         -- mid-session would otherwise not take effect until restart.
         bog.api.forget_auth()
         io.write("stored ", what, " = ", what == "key" and select(1, auth.masked()) or val, "\n")
-        if what == "model" then bog.session.model = val end
+        if what == "model" then bog.set_model(val) end
       end
     else
       io.write("usage: /auth [show] | /auth key <k> | /auth url <u> | /auth model <m> | /auth clear\n")
@@ -353,10 +371,10 @@ local function handle_command(line)
     else
       -- A NUMBER jumps to that entry; else a saved preset; else a raw model id.
       local n = tonumber(rest)
-      if n and list[n] then bog.session.model = list[n]
+      if n and list[n] then bog.set_model(list[n])
       elseif require("presets").load()[rest] then
         require("presets").apply(rest); io.write("switched to preset '", rest, "'\n")
-      else bog.session.model = rest end
+      else bog.set_model(rest) end
       local s = bog.api.status()
       local where = s.is_local and ("local  " .. s.host) or (s.provider .. "  (remote)")
       io.write(string.format("model     %s\nrunning   %s\nendpoint  %s\n", s.model, where, s.endpoint))
@@ -396,6 +414,21 @@ local function handle_command(line)
       else
         io.write("no such preset: ", sub, "  (/endpoint list)\n")
       end
+    end
+  elseif cmd == "effort" then
+    -- Reasoning effort for models that support it (deepseek, gpt-oss, o-series).
+    -- Session-scoped; a preset can carry one so it restores on switch.
+    local LEVELS = { minimal = true, low = true, medium = true, high = true }
+    local v = rest:lower()
+    if rest == "" then
+      io.write("reasoning effort: ", tostring(bog.session.effort or "(server default)"),
+        "\n  /effort <minimal|low|medium|high>   (or 'none' to clear)\n")
+    elseif v == "none" or v == "off" or v == "default" or v == "clear" then
+      bog.session.effort = nil; io.write("effort cleared (server default)\n")
+    elseif LEVELS[v] then
+      bog.session.effort = v; io.write("effort -> ", v, "\n")
+    else
+      io.write("usage: /effort <minimal|low|medium|high|none>\n")
     end
   elseif cmd == "agents" or cmd == "fleet" or cmd == "swarm" then
     -- Live fleet status. The scheduler's actors ARE the agents (the coordinator

@@ -53,6 +53,14 @@ local function endpoint()
     if base:match("/v1$") then return base .. "/chat/completions" end
     return base .. "/v1/chat/completions"
   end
+  if wire() == "responses" then
+    -- OpenAI's modern Responses API: POST <base>/v1/responses.
+    if not base or base == "" then base = "https://api.openai.com" end
+    base = base:gsub("/+$", "")
+    if base:match("/responses$") then return base end
+    if base:match("/v1$") then return base .. "/responses" end
+    return base .. "/v1/responses"
+  end
   if not base or base == "" then return "https://api.anthropic.com/v1/messages" end
   base = base:gsub("/+$", "")
   -- Accept either a bare origin or a full messages URL, so callers do not have
@@ -237,7 +245,8 @@ local function auth_headers()
   -- OpenAI-compatible servers reject/ignore the anthropic-version header; send
   -- only content-type. A local llama.cpp wants no credential at all, which the
   -- base_url branch below already handles.
-  local h = wire() == "openai"
+  local w = wire()
+  local h = (w == "openai" or w == "responses")
     and { "content-type: application/json" }
     or { "anthropic-version: 2023-06-01", "content-type: application/json" }
   -- Note what is NOT here: the key. auth.has_key() answers the only question
@@ -503,6 +512,7 @@ local function to_openai_body(body)
   }
   if body.stream then out.stream_options = { include_usage = true } end
   if body.temperature then out.temperature = body.temperature end
+  if body.reasoning_effort then out.reasoning_effort = body.reasoning_effort end
   if body.tools and #body.tools > 0 then
     local tools = {}
     for _, t in ipairs(body.tools) do
@@ -611,9 +621,156 @@ local function new_openai_decoder(on_text)
   return { feed = feed, finish = finish }
 end
 
+-- ---- OpenAI Responses API adapter ------------------------------------------
+-- The modern OpenAI API (POST /v1/responses). Differs from chat-completions:
+-- the system prompt is top-level `instructions`; the transcript is `input`, an
+-- array of role messages PLUS `function_call` / `function_call_output` items;
+-- tools are FLAT ({type,name,description,parameters}); reasoning effort is
+-- `reasoning.effort`; the cap is `max_output_tokens`; and the stream is a TYPED
+-- event stream (response.output_text.delta, response.function_call_arguments.
+-- delta, response.completed, ...). We translate to/from the same Anthropic block
+-- shape as the other wires, so the agent loop is unchanged.
+local function to_responses_body(body)
+  local input = {}
+  for _, m in ipairs(body.messages or {}) do
+    if type(m.content) == "string" then
+      input[#input + 1] = { role = m.role, content = m.content }
+    else
+      local textparts, calls, outputs = {}, {}, {}
+      for _, b in ipairs(m.content or {}) do
+        if b.type == "text" then
+          textparts[#textparts + 1] = b.text or ""
+        elseif b.type == "tool_use" then
+          calls[#calls + 1] = { type = "function_call", call_id = b.id,
+            name = b.name, arguments = json.encode(b.input or {}) }
+        elseif b.type == "tool_result" then
+          outputs[#outputs + 1] = { type = "function_call_output",
+            call_id = b.tool_use_id, output = text_of(b.content) }
+        end
+        -- `thinking` blocks are dropped: no assistant-reasoning input item.
+      end
+      -- Order within a turn: the message text, then this turn's function calls,
+      -- then (next turn) their outputs. Cross-turn order is preserved by walking
+      -- messages in order, so a call always precedes its output.
+      local t = table.concat(textparts)
+      if t ~= "" then input[#input + 1] = { role = m.role, content = t } end
+      for _, c in ipairs(calls) do input[#input + 1] = c end
+      for _, o in ipairs(outputs) do input[#input + 1] = o end
+    end
+  end
+
+  local out = {
+    model = body.model, input = input,
+    max_output_tokens = body.max_tokens,
+    stream = body.stream and true or false, store = false,
+  }
+  local instructions = text_of(body.system)
+  if instructions ~= "" then out.instructions = instructions end
+  if body.reasoning_effort then out.reasoning = { effort = body.reasoning_effort } end
+  if body.temperature then out.temperature = body.temperature end
+  if body.tools and #body.tools > 0 then
+    local tools = {}
+    for _, t in ipairs(body.tools) do
+      tools[#tools + 1] = { type = "function", name = t.name,
+        description = t.description, parameters = norm_schema(t.input_schema) or { type = "object" } }
+    end
+    out.tools = tools
+  end
+  return out
+end
+
+-- Decode the Responses typed SSE stream into (assistant_message, stop_reason,
+-- stream_err). Each frame is `event: <type>` + `data: {json}`; we read the type
+-- from the data object (it carries its own `type`), so only `data:` lines matter.
+local function new_responses_decoder(on_text)
+  local text, thinking, tool_acc, order = "", "", {}, {}
+  local stop_reason, stream_err, buf = nil, nil, ""
+  local usage = { input_tokens = 0, output_tokens = 0,
+                  cache_read_input_tokens = 0, cache_creation_input_tokens = 0 }
+
+  local function handle(evt)
+    local t = evt.type
+    if t == "response.output_text.delta" then
+      text = text .. (evt.delta or ""); if on_text then on_text(evt.delta or "") end
+    elseif t == "response.reasoning_summary_text.delta" or t == "response.reasoning_text.delta" then
+      thinking = thinking .. (evt.delta or "")
+    elseif t == "response.output_item.added" then
+      local it = evt.item
+      if type(it) == "table" and it.type == "function_call" then
+        local id = it.id or ("item" .. (#order + 1))
+        if not tool_acc[id] then order[#order + 1] = id end
+        tool_acc[id] = { id = it.call_id, name = it.name or "", args = "" }
+      end
+    elseif t == "response.function_call_arguments.delta" then
+      local acc = tool_acc[evt.item_id]
+      if acc then acc.args = acc.args .. (evt.delta or "") end
+    elseif t == "response.output_item.done" then
+      local it = evt.item
+      if type(it) == "table" and it.type == "function_call" then
+        local acc = tool_acc[it.id or evt.item_id]
+        if acc then
+          acc.id = it.call_id or acc.id
+          if it.name and it.name ~= "" then acc.name = it.name end
+          if it.arguments and acc.args == "" then acc.args = it.arguments end
+        end
+      end
+    elseif t == "response.completed" or t == "response.incomplete" then
+      local u = evt.response and evt.response.usage
+      if type(u) == "table" then
+        if type(u.input_tokens) == "number" then usage.input_tokens = u.input_tokens end
+        if type(u.output_tokens) == "number" then usage.output_tokens = u.output_tokens end
+      end
+    elseif t == "response.failed" or t == "response.error" or t == "error" then
+      local msg = (evt.response and evt.response.error and evt.response.error.message)
+        or evt.message or "unknown"
+      stream_err = "api stream error: " .. tostring(msg)
+    end
+  end
+
+  local function feed(chunk)
+    buf = buf .. chunk
+    while true do
+      local nl = buf:find("\n", 1, true)
+      if not nl then break end
+      local line = buf:sub(1, nl - 1):gsub("\r$", "")
+      buf = buf:sub(nl + 1)
+      if line:sub(1, 6) == "data: " then
+        local data = line:sub(7)
+        if data ~= "" and data ~= "[DONE]" then
+          local ok, evt = pcall(json.decode, data)
+          if ok and type(evt) == "table" then handle(evt) end
+        end
+      end
+    end
+  end
+
+  local function finish()
+    local content = {}
+    if thinking ~= "" then content[#content + 1] = { type = "thinking", thinking = thinking } end
+    if text ~= "" then content[#content + 1] = { type = "text", text = text } end
+    local had_tool = false
+    for _, id in ipairs(order) do
+      local acc = tool_acc[id]
+      if acc and acc.name ~= "" then
+        local ok, parsed = pcall(json.decode, acc.args ~= "" and acc.args or "{}")
+        content[#content + 1] = { type = "tool_use", id = acc.id or ("call_" .. id),
+          name = acc.name, input = (ok and type(parsed) == "table") and parsed or {} }
+        had_tool = true
+      end
+    end
+    if #content == 0 then content[1] = { type = "text", text = "" } end
+    if had_tool then stop_reason = "tool_use" elseif not stop_reason then stop_reason = "end_turn" end
+    return { role = "assistant", content = content, usage = usage }, stop_reason, stream_err
+  end
+
+  return { feed = feed, finish = finish }
+end
+
 -- ---- the transport (always runs inside a scheduler coroutine) --------------
-local function stream_async_once(body, on_text, openai)
-  local dec = openai and new_openai_decoder(on_text) or new_decoder(on_text)
+local function stream_async_once(body, on_text, w)
+  local dec = (w == "responses" and new_responses_decoder(on_text))
+    or (w == "openai" and new_openai_decoder(on_text))
+    or new_decoder(on_text)
   local raw = {}
   local req = http.begin{
     url = endpoint(), method = "POST", headers = auth_headers(), auth = true,
@@ -643,10 +800,13 @@ local function stream_async(body_tbl, on_text)
   -- guarantees the outbound request is always valid UTF-8 no matter its
   -- provenance. It is a no-op (a single O(n) scan, no allocation) whenever the
   -- body is already valid, which after the ingest scrub is the normal case.
-  local openai = wire() == "openai"
-  local body = util.to_valid_utf8(json.encode(openai and to_openai_body(body_tbl) or body_tbl))
+  local w = wire()
+  local tbl = (w == "responses" and to_responses_body(body_tbl))
+    or (w == "openai" and to_openai_body(body_tbl))
+    or body_tbl
+  local body = util.to_valid_utf8(json.encode(tbl))
   for attempt = 1, M.RETRY.attempts do
-    local msg, stop, serr, status, terr, raw = stream_async_once(body, on_text, openai)
+    local msg, stop, serr, status, terr, raw = stream_async_once(body, on_text, w)
     if status == 200 and not serr then return msg, stop end
     if status == 401 or status == 403 then cached_headers = nil end
 
@@ -1282,6 +1442,9 @@ function M.run_on(sess, user_text, on_text, opts)
       system = system(),
       messages = sess.messages,
       stream = true,
+      -- Reasoning effort, when the user set one (/effort). Reasoning models
+      -- (deepseek, gpt-oss, o-series) read it; others ignore it.
+      reasoning_effort = sess.effort,
     }
     local tools = tools_fn()
     if #tools > 0 then body.tools = tools end
@@ -1375,5 +1538,12 @@ end
 function M.resume_turn(sess, on_text, opts)
   return M.run_on(sess, nil, on_text, opts)
 end
+
+-- Wire adapters are exposed under `_`-names for tests/wire.lua, which checks the
+-- OpenAI Responses encode/decode pair without a live endpoint. They are internal;
+-- nothing in the agent loop calls them by these names.
+M._to_responses_body = to_responses_body
+M._new_responses_decoder = new_responses_decoder
+M._to_openai_body = to_openai_body
 
 return M
