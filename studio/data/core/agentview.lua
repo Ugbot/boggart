@@ -27,6 +27,12 @@ local widgets = require "core.widgets"
 local tokenizer = require "core.tokenizer"
 local syntax = require "core.syntax"
 
+-- The interactive `choose` menu (lua/choose.lua): the agent can raise it
+-- mid-turn and the tool PARKS the turn until a front end sets a decision. This
+-- view is one such front end. Reachable because boggart's own lua modules are
+-- on the require path (registered in C, bogembed) independently of lite's.
+local choose = require "choose"
+
 local AgentView = View:extend()
 
 local ROLE = {
@@ -82,6 +88,12 @@ function AgentView:new()
   -- Input state: a line array plus a caret, so this behaves like a text field
   -- rather than a string you can only backspace through.
   self.lines, self.cy, self.cx = { "" }, 1, 1
+
+  -- Announce an async chooser. With this set the `choose` tool parks the turn
+  -- here (like the approval gate) and waits for a decision, instead of degrading
+  -- to a text-only fallback. Only ever set it: clearing it would silently turn
+  -- the menu back into prose the next time one is raised.
+  if bog then bog.choice_ui = true end
 
   self:push("system", "boggart " .. (bog and bog.version or "?")
     .. "   model " .. self:model())
@@ -499,6 +511,20 @@ function AgentView:delete_composer_selection()
 end
 
 function AgentView:send()
+  -- A pending choose menu claims the composer: submitting text while it is up is
+  -- the user's typed answer, handed to the parked turn via choose.decide, not a
+  -- new turn. Checked before the busy guard below, because the turn IS busy --
+  -- parked inside the choose tool waiting on exactly this. The tool clears
+  -- bog.choice and resumes on its own; we only deliver the text and clear input.
+  if bog and bog.choice then
+    local a = self:input_text():gsub("^%s+", ""):gsub("%s+$", "")
+    if a ~= "" then
+      choose.decide(bog.choice, { text = a })
+      self:set_input("")
+      core.redraw = true
+    end
+    return
+  end
   if self.busy then return end
   local t = self:input_text():gsub("^%s+", ""):gsub("%s+$", "")
   if t == "" then return end
@@ -617,6 +643,13 @@ function AgentView:update()
   if not self.busy and (self.busy_since or self.tool_running) then
     self.busy_since, self.tool_running = nil, nil
   end
+  -- A choose menu is born at the bottom of a transcript that may already be
+  -- scrolled to the last message; nudge the follow once, on the transition, so
+  -- the card the user has to act on is not below the fold. Only on the change,
+  -- so scrolling up to read the conversation while it waits still sticks.
+  local ch = (bog and bog.choice) or nil
+  if ch and ch ~= self.saw_choice then self.scroll_to_end = true end
+  self.saw_choice = ch
   if self.busy then core.redraw = true end
   AgentView.super.update(self)
 end
@@ -719,6 +752,25 @@ function AgentView:on_key_pressed(key)
     if key == "r" or key == "n" or key == "escape" then self:decide("reject"); return true end
     if key == "shift+a" then self:decide("always"); return true end
     return true
+  end
+
+  -- A pending choose menu takes letter keys and Escape the way the approval gate
+  -- above takes yes/no -- but only when the composer is a viewport, not a
+  -- half-typed draft: with text in it a letter IS that text, and Enter sends it
+  -- as a typed answer (see send()). Escape always dismisses the menu. A key that
+  -- matches no option falls through, so a non-option letter starts a typed reply.
+  if bog and bog.choice then
+    local rec = bog.choice
+    if key == "escape" then
+      choose.decide(rec, { cancel = true }); core.redraw = true; return true
+    end
+    if #key == 1 and (self.edit_mode == "normal" or self:input_text() == "") then
+      for i, o in ipairs(rec.options) do
+        if o.key == key then
+          choose.decide(rec, { index = i }); core.redraw = true; return true
+        end
+      end
+    end
   end
 
   -- ---- clipboard ---------------------------------------------------------
@@ -1661,6 +1713,84 @@ function AgentView:draw_pending(x, y, w, font)
   return h
 end
 
+-- The choose menu. Where the approval bar above is a yes/no on something about
+-- to happen, this is a fork the model handed back to you mid-turn, so it reads
+-- as a card in the conversation column rather than a bar: the prompt, then one
+-- clickable row per option with its letter in accent, and -- when free input is
+-- allowed -- a hint that the composer below will carry a typed answer. Answering
+-- is choose.decide(rec, ...); lua/choose.lua clears bog.choice and resumes the
+-- parked turn itself, so nothing here executes the outcome. Drawn inside the
+-- transcript's clip band (the caller's push_clip_rect), so it wraps, clips and
+-- scrolls like every other entry. Returns the height it consumed.
+function AgentView:draw_choice(rec, x, y, w, cols, font, visible)
+  local lh = font:get_height() * config.line_height
+  local voff = (lh - font:get_height()) / 2
+  local pad = style.padding.x
+  local vpad = style.padding.y
+
+  -- Measured up front: the card gets one background band the height of all its
+  -- rows, so the rect needs the total before any row is drawn. Labels can wrap,
+  -- so an option is however many rows wrap_tokens gives it, not always one.
+  local prompt_rows = wrap_tokens(inline(rec.prompt or "Choose:", style.accent), cols)
+  local opt_rows = {}
+  for _, o in ipairs(rec.options) do
+    opt_rows[#opt_rows + 1] = wrap_tokens(
+      { { style.accent, o.key .. ") " }, { style.text, o.label } }, cols)
+  end
+  local nrows = #prompt_rows
+  for _, rs in ipairs(opt_rows) do nrows = nrows + #rs end
+  if rec.allow_input then nrows = nrows + 1 end
+  local h = nrows * lh + vpad * 2
+
+  -- The card: a tinted fill so it lifts out of the transcript, and a rule down
+  -- the left edge -- the approval bar's "this one is yours" signal, in accent
+  -- rather than warn because a choice is a fork, not a hazard.
+  renderer.draw_rect(x - pad / 2, y, w + pad, h, style.background2)
+  renderer.draw_rect(x - pad / 2, y, math.max(2, pad / 3), h, style.accent)
+
+  local ty = y + vpad
+  local function draw_row(row)
+    local tx = x
+    for _, t in ipairs(row) do
+      tx = renderer.draw_text(font, t[2], tx, ty + voff, t[1])
+    end
+    ty = ty + lh
+  end
+
+  for _, row in ipairs(prompt_rows) do draw_row(row) end
+
+  for i, rs in ipairs(opt_rows) do
+    local oy, oh = ty, #rs * lh
+    -- Only a row actually on screen is a hover/hit target. The card is clipped
+    -- to the band, but a hit rect is not: one left below the fold would sit over
+    -- the composer and steal that click. (The code-block copy button hedges the
+    -- same way -- register the hit only when the row is visible.)
+    local shown = visible(oy)
+    if shown and self.mouse and self.mouse.x and widgets.inside(
+        { x = x - pad / 2, y = oy, w = w + pad, h = oh }, self.mouse.x, self.mouse.y) then
+      renderer.draw_rect(x - pad / 2, oy, w + pad, oh, style.line_highlight)
+    end
+    for _, row in ipairs(rs) do draw_row(row) end
+    if shown then
+      self.hits[#self.hits + 1] = {
+        x = x - pad / 2, y = oy, w = w + pad, h = oh,
+        item = { label = "choose-" .. i, action = function()
+          choose.decide(rec, { index = i })
+          core.redraw = true
+        end },
+      }
+    end
+  end
+
+  if rec.allow_input then
+    common.draw_text(font, style.dim,
+      "(click one, press its letter, or type your own answer below)",
+      "left", x, ty, w, lh)
+  end
+
+  return h
+end
+
 function AgentView:draw()
   self:draw_background(style.background)
   local font = style.code_font
@@ -1852,11 +1982,23 @@ function AgentView:draw()
     y = y + lh * 0.4
   end
 
+  -- The pending choose menu (lua/choose.lua parked the turn on it) draws here,
+  -- inside the transcript band, right where the reply will resume -- so it
+  -- clips and scrolls like every other entry. It clears itself once answered,
+  -- so this simply stops drawing then; no bookkeeping beyond rendering it.
+  local pending_choice = bog and bog.choice or nil
+  if pending_choice then
+    y = y + vpad
+    y = y + self:draw_choice(pending_choice, x, y, w, cols, font, visible)
+  end
+
   core.pop_clip_rect()
 
   -- The working indicator sits where the answer will appear, so the eye is
-  -- already in the right place when it does.
-  if self.busy then
+  -- already in the right place when it does. While a choose menu is up the turn
+  -- is parked on the user, not on the model, so the card above stands in for the
+  -- indeterminate bar rather than sliding away beside it.
+  if self.busy and not pending_choice then
     if visible(y) then
       self:draw_working(x, y + vpad, w, font)
     end
@@ -1922,6 +2064,11 @@ function AgentView:draw()
   -- ---- composer box -------------------------------------------------------
   local iy = self.position.y + self.size.y - composer_h
   local focused = core.active_view == self
+  -- Normally the composer looks disabled while a turn runs -- dim text, no
+  -- caret -- because there is nothing to send to. A pending choose menu is the
+  -- exception: the turn is parked waiting for a typed answer, so the box has to
+  -- read as live even though we are busy.
+  local composing = not self.busy or (bog and bog.choice)
   renderer.draw_rect(self.position.x, iy, self.size.x, composer_h, style.background)
   local bx, bw = x - pad / 2, w + pad
   renderer.draw_rect(bx, iy + vpad, bw, composer_h - vpad * 2, style.background2)
@@ -1981,14 +2128,16 @@ function AgentView:draw()
     local shown = line
     -- No text caret in normal mode: nothing you type lands here, so a caret
     -- would promise an insertion point that is not listening.
-    if i == self.cy and not self.busy and focused and self.edit_mode ~= "normal" then
+    if i == self.cy and composing and focused and self.edit_mode ~= "normal" then
       shown = line:sub(1, self.cx - 1) .. "|" .. line:sub(self.cx)
     end
-    if i == 1 and line == "" and #self.lines == 1 and not self.busy then
-      common.draw_text(font, style.dim, "Reply to boggart...", "left",
-        x, ty, w, lh)
+    if i == 1 and line == "" and #self.lines == 1 and composing then
+      common.draw_text(font, style.dim,
+        (bog and bog.choice and bog.choice.allow_input)
+          and "Type your own answer..." or "Reply to boggart...",
+        "left", x, ty, w, lh)
     else
-      common.draw_text(font, self.busy and style.dim or style.text,
+      common.draw_text(font, (not composing) and style.dim or style.text,
         shown, "left", x, ty, w, lh)
     end
     ty = ty + lh
@@ -1996,7 +2145,10 @@ function AgentView:draw()
 
   -- controls inside the box: attachments and pickers left, send right
   local crow = iy + composer_h - vpad * 2 - bh
-  local send_label = self.busy and (self.status or "working") or "Send"
+  -- A pending choose menu turns the button back into Send: the turn is busy,
+  -- but what it wants is the typed answer, not a cancel.
+  local send_label = (self.busy and not (bog and bog.choice))
+    and (self.status or "working") or "Send"
   local sw = widgets.width(font, send_label)
   local sx = x + w - sw
   -- Bounded so the pickers stop where Send begins. In a narrow window they
@@ -2007,13 +2159,17 @@ function AgentView:draw()
   end
   local shit = widgets.button(font, send_label, sx, crow, {
     w = sw,
-    active = not self.busy and self:input_text() ~= "",
-    dim = self.busy,
+    active = composing and self:input_text() ~= "",
+    dim = not composing,
     hover = self.mouse and widgets.inside({ x = sx, y = crow, w = sw, h = bh },
       self.mouse.x, self.mouse.y),
   })
   shit.item = { label = send_label, action = function()
-    if self.busy then self:cancel() else self:send() end
+    -- A typed answer to a pending choose menu goes through send() even though
+    -- the turn is busy; otherwise the busy branch would cancel it instead.
+    if bog and bog.choice then self:send()
+    elseif self.busy then self:cancel()
+    else self:send() end
   end }
   self.hits[#self.hits + 1] = shit
 

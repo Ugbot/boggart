@@ -329,20 +329,38 @@ local function handle_command(line)
     else
       io.write("usage: /auth [show] | /auth key <k> | /auth url <u> | /auth model <m> | /auth clear\n")
     end
-  elseif cmd == "model" then
-    -- `/model <name>` applies a saved endpoint preset when the name matches one
-    -- (so `/model gpt-oss` <-> `/model ds4` switches whole servers); otherwise it
-    -- sets the model id on the current endpoint.
-    if rest ~= "" then
-      local presets = require("presets")
-      if presets.load()[rest] then presets.apply(rest); io.write("switched to preset '", rest, "'\n")
-      else bog.session.model = rest end
+  elseif cmd == "model" or cmd == "models" then
+    -- The offered list: provider-table models + the running one + preset models,
+    -- deduped and sorted, so you can pick by NUMBER.
+    local function model_list()
+      local seen, out = {}, {}
+      local function add(m) if type(m) == "string" and m ~= "" and not seen[m] then seen[m] = true; out[#out + 1] = m end end
+      local ok, provs = pcall(bog.api.providers)
+      if ok then for _, p in pairs(provs or {}) do for _, m in ipairs(p.models or {}) do add(m) end end end
+      add(bog.api.status().model)
+      local okp, ps = pcall(function() return require("presets").load() end)
+      if okp then for _, p in pairs(ps or {}) do add(p.model) end end
+      table.sort(out); return out
     end
-    local s = bog.api.status()
-    local where = s.is_local and ("local  " .. s.host)
-      or (s.provider .. "  (remote)")
-    io.write(string.format("model     %s\nrunning   %s\nendpoint  %s\n",
-      s.model, where, s.endpoint))
+    local list = model_list()
+    -- No argument (or `/models`): show the numbered list, marking the current one.
+    if cmd == "models" or rest == "" then
+      local cur = bog.api.status().model
+      io.write("models (", #list, ") -- /model <n> to jump, or /model <name|preset>:\n")
+      for i, m in ipairs(list) do
+        io.write(string.format("  %2d. %s%s\n", i, m, (m == cur) and "   <- current" or ""))
+      end
+    else
+      -- A NUMBER jumps to that entry; else a saved preset; else a raw model id.
+      local n = tonumber(rest)
+      if n and list[n] then bog.session.model = list[n]
+      elseif require("presets").load()[rest] then
+        require("presets").apply(rest); io.write("switched to preset '", rest, "'\n")
+      else bog.session.model = rest end
+      local s = bog.api.status()
+      local where = s.is_local and ("local  " .. s.host) or (s.provider .. "  (remote)")
+      io.write(string.format("model     %s\nrunning   %s\nendpoint  %s\n", s.model, where, s.endpoint))
+    end
   elseif cmd == "endpoint" or cmd == "preset" then
     local sub, arg = rest:match("^(%S*)%s*(.*)$")
     local presets = require("presets")
@@ -714,6 +732,14 @@ local function do_repl()
   -- can fan out a fleet from the very first message -- the scrolling REPL is a
   -- coordinator like every other mode, not a lesser one.
   bog.activate_agents()
+  -- The REPL's synchronous resolver for the `choose` tool: print the menu, read
+  -- one line (a letter picks; anything else is a typed answer). See lua/choose.lua.
+  bog.choose_ask = function(rec)
+    local choose = require("choose")
+    io.write("\n", choose.render(rec), "\n")
+    local line = sys.readline("choose> ")
+    return choose.parse_line(rec, line or "")
+  end
   -- Tab completion, hints and (later) highlighting. `term` is a CLI-only C
   -- module (src/lterm.c); it is absent in the studio, so the call is guarded.
   if term and term.enable then pcall(term.enable) end

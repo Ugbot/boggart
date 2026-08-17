@@ -263,6 +263,18 @@ local function draw(st)
 
   -- transcript, left column, pinned to newest unless scrolled up
   local lines = transcript_lines(st.entries, tw)
+  -- A pending `choose` menu renders at the foot of the transcript (where the eye
+  -- is), so a parked turn asks its question in view. Answered in the key loop.
+  if bog.choice then
+    lines[#lines + 1] = { { text = "", fg = C.tool } }
+    lines[#lines + 1] = { { text = bog.choice.prompt, fg = C.tool } }
+    for _, o in ipairs(bog.choice.options) do
+      lines[#lines + 1] = { { text = "  " .. o.key .. ") ", fg = C.tool }, { text = o.label } }
+    end
+    if bog.choice.allow_input then
+      lines[#lines + 1] = { { text = "  (press a letter, or type your own + Enter)", fg = C.divider } }
+    end
+  end
   st.total = #lines
   local top = math.max(0, #lines - body - st.scroll)
   for i = 0, body - 1 do
@@ -426,6 +438,23 @@ local function run_turn(st, text)
         if ev.button == 64 then st.scroll = math.min(st.total, st.scroll + 3); st.dirty = true
         elseif ev.button == 65 then st.scroll = math.max(0, st.scroll - 3); st.dirty = true end
       elseif ev.type == "key" then
+      if bog.choice then
+        -- A parked `choose` menu owns the keyboard: a letter picks (while the box
+        -- is empty), Enter submits a typed answer, Esc dismisses.
+        local rec, CH = bog.choice, require("choose")
+        if ev.key == "escape" then CH.decide(rec, { cancel = true }); st.dirty = true
+        elseif ev.key == "enter" then
+          if st.box.line ~= "" then CH.decide(rec, { text = st.box.line }); st.box:_set("") end
+          st.dirty = true
+        elseif st.box.line == "" and type(ev.char) == "string" and #ev.char == 1 then
+          local k, picked = ev.char:lower(), false
+          for i, o in ipairs(rec.options) do
+            if o.key == k then CH.decide(rec, { index = i }); picked = true; break end
+          end
+          if not picked then st.box:key(ev) end
+          st.dirty = true
+        else st.box:key(ev); st.dirty = true end
+      else
       -- The input field stays LIVE while the turn runs: you can keep composing,
       -- and now you can SEND too. Enter queues the line onto the coordinator's
       -- inbox (api.run_on folds it into the next request, so it steers the
@@ -450,6 +479,7 @@ local function run_turn(st, text)
           st.dirty = true
         end
       else st.box:key(ev); st.dirty = true end
+      end
       end
       ev = tc.poll(0)
     end
@@ -509,6 +539,7 @@ function M.run()
   end)
   if not ok0 or not coord then tc.shutdown(); return false end
   bog.swarm_root = coord
+  bog.choice_ui = true   -- an async chooser is live: the `choose` tool parks here
 
   local st = { coord = coord, entries = {}, activity = {}, box = Input.new{},
                scroll = 0, total = 0, running = false, wake = uv.new_timer() }
@@ -609,6 +640,7 @@ function M.run()
     end
   end)
 
+  bog.choice_ui, bog.choice = nil, nil            -- no async chooser once we leave
   bog.log_tool, bog.log = saved_log_tool, saved_log -- restore before leaving the alt screen
   if crash_sub and bog.events and bog.events.off then pcall(bog.events.off, crash_sub) end
   if st.wake then pcall(function() st.wake:stop(); st.wake:close() end) end

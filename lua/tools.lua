@@ -1058,6 +1058,12 @@ M.register("define_tool", {
   },
   run = tool_define,
 })
+
+-- choose: an interactive A/B/C/D (+ free input) menu, resolved by the live front
+-- end (cTUI / studio / REPL). Parks the turn until the user answers. See
+-- lua/choose.lua.
+M.register("choose", require("choose").def)
+
 -- ---------------------------------------------------------------------------
 -- on_event: define_tool's mirror image -- code the harness calls, rather than
 -- code the model calls.
