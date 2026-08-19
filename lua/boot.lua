@@ -103,7 +103,7 @@ end
 -- putting it in the reload set means an edited ~/.boggart/lua/events.lua takes
 -- effect like any other module. Registrations themselves survive the reload --
 -- they live on bog.__events, not in the module (see lua/events.lua).
-local CORE = { "events", "json", "util", "lifecycle", "store", "memory", "mcphost", "prompt", "tools", "api", "workers", "complete", "goal", "termrender" }
+local CORE = { "events", "json", "util", "lifecycle", "store", "memory", "mcphost", "prompt", "tools", "api", "workers", "complete", "perm", "diff", "goal", "termrender" }
 
 local function wire()
   for _, m in ipairs(CORE) do package.loaded[m] = nil end
@@ -131,6 +131,9 @@ local function wire()
   -- complete come from the same registry, so a command is completed and coloured
   -- from one source.
   bog.repl_style = require("complete").style
+  -- Shared permission modes (auto/smart/manual/chat). The studio and the cTUI
+  -- both call perm.policy_for so a mode means the same thing on every surface.
+  bog.perm = require("perm")
   -- Run-until-a-goal: the supervisor that runs turns toward an objective until a
   -- done-check passes or the turn budget is spent.
   bog.goal = require("goal")

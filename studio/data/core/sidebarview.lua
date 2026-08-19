@@ -1,4 +1,8 @@
--- sidebarview.lua -- the left rail: chats, not files.
+-- sidebarview.lua -- LEGACY left rail: chats, not files.
+--
+-- Used by the legacy studio composition (core.studio.attach, restored with
+-- BOGGART_STUDIO_LEGACY=1). The default shell does not reuse this view: sessions
+-- live in the Agent menu, and the file tree docks in the EDIT workspace.
 --
 -- This is the structural decision the app turns on. The editor core this grew
 -- out of puts a file tree here, because its subject is a directory. boggart's

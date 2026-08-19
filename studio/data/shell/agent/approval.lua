@@ -23,9 +23,9 @@
 -- Deny stays deny: chat mode (or any explicit per-tool "deny") still refuses
 -- outright -- there is nothing to interactively approve when the policy is
 -- "never". Only "ask" becomes an interactive request.
-local M = {}
+local perm = require "perm"
 
-local GATED = { write = true, edit = true, bash = true }
+local M = {}
 
 -- How long a parked request waits for someone to answer before it degrades to
 -- the old refuse. The park is a real block, so this is the SAFETY FALLBACK: if
@@ -46,11 +46,7 @@ local allow_all = {}   -- agent_id -> true
 -- marker and the detail pane. bash is its command; write/edit is the path it
 -- would touch; anything else falls back to whatever obvious field it carries.
 local function summarise(name, input)
-  input = input or {}
-  if name == "bash" then return tostring(input.command or "") end
-  if name == "write" or name == "edit" then return tostring(input.path or "(no path)") end
-  local h = input.command or input.path or input.query or input.name
-  return h and tostring(h) or ""
+  return perm.summarise(name, input)
 end
 
 local function poke_redraw()
@@ -94,7 +90,6 @@ function M.install()
   }
 
   bog.approve = function(name, input, agent_id)
-    if not GATED[name] then return true end
     local studio = package.loaded["core.studio"]
     local v = studio and (studio.view or (studio.agent_view and studio.agent_view()))
     if not v then return true end -- no coordinator UI: don't block the swarm
@@ -103,7 +98,7 @@ function M.install()
     -- hook is for OTHER actors.
     if v.turn_id and agent_id == v.turn_id then return true end
 
-    local policy = v.policy_for and v:policy_for(name) or "ask"
+    local policy = v.policy_for and v:policy_for(name) or perm.policy_for(name, v)
     if policy == "allow" or v.approve_all then return true end
     -- Blanket allow the user granted this specific sub-agent from FLEET.
     if allow_all[agent_id] then return true end

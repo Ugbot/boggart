@@ -32,6 +32,8 @@ local syntax = require "core.syntax"
 -- view is one such front end. Reachable because boggart's own lua modules are
 -- on the require path (registered in C, bogembed) independently of lite's.
 local choose = require "choose"
+local perm = require "perm"
+local complete = require "core.agentcomplete"
 
 local AgentView = View:extend()
 
@@ -45,25 +47,9 @@ local ROLE = {
   thinking  = { prefix = "",   color = "dim" },
 }
 
--- Tools that change the world. These are what an approval gate is for; read,
--- list and the model's own helpers are not worth interrupting for.
-local GATED = { write = true, edit = true, bash = true }
-
--- Permission modes. The same four goose settled on, because the space really
--- does have four useful points in it: never ask, always ask, ask about the
--- things that can break something, and do not use tools at all.
---
--- "smart" is the default and is not a risk model -- it is the GATED list
--- above. Calling it a judgement about risk would be overselling a table.
-local MODES = {
-  { id = "auto",   label = "Autonomous",     help = "tools run without asking" },
-  { id = "smart",  label = "Smart approval", help = "ask before writes, edits and commands" },
-  { id = "manual", label = "Manual approval", help = "ask before every tool" },
-  { id = "chat",   label = "Chat only",      help = "no tools at all" },
-}
-local MODE_BY_ID = {}
-for _, m in ipairs(MODES) do MODE_BY_ID[m.id] = m end
-AgentView.MODES = MODES
+-- Permission modes and the gated-tool list live in lua/perm.lua so a mode
+-- means the same thing in the studio, the cTUI and any other front end.
+AgentView.MODES = perm.MODES
 
 function AgentView:new()
   AgentView.super.new(self)
@@ -98,7 +84,7 @@ function AgentView:new()
   self:push("system", "boggart " .. (bog and bog.version or "?")
     .. "   model " .. self:model())
   self:push("system",
-    "enter sends · shift+enter newline · esc cancels · ctrl+g toggles approval")
+    "enter sends · shift+enter newline · tab completes · /commands · esc cancels · shift+tab cycles approval")
   if bog and not self:has_creds() then
     self:push("system", "No credentials. Command palette: 'agent: set api key',")
     self:push("system", "or 'agent: set endpoint' for a local server (ds4 on :8000).")
@@ -163,13 +149,25 @@ local MENTION_MAX = 64 * 1024
 
 function AgentView:expand_mentions(text)
   local seen, attach = {}, {}
-  for path in text:gmatch("@([%w%._%-/~]+)") do
-    if not seen[path] then
-      seen[path] = true
+  for token in text:gmatch("@([%w%._%-/~]+)") do
+    if not seen[token] then
+      seen[token] = true
+      local path = token
       local real = path:gsub("^~", sys.home())
       -- Relative paths need no base: lite chdirs to the project directory at
       -- startup, so the process cwd is already the project root.
       local body = bog.util.read_file(real)
+      -- `@complete` is a basename search in the completer, not a file on disk.
+      -- If the typed token is not itself a path, take a unique completion so
+      -- sending without Tab still attaches the file Tab would have filled in.
+      if not body then
+        local resolved = complete.resolve_mention(token)
+        if resolved and resolved ~= token then
+          path = resolved
+          real = path:gsub("^~", sys.home())
+          body = bog.util.read_file(real)
+        end
+      end
       if body then
         local note = ""
         if #body > MENTION_MAX then
@@ -258,29 +256,14 @@ end
 -- ---------------------------------------------------------------------------
 
 -- Build the record the UI shows and the coroutine waits on.
+-- Diffs use the studio differ (patience); the mode/policy decision is perm's.
 function AgentView:request_approval(name, input)
-  local rec = { name = name, input = input, decision = nil }
-  if name == "write" or name == "edit" then
-    local path = input.path
-    rec.path = path
-    local old = (path and bog.util.read_file(path)) or ""
-    local new
-    if name == "write" then
-      new = input.content or ""
-    else
-      -- Show what the edit would produce, without performing it. If `old`
-      -- does not occur exactly once the tool will refuse anyway, so we let it
-      -- through unreviewed and the model gets its normal validation error.
-      local first = old:find(input.old or "", 1, true)
-      local second = first and old:find(input.old or "", first + 1, true)
-      if not first or second then return nil end
-      new = old:sub(1, first - 1) .. (input.new or "")
-          .. old:sub(first + #(input.old or ""))
-    end
-    rec.diff = difflib.compute(old, new)
-    rec.summary = difflib.summary(rec.diff, path or "(no path)")
-  else
-    rec.summary = tostring(input.command or "")
+  local rec = perm.request(name, input)
+  -- An edit whose `old` is not unique is left for the tool to refuse; parking
+  -- a review of "we don't know what would change" is worse than letting it
+  -- fail with the normal validation error.
+  if (name == "write" or name == "edit") and rec.path and not rec.diff then
+    return nil
   end
   return rec
 end
@@ -290,28 +273,26 @@ end
 -- having one -- "manual approval, except never ask about read" is a reasonable
 -- thing to want and a mode alone cannot express it.
 function AgentView:policy_for(name)
-  local explicit = self.tool_policy[name]
-  if explicit then return explicit end
-  if self.mode == "chat" then return "deny" end
-  if self.mode == "auto" then return "allow" end
-  if self.approve_all then return "allow" end
-  if self.mode == "manual" then return "ask" end
-  return GATED[name] and "ask" or "allow"   -- smart
+  return perm.policy_for(name, self)
 end
 
 function AgentView:mode_label()
-  local m = MODE_BY_ID[self.mode]
-  return m and m.label or self.mode
+  return perm.mode_at(self.mode).label
 end
 
 function AgentView:set_mode(id)
-  if not MODE_BY_ID[id] then return false end
+  local found
+  for _, m in ipairs(perm.MODES) do if m.id == id then found = m end end
+  if not found then return false end
   self.mode = id
   self.approve_all = false   -- a mode change is an explicit re-decision
-  self:push("system", "mode: " .. self:mode_label()
-    .. " -- " .. MODE_BY_ID[id].help)
+  self:push("system", "mode: " .. found.label .. " -- " .. found.help)
   core.redraw = true
   return true
+end
+
+function AgentView:cycle_mode()
+  return self:set_mode((perm.cycle(self.mode)))
 end
 
 function AgentView:decide(decision)
@@ -530,7 +511,52 @@ function AgentView:send()
   if t == "" then return end
   self:set_input("")
   self:set_edit_mode("insert")   -- sending is composing; land ready to type again
+  complete.dismiss(self)
+  -- Slash commands run through the same handler the REPL and cTUI use, so
+  -- `/help`, `/model`, `/tdd` (a skill) and the rest mean the same thing in
+  -- every front end. A `{ run = prompt }` return (unknown skill, failed git
+  -- command) is handed to the agent as a turn.
+  if t:match("^/") then
+    local r = self:run_slash(t)
+    if type(r) == "table" and r.run then self:submit(r.run) end
+    return
+  end
   self:submit(self:expand_mentions(t))
+end
+
+-- Run a `/command` and capture io.write/print into a system transcript entry,
+-- the same trick the cTUI uses so a cell-grid (or here, a GUI) is not shredded
+-- by REPL output. Returns the handle_command result.
+function AgentView:run_slash(line)
+  local cmd = line:match("^/(%S+)")
+  if cmd == "exit" or cmd == "quit" then
+    self:push("system", "this is the studio -- close the window to quit")
+    return
+  end
+  if not (bog and bog.handle_command) then
+    self:push("system", "commands are unavailable")
+    return
+  end
+  local buf = {}
+  local real_write, real_print = io.write, print
+  io.write = function(...)
+    for i = 1, select("#", ...) do buf[#buf + 1] = tostring((select(i, ...))) end
+  end
+  print = function(...)
+    local t = {}
+    for i = 1, select("#", ...) do t[#t + 1] = tostring((select(i, ...))) end
+    buf[#buf + 1] = table.concat(t, "\t") .. "\n"
+  end
+  local ok, brk = pcall(bog.handle_command, line)
+  io.write, print = real_write, real_print
+  local out = table.concat(buf):gsub("\27%[[%d;]*m", ""):gsub("%s+$", "")
+  if not ok then out = "command error: " .. tostring(brk) end
+  if out ~= "" then self:push("system", out) end
+  if cmd == "new" or cmd == "resume" then
+    self:repaint((bog.session and bog.session.messages) or {})
+  end
+  if type(brk) == "table" and brk.run then return brk end
+  return brk
 end
 
 function AgentView:cancel()
@@ -667,6 +693,7 @@ function AgentView:set_input(s)
   if #self.lines == 0 then self.lines = { "" } end
   self.cy = #self.lines
   self.cx = #self.lines[self.cy] + 1
+  complete.dismiss(self)
 end
 
 -- Caret arithmetic. self.cx is a byte offset into the line -- the same index
@@ -741,6 +768,7 @@ function AgentView:on_text_input(text)
   local l = self.lines[self.cy]
   self.lines[self.cy] = l:sub(1, self.cx - 1) .. text .. l:sub(self.cx)
   self.cx = self.cx + #text
+  complete.refresh(self)
   core.redraw = true
 end
 
@@ -770,6 +798,14 @@ function AgentView:on_key_pressed(key)
         choose.decide(rec, { index = i }); core.redraw = true; return true
       end
     end
+  end
+
+  -- Tab completion overlay (and Shift-Tab mode cycle when the menu is closed).
+  -- Claimed before clipboard/history so a visible menu owns up/down/enter/esc.
+  if complete.on_key(self, key) then core.redraw = true; return true end
+  if key == "shift+tab" then
+    self:cycle_mode()
+    return true
   end
 
   -- ---- clipboard ---------------------------------------------------------
@@ -818,6 +854,7 @@ function AgentView:on_key_pressed(key)
         self.cx = #lines[#lines] + 1
       end
       self.sel_anchor = nil
+      complete.refresh(self)
       core.redraw = true
     end
     return true
@@ -865,6 +902,7 @@ function AgentView:on_key_pressed(key)
       table.remove(self.lines, self.cy)
       self.cy = self.cy - 1
     end
+    complete.refresh(self)
     core.redraw = true
     return true
 
@@ -877,6 +915,7 @@ function AgentView:on_key_pressed(key)
     local head = l:sub(1, self.cx - 1):gsub("%s*%S+%s*$", "")
     self.lines[self.cy] = head .. l:sub(self.cx)
     self.cx = #head + 1
+    complete.refresh(self)
     core.redraw = true
     return true
 
@@ -2199,6 +2238,10 @@ function AgentView:draw()
     else self:send() end
   end }
   self.hits[#self.hits + 1] = shit
+
+  complete.draw(self, {
+    font = font, x = x, w = w, y = iy, lh = lh, pad = pad,
+  })
 
   self:draw_scrollbar()
 end

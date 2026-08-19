@@ -1,8 +1,15 @@
--- studio.lua -- boggart-studio: the app layer over lite.
+-- studio.lua -- LEGACY window composition (boggart-studio app layer over lite).
 --
 -- Adds the agent panel, the commands that drive it, and the configuration
 -- surfaces (credentials, model, MCP servers, sessions). Loaded from
 -- core/init.lua after the editor is up.
+--
+-- THIS FILE'S attach() IS THE LEGACY LAYOUT: everything is a tab in the
+-- primary node, with SidebarView as the left rail. The default studio is the
+-- shell (studio/data/shell): menu bar + AGENT/EDIT/FLEET workspaces. Set
+-- BOGGART_STUDIO_LEGACY=1 to restore this composition. The engine -- AgentView,
+-- swarm setup, commands, recipes -- is still required by the shell; only the
+-- window chrome here is legacy.
 --
 -- Everything here is ordinary lite Lua and ordinary boggart Lua in one
 -- interpreter, which is the point: the agent can edit this file and reload it,
@@ -49,6 +56,9 @@ end
 -- because the conversation is what this application is. Files open as further
 -- tabs in that same node, which is also how they stop being the point: things
 -- you opened alongside the chat, not the surface the window is built around.
+-- LEGACY window composition: AgentView + SidebarView in the primary node.
+-- The default studio is shell.attach(); this path is restored with
+-- BOGGART_STUDIO_LEGACY=1.
 function studio.attach()
   if studio.attached then return end
   studio.attached = true

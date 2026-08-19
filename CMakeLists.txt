@@ -595,11 +595,12 @@ if(BOGGART_BUILD_APP AND SDL2_FOUND)
 
   add_custom_target(ui-check
     COMMAND ${CMAKE_COMMAND} -E env
+      BOGGART_STUDIO_LEGACY=1
       BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/uishot.lua
       BOGGART_STUDIO_SHOT=${CMAKE_CURRENT_BINARY_DIR}/studio-shot.bmp
       $<TARGET_FILE:boggart-studio> ${CMAKE_CURRENT_SOURCE_DIR}
     DEPENDS boggart-studio
-    COMMENT "Rendering boggart-studio and checking the agent panel"
+    COMMENT "Rendering the legacy studio composition and checking the agent panel"
     USES_TERMINAL)
 elseif(BOGGART_BUILD_APP)
   message(STATUS "SDL2 not found -- skipping boggart-studio (the CLI still builds)")

@@ -148,7 +148,10 @@ echo "task" | ./boggart --headless   # scriptable: prompt on stdin, reply on std
 ./boggart --help          # every flag, subcommand and environment variable
 
 ./boggart-studio          # the desktop app; ./boggart-studio <dir> opens a project
+# BOGGART_STUDIO_LEGACY=1 restores the old single-primary-node + sidebar layout
 ```
+
+The studio's composer shares the cTUI's completion engine: **Tab** completes `/` commands and skills and `@` file mentions (typing `@` opens a filterable file menu), and a leading `/command` runs the same handler the REPL uses (`/help`, `/tdd`, …). **Shift-Tab** cycles the shared permission modes (auto / smart / manual / chat).
 
 The studio's code editor has an optional **neovim-style modal layer** (modes,
 motions, operators, text objects, `:` ex-commands, search, dot-repeat,
@@ -394,8 +397,11 @@ src/vendor/     vendored Lua 5.5 + sqlite (FTS5) + cJSON + libuv + luv
                 + ltui/PDCurses + isocline
 studio/         boggart-studio, the desktop app: an SDL window whose main
   src/            surface is the conversation, with an editor behind it.
-  data/core/      agentview (chat), sidebarview (chats + Chat/Code),
-                  widgets (buttons), studio (commands), recipes, diff
+  data/shell/     DEFAULT window: menu bar + AGENT/EDIT/FLEET workspaces
+  data/core/      agentview (chat), agentcomplete (Tab/@//), studio (commands;
+                  attach() is LEGACY chrome), sidebarview (LEGACY rail),
+                  widgets, recipes, diff. Default window is data/shell/;
+                  BOGGART_STUDIO_LEGACY=1 restores the old layout.
 lua/            the golden default harness, baked into the binary:
   boot.lua        overlay loader, wiring, hot-reload, sessions, REPL, dispatch
   api.lua         Anthropic client: shared SSE decoder + sync & async transports + turn loop

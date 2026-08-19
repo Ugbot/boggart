@@ -612,19 +612,26 @@ function core.init()
   -- that cannot reach a model is still an editor.
   if bog then
     -- The ground-up shell (menu bar + switchable AGENT/EDIT/FLEET workspaces +
-    -- an app-wide neovim spine + the ember theme) is now the DEFAULT studio; it
+    -- an app-wide neovim spine + the ember theme) is the DEFAULT studio; it
     -- supersedes the old single-primary-node composition. The old one is kept as
-    -- an opt-in fallback (BOGGART_STUDIO_LEGACY=1) until the shell has enough
-    -- real-world miles to retire it outright. Both reuse the same engine and
-    -- primitives; only the window composition differs.
-    -- The new shell is still WIP (opt in with BOGGART_STUDIO_SHELL=1); the
-    -- proven composition stays the default until the shell actually works.
-    if os.getenv("BOGGART_STUDIO_SHELL") then
-      core.shell = core.try(require, "shell") and require "shell" or nil
-      if core.shell then core.try(core.shell.attach) end
-    else
+    -- a legacy fallback: set BOGGART_STUDIO_LEGACY=1 to restore it.
+    -- BOGGART_STUDIO_SHELL=1 is accepted as a no-op alias of the default.
+    local function attach_legacy()
       core.studio = core.try(require, "core.studio") and require "core.studio" or nil
       if core.studio then core.try(core.studio.attach) end
+    end
+    local function attach_shell()
+      -- The engine (commands, AgentView, swarm) still lives in core.studio;
+      -- the shell replaces only the window chrome.
+      core.studio = core.try(require, "core.studio") and require "core.studio" or nil
+      core.shell = core.try(require, "shell") and require "shell" or nil
+      if core.shell then core.try(core.shell.attach) end
+      return core.shell and core.shell.attached
+    end
+    if os.getenv("BOGGART_STUDIO_LEGACY") then
+      attach_legacy()
+    else
+      if not attach_shell() then attach_legacy() end
     end
   end
   -- Modal (neovim-style) editing. Loaded unconditionally so its commands and

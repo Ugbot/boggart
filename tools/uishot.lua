@@ -1,12 +1,16 @@
--- uishot.lua -- render the studio with representative content and photograph it.
+-- uishot.lua -- render the (legacy) studio with representative content and photograph it.
 --
--- Run with `ninja ui-check`. This exists because the panel-attachment bug of
--- 2026-08-11 was invisible to every headless test: AgentView constructed
--- correctly, laid out correctly, and answered every probe correctly, while
--- never appearing on screen at all -- once because the editor core does not set
--- view.node (so the "is the panel open?" check was nil every time) and once
--- because a `locked` split pins a node to its view's size, which for a fresh
--- View is zero. Neither is detectable without a rendered frame.
+-- Run with `ninja ui-check`. Photographs the LEGACY window composition
+-- (BOGGART_STUDIO_LEGACY=1) because the assertions below are about SidebarView
+-- and the single-primary-node layout. The default studio is the shell.
+--
+-- This exists because the panel-attachment bug of 2026-08-11 was invisible to
+-- every headless test: AgentView constructed correctly, laid out correctly, and
+-- answered every probe correctly, while never appearing on screen at all --
+-- once because the editor core does not set view.node (so the "is the panel
+-- open?" check was nil every time) and once because a `locked` split pins a
+-- node to its view's size, which for a fresh View is zero. Neither is
+-- detectable without a rendered frame.
 --
 -- It has since grown a second job. A frame is also the only place to check the
 -- things that only exist once a layout has run against a real window: that two

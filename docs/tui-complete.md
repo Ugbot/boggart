@@ -19,6 +19,9 @@ Component contracts live in [`ctui-spec.md`](./ctui-spec.md).
 - [x] **`@` file autocomplete** — `@lua/comp` lists that directory; `@complete`
       finds `lua/complete.lua` by basename; typing `@` opens the file menu and
       further keys filter it; Tab into a unique directory keeps descending.
+- [x] **Studio parity** — AgentView uses the same `bog.complete` / slash-command
+      / `perm` engines as the cTUI. The old single-primary-node studio layout is
+      marked LEGACY (`BOGGART_STUDIO_LEGACY=1`); the shell is the default.
 
 ## Next
 

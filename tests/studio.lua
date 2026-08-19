@@ -51,6 +51,7 @@ end
 for _, must in ipairs {
   "studio/data/core/init.lua",
   "studio/data/core/agentview.lua",
+  "studio/data/core/agentcomplete.lua",
   "studio/data/core/sidebarview.lua",
   "studio/data/core/studio.lua",
   "studio/data/core/widgets.lua",
@@ -395,6 +396,72 @@ if loaded then
   end
   ok(said == "hello there",
     "fallback: streamed text landed in the transcript (got '" .. said .. "')")
+
+  -- ---- completion, slash commands, shared permission modes ----------------
+  -- The cTUI's Tab/`@`/`/` work through bog.complete and bog.handle_command.
+  -- The studio composer has to use the same engines so a skill or a file
+  -- mention means the same thing in both windows.
+  local okp, perm = pcall(require, "perm")
+  ok(okp, "perm loads" .. (okp and "" or ("  -- " .. tostring(perm))))
+  if okp then
+    ok(v:policy_for("read") == "allow", "smart mode allows read")
+    ok(v:policy_for("write") == "ask", "smart mode asks before write")
+    ok(v:policy_for("bash") == "ask", "smart mode asks before bash")
+    v:set_mode("chat")
+    ok(v:policy_for("write") == "deny", "chat mode denies write")
+    v:set_mode("manual")
+    ok(v:policy_for("read") == "ask", "manual mode asks before read")
+    v:set_mode("auto")
+    ok(v:policy_for("write") == "allow", "auto mode allows write")
+    v:set_mode("smart")
+    v:on_key_pressed("shift+tab")
+    ok(v.mode == "manual", "shift+tab cycles smart -> manual (got " .. tostring(v.mode) .. ")")
+    v:set_mode("smart")
+  end
+
+  v:set_input("@lua/comp")
+  v:on_key_pressed("tab")
+  ok(v:input_text() == "@lua/complete.lua",
+    "Tab completes @lua/comp to @lua/complete.lua (got '" .. v:input_text() .. "')")
+
+  v:set_input("@complete")
+  v:on_key_pressed("tab")
+  ok(v._complete_menu and #v._complete_menu.items >= 2,
+    "Tab on @complete opens a menu (lua/ and tests/ both match)")
+  v:on_key_pressed("escape")
+  ok(v._complete_menu == nil, "escape dismisses the completion menu")
+
+  v:set_input("")
+  v:on_text_input("@")
+  ok(v._complete_menu and #v._complete_menu.items > 0,
+    "typing @ opens the file menu")
+
+  v.entries, v.busy = {}, false
+  v:set_input("/help")
+  v:send()
+  local help_out = ""
+  for _, e in ipairs(v.entries) do
+    if e.role == "system" then help_out = help_out .. (e.text or "") end
+  end
+  ok(help_out:find("/model", 1, true),
+    "/help in the composer prints the command list (got '"
+    .. help_out:sub(1, 80) .. "')")
+  ok(not v.busy, "/help does not start a model turn")
+
+  local saved_run = bog.api.run_on
+  local ran
+  bog.api.run_on = function(_, text, on_text)
+    ran = text
+    on_text("ok")
+    return true
+  end
+  v.entries, v.busy, v.co, v.turn_id = {}, false, nil, nil
+  v:set_input("/tdd")
+  v:send()
+  for _ = 1, 50 do if not v.busy then break end v:tick() end
+  bog.api.run_on = saved_run
+  ok(type(ran) == "string" and ran:find("tdd", 1, true),
+    "/tdd hands the skill instructions to the agent")
 end
 
 -- ---------------------------------------------------------------------------

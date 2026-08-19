@@ -1,6 +1,8 @@
 -- sidebarprobe.lua -- resize and collapse, exercised through RootView's drag.
 --
---   BOGGART_STUDIO_SCRIPT=$PWD/tools/sidebarprobe.lua ./boggart-studio .
+--   BOGGART_STUDIO_LEGACY=1 BOGGART_STUDIO_SCRIPT=$PWD/tools/sidebarprobe.lua ./boggart-studio .
+--
+-- Photographs the LEGACY SidebarView (the default shell does not use it).
 --
 -- Two things here are easy to get wrong in a way no static check catches. The
 -- drag is driven through RootView:on_mouse_moved with a divider held, not by
