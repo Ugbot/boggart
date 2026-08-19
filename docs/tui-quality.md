@@ -6,6 +6,7 @@ down with a terminal (and a pipe, and a resized window) and mark it pass/fail â€
 no taste required, no "feels nice." This is the bar the work in
 [`cli-plan.md`](./cli-plan.md) builds to. The live cTUI build list (what is
 done vs still missing vs Claude Code) is [`tui-complete.md`](./tui-complete.md).
+The product-surface comparison (Codex / Goose / Claude Code) is [`peers.md`](./peers.md).
 
 **How to read a row.** Every checklist item carries two tags:
 

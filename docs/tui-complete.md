@@ -4,7 +4,9 @@ Work remaining to bring `boggart --tui` up to the Claude Code floor. Skip by
 design: voice, images, full vim, `keybindings.json`, OSC-8 hyperlinks, rewind UI.
 
 The quality bar (observable pass/fail) lives in [`tui-quality.md`](./tui-quality.md).
-Component contracts live in [`ctui-spec.md`](./ctui-spec.md).
+Component contracts live in [`ctui-spec.md`](./ctui-spec.md). Why Claude Code
+is the floor, and how Codex / Goose compare on the same surfaces, lives in
+[`peers.md`](./peers.md).
 
 ## Done
 

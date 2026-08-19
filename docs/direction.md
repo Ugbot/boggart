@@ -7,11 +7,15 @@ whole.
 
 ## Competitive analysis & borrows
 
+- **`peers.md`** — product-surface snapshot (TUI / studio / permissions)
+  against **Codex**, **Goose**, and **Claude Code**. Kernel is a peer; the
+  remaining gaps are chrome, policy, and distribution. Next honest step on all
+  three: TUI permission bar (`perm.lua` already matches Goose modes in studio).
 - **`comparisons.md`** — the studies, framed "could you rebuild X on boggart,
   what are the gaps":
   - §1 **OpenClaw** — boggart is the kernel, not the shell.
   - §2 **OpenAI Codex** — boggart's closest peer; wins on self-modification and
-    multi-agent, loses on OS sandboxing.
+    multi-agent, loses on OS sandboxing. Product surface: `peers.md` §1.
   - §3 **pi** — the minimal harness boggart forks from; pi's aesthetic inverted
     into a self-modifying kernel. The capability boundary is the through-line.
   - §5 **Trigger.dev** — the durable-execution substrate §4 implies; borrow
