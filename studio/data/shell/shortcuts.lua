@@ -45,7 +45,7 @@ local SECTIONS = {
     { "@ then type",     "filter the file menu" },
     { "/command",        "same slash commands as the REPL" },
     { "Shift-Tab",       "cycle approval mode" },
-    { "Shift-Enter",     "newline" },
+    { "Shift-Enter / Ctrl-J", "newline" },
     { "Esc",             "cancel turn / normal mode" },
   } },
 }

@@ -84,7 +84,7 @@ function AgentView:new()
   self:push("system", "boggart " .. (bog and bog.version or "?")
     .. "   model " .. self:model())
   self:push("system",
-    "enter sends · shift+enter newline · tab completes · /commands · esc cancels · shift+tab cycles approval")
+    "enter sends · shift+enter / ctrl+j newline · tab completes · /commands · esc cancels · shift+tab cycles approval")
   if bog and not self:has_creds() then
     self:push("system", "No credentials. Command palette: 'agent: set api key',")
     self:push("system", "or 'agent: set endpoint' for a local server (ds4 on :8000).")
@@ -889,7 +889,7 @@ function AgentView:on_key_pressed(key)
     self:send()
     return true
 
-  elseif key == "shift+return" then
+  elseif key == "shift+return" or key == "ctrl+j" then
     local l = self.lines[self.cy]
     local rest = l:sub(self.cx)
     self.lines[self.cy] = l:sub(1, self.cx - 1)
@@ -1682,9 +1682,8 @@ function AgentView:toolbar_items()
   local busy = self.busy
   local sidebar = core.studio and core.studio.sidebar
   local items = {}
-  -- The chevron toggles the LEGACY left rail. The shell has no SidebarView
-  -- (sessions live in the Agent menu; files live in EDIT), so drawing it
-  -- there is a button that does nothing.
+  -- The chevron toggles the recents rail (legacy SidebarView, also docked in
+  -- the shell's AGENT workspace). Hide it only when there is no rail at all.
   if sidebar then
     items[#items + 1] = { label = sidebar.visible and "<" or ">",
       command = "studio:toggle-sidebar" }

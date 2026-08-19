@@ -6,6 +6,7 @@ local core = require "core"
 local M = {}
 
 function M.enter()
+  require("shell").set_docks("fleet")
   local ok, SwarmView = pcall(require, "core.swarmview")
   if not ok then return end
   local view = SwarmView.ensure()
@@ -17,6 +18,8 @@ function M.enter()
   core.set_active_view(view)
 end
 
-function M.leave() end
+function M.leave()
+  require("shell").set_docks(nil)
+end
 
 return M

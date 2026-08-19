@@ -193,6 +193,21 @@ function shell.cycle_workspace(dir)
   shell.switch(order[((i - 1 + (dir or 1)) % #order) + 1])
 end
 
+-- Docks that belong to one workspace. AGENT gets the session list (the same
+-- recents rail the legacy sidebar was), EDIT gets the file tree, FLEET gets
+-- neither. Called from each workspace's enter() so a Files-button toggle in
+-- AGENT cannot leak the tree into FLEET, and leaving AGENT hides the recents.
+function shell.set_docks(which)
+  local studio = package.loaded["core.studio"]
+  if studio and studio.sidebar then
+    studio.sidebar.visible = (which == "agent")
+  end
+  local ok, tree = pcall(require, "plugins.treeview")
+  if ok and type(tree) == "table" and tree.visible ~= nil then
+    tree.visible = (which == "edit")
+  end
+end
+
 -- Compose the window: reuse the agent engine, drop the legacy chrome, dock the
 -- menu bar, and open the AGENT workspace. Called from core.init in place of
 -- the legacy core.studio.attach().
@@ -233,6 +248,18 @@ function shell.attach()
   shell.menubar = MenuBar()
   primary():split("up", shell.menubar, true)
   shell.install_menu_overlay()
+
+  -- Recents rail, the same SidebarView the legacy layout used, minus the
+  -- Chat/Code control (workspaces replace that). Docked left of the content
+  -- leaf so AGENT has conversations on the left the way EDIT has files.
+  -- Visibility is owned by shell.set_docks, called from each workspace enter.
+  core.try(function()
+    local SidebarView = require "core.sidebarview"
+    local rail = SidebarView()
+    rail.shell_rail = true
+    studio.sidebar = rail
+    primary():split("left", rail, true)
+  end)
 
   -- AGENT is the default workspace: build its AgentView, then enter it (which
   -- docks the sessions rail and shows the conversation).

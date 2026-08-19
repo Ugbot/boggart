@@ -199,11 +199,14 @@ function SidebarView:update()
 
   -- The segmented control follows what is actually on screen. Opening a file
   -- from the tree, from ctrl+p or from a tool all put you in code; the control
-  -- would otherwise still claim you were in the chat.
-  local active = core.active_view
-  if active then
-    if active.doc then self.tab = "code"
-    elseif active == (core.studio and core.studio.view) then self.tab = "chat" end
+  -- would otherwise still claim you were in the chat. The shell rail has no
+  -- Chat/Code control -- workspaces own that switch -- so leave the tab on chat.
+  if not self.shell_rail then
+    local active = core.active_view
+    if active then
+      if active.doc then self.tab = "code"
+      elseif active == (core.studio and core.studio.view) then self.tab = "chat" end
+    end
   end
 
   SidebarView.super.update(self)
@@ -286,17 +289,22 @@ function SidebarView:draw()
   local function add(hit, item) hit.item = item; self.hits[#self.hits + 1] = hit end
 
   -- ---- Chat / Code --------------------------------------------------------
+  -- The shell docks this view as a recents rail; AGENT/EDIT/FLEET already
+  -- replace the segmented control, and drawing it here would be a second
+  -- Chat/Code switch that called show_surface into the wrong node.
   local bh = widgets.height(font)
-  local halfw = (w - style.padding.x * widgets.GAP) / 2
-  for i, tab in ipairs { { "chat", "Chat" }, { "code", "Code" } } do
-    local bx = x + (i - 1) * (halfw + style.padding.x * widgets.GAP)
-    local hovered = self.mouse and widgets.inside(
-      { x = bx, y = y, w = halfw, h = bh }, self.mouse.x, self.mouse.y)
-    local r = widgets.button(font, tab[2], bx, y,
-      { w = halfw, active = self.tab == tab[1], hover = hovered })
-    add(r, { label = tab[2], action = function() self:set_tab(tab[1]) end })
+  if not self.shell_rail then
+    local halfw = (w - style.padding.x * widgets.GAP) / 2
+    for i, tab in ipairs { { "chat", "Chat" }, { "code", "Code" } } do
+      local bx = x + (i - 1) * (halfw + style.padding.x * widgets.GAP)
+      local hovered = self.mouse and widgets.inside(
+        { x = bx, y = y, w = halfw, h = bh }, self.mouse.x, self.mouse.y)
+      local r = widgets.button(font, tab[2], bx, y,
+        { w = halfw, active = self.tab == tab[1], hover = hovered })
+      add(r, { label = tab[2], action = function() self:set_tab(tab[1]) end })
+    end
+    y = y + bh + vpad
   end
-  y = y + bh + vpad
 
   if self.tab == "code" then
     local hov = self.mouse and widgets.inside(
@@ -461,6 +469,8 @@ end
 -- time rather than captured now.
 command.add(nil, {
   ["agent:search-sessions"] = function()
+    local sh = package.loaded["shell"]
+    if sh and sh.attached then sh.switch("agent") end
     local sb = core.studio and core.studio.sidebar
     if sb then sb:focus_search() end
   end,

@@ -352,6 +352,12 @@ if loaded then
   v:on_key_pressed("down"); v:on_key_pressed("down")
   ok(v:input_text() == "", "down walks back out to an empty input")
 
+  v:set_input("hello")
+  v:on_key_pressed("ctrl+j")
+  ok(v:input_text() == "hello\n",
+    "ctrl+j inserts a newline (got '" .. v:input_text():gsub("\n", "\\n") .. "')")
+
+
   -- ---- the transcript ----------------------------------------------------
   v.entries = {}
   v:push("user", "hi")
@@ -463,16 +469,26 @@ if loaded then
   ok(type(ran) == "string" and ran:find("tdd", 1, true),
     "/tdd hands the skill instructions to the agent")
 
-  -- The shell has no SidebarView; the chevron that toggled it must not appear
-  -- as a dead button on the shared AgentView toolbar.
+  -- The shell docks the same recents rail; the chevron that toggled it must
+  -- not appear as a dead button when there is no sidebar, and must appear
+  -- when there is one (AGENT workspace).
   local has_side = false
   local has_new = false
   for _, it in ipairs(v:toolbar_items()) do
     if it.command == "studio:toggle-sidebar" then has_side = true end
     if it.command == "agent:new-session" then has_new = true end
   end
-  ok(not has_side, "toolbar has no legacy sidebar chevron without a sidebar")
+  ok(not has_side, "toolbar has no sidebar chevron without a sidebar")
   ok(has_new, "toolbar still has New chat")
+
+  local core = require "core"
+  core.studio = { sidebar = { visible = true } }
+  has_side = false
+  for _, it in ipairs(v:toolbar_items()) do
+    if it.command == "studio:toggle-sidebar" then has_side = true end
+  end
+  ok(has_side, "toolbar shows the recents chevron when a sidebar is docked")
+  core.studio = nil
 
   v.entries, v.busy, v.co, v.turn_id = {}, false, nil, nil
   v:send_prompt("/help")
@@ -481,6 +497,33 @@ if loaded then
     if e.role == "system" then help2 = help2 .. (e.text or "") end
   end
   ok(help2:find("/model", 1, true), "send_prompt('/help') runs the slash command")
+
+  -- The newer (shell) studio must surface the same agent commands the legacy
+  -- window had: attach-file, recipes, session search, the recents rail toggle.
+  local okr, reg = pcall(require, "shell.registry")
+  ok(okr, "shell.registry loads" .. (okr and "" or ("  -- " .. tostring(reg))))
+  if okr then
+    local function has_cmd(menu, cmd)
+      for _, r in ipairs(reg.tree[menu] or {}) do
+        if r[2] == cmd then return true end
+      end
+      return false
+    end
+    ok(has_cmd("Agent", "agent:attach-file"), "Agent menu has attach-file")
+    ok(has_cmd("Agent", "agent:search-sessions"), "Agent menu has search chats")
+    ok(has_cmd("Agent", "agent:tool-permission"), "Agent menu has per-tool permissions")
+    ok(has_cmd("Run", "agent:run-recipe"), "Run menu has recipes")
+    ok(has_cmd("Run", "automations:run"), "Run menu has automations")
+    ok(has_cmd("View", "studio:toggle-sidebar"), "View menu toggles the session list")
+    ok(has_cmd("View", "studio:toggle-files"), "View menu toggles the file tree")
+    ok(has_cmd("boggart", "agent:welcome"), "boggart menu has welcome")
+    ok(has_cmd("File", "studio:open-folder"), "File menu has open-folder")
+  end
+
+  local oks, SV = pcall(require, "core.swarmview")
+  ok(oks and type(SV) == "table" and type(SV.ensure) == "function",
+    "SwarmView.ensure exists so FLEET and agent:swarm share one roster"
+    .. (oks and "" or ("  -- " .. tostring(SV))))
 end
 
 -- ---------------------------------------------------------------------------

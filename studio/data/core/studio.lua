@@ -315,6 +315,12 @@ end
 
 -- Chat or Code, from the sidebar's segmented control.
 function studio.show_surface(which)
+  -- In the shell those two surfaces are workspaces, not tabs in one node.
+  local sh = package.loaded["shell"]
+  if sh and sh.attached then
+    if which == "code" then sh.switch("edit") else studio.open_agent() end
+    return
+  end
   local tree = package.loaded["plugins.treeview"]
   local has_tree = type(tree) == "table" and tree.visible ~= nil
   if which == "code" then
@@ -1359,14 +1365,26 @@ command.add(nil, {
   end,
 
   ["studio:toggle-files"] = function()
+    local sh = package.loaded["shell"]
+    if sh and sh.attached and sh.current ~= "edit" then
+      sh.switch("edit")
+      return
+    end
     command.perform("treeview:toggle")
   end,
 
   ["studio:toggle-sidebar"] = function()
     if studio.sidebar then
+      local sh = package.loaded["shell"]
+      if sh and sh.attached and sh.current ~= "agent" then
+        sh.switch("agent")
+        studio.sidebar.visible = true
+        return
+      end
       studio.sidebar:toggle()
     else
-      -- Shell: no rail. The file tree is the equivalent surface.
+      -- No rail (tests, or a composition that never docked one): the file tree
+      -- is the equivalent surface.
       command.perform("treeview:toggle")
     end
   end,

@@ -7,13 +7,8 @@ local DocView = require "core.docview"
 
 local M = {}
 
-local function tree()
-  local ok, v = pcall(require, "plugins.treeview")
-  return ok and v or nil
-end
-
 function M.enter()
-  local t = tree(); if t then t.visible = true end
+  require("shell").set_docks("edit")
   -- activate a buffer if one is open; otherwise the leaf shows the splash and
   -- you open a file from the tree or Ctrl-P.
   local node = core.root_view:get_primary_node()
@@ -28,7 +23,7 @@ function M.enter()
 end
 
 function M.leave()
-  local t = tree(); if t then t.visible = false end
+  require("shell").set_docks(nil)
 end
 
 return M
