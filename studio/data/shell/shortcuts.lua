@@ -43,10 +43,14 @@ local SECTIONS = {
   { "Composer  (Agent workspace)", {
     { "Tab",             "complete / commands, skills, @files" },
     { "@ then type",     "filter the file menu" },
-    { "/command",        "same slash commands as the REPL" },
+    { "/command",        "same slash commands as the REPL / TUI" },
+    { "!command",        "run a shell command" },
     { "Shift-Tab",       "cycle approval mode" },
     { "Shift-Enter / Ctrl-J", "newline" },
     { "Esc",             "cancel turn / normal mode" },
+    { "Ctrl-R",          "search composer history" },
+    { "{ / }",           "previous / next user prompt (normal mode)" },
+    { "?",               "this cheatsheet" },
   } },
 }
 
@@ -60,6 +64,7 @@ local COMMANDS = {
   { "agent:cancel",       "Cancel turn" },
   { "agent:set-mode",     "Approval mode" },
   { "agent:attach-file",  "Attach a file" },
+  { "agent:history-search", "Composer history" },
   { "shell:toggle-theme", "Toggle theme" },
   { "help:shortcuts",     "This cheatsheet" },
 }

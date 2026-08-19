@@ -498,6 +498,31 @@ if loaded then
   end
   ok(help2:find("/model", 1, true), "send_prompt('/help') runs the slash command")
 
+  -- Shared take.lua door: !bash, /mode, /clear mean the same thing as the TUI.
+  v.entries, v.busy, v.co, v.turn_id = {}, false, nil, nil
+  v:send_prompt("!echo studio-ok")
+  local bash_out = ""
+  for _, e in ipairs(v.entries) do bash_out = bash_out .. (e.text or "") end
+  ok(bash_out:find("studio-ok", 1, true),
+    "!echo studio-ok runs a shell command in the composer (got '"
+    .. bash_out:sub(1, 80) .. "')")
+  ok(not v.busy, "!bash does not start a model turn")
+
+  v.entries, v.busy = {}, false
+  v:send_prompt("/mode chat")
+  ok(v.mode == "chat", "/mode chat updates the studio permission mode (got "
+    .. tostring(v.mode) .. ")")
+  v:send_prompt("/mode smart")
+  ok(v.mode == "smart", "/mode smart restores smart")
+
+  v.entries = { { role = "user", text = "keep me" } }
+  v:send_prompt("/clear")
+  local still = false
+  for _, e in ipairs(v.entries) do
+    if e.text == "keep me" then still = true end
+  end
+  ok(not still, "/clear wipes the studio transcript")
+
   -- The newer (shell) studio must surface the same agent commands the legacy
   -- window had: attach-file, recipes, session search, the recents rail toggle.
   local okr, reg = pcall(require, "shell.registry")

@@ -503,7 +503,59 @@ local function handle_command(line)
       "   (/dispatch on | /dispatch off)\n")
   elseif cmd == "new" then
     bog.new_session()
+    if bog.clear_ui then pcall(bog.clear_ui) end
     io.write("started new session ", tostring(bog.session.id), ".\n")
+  elseif cmd == "clear" then
+    local S = bog.active_session()
+    if S then S.messages = {} end
+    if bog.clear_ui then pcall(bog.clear_ui) end
+    io.write("conversation cleared.\n")
+  elseif cmd == "compact" then
+    local S = bog.active_session()
+    if not S or #(S.messages or {}) == 0 then
+      io.write("nothing to compact.\n")
+    else
+      local okc, err = pcall(bog.api.compact, S, {})
+      if not okc then io.write("compaction failed: ", tostring(err), "\n")
+      else
+        local frac, used = bog.api.context_fraction(S)
+        io.write(string.format("compacted -- now %d tokens (%.0f%%)\n",
+          used or 0, (frac or 0) * 100))
+      end
+    end
+  elseif cmd == "cost" then
+    local S = bog.active_session()
+    local frac, used = 0, 0
+    pcall(function() frac, used = bog.api.context_fraction(S) end)
+    local limit = bog.api.context_limit and bog.api.context_limit(S)
+    local dollars
+    if bog.api.cost then
+      local okd, d = pcall(bog.api.cost, S)
+      if okd then dollars = d end
+    end
+    local money = (dollars == nil) and "local (no per-token cost)"
+      or string.format("$%.4f", dollars)
+    io.write(string.format("context %s / %s tokens (%d%%) -- %s\n",
+      tostring(used or "?"), tostring(limit or "?"),
+      math.floor((frac or 0) * 100 + 0.5), money))
+  elseif cmd == "copy" then
+    local text = require("take").last_assistant()
+    if text == "" then io.write("nothing to copy.\n")
+    else
+      if bog.copy_text then pcall(bog.copy_text, text) end
+      io.write("copied last assistant reply (", #text, " bytes)\n")
+    end
+  elseif cmd == "mode" then
+    local id = rest:match("^(%S*)") or ""
+    if id == "" then
+      local m = bog.perm.mode_at(bog.perm.state().mode)
+      io.write("mode: ", m.id, " (", m.label, ") -- ", m.help, "\n")
+      io.write("  /mode auto | smart | manual | chat\n")
+    else
+      local m, okm = bog.perm.set_mode(id)
+      if not okm then io.write("unknown mode: ", id, "  (auto|smart|manual|chat)\n")
+      else io.write("mode: ", m.label, " -- ", m.help, "\n") end
+    end
   else
     -- A skill name as a slash command: hand its instructions to the agent as
     -- the next turn. Commands always win the name; see lua/complete.lua.

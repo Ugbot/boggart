@@ -22,22 +22,24 @@ is the floor, and how Codex / Goose compare on the same surfaces, lives in
       finds `lua/complete.lua` by basename; typing `@` opens the file menu and
       further keys filter it; Tab into a unique directory keeps descending.
 - [x] **Studio parity** — AgentView uses the same `bog.complete` / slash-command
-      / `perm` engines as the cTUI. The old single-primary-node studio layout is
-      marked LEGACY (`BOGGART_STUDIO_LEGACY=1`); the shell is the default.
+      / `perm` / `take` engines as the cTUI. The old single-primary-node studio
+      layout is marked LEGACY (`BOGGART_STUDIO_LEGACY=1`); the shell is the default.
+- [x] **Permission bar + Shift-Tab modes** (`auto` / `smart` / `manual` / `chat`).
+      Shared `perm.lua` state; TUI gates `run_tool` and draws the approval bar.
+      `/mode` works on every surface.
+- [x] **Chrome** — `?` help overlay, footer shows the mode, Esc interrupts a
+      turn (does not quit), Ctrl-D double-tap exit, `/clear` `/compact` `/cost`
+      `/copy`, `!` bash, Ctrl-G `$VISUAL`/`$EDITOR`. Too-small terminals draw a
+      message instead of a blank frame.
+- [x] **Shared submit door** — `lua/take.lua` parses `/` `!` `@` the same way in
+      the TUI and the studio. Composer history is the same file. `{` `}` jumps
+      user prompts. Ctrl-O expands the TUI tool strip.
 
 ## Next
 
-- [ ] **Permission bar + Shift-Tab modes** (`auto` / `smart` / `manual` / `chat`).
-      Studio already has this (`perm.lua` / AgentView); the TUI does not gate
-      `run_tool` or draw an approval bar.
-- [ ] **Chrome** — `?` help overlay, footer, Esc interrupts a turn (does not
-      quit), Ctrl-D double-tap exit, `/clear` `/compact` `/cost`, `!` bash,
-      Ctrl-G `$VISUAL`/`$EDITOR`.
-- [ ] **Transcript** — tool cards, diffs at the decision point, thinking
-      blocks, search, `{` `}` jump to previous/next user prompt, Ctrl-O expand
-      tools.
-- [ ] **Too-small terminal** — if the grid is below a usable size, draw a
-      message instead of a blank frame.
+- [ ] **Transcript polish** — thinking-block collapse in the TUI (studio has
+      it), in-transcript search, Ctrl-O expand of a single tool card (TUI
+      currently toggles the activity strip height).
 
 ## Notes
 
@@ -45,3 +47,4 @@ is the floor, and how Codex / Goose compare on the same surfaces, lives in
   empty table.
 - Composer tests: `./boggart --eval tests/tui_input.lua`.
 - Completion tests: `./boggart --eval tests/complete.lua`.
+- Shared front-end tests: `./boggart --eval tests/front.lua`.

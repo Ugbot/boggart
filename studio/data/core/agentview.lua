@@ -34,6 +34,9 @@ local syntax = require "core.syntax"
 local choose = require "choose"
 local perm = require "perm"
 local complete = require "core.agentcomplete"
+local mention = require "mention"
+local take = require "take"
+local keymap = require "core.keymap"
 
 local AgentView = View:extend()
 
@@ -59,10 +62,18 @@ function AgentView:new()
   self.co = nil
   self.status = "idle"
   self.approve_all = false     -- "always allow" for this session
-  self.mode = "smart"          -- approval on by default, like goose/codex
-  self.tool_policy = {}        -- name -> "allow" | "ask" | "deny", overrides mode
+  self.mode = perm.state().mode -- shared with /mode and the cTUI
+  self.tool_policy = perm.state().tool_policy
+  if bog then
+    bog.copy_text = function(s) pcall(system.set_clipboard, s) end
+    bog.clear_ui = function()
+      self.entries = {}
+      self:push("system", "conversation cleared")
+    end
+  end
   self.pending = nil           -- { name, input, diff, path, decision }
   self.history, self.hpos = {}, 0
+  self:_load_history()
 
   -- The composer's modal context, in the neovim sense -- distinct from
   -- self.mode above, which is the approval policy. "insert" is a text field
@@ -84,7 +95,7 @@ function AgentView:new()
   self:push("system", "boggart " .. (bog and bog.version or "?")
     .. "   model " .. self:model())
   self:push("system",
-    "enter sends · shift+enter / ctrl+j newline · tab completes · /commands · esc cancels · shift+tab cycles approval")
+    "enter sends · !cmd runs a shell · shift+enter / ctrl+j newline · tab completes · /commands · esc cancels · shift+tab cycles approval · ? shortcuts")
   if bog and not self:has_creds() then
     self:push("system", "No credentials. Command palette: 'agent: set api key',")
     self:push("system", "or 'agent: set endpoint' for a local server (ds4 on :8000).")
@@ -138,54 +149,18 @@ function AgentView:close_stream()
   if last then last.open = nil end
 end
 
--- @-mentions: "explain @src/lauth.c" attaches the file.
---
--- Expanded here, at the keystroke, rather than inside submit(): submit() is
--- also how studio sends a selection, and that payload is already a fenced
--- block which may legitimately contain an @. Attaching inline costs a turn of
--- context but saves a round trip through the read tool, which is the trade
--- every other coding agent makes for the file you have explicitly named.
-local MENTION_MAX = 64 * 1024
-
+-- @-mentions: "explain @src/lauth.c" attaches the file. Expanded at send
+-- time via lua/mention.lua so the cTUI and the studio attach the same files.
 function AgentView:expand_mentions(text)
-  local seen, attach = {}, {}
-  for token in text:gmatch("@([%w%._%-/~]+)") do
-    if not seen[token] then
-      seen[token] = true
-      local path = token
-      local real = path:gsub("^~", sys.home())
-      -- Relative paths need no base: lite chdirs to the project directory at
-      -- startup, so the process cwd is already the project root.
-      local body = bog.util.read_file(real)
-      -- `@complete` is a basename search in the completer, not a file on disk.
-      -- If the typed token is not itself a path, take a unique completion so
-      -- sending without Tab still attaches the file Tab would have filled in.
-      if not body then
-        local resolved = complete.resolve_mention(token)
-        if resolved and resolved ~= token then
-          path = resolved
-          real = path:gsub("^~", sys.home())
-          body = bog.util.read_file(real)
-        end
-      end
-      if body then
-        local note = ""
-        if #body > MENTION_MAX then
-          body = body:sub(1, MENTION_MAX)
-          note = string.format("\n... (truncated at %d KB)", MENTION_MAX // 1024)
-        end
-        attach[#attach + 1] = string.format("--- %s ---\n%s%s", path, body, note)
-        self:push("system", string.format("attached %s (%d bytes)", path, #body))
-      else
-        -- Not silently: an @ that did not resolve is nearly always a typo, and
-        -- the model answering confidently about a file it never saw is worse
-        -- than being told the path was wrong.
-        self:push("error", "no such file: " .. path)
-      end
+  local expanded, notes = mention.expand(text)
+  for _, n in ipairs(notes) do
+    if n.ok then
+      self:push("system", string.format("attached %s (%d bytes)", n.path, n.bytes))
+    else
+      self:push("error", "no such file: " .. n.path)
     end
   end
-  if #attach == 0 then return text end
-  return text .. "\n\n" .. table.concat(attach, "\n\n")
+  return expanded
 end
 
 -- Repaint the panel from a stored transcript.
@@ -284,6 +259,7 @@ function AgentView:set_mode(id)
   local found
   for _, m in ipairs(perm.MODES) do if m.id == id then found = m end end
   if not found then return false end
+  perm.set_mode(id)
   self.mode = id
   self.approve_all = false   -- a mode change is an explicit re-decision
   self:push("system", "mode: " .. found.label .. " -- " .. found.help)
@@ -318,6 +294,7 @@ function AgentView:submit(text)
   end
   self.history[#self.history + 1] = text
   self.hpos = 0
+  self:_save_history()
   self:push("user", text)
   self.busy, self.status = true, "thinking"
   self.busy_since = system.get_time()
@@ -512,16 +489,26 @@ function AgentView:send()
   self:set_input("")
   self:set_edit_mode("insert")   -- sending is composing; land ready to type again
   complete.dismiss(self)
-  -- Slash commands run through the same handler the REPL and cTUI use, so
-  -- `/help`, `/model`, `/tdd` (a skill) and the rest mean the same thing in
-  -- every front end. A `{ run = prompt }` return (unknown skill, failed git
-  -- command) is handed to the agent as a turn.
-  if t:match("^/") then
-    local r = self:run_slash(t)
+  local p = take.parse(t)
+  if p.kind == "slash" then
+    local r = self:run_slash(p.line)
     if type(r) == "table" and r.run then self:submit(r.run) end
     return
   end
-  self:submit(self:expand_mentions(t))
+  if p.kind == "bash" then
+    self:push("user", "!" .. p.command)
+    local okb, out = take.run_bash(p.command)
+    self:push(okb and "system" or "error", out)
+    return
+  end
+  for _, n in ipairs(p.notes or {}) do
+    if n.ok then
+      self:push("system", string.format("attached %s (%d bytes)", n.path, n.bytes))
+    else
+      self:push("error", "no such file: " .. n.path)
+    end
+  end
+  self:submit(p.text)
 end
 
 -- Put `text` in the composer and send it, so recipes, automations and the
@@ -561,9 +548,14 @@ function AgentView:run_slash(line)
   io.write, print = real_write, real_print
   local out = table.concat(buf):gsub("\27%[[%d;]*m", ""):gsub("%s+$", "")
   if not ok then out = "command error: " .. tostring(brk) end
-  if out ~= "" then self:push("system", out) end
-  if cmd == "new" or cmd == "resume" or cmd == "until" or cmd == "react" then
+  if cmd == "new" or cmd == "clear" or cmd == "resume" or cmd == "until"
+      or cmd == "react" or cmd == "compact" then
     self:repaint((bog.session and bog.session.messages) or {})
+  end
+  if out ~= "" then self:push("system", out) end
+  if cmd == "mode" then
+    self.mode = perm.state().mode
+    self.approve_all = perm.state().approve_all
   end
   if type(brk) == "table" and brk.run then return brk end
   return brk
@@ -706,6 +698,46 @@ function AgentView:set_input(s)
   complete.dismiss(self)
 end
 
+function AgentView:_hist_path()
+  return (bog and bog.userdir or "") .. "/history"
+end
+
+function AgentView:_load_history()
+  local f = io.open(self:_hist_path(), "r")
+  if not f then return end
+  for line in f:lines() do
+    if line ~= "" then self.history[#self.history + 1] = line end
+  end
+  f:close()
+end
+
+function AgentView:_save_history()
+  local h = self.history
+  while #h > 200 do table.remove(h, 1) end
+  local f = io.open(self:_hist_path(), "w")
+  if not f then return end
+  f:write(table.concat(h, "\n"))
+  if #h > 0 then f:write("\n") end
+  f:close()
+end
+
+function AgentView:jump_user(dir)
+  local idxs = {}
+  for i, e in ipairs(self.entries) do
+    if e.role == "user" then idxs[#idxs + 1] = i end
+  end
+  if #idxs == 0 then return end
+  local cur = self._user_i or (#idxs + (dir < 0 and 1 or 0))
+  cur = math.max(1, math.min(#idxs, cur + dir))
+  self._user_i = cur
+  local e = self.entries[idxs[cur]]
+  if e and e.content_y then
+    self.scroll.to.y = math.max(0, e.content_y)
+    self.scroll_to_end = false
+    core.redraw = true
+  end
+end
+
 -- Caret arithmetic. self.cx is a byte offset into the line -- the same index
 -- string.sub wants -- but it must always sit on a character boundary.
 function AgentView:prev_char(line, i)
@@ -768,7 +800,10 @@ function AgentView:on_text_input(text)
   -- spine's motions (j/k/gg/G) are claimed before they reach here, and anything
   -- else is swallowed rather than typed into the draft.
   if self.edit_mode == "normal" then
-    if text:match("^[iaoc:]$") then self:set_edit_mode("insert") end
+    if text:match("^[iaoc:]$") then self:set_edit_mode("insert")
+    elseif text == "{" then self:jump_user(-1)
+    elseif text == "}" then self:jump_user(1)
+    end
     return
   end
   -- Typing over a selection replaces it, which is what every text field does
@@ -1931,6 +1966,7 @@ function AgentView:draw()
   self.char_w = charw
 
   for ei, e in ipairs(self.entries) do
+    e.content_y = (y + self.scroll.y) - body_top
     if e.role == "diff" and e.diff then
       if visible(y) then
         common.draw_text(font, style.dim, difflib.summary(e.diff, e.path or ""),
@@ -2262,5 +2298,21 @@ function AgentView:draw()
 
   self:draw_scrollbar()
 end
+
+command.add(AgentView, {
+  ["agent:history-search"] = function()
+    local v = core.active_view
+    if not v or not v.history then return end
+    local items = {}
+    for i = #v.history, 1, -1 do items[#items + 1] = v.history[i] end
+    core.command_view:enter("History:", function(text, item)
+      v:set_input(item or text or "")
+      core.set_active_view(v)
+    end, function(text)
+      return common.fuzzy_match(items, text)
+    end)
+  end,
+})
+keymap.add { ["ctrl+r"] = "agent:history-search" }
 
 return AgentView

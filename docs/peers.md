@@ -64,8 +64,8 @@ Codex-style escalation-from-sandbox prompts.
 1. **No OS sandbox.** The capability boundary already jails Lua; `sys.exec` and
    MCP stdio leave it. That is still the one C lift ([`comparisons.md` §2 and
    §3](./comparisons.md)).
-2. **TUI permission bar.** Studio has Goose-shaped modes; the TUI does not
-   draw or enforce them.
+2. **TUI permission bar.** Shared `perm.lua`; Shift-Tab and `/mode` on both
+   surfaces. Remaining Codex gap is the OS sandbox, not the mode chrome.
 3. Do **not** start an IDE extension or desktop clone to "match Codex." The
    TUI bar + subprocess jail are the honest parity items.
 
@@ -108,8 +108,7 @@ default. Goose is ahead on **provider matrix** (many vendors out of the box).
 
 Goose CLI has `/mode`, `/plan`, extension flags, and an external-editor
 prompt. Boggart `--tui` now matches Goose on **input** (composer, completion,
-slash, `@` files). It does **not** match Goose on **mode cycling in the
-terminal** — that UI exists only in studio AgentView (Shift-Tab).
+slash, `@` files) **and** on **mode cycling** (Shift-Tab / `/mode`).
 
 ### Studio vs Goose desktop
 
@@ -129,8 +128,9 @@ the store.
 
 ### Biggest holes vs Goose
 
-1. **TUI does not expose the modes studio already has.** Highest leverage:
-   wire `perm.lua` into `--tui` the same way AgentView does.
+1. **TUI now exposes the modes studio already had.** Shift-Tab and `/mode`
+   share `perm.lua`. Remaining Goose-like work is a configure wizard, not the
+   bar.
 2. **No OS sandbox** (same as vs Codex). Goose is also not Seatbelt-first;
    Codex is the sandbox bar, Goose is the **mode + extensions** bar.
 3. **Provider picker / configure wizard.** Soft; overlay-mutable `api.lua` can
@@ -178,7 +178,7 @@ Signature pieces (2026):
 | `CLAUDE.md` | `lua/claudemd.lua` + `/init` |
 | Worktrees | `git_worktree` skill + `worktree` tool |
 | Hooks | `lua/events.lua` + `on_event` — **nvim-style globs**, not CC's JSON + exit-2 gate |
-| Permissions | `lua/perm.lua` — **studio only**; TUI does not gate `run_tool` |
+| Permissions | `lua/perm.lua` — **both surfaces**; TUI gates `run_tool` and draws the bar |
 | ReAct / loops | Inner Thought→Act→Obs; `/until`; `/react` |
 
 Boggart is **more programmable** (Lua REPL, live `src/`, swarm as a first-class
@@ -193,9 +193,8 @@ slash registry.
 **Still missing** (the [`tui-complete.md`](./tui-complete.md) "Next" list,
 still accurate):
 
-1. **Permission bar + Shift-Tab** — CC's defining chrome. Studio has modes
-   (`auto` / `smart` / `manual` / `chat`). TUI does not.
-2. **Status footer** — mode, tokens, MCP, vim indicator.
+1. **Permission bar + Shift-Tab** — wired. Studio and TUI share `perm.lua`.
+2. **Status footer** — mode is on the TUI status row (tokens via `/cost`).
 3. **`?` shortcuts overlay**
 4. **Esc = interrupt generation** (CC; vim Esc is skipped by design)
 5. **`/clear` `/compact` `/cost` `/copy`**
@@ -252,7 +251,7 @@ bypass + plan** do not.
 | Swarm / multi-agent | **Peer or stronger** (FLEET is a real UI) |
 | Studio | **Same category**, less polish, no marketplace/hooks product |
 | cTUI composer | **Caught up** on input |
-| cTUI chrome + permissions + transcript | **Still the gap** |
+| cTUI chrome + permissions + transcript | **Caught up** on chrome and permissions; transcript cards still thinner |
 
 Claude Code's remaining moat is **product chrome + permission/hook policy +
 distribution** (IDE, web, Slack), not the agent loop. Boggart's moat is
@@ -265,18 +264,17 @@ distribution** (IDE, web, Slack), not the agent loop. Boggart's moat is
 If the goal is "feels like the peers," do **not** start with desktop clones,
 voice, or a plugin store.
 
-1. **TUI permission bar** — wire `perm.lua` the same way studio does
-   (Shift-Tab). Goose modes, Claude Code chrome, Codex "I can see the policy."
-   That single control is what people notice.
-2. **TUI chrome** — `?`, footer, Esc interrupt, `/clear` `/compact` `/cost`,
-   `!`. Claude Code floor; see [`tui-complete.md`](./tui-complete.md).
-3. **Transcript cards** — tool calls as blocks + diffs, not raw stream.
+1. **TUI permission bar** — done (Shift-Tab / `/mode`, shared `perm.lua`).
+2. **TUI chrome** — done (`?`, footer mode, Esc interrupt, `/clear` `/compact`
+   `/cost` `/copy`, `!`, Ctrl-G). See [`tui-complete.md`](./tui-complete.md).
+3. **Transcript cards** — tool calls as blocks + diffs, not raw stream. The
+   remaining polish (thinking collapse in the TUI, in-transcript search).
 4. Then **hooks that can deny** (map `PreToolUse` → `events` + perm) if the
    Claude Code security story matters, and the **subprocess jail** if the Codex
    story matters.
 
 | Peer | Their moat | Ours | Next honest step |
 |---|---|---|---|
-| Codex | OS sandbox + approvals | Lua mutability, swarm | TUI perm bar; then Landlock/Seatbelt |
-| Goose | MCP extensions + mode UX | same modes in studio; Lua tools | TUI perm bar; studio configure flow |
-| Claude Code | chrome, hooks, distribution | kernel + FLEET | TUI perm bar, then chrome + transcript |
+| Codex | OS sandbox + approvals | Lua mutability, swarm | Landlock/Seatbelt |
+| Goose | MCP extensions + mode UX | same modes on both surfaces | studio configure flow |
+| Claude Code | chrome, hooks, distribution | kernel + FLEET | transcript polish |

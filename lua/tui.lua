@@ -23,6 +23,10 @@
 local M = {}
 
 local Input = require("tui.input")
+local help = require("tui.help")
+local gate = require("tui.gate")
+local take = require("take")
+local perm = require("perm")
 local uv = require("uv")
 
 -- Frame budget for the scheduler-driven paint. should_stop fires once per
@@ -233,7 +237,11 @@ local function status_runs(st)
   if s.is_local then runs[#runs + 1] = { text = "\u{00B7} " .. s.host .. " ", fg = C.dim, bg = bg } end
   runs[#runs + 1] = { text = string.format("\u{00B7} ctx %d%% ", math.floor(frac * 100 + 0.5)), fg = C.dim, bg = bg }
   runs[#runs + 1] = { text = string.format("\u{00B7} %d agent%s ", agents, agents == 1 and "" or "s"), fg = C.dim, bg = bg }
-  if st.running then runs[#runs + 1] = { text = "\u{00B7} working\u{2026} (Ctrl-C) ", fg = C.amber, bg = bg } end
+  local mode = (st.mode or perm.state().mode or "smart")
+  runs[#runs + 1] = { text = "\u{00B7} " .. mode .. " ", fg = C.text, bg = bg }
+  if st.help then runs[#runs + 1] = { text = "\u{00B7} ? ", fg = C.amber, bg = bg } end
+  if st.eof_arm then runs[#runs + 1] = { text = "\u{00B7} Ctrl-D again to quit ", fg = C.amber, bg = bg } end
+  if st.running then runs[#runs + 1] = { text = "\u{00B7} working\u{2026} (Esc) ", fg = C.amber, bg = bg } end
   -- You can keep typing while a turn runs; Enter is held until it finishes. Say so
   -- when there is composed text waiting, so a blocked Enter never feels broken.
   if st.running and st.box and (st.box.line or "") ~= "" then
@@ -248,12 +256,20 @@ end
 local function strip_rows(st)
   local n = st.activity and #st.activity or 0
   if n == 0 then return 0 end
-  return math.min(ACTIVITY_LINES, n) + 1 -- +1 for the divider row
+  local cap = st.activity_max or ACTIVITY_LINES
+  return math.min(cap, n) + 1 -- +1 for the divider row
 end
 
 local function draw(st)
   local w, h = tc.size()
-  if h < 3 or w < 8 then return end
+  if help.too_small(w, h) then
+    tc.clear()
+    local msg = help.too_small_runs()
+    local y = math.max(0, (h - #msg) // 2)
+    for i, ln in ipairs(msg) do blit(math.max(0, (w - 24) // 2), y + i - 1, ln, w) end
+    tc.flush()
+    return
+  end
   tc.clear()
 
   local vis, cursor_row, cursor_col = st.box:visual(w)
@@ -261,13 +277,13 @@ local function draw(st)
   local ih = math.max(1, #vis)
   local oh = #overlay
   local sh = strip_rows(st)
-  -- input rows + overlay + status + optional activity strip
-  local body = h - 1 - ih - oh - sh
-  if body < 3 then sh, body = 0, h - 1 - ih - oh end
+  local ask = (st.pending and st.pending.decision == nil)
+    and perm.runs(st.pending, w) or {}
+  local ah = #ask
+  -- input rows + overlay + status + optional activity strip + approval bar
+  local body = h - 1 - ih - oh - sh - ah
+  if body < 3 then sh, body = 0, h - 1 - ih - oh - ah end
   if body < 1 then body = 1 end
-
-  local pw = pane_width(st, w)
-  local tw = pw > 0 and (w - pw - 1) or w
 
   local pw = pane_width(st, w)
   local tw = pw > 0 and (w - pw - 1) or w
@@ -327,21 +343,31 @@ local function draw(st)
     end
   end
 
-  -- status row, then the completion/search overlay, then the (possibly
-  -- multiline) composer with a block cursor on the focused visual row.
+  -- status row, then the approval bar, then the completion/search overlay,
+  -- then the (possibly multiline) composer with a block cursor on the focused
+  -- visual row.
   local status_y = body + sh
   fill_row(status_y, w, C.bar_bg)
   blit(0, status_y, status_runs(st), w)
-  for i, ln in ipairs(overlay) do
+  for i, ln in ipairs(ask) do
     blit(0, status_y + i, ln, w)
   end
-  local input_y = status_y + 1 + oh
+  for i, ln in ipairs(overlay) do
+    blit(0, status_y + ah + i, ln, w)
+  end
+  local input_y = status_y + 1 + ah + oh
   for i, ln in ipairs(vis) do
     blit(0, input_y + i - 1, ln, w)
   end
   local cx = math.min(math.max(0, cursor_col or 0), w - 1)
   local cy = math.min(input_y + (cursor_row or 1) - 1, h - 1)
   tc.set(cx, cy, 32, nil, C.cursor, nil)
+
+  if st.help then
+    local hr = help.runs(w)
+    local top = math.max(0, (body - #hr) // 2)
+    for i, ln in ipairs(hr) do blit(0, top + i - 1, ln, w) end
+  end
 
   tc.flush()
   if SNAP and tc.snapshot then
@@ -359,9 +385,69 @@ local function setup_swarm() bog.activate_agents() end
 
 local function page(st) local _, h = tc.size(); return math.max(1, h - 3) end
 
--- Run one turn under the scheduler. The coordinator streams into a live entry;
--- the should_stop hook paints one frame per iteration and lets the user scroll
--- or interrupt (Ctrl-C) while the fleet works.
+-- Jump the transcript scroll to the previous/next user prompt. `{` / `}`
+-- when the composer is empty, matching Claude Code and the studio normal mode.
+local function jump_user(st, dir)
+  local idxs = {}
+  for i, e in ipairs(st.entries) do
+    if e.role == "user" then idxs[#idxs + 1] = i end
+  end
+  if #idxs == 0 then return end
+  local cur = st.user_i or (#idxs + (dir < 0 and 1 or 0))
+  cur = math.max(1, math.min(#idxs, cur + dir))
+  st.user_i = cur
+  -- Pin that entry near the bottom of the body: count lines from the start
+  -- through it, then scroll so it sits in view.
+  local tw = select(1, tc.size())
+  local lines, target = 0, 0
+  for i, e in ipairs(st.entries) do
+    if i > 1 then lines = lines + 1 end
+    local n = #entry_lines(e, tw)
+    if i == idxs[cur] then target = lines end
+    lines = lines + n
+  end
+  local _, h = tc.size()
+  local body = math.max(1, h - 6)
+  st.scroll = math.max(0, lines - body - target)
+  st.dirty = true
+end
+
+local function edit_in_editor(st)
+  local vis = os.getenv("VISUAL") or os.getenv("EDITOR")
+  if not vis or vis == "" then
+    st.entries[#st.entries + 1] = { role = "system",
+      text = "set $VISUAL or $EDITOR to edit the prompt" }
+    st.dirty = true
+    return
+  end
+  local path = (bog.userdir or os.getenv("TMPDIR") or "/tmp") .. "/boggart-prompt.txt"
+  local f = io.open(path, "w")
+  if not f then return end
+  f:write(st.box.line or ""); f:close()
+  tc.shutdown()
+  os.execute(vis .. " '" .. path:gsub("'", "'\\''") .. "'")
+  if not (tc.init and tc.init()) then return end
+  tc.attach()
+  local r = io.open(path, "r")
+  if r then
+    local body = r:read("*a") or ""
+    r:close()
+    st.box:_set(body:gsub("\r\n", "\n"):gsub("\n+$", ""))
+  end
+  st.dirty = true
+end
+
+local function note_mentions(st, notes)
+  for _, n in ipairs(notes or {}) do
+    if n.ok then
+      st.entries[#st.entries + 1] = { role = "system",
+        text = string.format("attached %s (%d bytes)", n.path, n.bytes) }
+    else
+      st.entries[#st.entries + 1] = { role = "error", text = "no such file: " .. n.path }
+    end
+  end
+end
+
 -- Slash commands (/exit, /auth, /model, /help, ...). These run through the very
 -- same handler the scrolling REPL uses, so the cTUI is not a second-class front
 -- end that silently sends "/exit" to the model. handle_command writes its output
@@ -426,6 +512,10 @@ local function run_turn(st, text)
   local topts = {}
   for k, v in pairs(st.coord.opts or {}) do topts[k] = v end
   topts.on_tool = bog.log_tool
+  topts.run_tool = gate.run_tool(st)
+  if st.mode == "chat" then
+    topts.tools = function() return {} end
+  end
 
   local turn_err
   local co = coroutine.create(function()
@@ -466,7 +556,11 @@ local function run_turn(st, text)
       elseif ev.type == "paste" then
         st.box:paste(ev.text); st.dirty = true
       elseif ev.type == "key" then
-      if bog.choice then
+      if gate.key(st, ev) then st.dirty = true
+      elseif st.help then st.help = false; st.dirty = true
+      elseif ev.key == "esc" or ev.key == "escape" then
+        st.abort = true
+      elseif bog.choice then
         -- A parked `choose` menu owns the keyboard: a letter picks (while the box
         -- is empty), Enter submits a typed answer, Esc dismisses.
         local rec, CH = bog.choice, require("choose")
@@ -492,6 +586,9 @@ local function run_turn(st, text)
         for _, a in ipairs(bog.sched.actors) do
           if a.id ~= st.coord.id then pcall(bog.sched.pause, a.id, st.paused) end
         end
+        st.dirty = true
+      elseif ev.key == "ctrl" and ev.char == "o" then
+        st.activity_max = (st.activity_max == 16) and ACTIVITY_LINES or 16
         st.dirty = true
       elseif ev.key == "pageup" then st.scroll = math.min(st.total, st.scroll + page(st)); st.dirty = true
       elseif ev.key == "pagedown" then st.scroll = math.max(0, st.scroll - page(st)); st.dirty = true
@@ -571,7 +668,19 @@ function M.run()
   local st = { coord = coord, entries = {}, activity = {},
                box = Input.new{ history_file = hist_file },
                scroll = 0, total = 0, running = false, wake = uv.new_timer() }
+  gate.sync(st)
+  gate.install_approve(st)
   st.entries[1] = { role = "art", text = require("logo").art } -- the mascot, on launch
+  bog.clear_ui = function()
+    st.entries = { { role = "art", text = require("logo").art } }
+    st.activity = {}
+    st.pending = nil
+    st.dirty = true
+  end
+  bog.copy_text = function(text)
+    -- Best-effort: a front end that has a clipboard (studio) replaces this.
+    st._copied = text
+  end
 
   -- Make a collapsing fan-out visible. A sub-agent that dies (a bad key, an
   -- unreachable endpoint, a crash) is removed from the scheduler and the fleet
@@ -639,27 +748,57 @@ function M.run()
           elseif ev.button == 65 then st.scroll = math.max(0, st.scroll - 3); draw(st) end
         elseif ev.type == "key" then
           if ev.key == "ctrl" and ev.char == "q" then quit = true; break end
-          if ev.key == "pageup" then
+          if gate.key(st, ev) then draw(st)
+          elseif st.help then
+            st.help = false; draw(st)
+          elseif ev.key == "pageup" then
             st.scroll = math.min(st.total, st.scroll + page(st)); draw(st)
           elseif ev.key == "pagedown" then
             st.scroll = math.max(0, st.scroll - page(st)); draw(st)
+          elseif ev.key == "ctrl" and ev.char == "o" then
+            st.activity_max = (st.activity_max == 16) and ACTIVITY_LINES or 16
+            draw(st)
           else
+            local empty = (st.box.line or "") == ""
+            if empty and ev.key == "char" and ev.char == "?" then
+              st.help = true; draw(st)
+            elseif empty and ev.key == "char" and ev.char == "{" then
+              jump_user(st, -1); draw(st)
+            elseif empty and ev.key == "char" and ev.char == "}" then
+              jump_user(st, 1); draw(st)
+            else
             local action, value = st.box:key(ev)
-            if action == "cancel" then
-              quit = true; break
+            st.eof_arm = (action == "eof") and not st.eof_arm
+            if action == "eof" and not st.eof_arm then quit = true; break end
+            if action == "eof" then draw(st)
+            elseif action == "cancel" then
+              -- Esc on an empty prompt no longer quits (Ctrl-D / Ctrl-Q do).
+              st.help = false; draw(st)
+            elseif action == "editor" then
+              edit_in_editor(st); draw(st)
             elseif action == "submit" then
-              if value and value:sub(1, 1) == "/" and value:match("^/%a") then
-                local s = slash(st, value)
+              local p = take.parse(value)
+              if p.kind == "slash" then
+                local s = slash(st, p.line)
                 if s == "quit" then quit = true; break
-                elseif type(s) == "table" and s.run then run_turn(st, s.run) end -- model fallback
-              elseif value and value:match("%S") then
-                run_turn(st, value)                       -- new prompt (abandons any interrupted turn)
+                elseif type(s) == "table" and s.run then run_turn(st, s.run) end
+              elseif p.kind == "bash" then
+                st.entries[#st.entries + 1] = { role = "user", text = "!" .. p.command }
+                local okb, out = take.run_bash(p.command)
+                st.entries[#st.entries + 1] = {
+                  role = okb and "system" or "error", text = out }
+              elseif p.kind == "prompt" then
+                note_mentions(st, p.notes)
+                run_turn(st, p.text)
               elseif bog.api.incomplete_turn and bog.api.incomplete_turn(st.coord.session) then
-                run_turn(st, nil)                         -- empty Enter resumes the interrupted turn
+                run_turn(st, nil)
               end
+              gate.sync(st)
               draw(st)
             else
+              if action ~= "eof" then st.eof_arm = nil end
               draw(st)
+            end
             end
           end
         end
@@ -672,6 +811,7 @@ function M.run()
 
   bog.choice_ui, bog.choice = nil, nil            -- no async chooser once we leave
   bog.log_tool, bog.log = saved_log_tool, saved_log -- restore before leaving the alt screen
+  bog.clear_ui, bog.copy_text, bog.approve = nil, nil, nil
   if crash_sub and bog.events and bog.events.off then pcall(bog.events.off, crash_sub) end
   if st.wake then pcall(function() st.wake:stop(); st.wake:close() end) end
   tc.shutdown()

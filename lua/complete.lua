@@ -119,6 +119,12 @@ M.commands = {
   { name = "until",    help = "run turns until a goal is met, or the budget is spent" },
   { name = "react",    help = "ReAct loop: Thought → Act → Observe until the goal is met" },
   { name = "new",      help = "start a fresh conversation (new saved session)" },
+  { name = "clear",    help = "clear the conversation (same as /new, also wipes the transcript)" },
+  { name = "compact",  help = "summarise the conversation to free context" },
+  { name = "cost",     help = "show estimated token spend for this conversation" },
+  { name = "copy",     help = "copy the last assistant reply" },
+  { name = "mode",     help = "approval mode: auto | smart | manual | chat",
+                       args = { "auto", "smart", "manual", "chat" } },
   { name = "dispatch", help = "optional auto-routing: hand different-enough requests to a specialist",
                        args = { "on", "off" } },
   -- common git tasks: run directly, fall back to the model on failure

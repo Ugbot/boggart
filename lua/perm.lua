@@ -20,6 +20,16 @@ M.MODES = {
 local BY_ID = {}
 for i, m in ipairs(M.MODES) do BY_ID[m.id] = i end
 
+-- Shared live state so /mode, Shift-Tab and policy_for agree across the TUI
+-- and the studio. Front ends may keep a local copy; set_mode is the writer.
+function M.state()
+  if type(bog) ~= "table" then
+    return { mode = "smart", approve_all = false, tool_policy = {} }
+  end
+  bog.perm_state = bog.perm_state or { mode = "smart", approve_all = false, tool_policy = {} }
+  return bog.perm_state
+end
+
 function M.mode_at(id)
   local i = BY_ID[id or ""]
   return i and M.MODES[i] or M.MODES[2] -- smart
@@ -31,10 +41,20 @@ function M.cycle(id)
   return n.id, n
 end
 
+function M.set_mode(id)
+  local m = M.mode_at(id)
+  local st = M.state()
+  if BY_ID[id or ""] then
+    st.mode = m.id
+    st.approve_all = false
+  end
+  return m, BY_ID[id or ""] ~= nil
+end
+
 -- What should happen when the model calls `name`: "allow", "ask" or "deny".
 -- st may carry approve_all and tool_policy[name] = "allow"|"ask"|"deny".
 function M.policy_for(name, st)
-  st = st or {}
+  st = st or M.state()
   local explicit = st.tool_policy and st.tool_policy[name]
   if explicit then return explicit end
   local mode = st.mode or "smart"
@@ -128,6 +148,39 @@ function M.runs(rec, width)
     end
   end
   return lines
+end
+
+-- Wrap a run_tool so deny/ask/allow match the studio gate. on_ask receives the
+-- parked record; the caller must set rec.decision (approve/reject) before the
+-- yield loop returns. Used by the cTUI; AgentView keeps its own hook so it can
+-- push a diff entry at the decision point.
+function M.wrap_run(run, st, hooks)
+  hooks = hooks or {}
+  st = st or M.state()
+  run = run or function(name, input) return bog.tools.run(name, input) end
+  return function(name, input)
+    input = input or {}
+    local policy = M.policy_for(name, st)
+    if policy == "deny" then
+      if hooks.on_deny then hooks.on_deny(name, input) end
+      return "Tool error: [permission_error] the user's settings do not "
+        .. "permit the " .. name .. " tool. Do not retry it; say what you "
+        .. "would have done and ask."
+    end
+    if policy == "ask" then
+      local rec = M.request(name, input)
+      if rec then
+        if hooks.on_ask then hooks.on_ask(rec) end
+        while rec.decision == nil do coroutine.yield("approve") end
+        if hooks.on_done then hooks.on_done(rec) end
+        if rec.decision == "reject" then
+          return "Tool error: [permission_error] the user rejected this "
+            .. name .. " call. Do not retry it; ask what to do instead."
+        end
+      end
+    end
+    return run(name, input)
+  end
 end
 
 return M

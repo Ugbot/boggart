@@ -151,7 +151,7 @@ echo "task" | ./boggart --headless   # scriptable: prompt on stdin, reply on std
 # BOGGART_STUDIO_LEGACY=1 restores the old single-primary-node + sidebar layout
 ```
 
-The studio's composer shares the cTUI's completion engine: **Tab** completes `/` commands and skills and `@` file mentions (typing `@` opens a filterable file menu), and a leading `/command` runs the same handler the REPL uses (`/help`, `/tdd`, …). **Shift-Tab** cycles the shared permission modes (auto / smart / manual / chat).
+The studio's composer shares the cTUI's engines: **Tab** completes `/` commands and skills and `@` file mentions (typing `@` opens a filterable file menu), a leading `/command` runs the same handler the REPL uses (`/help`, `/tdd`, `/clear`, `/mode`, …), **`!command`** runs a shell command, and **Shift-Tab** cycles the shared permission modes (auto / smart / manual / chat). Both surfaces persist composer history to the same file.
 
 The studio's code editor has an optional **neovim-style modal layer** (modes,
 motions, operators, text objects, `:` ex-commands, search, dot-repeat,
@@ -175,11 +175,14 @@ the same error taxonomy the agent itself uses.
 
 REPL commands (Tab-completed; `/help` is generated from the registry, so it is
 always current): `/help /tools /auth /doctor /memory /sessions /resume <id>
-/reload /reset [file] /model /until <task> /react <task> /new /quit`. `/until`
+/reload /reset [file] /model /until <task> /react <task> /new /clear /compact
+/cost /copy /mode /quit`. `/until`
 and `/react` run turns toward a goal until it is met or a turn budget is spent
 (`/until <shell-check> :: <task>` stops when the command exits 0; `/react` is
 the same loop with Thought → Act → Observe prompts). `/model` shows the running model and
-whether it is local or remote; `/model <id>` switches.
+whether it is local or remote; `/model <id>` switches. `/mode` sets the shared
+approval policy (auto / smart / manual / chat). `!command` in the TUI or studio
+composer runs a shell command without a model turn.
 Swarm commands: `/help /threads /journal [n] /agents /model <id> /quit`.
 
 ### Where boggart keeps its files
