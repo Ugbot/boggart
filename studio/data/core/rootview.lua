@@ -220,13 +220,17 @@ function Node:get_divider_overlapping_point(px, py)
 end
 
 
--- Whether this leaf shows a tab strip. A content leaf always shows one -- even
--- when it holds a single view -- so what is open is always named and closable,
--- like a real editor. It is withheld from docked panels (locked nodes) and from
--- the EmptyView splash placeholder, neither of which has a tab to show.
+-- Whether this leaf shows a tab strip.
+--
+-- Docked panels (locked) and the EmptyView splash never do. A destination
+-- surface -- the conversation, settings, the swarm -- is the stage itself, not
+-- a tab next to a file. Files still get a strip (even a single one) so the
+-- open document is named and closable.
 function Node:should_show_tabs()
   if self.type ~= "leaf" or self.locked then return false end
-  return #self.views > 1 or not self.active_view:is(EmptyView)
+  if self.active_view:is(EmptyView) and #self.views <= 1 then return false end
+  if #self.views > 1 then return true end
+  return self.active_view.doc ~= nil
 end
 
 
@@ -272,8 +276,18 @@ end
 function Node:get_locked_size()
   if self.type == "leaf" then
     if self.locked then
-      local size = self.active_view.size
-      return size.x, size.y
+      local av = self.active_view
+      -- Prefer the size the dock is heading for. Layout used to read the
+      -- current (possibly mid-animation) width, so a rail switch that hid
+      -- one dock and showed another left both columns painted for a frame.
+      if av.get_target_size then
+        local tx = av:get_target_size("x")
+        local ty = av:get_target_size("y")
+        if tx ~= nil or ty ~= nil then
+          return tx or av.size.x, ty or av.size.y
+        end
+      end
+      return av.size.x, av.size.y
     end
   else
     local x1, y1 = self.a:get_locked_size()
@@ -389,7 +403,10 @@ function Node:draw()
       self:draw_tabs()
     end
     local pos, size = self.active_view.position, self.active_view.size
-    core.push_clip_rect(pos.x, pos.y, size.x + pos.x % 1, size.y + pos.y % 1)
+    -- Integer clip: the GPU path sizes the backbuffer in window pixels, so the
+    -- old software-surface `pos % 1` fudge no longer has a fractional origin
+    -- to correct and would only widen the clip into the next view.
+    core.push_clip_rect(pos.x, pos.y, size.x, size.y)
     self.active_view:draw()
     core.pop_clip_rect()
   else

@@ -380,7 +380,7 @@ function SettingsView:draw()
     { label = "Permission mode", action = function()
         command.perform("agent:set-mode") end },
     { label = "MCP servers", action = function()
-        command.perform("agent:list-mcp-servers") end },
+        require("core.studio").open_library("mcp") end },
     { label = "Close", action = function()
         local node = core.root_view:get_primary_node()
         node:close_active_view(core.root_view.root_node)

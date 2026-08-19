@@ -15,21 +15,21 @@ name: release
 # archives without releasing anything.
 #
 # ONE FILE. Each archive holds two executables and nothing else -- no data
-# directory, no SDL2.dll, no "install SDL2 first". Two things make that true:
+# directory, no SDL3.dll, no "install SDL3 first". Two things make that true:
 #
 #   studio/data (sixty-odd Lua files and three fonts) is baked into
 #   boggart-studio by tools/bake_assets.cmake, so it has no tree to find.
 #
-#   SDL2 is built from source as a static library by CMakeLists.txt itself and
+#   SDL3 is built from source as a static library by CMakeLists.txt itself and
 #   linked in, so this workflow installs nothing to get it. The
 #   package-manager route cannot give us this: Homebrew's `sdl2` is really
 #   sdl2-compat, a shim that dlopen()s SDL3 from an absolute Cellar path, so a
 #   binary linked against it fails on any machine without Homebrew.
 #
-# What is still dynamic is the platform's own: libc everywhere, plus libcurl
-# and ncurses on Linux and macOS (both are /usr/lib on macOS and present on any
-# Linux that can run a terminal). A fully static Linux build would need musl and
-# a static curl, which is a bigger job than this file.
+# What is still dynamic is the platform's own: libc, and on macOS the Cocoa /
+# Metal / Security frameworks. curl, ncurses, SDL, FreeType and mbedTLS are
+# fetched and linked statically. A fully static Linux binary (musl, no glibc)
+# is a different job and is not what these archives are.
 
 on:
   push:
@@ -86,7 +86,7 @@ jobs:
         uses: lukka/get-cmake@latest
 
       # Linux still needs the C-side dependencies that are not vendored.
-      # SDL2 is not among them any more -- CMakeLists.txt fetches and builds it.
+      # SDL3 is not among them any more -- CMakeLists.txt fetches and builds it.
       #
       # It does, however, need the X11 and Wayland *headers*, and this list not
       # having them was a real bug in the release: SDL configures cleanly
@@ -101,7 +101,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libncurses-dev python3 \
+            python3 \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
             libxfixes-dev libxss-dev libxkbcommon-dev \
             libwayland-dev wayland-protocols libdecor-0-dev \
@@ -122,14 +122,14 @@ jobs:
       # everything anyway. The key carries the build type because this workflow
       # builds Release and ci.yml builds RelWithDebInfo, and one set of objects
       # must not be handed to the other.
-      - name: Cache the SDL2/libcurl build
+      - name: Cache the SDL3/libcurl build
         uses: actions/cache@v4
         with:
           path: |
             build/_deps
             build/.ninja_log
             build/.ninja_deps
-          key: rel-${{ matrix.os }}-sdl2.32.10-curl8.20.0-${{ hashFiles('CMakeLists.txt') }}
+          key: rel-${{ matrix.os }}-sdl3.4.14-curl8.20.0-${{ hashFiles('CMakeLists.txt') }}
 
       # ---- build -------------------------------------------------------------
       # Release, not the project's RelWithDebInfo default: this is the build
@@ -165,7 +165,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -eu
-          h=$(find build/_deps/sdl2-build -name SDL_config.h -path '*include-config*' | head -1)
+          h=$(find build/_deps/sdl3-build -name SDL_config.h -path '*include-config*' | head -1)
           test -n "$h" || { echo "no SDL_config.h -- did SDL build from source?"; exit 1; }
           for d in X11 WAYLAND; do
             grep -q "^#define SDL_VIDEO_DRIVER_$d 1" "$h" || {
@@ -194,7 +194,7 @@ jobs:
         run: |
           set -eu
           test -x ./boggart        || { echo "boggart was not built"; exit 1; }
-          test -x ./boggart-studio || { echo "boggart-studio was not built -- SDL2 missing?"; exit 1; }
+          test -x ./boggart-studio || { echo "boggart-studio was not built -- SDL3 missing?"; exit 1; }
           name="boggart-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}-${{ matrix.target }}"
           mkdir -p "dist/$name"
           cp boggart boggart-studio "dist/$name/"
@@ -207,7 +207,7 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path ./boggart.exe))        { throw "boggart.exe was not built" }
-          if (-not (Test-Path ./boggart-studio.exe)) { throw "boggart-studio.exe was not built -- SDL2 missing?" }
+          if (-not (Test-Path ./boggart-studio.exe)) { throw "boggart-studio.exe was not built -- SDL3 missing?" }
           $tag  = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { $env:GITHUB_SHA }
           $name = "boggart-$tag-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
@@ -246,8 +246,10 @@ jobs:
           # still find a data/ tree if one had crept back in.
           solo=$(mktemp -d); cp "$p/boggart-studio" "$solo/"
           test -z "$(ls -A "$solo" | grep -v boggart-studio)" || { echo "not a single file"; exit 1; }
-          ldd "$solo/boggart-studio" 2>/dev/null | grep -i sdl && { echo "SDL2 is still dynamic"; exit 1; }
-          otool -L "$solo/boggart-studio" 2>/dev/null | grep -i sdl && { echo "SDL2 is still dynamic"; exit 1; }
+          ldd "$solo/boggart-studio" 2>/dev/null | grep -Ei 'libsdl|libcurl' && { echo "studio still has a third-party dylib"; exit 1; }
+          otool -L "$solo/boggart-studio" 2>/dev/null | grep -Ei 'libsdl|libcurl' && { echo "studio still has a third-party dylib"; exit 1; }
+          ldd "$p/boggart" 2>/dev/null | grep -Ei 'libcurl|libncurses|libform' && { echo "cli still has a third-party dylib"; exit 1; }
+          otool -L "$p/boggart" 2>/dev/null | grep -Ei 'libcurl|libncurses|libform' && { echo "cli still has a third-party dylib"; exit 1; }
           echo "boggart-studio is one file"; true
 
       - name: Smoke-test the package (windows)
@@ -273,7 +275,8 @@ jobs:
           & "$p\boggart.exe" --eval $lua
           if ($LASTEXITCODE -ne 0) { throw "packaged boggart.exe did not run" }
           # One file: the archive must contain the two exes and nothing else.
-          if (Test-Path "$p\SDL2.dll") { throw "SDL2.dll should not be needed any more" }
+          if (Test-Path "$p\SDL3.dll") { throw "SDL3.dll should not be needed any more" }
+          if (Test-Path "$p\libcurl.dll") { throw "libcurl.dll should be statically linked" }
           if (Test-Path "$p\data")     { throw "data/ should be baked into the exe" }
 
       - uses: actions/upload-artifact@v4

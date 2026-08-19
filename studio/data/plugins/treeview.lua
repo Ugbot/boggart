@@ -5,6 +5,7 @@ local config = require "core.config"
 local keymap = require "core.keymap"
 local style = require "core.style"
 local View = require "core.view"
+local widgets = require "core.widgets"
 
 config.treeview_size = 200 * SCALE
 
@@ -108,8 +109,12 @@ end
 
 
 function TreeView:on_mouse_moved(px, py)
+  self.mouse = { x = px, y = py }
   self.hovered_item = nil
+  local bh = widgets.height(style.font)
+  local footer_top = self.position.y + self.size.y - bh - style.padding.y * 2
   for item, x,y,w,h in self:each_item() do
+    if y + h > footer_top then break end
     if px > x and py > y and px <= x + w and py <= y + h then
       self.hovered_item = item
       break
@@ -119,6 +124,8 @@ end
 
 
 function TreeView:on_mouse_pressed(button, x, y)
+  local item = widgets.hit(self.hits, x, y)
+  if item and item.action then item.action(); return true end
   if not self.hovered_item then
     return
   elseif self.hovered_item.type == "dir" then
@@ -165,14 +172,19 @@ end
 
 function TreeView:draw()
   self:draw_background(style.background2)
+  self.hits = {}
+  if self.size.x < 20 then return end
 
   local icon_width = style.icon_font:get_width("D")
   local spacing = style.font:get_width(" ") * 2
+  local bh = widgets.height(style.font)
+  local footer_top = self.position.y + self.size.y - bh - style.padding.y * 2
 
   local doc = core.active_view.doc
   local active_filename = doc and system.absolute_path(doc.filename or "")
 
   for item, x,y,w,h in self:each_item() do
+    if y + h > footer_top then break end
     local color = style.text
 
     -- highlight active_view doc
@@ -205,21 +217,48 @@ function TreeView:draw()
     x = x + spacing
     x = common.draw_text(style.font, color, item.name, nil, x, y, 0, h)
   end
+
+  -- Open folder lives here, not as a peer of Files on the rail. The tree
+  -- is the Files sidebar; this is the one control that moves the project.
+  local font = style.font
+  local pad = style.padding.x * 0.6
+  local vpad = style.padding.y
+  local fy = self.position.y + self.size.y - bh - vpad
+  renderer.draw_rect(self.position.x, fy - vpad, self.size.x, 1, style.divider)
+  local bx = self.position.x + pad
+  local bw = self.size.x - pad * 2
+  local hov = self.mouse and widgets.inside(
+    { x = bx, y = fy, w = bw, h = bh }, self.mouse.x, self.mouse.y)
+  local hit = widgets.button(font, "Open folder", bx, fy,
+    { w = bw, hover = hov, align = "left" })
+  hit.item = { label = "Open folder", command = "studio:open-folder",
+    action = function() command.perform("studio:open-folder") end }
+  self.hits[#self.hits + 1] = hit
 end
 
 
 -- init
 local view = TreeView()
--- Hidden by default: this app's left rail is the conversation list, and the
--- file tree appears when you ask for code. It still docks left, so choosing
--- Code slides it in beside the sidebar rather than rearranging the window.
 view.visible = false
-local node = core.root_view:get_primary_node()
-node:split("left", view, true)
+view.hits = {}
+-- The rail layout owns a single sidebar slot. Docking here as a third
+-- column is what made Files slide over the conversation. Hand the view
+-- to studio and let workspaces.set_sidebar swap it in.
+local studio = core.studio
+if studio and not studio.legacy and studio.rail then
+  studio.tree = view
+else
+  local node = core.root_view:get_primary_node()
+  node:split("left", view, true)
+end
 
 -- register commands and keymap
 command.add(nil, {
   ["treeview:toggle"] = function()
+    if studio and not studio.legacy then
+      command.perform("studio:toggle-files")
+      return
+    end
     view.visible = not view.visible
   end,
 })

@@ -60,8 +60,7 @@ function widgets.button(font, label, x, y, opts)
   return { x = x, y = y, w = w, h = h }
 end
 
--- Lay a row of buttons left to right, wrapping is not attempted: a row that
--- does not fit is clipped, which is honest and keeps this trivial.
+-- Lay a row of buttons left to right.
 --
 -- `items` is a list of { label, command|action, active?, dim?, tone? }.
 -- `limit` is an optional right edge: a button that would cross it is dropped
@@ -86,6 +85,32 @@ function widgets.row(font, items, x, y, hover, limit)
     x = x + w + gap
   end
   return hits
+end
+
+-- Same buttons as widgets.row, but a button that would cross `limit` starts a
+-- new line instead of being dropped. Returns hits and the y just below the
+-- last row, so a caller that has to share a band with a Send button can reserve
+-- height before it draws.
+function widgets.wrap_row(font, items, x, y, hover, limit)
+  local gap = style.padding.x * widgets.GAP
+  local bh = widgets.height(font)
+  local hits = {}
+  local x0, cx, cy = x, x, y
+  for _, it in ipairs(items) do
+    local w = widgets.width(font, it.label)
+    if cx > x0 and limit and cx + w > limit then
+      cx, cy = x0, cy + bh + gap
+    end
+    local is_hover = hover and hover.x and widgets.inside(
+      { x = cx, y = cy, w = w, h = bh }, hover.x, hover.y)
+    local r = widgets.button(font, it.label, cx, cy, {
+      w = w, active = it.active, dim = it.dim, tone = it.tone, hover = is_hover,
+    })
+    r.item = it
+    hits[#hits + 1] = r
+    cx = cx + w + gap
+  end
+  return hits, cy + bh
 end
 
 function widgets.inside(r, x, y)

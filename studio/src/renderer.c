@@ -88,10 +88,11 @@ typedef struct {
 
 typedef struct {
   RenImage *image;
+  SDL_Texture *texture;
   /* An LCD atlas holds three coverages per pixel in r/g/b rather than one
    * alpha, so it needs a different blend. Recorded per atlas rather than per
    * font because a bitmap-strike glyph inside a subpixel font still comes out
-   * grayscale. */
+   * grayscale. GPU drawing always uses coverage-in-A (see load_glyphset). */
   int lcd;
   Glyph glyphs[256];
 } GlyphSet;
@@ -131,8 +132,98 @@ struct RenFont {
 
 
 static SDL_Window *window;
+static SDL_Renderer *renderer;
+static SDL_Texture *target;
+static int target_w, target_h;
 static struct { int left, top, right, bottom; } clip;
 static FT_Library library;
+
+#define GLYPH_BATCH_MAX 256
+static SDL_Vertex glyph_batch[GLYPH_BATCH_MAX * 4];
+static SDL_Texture *glyph_batch_tex;
+static int glyph_batch_n;
+
+static void glyph_batch_flush(void);
+
+static bool target_undrawn;
+
+static void ensure_target(void) {
+  int pw = 0, ph = 0;
+  if (!window || !renderer) { return; }
+  SDL_GetWindowSizeInPixels(window, &pw, &ph);
+  if (pw < 1) { pw = 1; }
+  if (ph < 1) { ph = 1; }
+  if (target && target_w == pw && target_h == ph) { return; }
+  if (target) { SDL_DestroyTexture(target); target = NULL; }
+  target = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
+                             SDL_TEXTUREACCESS_TARGET, pw, ph);
+  target_w = pw;
+  target_h = ph;
+  if (target) {
+    SDL_SetTextureScaleMode(target, SDL_SCALEMODE_NEAREST);
+    SDL_SetRenderTarget(renderer, target);
+    /* Match the studio chrome, not black: a resize that presents before the
+       next Lua frame would otherwise flash the swapchain black. The undrawn
+       flag still skips that present entirely (see ren_update_rects). */
+    SDL_SetRenderDrawColor(renderer, 46, 46, 50, 255);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+    SDL_RenderClear(renderer);
+    target_undrawn = true;
+  }
+}
+
+static void bind_target(void) {
+  ensure_target();
+  if (!renderer || !target) { return; }
+  target_undrawn = false;
+  if (SDL_GetRenderTarget(renderer) != target) {
+    SDL_SetRenderTarget(renderer, target);
+  }
+  SDL_Rect r = {
+    clip.left, clip.top,
+    clip.right - clip.left, clip.bottom - clip.top
+  };
+  if (r.w <= 0 || r.h <= 0) {
+    SDL_SetRenderClipRect(renderer, NULL);
+  } else {
+    SDL_SetRenderClipRect(renderer, &r);
+  }
+}
+
+
+static void glyph_batch_flush(void) {
+  if (glyph_batch_n <= 0 || !renderer) {
+    glyph_batch_n = 0;
+    glyph_batch_tex = NULL;
+    return;
+  }
+  int indices[GLYPH_BATCH_MAX * 6];
+  for (int i = 0; i < glyph_batch_n; i++) {
+    int v = i * 4;
+    int b = i * 6;
+    indices[b + 0] = v + 0;
+    indices[b + 1] = v + 1;
+    indices[b + 2] = v + 2;
+    indices[b + 3] = v + 0;
+    indices[b + 4] = v + 2;
+    indices[b + 5] = v + 3;
+  }
+  SDL_SetRenderTarget(renderer, target);
+  SDL_Rect r = {
+    clip.left, clip.top,
+    clip.right - clip.left, clip.bottom - clip.top
+  };
+  if (r.w <= 0 || r.h <= 0) {
+    SDL_SetRenderClipRect(renderer, NULL);
+  } else {
+    SDL_SetRenderClipRect(renderer, &r);
+  }
+  SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+  SDL_RenderGeometry(renderer, glyph_batch_tex, glyph_batch, glyph_batch_n * 4,
+                     indices, glyph_batch_n * 6);
+  glyph_batch_n = 0;
+  glyph_batch_tex = NULL;
+}
 
 
 static void* check_alloc(void *ptr) {
@@ -169,13 +260,28 @@ static const char* utf8_to_codepoint(const char *p, unsigned *dst) {
 void ren_init(SDL_Window *win) {
   assert(win);
   window = win;
-  SDL_Surface *surf = SDL_GetWindowSurface(window);
-  ren_set_clip_rect( (RenRect) { 0, 0, surf->w, surf->h } );
+  renderer = SDL_CreateRenderer(window, NULL);
+  if (!renderer) {
+    fprintf(stderr, "Fatal error: SDL_CreateRenderer failed: %s\n", SDL_GetError());
+    exit(EXIT_FAILURE);
+  }
+  SDL_SetRenderVSync(renderer, 0);
+  ensure_target();
+  ren_set_clip_rect( (RenRect) { 0, 0, target_w, target_h } );
 }
 
 
 void ren_update_rects(RenRect *rects, int count) {
-  SDL_UpdateWindowSurfaceRects(window, (SDL_Rect*) rects, count);
+  (void)rects;
+  glyph_batch_flush();
+  /* A just-resized target is filled with chrome grey and has no scene yet.
+     Presenting it is the black/smear flash on the first event after a drag. */
+  if (count > 0 && renderer && target && !target_undrawn) {
+    SDL_SetRenderTarget(renderer, NULL);
+    SDL_SetRenderClipRect(renderer, NULL);
+    SDL_RenderTexture(renderer, target, NULL, NULL);
+    SDL_RenderPresent(renderer);
+  }
   static bool initial_frame = true;
   if (initial_frame) {
     SDL_ShowWindow(window);
@@ -185,6 +291,7 @@ void ren_update_rects(RenRect *rects, int count) {
 
 
 void ren_set_clip_rect(RenRect rect) {
+  glyph_batch_flush();
   clip.left   = rect.x;
   clip.top    = rect.y;
   clip.right  = rect.x + rect.width;
@@ -193,9 +300,21 @@ void ren_set_clip_rect(RenRect rect) {
 
 
 void ren_get_size(int *x, int *y) {
-  SDL_Surface *surf = SDL_GetWindowSurface(window);
-  *x = surf->w;
-  *y = surf->h;
+  ensure_target();
+  *x = target_w;
+  *y = target_h;
+}
+
+
+int ren_save_screenshot(const char *path) {
+  if (!renderer || !target) { return -1; }
+  glyph_batch_flush();
+  SDL_SetRenderTarget(renderer, target);
+  SDL_Surface *surf = SDL_RenderReadPixels(renderer, NULL);
+  if (!surf) { return -1; }
+  int ok = SDL_SaveBMP(surf, path) ? 0 : -1;
+  SDL_DestroySurface(surf);
+  return ok;
 }
 
 
@@ -601,7 +720,10 @@ static GlyphSet* load_glyphset(RenFont *font, int block, int phase) {
     height *= 2;
   }
   set->image = ren_new_image(width, height);
-  set->lcd = (font->antialias == REN_AA_SUBPIXEL);
+  /* GPU path stores coverage in A. Per-channel LCD needs a custom blend that
+   * is not portable across Metal/D3D/GL, and REN_AA_SUBPIXEL is already wrong
+   * on HiDPI; average the three coverages instead. */
+  set->lcd = 0;
   memset(set->image->pixels, 0, (size_t) width * (size_t) height * sizeof(RenColor));
 
   /* ---- blit and finish the metrics ---------------------------------------- */
@@ -677,6 +799,20 @@ static GlyphSet* load_glyphset(RenFont *font, int block, int phase) {
 
   if (block == 0 && font->tab_advance > 0) {
     set->glyphs['\t'].xadvance = (float) font->tab_advance;
+  }
+
+  if (renderer) {
+    set->texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
+                                     SDL_TEXTUREACCESS_STATIC, width, height);
+    if (set->texture) {
+      SDL_SetTextureBlendMode(set->texture, SDL_BLENDMODE_BLEND);
+      SDL_SetTextureScaleMode(set->texture, SDL_SCALEMODE_NEAREST);
+      SDL_SetTextureColorMod(set->texture, 255, 255, 255);
+      SDL_UpdateTexture(set->texture, NULL, set->image->pixels,
+                        width * (int)sizeof(RenColor));
+      ren_free_image(set->image);
+      set->image = NULL;
+    }
   }
   return set;
 }
@@ -844,15 +980,17 @@ fail:
 
 
 void ren_free_font(RenFont *font) {
+  glyph_batch_flush();
   for (int p = 0; p < GLYPH_PLANES; p++) {
     Block *table = font->planes[p];
     if (!table) { continue; }
     for (int b = 0; b < BLOCKS_PER_PLANE; b++) {
       for (int s = 0; s < SUBPIXEL_BITMAPS; s++) {
-        if (table[b].phase[s]) {
-          ren_free_image(table[b].phase[s]->image);
-          free(table[b].phase[s]);
-        }
+        GlyphSet *set = table[b].phase[s];
+        if (!set) { continue; }
+        if (set->texture) { SDL_DestroyTexture(set->texture); }
+        if (set->image) { ren_free_image(set->image); }
+        free(set);
       }
     }
     free(table);
@@ -923,49 +1061,17 @@ int ren_get_font_height(RenFont *font) {
 }
 
 
-static inline RenColor blend_pixel(RenColor dst, RenColor src) {
-  int ia = 0xff - src.a;
-  dst.r = ((src.r * src.a) + (dst.r * ia)) >> 8;
-  dst.g = ((src.g * src.a) + (dst.g * ia)) >> 8;
-  dst.b = ((src.b * src.a) + (dst.b * ia)) >> 8;
-  return dst;
+static SDL_FColor fcolor(RenColor c) {
+  return (SDL_FColor) {
+    (float) c.r / 255.0f,
+    (float) c.g / 255.0f,
+    (float) c.b / 255.0f,
+    (float) c.a / 255.0f
+  };
 }
 
 
-static inline RenColor blend_pixel2(RenColor dst, RenColor src, RenColor color) {
-  src.a = (src.a * color.a) >> 8;
-  int ia = 0xff - src.a;
-  dst.r = ((src.r * color.r * src.a) >> 16) + ((dst.r * ia) >> 8);
-  dst.g = ((src.g * color.g * src.a) >> 16) + ((dst.g * ia) >> 8);
-  dst.b = ((src.b * color.b * src.a) >> 16) + ((dst.b * ia) >> 8);
-  return dst;
-}
-
-
-/* The LCD blend: one coverage per colour stripe, so each channel composites
- * against the destination independently. That is the whole of subpixel
- * antialiasing -- there is no per-pixel alpha to speak of, which is why it
- * cannot go through blend_pixel2. Arithmetic is lite-xl's: the 65025 is
- * 255*255, the +32767 rounds rather than truncates. */
-static inline RenColor blend_pixel_lcd(RenColor dst, RenColor src, RenColor color) {
-  unsigned a = color.a;
-  dst.r = (uint8_t) ((color.r * src.r * a + dst.r * (65025 - src.r * a) + 32767) / 65025);
-  dst.g = (uint8_t) ((color.g * src.g * a + dst.g * (65025 - src.g * a) + 32767) / 65025);
-  dst.b = (uint8_t) ((color.b * src.b * a + dst.b * (65025 - src.b * a) + 32767) / 65025);
-  return dst;
-}
-
-
-#define rect_draw_loop(expr)        \
-  for (int j = y1; j < y2; j++) {   \
-    for (int i = x1; i < x2; i++) { \
-      *d = expr;                    \
-      d++;                          \
-    }                               \
-    d += dr;                        \
-  }
-
-/* Anti-aliased line, clipped to the current clip rect.
+/* Anti-aliased thick line as a GPU quad.
  *
  * The editor core this grew from draws axis-aligned rectangles and glyphs,
  * which is everything a text editor needs and nothing a diagram does. A line at
@@ -974,151 +1080,112 @@ static inline RenColor blend_pixel_lcd(RenColor dst, RenColor src, RenColor colo
  * hatch fills to short straight segments, so a line is not one feature among
  * many, it is the whole capability.
  *
- * Sampled and bilinearly blended rather than Bresenham. A hard-edged diagonal
- * looks like a mistake next to anti-aliased glyphs, and the sketchy strokes
- * this exists to draw are mostly shallow diagonals where aliasing is worst.
- * The cost is one pass along the longer axis, which is the same order as
- * Bresenham with a constant on it. */
-static inline void blend_px(SDL_Surface *surf, int x, int y, RenColor color, float a) {
-  if (x < clip.left || x >= clip.right || y < clip.top || y >= clip.bottom) { return; }
-  if (a <= 0.0f) { return; }
-  if (a > 1.0f) { a = 1.0f; }
-  RenColor c = color;
-  c.a = (uint8_t) ((float) color.a * a);
-  if (c.a == 0) { return; }
-  RenColor *d = (RenColor*) surf->pixels + x + y * surf->w;
-  *d = blend_pixel(*d, c);
-}
-
-
-static void aa_line(SDL_Surface *surf, float x0, float y0, float x1, float y1,
-                    RenColor color) {
-  float dx = x1 - x0, dy = y1 - y0;
-  float adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
-  float len = adx > ady ? adx : ady;
-  int n = (int) len;
-  if (n < 1) { n = 1; }
-  for (int i = 0; i <= n; i++) {
-    float t = (float) i / (float) n;
-    float x = x0 + dx * t, y = y0 + dy * t;
-    int ix = (int) floorf(x), iy = (int) floorf(y);
-    float fx = x - (float) ix, fy = y - (float) iy;
-    blend_px(surf, ix,     iy,     color, (1.0f - fx) * (1.0f - fy));
-    blend_px(surf, ix + 1, iy,     color, fx * (1.0f - fy));
-    blend_px(surf, ix,     iy + 1, color, (1.0f - fx) * fy);
-    blend_px(surf, ix + 1, iy + 1, color, fx * fy);
-  }
-}
-
-
+ * Core width is `thickness`; a 0.5px fringe with vertex alpha 0 antialiases
+ * the edges. Clip is the renderer clip rect. */
 void ren_draw_line(float x0, float y0, float x1, float y1, float thickness,
                    RenColor color) {
-  if (color.a == 0) { return; }
-  SDL_Surface *surf = SDL_GetWindowSurface(window);
-  if (!surf) { return; }
+  if (color.a == 0 || !renderer) { return; }
+  glyph_batch_flush();
+  bind_target();
   if (thickness < 1.0f) { thickness = 1.0f; }
 
   float dx = x1 - x0, dy = y1 - y0;
   float len = sqrtf(dx * dx + dy * dy);
+  SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
   if (len < 0.0001f) {
     /* A zero-length line is a dot, which is a legitimate thing for a dotted
      * fill to ask for. */
-    blend_px(surf, (int) x0, (int) y0, color, 1.0f);
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    SDL_RenderPoint(renderer, x0, y0);
     return;
   }
-  /* Thickness as parallel offsets half a pixel apart: enough passes that they
-   * overlap, so a thick stroke has no gaps down its middle. */
-  float px = -dy / len, py = dx / len;
-  int passes = (int) (thickness * 2.0f);
-  if (passes < 1) { passes = 1; }
-  for (int i = 0; i < passes; i++) {
-    float off = ((float) i / (float) (passes > 1 ? passes - 1 : 1) - 0.5f) * thickness;
-    if (passes == 1) { off = 0.0f; }
-    aa_line(surf, x0 + px * off, y0 + py * off, x1 + px * off, y1 + py * off, color);
-  }
+
+  float nx = -dy / len, ny = dx / len;
+  float hw = thickness * 0.5f;
+  float fr = 0.5f;
+  SDL_FColor solid = fcolor(color);
+  SDL_FColor fade = solid;
+  fade.a = 0.0f;
+
+  SDL_Vertex v[8];
+  SDL_Vertex tmpl = { .position = { 0, 0 }, .color = solid, .tex_coord = { 0, 0 } };
+  v[0] = tmpl; v[0].position.x = x0 + nx * hw; v[0].position.y = y0 + ny * hw;
+  v[1] = tmpl; v[1].position.x = x0 - nx * hw; v[1].position.y = y0 - ny * hw;
+  v[2] = tmpl; v[2].position.x = x1 - nx * hw; v[2].position.y = y1 - ny * hw;
+  v[3] = tmpl; v[3].position.x = x1 + nx * hw; v[3].position.y = y1 + ny * hw;
+  tmpl.color = fade;
+  v[4] = tmpl; v[4].position.x = x0 + nx * (hw + fr); v[4].position.y = y0 + ny * (hw + fr);
+  v[5] = tmpl; v[5].position.x = x0 - nx * (hw + fr); v[5].position.y = y0 - ny * (hw + fr);
+  v[6] = tmpl; v[6].position.x = x1 - nx * (hw + fr); v[6].position.y = y1 - ny * (hw + fr);
+  v[7] = tmpl; v[7].position.x = x1 + nx * (hw + fr); v[7].position.y = y1 + ny * (hw + fr);
+
+  static const int idx[] = {
+    0, 1, 2,  0, 2, 3,
+    0, 3, 7,  0, 7, 4,
+    1, 5, 6,  1, 6, 2,
+    0, 4, 5,  0, 5, 1,
+    3, 2, 6,  3, 6, 7
+  };
+  SDL_RenderGeometry(renderer, NULL, v, 8, idx, (int) (sizeof idx / sizeof idx[0]));
 }
 
 
 void ren_draw_rect(RenRect rect, RenColor color) {
-  if (color.a == 0) { return; }
-
-  int x1 = rect.x < clip.left ? clip.left : rect.x;
-  int y1 = rect.y < clip.top  ? clip.top  : rect.y;
-  int x2 = rect.x + rect.width;
-  int y2 = rect.y + rect.height;
-  x2 = x2 > clip.right  ? clip.right  : x2;
-  y2 = y2 > clip.bottom ? clip.bottom : y2;
-
-  SDL_Surface *surf = SDL_GetWindowSurface(window);
-  RenColor *d = (RenColor*) surf->pixels;
-  d += x1 + y1 * surf->w;
-  int dr = surf->w - (x2 - x1);
-
-  if (color.a == 0xff) {
-    rect_draw_loop(color);
-  } else {
-    rect_draw_loop(blend_pixel(*d, color));
-  }
-}
-
-
-/* Clip `sub` and the destination point against the clip rect, in place.
- * Returns 0 when nothing survives. Shared by the two blit paths so that the
- * grayscale and LCD glyph blits cannot disagree about what is on screen. */
-static int clip_blit(RenRect *sub, int *x, int *y) {
-  int n;
-  if ((n = clip.left - *x) > 0) { sub->width  -= n; sub->x += n; *x += n; }
-  if ((n = clip.top  - *y) > 0) { sub->height -= n; sub->y += n; *y += n; }
-  if ((n = *x + sub->width  - clip.right ) > 0) { sub->width  -= n; }
-  if ((n = *y + sub->height - clip.bottom) > 0) { sub->height -= n; }
-  return sub->width > 0 && sub->height > 0;
+  if (color.a == 0 || !renderer) { return; }
+  glyph_batch_flush();
+  bind_target();
+  SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+  SDL_SetRenderDrawBlendMode(renderer,
+                             color.a == 0xff ? SDL_BLENDMODE_NONE : SDL_BLENDMODE_BLEND);
+  SDL_FRect r = {
+    (float) rect.x, (float) rect.y,
+    (float) rect.width, (float) rect.height
+  };
+  SDL_RenderFillRect(renderer, &r);
 }
 
 
 void ren_draw_image(RenImage *image, RenRect *sub, int x, int y, RenColor color) {
-  if (color.a == 0) { return; }
-  if (!clip_blit(sub, &x, &y)) { return; }
-
-  SDL_Surface *surf = SDL_GetWindowSurface(window);
-  RenColor *s = image->pixels;
-  RenColor *d = (RenColor*) surf->pixels;
-  s += sub->x + sub->y * image->width;
-  d += x + y * surf->w;
-  int sr = image->width - sub->width;
-  int dr = surf->w - sub->width;
-
-  for (int j = 0; j < sub->height; j++) {
-    for (int i = 0; i < sub->width; i++) {
-      *d = blend_pixel2(*d, *s, color);
-      d++;
-      s++;
-    }
-    d += dr;
-    s += sr;
-  }
+  if (color.a == 0 || !renderer || !image || !sub) { return; }
+  if (sub->width <= 0 || sub->height <= 0) { return; }
+  glyph_batch_flush();
+  bind_target();
+  SDL_Texture *tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
+                                       SDL_TEXTUREACCESS_STATIC,
+                                       image->width, image->height);
+  if (!tex) { return; }
+  SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+  SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
+  SDL_SetTextureColorMod(tex, color.r, color.g, color.b);
+  SDL_SetTextureAlphaMod(tex, color.a);
+  SDL_UpdateTexture(tex, NULL, image->pixels, image->width * (int)sizeof(RenColor));
+  SDL_FRect src = {
+    (float) sub->x, (float) sub->y,
+    (float) sub->width, (float) sub->height
+  };
+  SDL_FRect dst = {
+    (float) x, (float) y,
+    (float) sub->width, (float) sub->height
+  };
+  SDL_RenderTexture(renderer, tex, &src, &dst);
+  SDL_DestroyTexture(tex);
 }
 
 
-static void draw_image_lcd(RenImage *image, RenRect *sub, int x, int y,
-                           RenColor color) {
-  if (color.a == 0) { return; }
-  if (!clip_blit(sub, &x, &y)) { return; }
-
-  SDL_Surface *surf = SDL_GetWindowSurface(window);
-  RenColor *s = image->pixels + sub->x + sub->y * image->width;
-  RenColor *d = (RenColor*) surf->pixels + x + y * surf->w;
-  int sr = image->width - sub->width;
-  int dr = surf->w - sub->width;
-
-  for (int j = 0; j < sub->height; j++) {
-    for (int i = 0; i < sub->width; i++) {
-      *d = blend_pixel_lcd(*d, *s, color);
-      d++;
-      s++;
-    }
-    d += dr;
-    s += sr;
+static void glyph_batch_push(SDL_Texture *tex, float x0, float y0, float x1, float y1,
+                             float u0, float v0, float u1, float v1, SDL_FColor col) {
+  if (!tex) { return; }
+  if (glyph_batch_tex != tex || glyph_batch_n >= GLYPH_BATCH_MAX) {
+    glyph_batch_flush();
+    bind_target();
+    glyph_batch_tex = tex;
   }
+  SDL_Vertex *q = &glyph_batch[glyph_batch_n * 4];
+  q[0].position.x = x0; q[0].position.y = y0; q[0].color = col; q[0].tex_coord.x = u0; q[0].tex_coord.y = v0;
+  q[1].position.x = x1; q[1].position.y = y0; q[1].color = col; q[1].tex_coord.x = u1; q[1].tex_coord.y = v0;
+  q[2].position.x = x1; q[2].position.y = y1; q[2].color = col; q[2].tex_coord.x = u1; q[2].tex_coord.y = v1;
+  q[3].position.x = x0; q[3].position.y = y1; q[3].color = col; q[3].tex_coord.x = u0; q[3].tex_coord.y = v1;
+  glyph_batch_n++;
 }
 
 
@@ -1132,6 +1199,11 @@ int ren_draw_text(RenFont *font, const char *text, int x, int y, RenColor color)
   float pen = (float) x;
   const char *p = text;
   unsigned codepoint;
+  SDL_FColor col = fcolor(color);
+
+  if (color.a != 0 && renderer) {
+    bind_target();
+  }
 
   while (*p) {
     p = utf8_to_codepoint(p, &codepoint);
@@ -1142,14 +1214,17 @@ int ren_draw_text(RenFont *font, const char *text, int x, int y, RenColor color)
 
     GlyphSet *set = get_glyphset(font, codepoint, phase);
     Glyph *g = &set->glyphs[codepoint & 0xff];
-    RenRect rect = { g->x0, g->y0, g->x1 - g->x0, g->y1 - g->y0 };
-    int gx = origin + (int) lroundf(g->xoff);
-    int gy = y + (int) lroundf(g->yoff);
-    if (rect.width > 0 && rect.height > 0) {
-      if (set->lcd) {
-        draw_image_lcd(set->image, &rect, gx, gy, color);
-      } else {
-        ren_draw_image(set->image, &rect, gx, gy, color);
+    int gw = g->x1 - g->x0;
+    int gh = g->y1 - g->y0;
+    if (gw > 0 && gh > 0 && color.a != 0 && set->texture) {
+      float tw = 0, th = 0;
+      SDL_GetTextureSize(set->texture, &tw, &th);
+      if (tw > 0 && th > 0) {
+        float gx = (float) origin + g->xoff;
+        float gy = (float) y + g->yoff;
+        glyph_batch_push(set->texture, gx, gy, gx + (float) gw, gy + (float) gh,
+                         (float) g->x0 / tw, (float) g->y0 / th,
+                         (float) g->x1 / tw, (float) g->y1 / th, col);
       }
     }
     pen += g->xadvance;

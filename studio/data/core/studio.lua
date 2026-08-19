@@ -16,6 +16,8 @@ local style = require "core.style"
 local AgentView = require "core.agentview"
 local recipes = require "core.recipes"
 local SidebarView = require "core.sidebarview"
+local RailView = require "core.railview"
+local workspaces = require "core.workspaces"
 local SettingsView = require "core.settingsview"
 local PanelView = require "core.panelview"
 local WorkflowView = require "core.workflowview"
@@ -24,6 +26,7 @@ local PickerView = require "core.pickerview"
 local fonts = require "core.fonts"
 local SwarmView = require "core.swarmview"
 local uitools = require "core.uitools"
+local menu = require "core.menu"
 
 local studio = {}
 
@@ -43,55 +46,17 @@ function studio.agent_view()
   return nil
 end
 
--- Build the window: conversation in the middle, chat list on the left.
---
--- The agent goes in the primary node rather than a split beside the editor,
--- because the conversation is what this application is. Files open as further
--- tabs in that same node, which is also how they stop being the point: things
--- you opened alongside the chat, not the surface the window is built around.
-function studio.attach()
-  if studio.attached then return end
-  studio.attached = true
-
-  local view = AgentView()
-  studio.view = view
-  core.root_view:get_primary_node():add_view(view)
-  core.set_active_view(view)
-
-  -- The agent's drawing tools. Registered here rather than in lua/tools.lua
-  -- because they only mean anything when there is a window: offering
-  -- `draw_panel` to a headless run would be a tool that cannot work.
+-- Shared startup that both attach paths run: fonts, drawing tools, the swarm
+-- pump, resume the last session, and (on a first run) the welcome surface.
+local function attach_common(view)
   core.try(uitools.register, studio)
-
-  -- The stored typeface, before anything draws with the default one.
   core.try(function()
     local problems = fonts.apply()
     for _, p2 in ipairs(problems or {}) do core.log("%s", p2) end
   end)
-
-  studio.sidebar = SidebarView()
-  core.root_view:get_primary_node():split("left", studio.sidebar, true)
-  core.set_active_view(view)
-
-  -- Swarm mode by default: make the capability to fan out to sub-agents always
-  -- present in the chat. This registers the swarm tools so the model can always
-  -- reach for them and starts the per-frame scheduler pump; it deliberately does
-  -- NOT stand up the bus/journal (the expensive half), which is deferred to the
-  -- first actual spawn. core.try because a studio that cannot start a scheduler
-  -- must still be a chat window.
   core.try(studio.setup_swarm)
-
-  -- Land the user back where they left off. On every launch after the first,
-  -- resume the most recent conversation into the AgentView rather than opening a
-  -- blank one -- like Claude/ChatGPT desktop. The welcome screen (below) owns the
-  -- first run and must start empty, so this defers to it, the two agreeing by
-  -- asking WelcomeView the same question. core.try because a store that cannot be
-  -- read must still leave you with a chat window.
   core.try(function()
     if require("core.welcomeview").is_first_run() then return end
-    -- --resume, if it was passed, chooses the session; without the flag
-    -- resume_startup returns nil and we fall back to the newest row in the store.
-    -- Either way we only repaint once a transcript has actually loaded.
     if not (bog.resume_startup and bog.resume_startup()) then
       local recent = bog.store.sess_list(1)
       local id = recent and recent[1] and recent[1].id
@@ -99,13 +64,75 @@ function studio.attach()
     end
     if bog.session and bog.session.id then view:repaint(bog.session.messages) end
   end)
-
-  -- A new install opens on the welcome screen instead of an empty conversation
-  -- it has no credentials to run. The view decides for itself whether this is a
-  -- first run and does nothing on every launch after it; core.try because an
-  -- onboarding screen that fails must not cost you the application.
   core.try(function() require("core.welcomeview").maybe_open() end)
+  if bog and bog.mode == "embedded" then
+    bog._mcp_loading = true
+    core.add_thread(function()
+      coroutine.yield()
+      if bog.mcphost then bog.try(bog.mcphost.load) end
+      if bog.llmstation then bog.try(bog.llmstation.autostart) end
+      bog._mcp_loading = false
+    end)
+  end
   return view
+end
+
+-- The old "agent tab + Chat/Code sidebar" window. Kept behind
+-- BOGGART_STUDIO_LEGACY=1 until the rail layout has enough miles.
+function studio.attach_legacy()
+  if studio.attached then return end
+  studio.attached = true
+  studio.legacy = true
+  studio.workspace = "agent"
+
+  local view = AgentView()
+  studio.view = view
+  core.root_view:get_primary_node():add_view(view)
+  core.set_active_view(view)
+
+  studio.sidebar = SidebarView()
+  core.root_view:get_primary_node():split("left", studio.sidebar, true)
+  core.set_active_view(view)
+  return attach_common(view)
+end
+
+-- Default window: activity rail, a contextual sidebar, a stage that is one
+-- workspace at a time. Conversation is never a tab next to a file.
+function studio.attach()
+  if studio.attached then return end
+  if os.getenv("BOGGART_STUDIO_LEGACY") then
+    return studio.attach_legacy()
+  end
+  studio.attached = true
+  studio.legacy = false
+  studio.workspace = "agent"
+  workspaces.current = "agent"
+
+  local view = AgentView()
+  studio.view = view
+  local primary = core.root_view:get_primary_node()
+  primary:add_view(view)
+  core.set_active_view(view)
+
+  -- Rail, then one sidebar slot, then the conversation:
+  -- [rail | sidebar-slot | agent]. Files docks chat on the right and
+  -- puts the editor in the center; the tree occupies this same slot.
+  studio.rail = RailView()
+  primary:split("left", studio.rail, true)
+  studio.sidebar = SidebarView()
+  core.root_view:get_primary_node():split("left", studio.sidebar, true)
+  studio.sidebar_node = core.root_view.root_node:get_node_for_view(studio.sidebar)
+  core.set_active_view(view)
+
+  menu.install()
+  workspaces.install_open_hook()
+  workspaces.set_sidebar("sessions")
+
+  return attach_common(view)
+end
+
+function studio.switch_workspace(name)
+  workspaces.switch(name)
 end
 
 -- ---------------------------------------------------------------------------
@@ -283,6 +310,18 @@ function studio.start_pump()
 end
 
 function studio.open_agent()
+  if not studio.legacy then
+    local ws = require "core.workspaces"
+    if ws.layout == "files" and studio.view then
+      core.set_active_view(studio.view)
+      return studio.view
+    end
+    workspaces.show_chat()
+    if studio.view and core.root_view.root_node:get_node_for_view(studio.view) then
+      core.set_active_view(studio.view)
+      return studio.view
+    end
+  end
   local existing = studio.agent_view()
   if existing then
     -- Bring the tab forward as well as taking focus. set_active_view only moves
@@ -296,15 +335,20 @@ function studio.open_agent()
   end
   -- The panel was closed. Put it back in the main area rather than splitting:
   -- there is only ever one conversation view, and it belongs in the middle.
-  local view = AgentView()
+  local view = studio.view or AgentView()
   studio.view = view
   core.root_view:get_primary_node():add_view(view)
   core.set_active_view(view)
   return view
 end
 
--- Chat or Code, from the sidebar's segmented control.
+-- Chat or Code. The rail layout maps these onto workspaces; the legacy
+-- attach still flips the Chat/Code segmented control and the file tree.
 function studio.show_surface(which)
+  if not studio.legacy then
+    if which == "code" then workspaces.show_files() else workspaces.show_chat() end
+    return
+  end
   local tree = package.loaded["plugins.treeview"]
   local has_tree = type(tree) == "table" and tree.visible ~= nil
   if which == "code" then
@@ -409,7 +453,7 @@ end
 
 function studio.status_items()
   if not bog then return {} end
-  local v = studio.agent_view()
+  local v = studio.view or studio.agent_view()
 
   -- Which model, and crucially where it runs: local (your own server, free) or
   -- remote (a named vendor, per-token money). The status()-derived provider is
@@ -497,9 +541,13 @@ function studio.project_paths()
   return out
 end
 
--- One settings view, opened as a tab beside the conversation so it can be
--- closed like anything else.
+-- One settings view. On the rail layout it is a destination, not a tab
+-- beside the conversation.
 function studio.open_settings()
+  if not studio.legacy then
+    workspaces.switch("settings")
+    return studio.settings
+  end
   -- One settings view, ever. Reuse the singleton wherever it lives: an inactive
   -- workspace stashes its views OUT of the live Node tree, so searching only the
   -- primary node would miss a stashed instance and build a duplicate. Search the
@@ -528,7 +576,12 @@ function studio.open_swarm() return SwarmView.open() end
 -- The Library: the tools the agent wrote for itself, its skills, its memory and
 -- its MCP servers. A tab beside the conversation, like settings, because it is
 -- a place you look at rather than a command you have to know the name of.
-function studio.open_library()
+function studio.open_library(section)
+  if not studio.legacy then
+    workspaces.switch("library")
+    if section and studio.library then studio.library:set_section(section) end
+    return studio.library
+  end
   -- Singleton, reused wherever it lives -- see open_settings for why the search
   -- is over the whole root and why a stashed instance is re-homed rather than
   -- duplicated across workspaces.
@@ -551,6 +604,10 @@ end
 -- One workflow builder, opened as a tab beside the conversation. Refreshed on
 -- reopen because the files can change under it -- by hand, or by the agent.
 function studio.open_workflows()
+  if not studio.legacy then
+    workspaces.switch("workflows")
+    return studio.workflows
+  end
   -- Singleton, reused wherever it lives -- see open_settings for the whole-root
   -- search and the re-home-instead-of-duplicate rule. Refresh on every reopen,
   -- live or re-homed, because the files can change under it.
@@ -819,17 +876,28 @@ command.add(nil, {
   end,
 
   ["agent:set-mode"] = function()
-    local v = studio.open_agent()
-    local items, byname = {}, {}
+    local v = studio.view or studio.open_agent()
+    local items = {}
     for _, m in ipairs(v.MODES) do
-      local label = string.format("%s -- %s", m.label, m.help)
-      items[#items + 1] = label
-      byname[label] = m.id
+      items[#items + 1] = {
+        label = string.format("%s -- %s", m.label, m.help),
+        action = function() v:set_mode(m.id) end,
+      }
+    end
+    local anchor = v.mode_hit
+    if anchor and not studio.legacy then
+      menu.show(anchor, items)
+      return
+    end
+    local labels, byname = {}, {}
+    for _, it in ipairs(items) do
+      labels[#labels + 1] = it.label
+      byname[it.label] = it.action
     end
     core.command_view:enter("Permission mode:", function(text, item)
-      local id = byname[item or text]
-      if id then v:set_mode(id) end
-    end, function(text) return common.fuzzy_match(items, text) end)
+      local act = byname[item or text]
+      if act then act() end
+    end, function(text) return common.fuzzy_match(labels, text) end)
   end,
 
   -- Per-tool overrides, because a mode alone cannot say "ask about everything
@@ -940,12 +1008,29 @@ command.add(nil, {
   end,
 
   ["agent:set-model"] = function()
-    prompt("Model:", function(text)
+    local v = studio.view or studio.open_agent()
+    local current = (bog.session and bog.session.model) or ""
+    local function apply(text)
       if text == "" then return end
       auth.set("model", text)
       bog.session.model = text
       core.log("model: %s", text)
-    end, (bog.session and bog.session.model) or "")
+    end
+    local items = {}
+    if current ~= "" then
+      items[#items + 1] = { label = current, action = function() apply(current) end }
+    end
+    items[#items + 1] = {
+      label = "Enter model…",
+      action = function()
+        prompt("Model:", apply, current)
+      end,
+    }
+    if v and v.model_hit and not studio.legacy then
+      menu.show(v.model_hit, items)
+      return
+    end
+    prompt("Model:", apply, current)
   end,
 
   ["agent:show-config"] = function()
@@ -1034,11 +1119,7 @@ command.add(nil, {
   end,
 
   ["agent:show-tools"] = function()
-    local report = bog.tools.report({})
-    for line in (report .. "\n"):gmatch("(.-)\n") do
-      if line ~= "" then core.log_quiet("%s", line) end
-    end
-    studio.say("Tool report written to the log (ctrl+l).")
+    studio.open_library("tools")
   end,
 
   -- ---- MCP servers --------------------------------------------------------
@@ -1047,17 +1128,7 @@ command.add(nil, {
   -- inventing a second registry, so what the GUI configures is exactly what
   -- the terminal boggart connects to.
   ["agent:list-mcp-servers"] = function()
-    local live = bog.mcphost and bog.mcphost.list() or {}
-    if #live == 0 then
-      studio.say("No MCP servers connected. 'agent: add mcp server' adds one; "
-        .. "they are declared in ~/.boggart/lua/mcp_servers.lua.")
-      return
-    end
-    for _, e in ipairs(live) do
-      core.log_quiet("%s [%s] (%d tools): %s", e.server,
-        bog.mcphost.generation(e.server), #e.tools, table.concat(e.tools, ", "))
-    end
-    studio.say("%d MCP server(s) connected -- details in the log (ctrl+l)", #live)
+    studio.open_library("mcp")
   end,
 
   ["agent:add-mcp-server"] = function()
@@ -1340,6 +1411,14 @@ command.add(nil, {
   end,
 
   ["studio:toggle-files"] = function()
+    if not studio.legacy then
+      if workspaces.sidebar_mode == "tree" then
+        workspaces.show_chat()
+      else
+        workspaces.show_files()
+      end
+      return
+    end
     command.perform("treeview:toggle")
   end,
 

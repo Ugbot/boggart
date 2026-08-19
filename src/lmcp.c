@@ -229,6 +229,7 @@ typedef struct {
   int id;
   int done;
   int want_tools; /* unwrap result.tools (tools/list) */
+  int want_raw;   /* keep the whole JSON-RPC response (connect probe) */
   uint64_t deadline; /* now_ms() value, 0 = none */
   char *out; /* result JSON (owned) */
   char *err; /* error text (owned) */
@@ -739,6 +740,13 @@ static const char *bad_result_type(mcpconn *c, cJSON *result) {
 }
 
 static void call_finish(mcpcall *h, cJSON *resp /*owned*/) {
+  if (h->want_raw) {
+    h->out = cJSON_PrintUnformatted(resp);
+    if (!h->out) h->out = strdup("{}");
+    cJSON_Delete(resp);
+    h->done = 1;
+    return;
+  }
   cJSON *errobj = cJSON_GetObjectItem(resp, "error");
   if (errobj) {
     h->err = strdup(rpc_error_text(errobj));
@@ -993,13 +1001,157 @@ static int probe_discover(mcpconn *c, const char **err) {
   return PROBE_MODERN;
 }
 
-/* Settle the protocol generation for this connection. */
+static int negotiate(mcpconn *c, const char **err)
+  __attribute__((unused));
 static int negotiate(mcpconn *c, const char **err) {
   switch (probe_discover(c, err)) {
     case PROBE_MODERN: return 0;
     case PROBE_FAIL: return -1;
     default: return do_initialize(c, err); /* PROBE_LEGACY */
   }
+}
+
+/* Yieldable connect: the same handshake as negotiate(), but each round-trip
+ * uses call_wait so a studio core-thread can return to the frame loop. Off a
+ * coroutine it still pumps in 50ms slices, matching the old blocking path. */
+enum { PH_PROBE = 1, PH_INIT = 2 };
+#define HANDLE_IDX 4
+static int connect_cont(lua_State *L, int status, lua_KContext phase);
+static mcpcall *new_call(lua_State *L, int conn_idx, mcpconn *c, int id, int want_tools);
+static void conn_teardown(mcpconn *c);
+
+static int connect_fail(lua_State *L, mcpconn *c, const char *err) {
+  c->dead = 1;
+  conn_teardown(c);
+  lua_pushnil(L);
+  lua_pushstring(L, err ? err : "MCP negotiation failed");
+  return 2;
+}
+
+static cJSON *call_raw_json(mcpcall *h) {
+  if (!h->out) return NULL;
+  return cJSON_Parse(h->out);
+}
+
+static int start_raw_call(lua_State *L, mcpconn *c, const char *method, cJSON *params,
+                          int timeout_s, const char **err) {
+  int id = start_call(c, method, params, err);
+  if (id < 0) return -1;
+  lua_settop(L, HANDLE_IDX - 1);
+  mcpcall *h = new_call(L, 2, c, id, 0);
+  h->want_raw = 1;
+  h->deadline = now_ms() + (uint64_t)timeout_s * 1000;
+  return 0;
+}
+
+static int connect_cont(lua_State *L, int status, lua_KContext phase) {
+  (void)status;
+  lua_settop(L, HANDLE_IDX);
+  mcpcall *h = (mcpcall *)luaL_checkudata(L, HANDLE_IDX, API_TYPE_CALL);
+  mcpconn *c = (mcpconn *)luaL_checkudata(L, 2, API_TYPE_MCP);
+
+  if (!h->done) {
+    if (lua_isyieldable(L)) {
+      call_poll(h, MCP_YIELD_MS);
+      if (!h->done) {
+        lua_pushliteral(L, "io");
+        lua_pushvalue(L, HANDLE_IDX);
+        return lua_yieldk(L, 2, phase, connect_cont);
+      }
+    } else {
+      while (!h->done) call_poll(h, MCP_SLICE_MS);
+    }
+  }
+
+  const char *err = NULL;
+  if (phase == PH_PROBE) {
+    cJSON *resp = call_raw_json(h);
+    int pr;
+    if (!resp) {
+      const char *terr = h->err;
+      if (c->io && (c->io->eof || c->io->io_err)) {
+        return connect_fail(L, c, terr ? terr : "no response (server exited)");
+      }
+      pr = PROBE_LEGACY;
+    } else {
+      pr = PROBE_LEGACY;
+      cJSON *errobj = cJSON_GetObjectItem(resp, "error");
+      if (errobj) {
+        cJSON *code = cJSON_GetObjectItem(errobj, "code");
+        int n = cJSON_IsNumber(code) ? code->valueint : 0;
+        if (n == MCP_E_BAD_VERSION) {
+          cJSON *data = cJSON_GetObjectItem(errobj, "data");
+          cJSON *sup = data ? cJSON_GetObjectItem(data, "supported") : NULL;
+          const char *pick = pick_modern_version(sup);
+          if (pick) { set_str(&c->proto, pick); pr = PROBE_MODERN; }
+          else if (has_legacy_version(sup)) pr = PROBE_LEGACY;
+          else {
+            char list[256];
+            join_strings(sup, list, sizeof(list));
+            err = seterr("server speaks no protocol version boggart supports "
+                          "(it offers: %s; boggart speaks %s and %s or earlier)",
+                          list[0] ? list : "nothing it would name",
+                          MCP_PROTO_MODERN, MCP_PROTO_LEGACY);
+            pr = PROBE_FAIL;
+          }
+        } else {
+          int modern = (n == MCP_E_HEADER_MISMATCH || n == MCP_E_MISSING_CAP);
+          pr = modern ? PROBE_MODERN : PROBE_LEGACY;
+        }
+      } else {
+        cJSON *result = cJSON_GetObjectItem(resp, "result");
+        cJSON *sup = result ? cJSON_GetObjectItem(result, "supportedVersions") : NULL;
+        const char *pick = pick_modern_version(sup);
+        if (!pick && cJSON_IsArray(sup)) {
+          if (has_legacy_version(sup)) pr = PROBE_LEGACY;
+          else {
+            char list[256];
+            join_strings(sup, list, sizeof(list));
+            err = seterr("server speaks no protocol version boggart supports "
+                          "(it offers: %s; boggart speaks %s and %s or earlier)",
+                          list[0] ? list : "nothing it would name",
+                          MCP_PROTO_MODERN, MCP_PROTO_LEGACY);
+            pr = PROBE_FAIL;
+          }
+        } else {
+          if (pick) set_str(&c->proto, pick);
+          capture_server_info(c, result);
+          pr = PROBE_MODERN;
+        }
+      }
+      cJSON_Delete(resp);
+    }
+    if (pr == PROBE_FAIL) return connect_fail(L, c, err);
+    if (pr == PROBE_MODERN) { lua_settop(L, 2); return 1; }
+
+    c->era = ERA_LEGACY;
+    set_str(&c->proto, MCP_PROTO_LEGACY);
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "protocolVersion", MCP_PROTO_LEGACY);
+    cJSON_AddItemToObject(params, "capabilities", client_caps());
+    cJSON_AddItemToObject(params, "clientInfo", client_info());
+    if (start_raw_call(L, c, "initialize", params, MCP_TIMEOUT, &err) != 0) {
+      return connect_fail(L, c, err);
+    }
+    return connect_cont(L, 0, PH_INIT);
+  }
+
+  cJSON *resp = call_raw_json(h);
+  if (!resp) return connect_fail(L, c, h->err ? h->err : "initialize failed");
+  cJSON *errobj = cJSON_GetObjectItem(resp, "error");
+  if (errobj) {
+    err = rpc_error_text(errobj);
+    cJSON_Delete(resp);
+    return connect_fail(L, c, err);
+  }
+  cJSON *result = cJSON_GetObjectItem(resp, "result");
+  cJSON *pv = result ? cJSON_GetObjectItem(result, "protocolVersion") : NULL;
+  if (cJSON_IsString(pv)) set_str(&c->proto, pv->valuestring);
+  capture_server_info(c, result);
+  cJSON_Delete(resp);
+  notify(c, "notifications/initialized");
+  lua_settop(L, 2);
+  return 1;
 }
 
 /* ---- connection setup ----------------------------------------------------- */
@@ -1270,17 +1422,12 @@ static int l_connect(lua_State *L) {
   }
 
   err = NULL;
-  if (negotiate(c, &err) != 0) {
-    char msg[512];
-    snprintf(msg, sizeof(msg), "%s", err ? err : "MCP negotiation failed");
-    c->dead = 1;
-    conn_teardown(c);
-    lua_pushnil(L);
-    lua_pushstring(L, msg);
-    return 2;
+  c->era = ERA_MODERN;
+  set_str(&c->proto, MODERN_VERSIONS[0]);
+  if (start_raw_call(L, c, "server/discover", NULL, MCP_PROBE_TIMEOUT, &err) != 0) {
+    return connect_fail(L, c, err);
   }
-  lua_settop(L, 2); /* leave the connection userdata on top */
-  return 1;
+  return connect_cont(L, 0, PH_PROBE);
 }
 
 static mcpconn *check_conn(lua_State *L) {
@@ -1307,10 +1454,6 @@ static int call_push(lua_State *L, mcpcall *h) {
   lua_pushstring(L, h->out ? h->out : "{}");
   return 1;
 }
-
-/* The handle always sits at this absolute index while we wait (the frame below
- * it survives the yield, so the continuation can find it again). */
-#define HANDLE_IDX 4
 
 static int call_wait(lua_State *L);
 

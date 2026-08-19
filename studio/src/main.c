@@ -1,5 +1,7 @@
 #include <stdio.h>
-#include <SDL2/SDL.h>
+#include <stdlib.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
 #include "api/api.h"
 #include "renderer.h"
 #include "assets.h"
@@ -32,7 +34,7 @@ SDL_Window *window;
  *   - macOS reports 72 DPI, not 96, so even the DPI path would give 0.75.
  *   - The real scaling on macOS is not a DPI at all. It is the ratio between
  *     the window in *points* and its drawable in *pixels*, and with
- *     SDL_WINDOW_ALLOW_HIGHDPI that is 2.0 on a Retina display.
+ *     SDL_WINDOW_HIGH_PIXEL_DENSITY that is 2.0 on a Retina display.
  *
  * Returning 1.0 there is what makes every font and padding render at half its
  * intended physical size. Measuring the ratio directly is correct on every
@@ -44,22 +46,11 @@ static double get_scale(void) {
   if (!window) return 1.0;
   int win_w = 0, win_h = 0, px_w = 0, px_h = 0;
   SDL_GetWindowSize(window, &win_w, &win_h);
-  SDL_GetRendererOutputSize(SDL_GetRenderer(window), &px_w, &px_h);
-  if (px_w <= 0 || win_w <= 0) {
-    /* No renderer (lite draws into the window surface): ask the surface. */
-    SDL_Surface *s = SDL_GetWindowSurface(window);
-    if (s) { px_w = s->w; px_h = s->h; }
-  }
+  SDL_GetWindowSizeInPixels(window, &px_w, &px_h);
   if (px_w > 0 && win_w > 0) {
     double s = (double)px_w / (double)win_w;
     if (s > 0.1 && s < 8.0) return s;
   }
-#if _WIN32
-  {
-    float dpi;
-    if (SDL_GetDisplayDPI(0, NULL, &dpi, NULL) == 0 && dpi > 0) return dpi / 96.0;
-  }
-#endif
   return 1.0;
 }
 
@@ -90,15 +81,10 @@ static void init_window_icon(void) {
 #ifndef _WIN32
   #include "../icon.inl"
   (void) icon_rgba_len; /* unused */
-  SDL_Surface *surf = SDL_CreateRGBSurfaceFrom(
-    icon_rgba, 64, 64,
-    32, 64 * 4,
-    0x000000ff,
-    0x0000ff00,
-    0x00ff0000,
-    0xff000000);
+  SDL_Surface *surf = SDL_CreateSurfaceFrom(
+    64, 64, SDL_PIXELFORMAT_ABGR8888, (void *)icon_rgba, 64 * 4);
   SDL_SetWindowIcon(window, surf);
-  SDL_FreeSurface(surf);
+  SDL_DestroySurface(surf);
 #endif
 }
 
@@ -110,24 +96,31 @@ int main(int argc, char **argv) {
   SetProcessDPIAware();
 #endif
 
-  SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS);
+  if (!SDL_Init(SDL_INIT_VIDEO)) {
+    fprintf(stderr, "boggart-studio: SDL_Init failed: %s\n", SDL_GetError());
+    return EXIT_FAILURE;
+  }
   SDL_EnableScreenSaver();
-  SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
   atexit(SDL_Quit);
 
-#ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR /* Available since 2.0.8 */
   SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-#endif
-#if SDL_VERSION_ATLEAST(2, 0, 5)
   SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
-#endif
 
-  SDL_DisplayMode dm;
-  SDL_GetCurrentDisplayMode(0, &dm);
+  const SDL_DisplayID display = SDL_GetPrimaryDisplay();
+  const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(display);
+  int win_w = 800, win_h = 600;
+  if (dm) {
+    win_w = (int)(dm->w * 0.8f);
+    win_h = (int)(dm->h * 0.8f);
+  }
 
   window = SDL_CreateWindow(
-    "", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, dm.w * 0.8, dm.h * 0.8,
-    SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_HIDDEN);
+    "", win_w, win_h,
+    SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN);
+  if (!window) {
+    fprintf(stderr, "boggart-studio: SDL_CreateWindow failed: %s\n", SDL_GetError());
+    return EXIT_FAILURE;
+  }
   init_window_icon();
   ren_init(window);
 

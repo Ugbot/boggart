@@ -115,6 +115,9 @@ function M.load()
   local ok, servers = pcall(require, "mcp_servers")
   if not ok or type(servers) ~= "table" then return end
   for _, spec in ipairs(servers) do
+    -- Yield before each handshake so the studio can paint between servers.
+    -- Off a coroutine (CLI boot) this is a no-op.
+    if coroutine.isyieldable() then coroutine.yield() end
     local names, err = M.add(spec)
     if names then bog.log(string.format("mcp: connected '%s' (%d tools, %s)",
       spec.name, #names, M.generation(spec.name)))

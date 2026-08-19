@@ -6,10 +6,10 @@
 # The binary is written to the source root (./boggart) so the documented
 # invocations keep working. Everything else stays in the build dir.
 #
-# Platforms: macOS and Linux use the system libcurl and system ncurses.
-# Native Windows (MSVC / clang-cl -- never MinGW) builds libcurl from source
-# with the Schannel backend and uses the vendored PDCurses. See the two blocks
-# marked "Windows" below for the whole of the difference.
+# Every third-party library is built from source and linked statically.
+# Native Windows (MSVC / clang-cl -- never MinGW) uses Schannel + PDCurses;
+# macOS/Linux use mbedTLS + a pinned ncurses. libc and OS frameworks stay
+# dynamic because they are the platform. See the curl / curses blocks.
 cmake_minimum_required(VERSION 3.20)
 project(boggart C)
 
@@ -59,56 +59,80 @@ target_compile_options(boggart_quiet INTERFACE
   $<$<NOT:$<C_COMPILER_ID:MSVC>>:-w>)
 
 # ---- libcurl ---------------------------------------------------------------
-# macOS/Linux: the system libcurl, as before -- it is the only dynamic dep and
-# it comes with the platform (macOS SDK, distro -dev package).
+# Built from source and linked statically on every platform, so neither
+# binary dlopens a Cellar or distro libcurl. Same FetchContent pin as SDL.
 #
-# Windows: there is no system libcurl, so build one from source with
-# FetchContent, pinned by release tarball + SHA256 so CI is reproducible.
-# The TLS backend is Schannel: it is part of the OS, so this needs no OpenSSL
-# (no second FetchContent, no Perl/NASM in CI) and it validates against the
-# Windows certificate store, which is also what corporate MITM proxies install
-# into. Everything optional is switched off -- no zlib/brotli/zstd/libpsl/
-# libidn2 -- so the fetch has no transitive dependencies at all.
-#
-# Tradeoff: ~1 extra minute of CI build time and a version pin someone has to
-# bump, in exchange for a Windows build that works from a bare checkout with
-# no vcpkg, no MSYS, and no prebuilt binary to trust. The alternative (vcpkg
-# or a downloaded prebuilt) is faster but adds a package manager or an
-# unsigned third-party binary to the trust chain.
+# TLS is the OS store where the OS has one that speaks TLS 1.3 (Schannel on
+# Windows). Apple's Secure Transport does not, so macOS and Linux use a
+# pinned mbedTLS -- small, CMake-native, no OpenSSL/Perl/NASM. Optional
+# curl features stay off so the fetch has no other transitive dependencies.
 #
 # curl's own lib/CMakeLists.txt defines the CURL::libcurl alias in-tree and
 # puts CURL_STATICLIB in the static target's INTERFACE_COMPILE_DEFINITIONS, so
 # the link line below is identical on all three platforms.
+set(BOGGART_CURL_VERSION 8.20.0)
+set(BOGGART_CURL_SHA256 63fe2dc148ba0ceae89922ef838f7e5c946272c2e78b7c59fab4b79d3ce2b896)
+
+set(BUILD_CURL_EXE     OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS  OFF CACHE BOOL "" FORCE)
+set(BUILD_STATIC_LIBS  ON  CACHE BOOL "" FORCE)
+set(BUILD_TESTING      OFF CACHE BOOL "" FORCE)
+set(BUILD_LIBCURL_DOCS OFF CACHE BOOL "" FORCE)
+set(ENABLE_CURL_MANUAL OFF CACHE BOOL "" FORCE)
+set(CURL_USE_LIBPSL    OFF CACHE BOOL "" FORCE)
+set(USE_LIBIDN2        OFF CACHE BOOL "" FORCE)
+set(USE_NGHTTP2        OFF CACHE BOOL "" FORCE)
+set(CURL_DISABLE_LDAP  ON  CACHE BOOL "" FORCE)
+set(CURL_DISABLE_LDAPS ON  CACHE BOOL "" FORCE)
+set(HTTP_ONLY          ON  CACHE BOOL "" FORCE)
+set(CURL_USE_PKGCONFIG OFF CACHE BOOL "" FORCE)
+set(CURL_USE_CMAKECONFIG OFF CACHE BOOL "" FORCE)
+set(CURL_ZLIB          OFF CACHE STRING "" FORCE)
+set(CURL_BROTLI        OFF CACHE STRING "" FORCE)
+set(CURL_ZSTD          OFF CACHE STRING "" FORCE)
+
+include(FetchContent)
 if(WIN32)
-  set(BOGGART_CURL_VERSION 8.20.0)
-  set(BOGGART_CURL_SHA256 63fe2dc148ba0ceae89922ef838f7e5c946272c2e78b7c59fab4b79d3ce2b896)
-
-  set(BUILD_CURL_EXE     OFF CACHE BOOL "" FORCE)
-  set(BUILD_SHARED_LIBS  OFF CACHE BOOL "" FORCE)
-  set(BUILD_STATIC_LIBS  ON  CACHE BOOL "" FORCE)
-  set(BUILD_TESTING      OFF CACHE BOOL "" FORCE)
-  set(BUILD_LIBCURL_DOCS OFF CACHE BOOL "" FORCE)
-  set(ENABLE_CURL_MANUAL OFF CACHE BOOL "" FORCE)
-  set(CURL_USE_SCHANNEL  ON  CACHE BOOL "" FORCE)   # implies CURL_WINDOWS_SSPI
-  set(CURL_USE_OPENSSL   OFF CACHE BOOL "" FORCE)
-  set(CURL_USE_LIBPSL    OFF CACHE BOOL "" FORCE)   # defaults ON and is fatal if absent
-  set(USE_LIBIDN2        OFF CACHE BOOL "" FORCE)
-  # These three are tri-state (AUTO/ON/OFF) CACHE STRINGs, not booleans.
-  set(CURL_ZLIB          OFF CACHE STRING "" FORCE)
-  set(CURL_BROTLI        OFF CACHE STRING "" FORCE)
-  set(CURL_ZSTD          OFF CACHE STRING "" FORCE)
-  # Schannel uses the Windows cert store; there is no PEM bundle to find.
-  set(CURL_CA_BUNDLE     "none" CACHE STRING "" FORCE)
-
-  include(FetchContent)
-  string(REPLACE "." "_" _curl_tag "curl-${BOGGART_CURL_VERSION}")
-  FetchContent_Declare(curl
-    URL https://github.com/curl/curl/releases/download/${_curl_tag}/curl-${BOGGART_CURL_VERSION}.tar.xz
-    URL_HASH SHA256=${BOGGART_CURL_SHA256})
-  FetchContent_MakeAvailable(curl)
+  set(CURL_USE_SCHANNEL ON  CACHE BOOL "" FORCE)
+  set(CURL_USE_OPENSSL  OFF CACHE BOOL "" FORCE)
+  set(CURL_USE_MBEDTLS  OFF CACHE BOOL "" FORCE)
+  set(CURL_CA_BUNDLE    "none" CACHE STRING "" FORCE)
 else()
-  find_package(CURL REQUIRED)
+  # Official release tarball (not GitHub's auto source.zip): that one ships
+  # the generated files, so the fetch does not need Python.
+  set(BOGGART_MBEDTLS_VERSION 3.6.4)
+  set(BOGGART_MBEDTLS_SHA256 ec35b18a6c593cf98c3e30db8b98ff93e8940a8c4e690e66b41dfc011d678110)
+  set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+  set(ENABLE_TESTING  OFF CACHE BOOL "" FORCE)
+  set(GEN_FILES       OFF CACHE BOOL "" FORCE)
+  set(USE_STATIC_MBEDTLS_LIBRARY ON  CACHE BOOL "" FORCE)
+  set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
+  set(DISABLE_PACKAGE_CONFIG_AND_INSTALL ON CACHE BOOL "" FORCE)
+  FetchContent_Declare(mbedtls
+    URL https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-${BOGGART_MBEDTLS_VERSION}/mbedtls-${BOGGART_MBEDTLS_VERSION}.tar.bz2
+    URL_HASH SHA256=${BOGGART_MBEDTLS_SHA256}
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  FetchContent_MakeAvailable(mbedtls)
+  # Point curl's FindMbedTLS at the in-tree targets before it configures.
+  # The .a files do not exist yet; the target names resolve at link time.
+  FetchContent_GetProperties(mbedtls SOURCE_DIR mbedtls_SOURCE_DIR)
+  set(MBEDTLS_INCLUDE_DIR "${mbedtls_SOURCE_DIR}/include" CACHE PATH "" FORCE)
+  set(MBEDTLS_LIBRARY     mbedtls   CACHE FILEPATH "" FORCE)
+  set(MBEDX509_LIBRARY    mbedx509  CACHE FILEPATH "" FORCE)
+  set(MBEDCRYPTO_LIBRARY  mbedcrypto CACHE FILEPATH "" FORCE)
+  set(CURL_USE_MBEDTLS ON  CACHE BOOL "" FORCE)
+  set(CURL_USE_OPENSSL OFF CACHE BOOL "" FORCE)
+  set(CURL_USE_SCHANNEL OFF CACHE BOOL "" FORCE)
+  # Bake the platform CA path if cmake finds one; HTTPS still works when
+  # copied to another Unix box that keeps certs in the usual places.
 endif()
+
+string(REPLACE "." "_" _curl_tag "curl-${BOGGART_CURL_VERSION}")
+FetchContent_Declare(curl
+  URL https://github.com/curl/curl/releases/download/${_curl_tag}/curl-${BOGGART_CURL_VERSION}.tar.xz
+  URL_HASH SHA256=${BOGGART_CURL_SHA256}
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(curl)
 
 set(VENDOR ${CMAKE_CURRENT_SOURCE_DIR}/src/vendor)
 set(LUA_SRC ${VENDOR}/lua/src)
@@ -202,10 +226,11 @@ add_subdirectory(${VENDOR}/libuv ${CMAKE_CURRENT_BINARY_DIR}/libuv EXCLUDE_FROM_
 # ~/.boggart/lua/ like every other module -- the agent can rewrite its own
 # dashboard. Only the curses binding is C.
 #
-# Backend: bundled PDCurses on Windows (no system curses there), system ncurses
-# elsewhere. curses.c defines LUA_COMPAT_5_1/5_3/ALL itself before including
-# luaconf.h, so the luaL_checkint family resolves without a build flag; the one
-# genuine 5.4 incompatibility (lua_strlen) is patched in place.
+# Backend: bundled PDCurses on Windows (no system curses there), ncurses 6.5
+# fetched and linked statically elsewhere -- same "one file" rule as curl.
+# curses.c defines LUA_COMPAT_5_1/5_3/ALL itself before including luaconf.h,
+# so the luaL_checkint family resolves without a build flag; the one genuine
+# 5.4 incompatibility (lua_strlen) is patched in place.
 if(WIN32)
   # The vendored PDCurses is 3.4 (2008), which predates the wincon/wingui/vt
   # split -- `win32/` is the only platform backend in the tree and therefore
@@ -239,13 +264,39 @@ if(WIN32)
   # trimmed CMAKE_C_STANDARD_LIBRARIES does not break the link silently.
   target_link_libraries(curses_backend PUBLIC user32 advapi32)
 else()
-  set(CURSES_NEED_NCURSES TRUE)
-  find_package(Curses REQUIRED)
-  add_library(curses_backend INTERFACE)
-  target_include_directories(curses_backend INTERFACE ${CURSES_INCLUDE_DIRS})
-  target_link_libraries(curses_backend INTERFACE ${CURSES_LIBRARIES})
-  # Wide-char entry points (box-drawing glyphs) need XPG4 extended on ncurses.
-  target_compile_definitions(curses_backend INTERFACE _XOPEN_SOURCE_EXTENDED)
+  # Autotools, not CMake: ncurses has no official CMake build. ExternalProject
+  # configures a static wide library into the build dir; ninja waits on the
+  # archives via BUILD_BYPRODUCTS. --without-shared is the whole point.
+  set(BOGGART_NCURSES_VERSION 6.5)
+  set(BOGGART_NCURSES_SHA256 136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6)
+  set(NCURSES_PREFIX ${CMAKE_CURRENT_BINARY_DIR}/ncurses)
+  file(MAKE_DIRECTORY ${NCURSES_PREFIX}/include ${NCURSES_PREFIX}/include/ncursesw)
+  include(ExternalProject)
+  ExternalProject_Add(ncurses_ep
+    URL https://ftp.gnu.org/gnu/ncurses/ncurses-${BOGGART_NCURSES_VERSION}.tar.gz
+    URL_HASH SHA256=${BOGGART_NCURSES_SHA256}
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    CONFIGURE_COMMAND <SOURCE_DIR>/configure
+      --prefix=${NCURSES_PREFIX}
+      --without-shared --with-normal --enable-widec
+      --with-termlib --enable-ext-colors
+      --without-ada --without-tests --without-progs
+      --without-cxx --without-cxx-binding --without-manpages
+      --disable-db-install
+    BUILD_COMMAND make -j
+    INSTALL_COMMAND make install
+    BUILD_BYPRODUCTS
+      ${NCURSES_PREFIX}/lib/libncursesw.a
+      ${NCURSES_PREFIX}/lib/libtinfow.a)
+  add_library(curses_backend STATIC IMPORTED GLOBAL)
+  add_dependencies(curses_backend ncurses_ep)
+  set_target_properties(curses_backend PROPERTIES
+    IMPORTED_LOCATION ${NCURSES_PREFIX}/lib/libncursesw.a
+    INTERFACE_LINK_LIBRARIES ${NCURSES_PREFIX}/lib/libtinfow.a
+    INTERFACE_COMPILE_DEFINITIONS _XOPEN_SOURCE_EXTENDED)
+  set_property(TARGET curses_backend PROPERTY INTERFACE_INCLUDE_DIRECTORIES
+    ${NCURSES_PREFIX}/include
+    ${NCURSES_PREFIX}/include/ncursesw)
 endif()
 
 add_library(ltui_curses STATIC ${VENDOR}/ltui/curses.c)
@@ -254,6 +305,9 @@ add_library(ltui_curses STATIC ${VENDOR}/ltui/curses.c)
 # duplicate archive.
 target_include_directories(ltui_curses PRIVATE ${LUA_SRC})
 target_link_libraries(ltui_curses PRIVATE curses_backend boggart_quiet)
+if(TARGET ncurses_ep)
+  add_dependencies(ltui_curses ncurses_ep)
+endif()
 set_property(TARGET ltui_curses PROPERTY C_STANDARD 99)
 
 # ---- luv: libuv bindings for Lua (Apache-2.0, luvit) -----------------------
@@ -321,6 +375,9 @@ target_link_libraries(boggart PRIVATE
   boggart_warnings
   lua_vendor sqlite_vendor cjson_vendor ltui_curses luv_lua uv_a
   isocline_vendor CURL::libcurl)
+if(NOT WIN32)
+  target_link_libraries(boggart PRIVATE mbedtls mbedx509 mbedcrypto)
+endif()
 
 # Keep ./boggart at the repo root, as the README documents. The per-config
 # properties matter only for multi-config generators (Visual Studio, Xcode),
@@ -355,7 +412,7 @@ endif()
 # Optional: configure with -DBOGGART_BUILD_APP=OFF to skip.
 option(BOGGART_BUILD_APP "Build the boggart-studio desktop app" ON)
 
-# ---- SDL2 -------------------------------------------------------------------
+# ---- SDL3 -------------------------------------------------------------------
 # Built from source and linked statically, so boggart-studio is genuinely one
 # file. Same reasoning and the same mechanism as the Windows libcurl above:
 # FetchContent, pinned by release tarball + SHA256, everything optional off.
@@ -365,63 +422,69 @@ option(BOGGART_BUILD_APP "Build the boggart-studio desktop app" ON)
 # SDL3 from an absolute Cellar path -- verified with DYLD_PRINT_LIBRARIES. So a
 # binary linked against it reaches into /opt/homebrew at run time even after
 # install_name_tool has been pointed at a bundled copy, and it is not SDL2 that
-# ends up running either. Building the real thing is the only way to know what
-# is in the binary.
+# ends up running either. Building the real SDL3 and linking it statically is
+# the only way to know what is in the binary.
 #
 # Cost: two or three minutes on a cold build, cached afterwards, and a version
 # pin someone has to bump. In exchange, the studio has no runtime dependency on
-# SDL at all -- no `brew install sdl2`, no SDL2.dll beside the exe, no
-# libsdl2-2.0-0 package -- on any platform.
+# SDL at all -- no `brew install sdl3`, no SDL3.dll beside the exe, no
+# libsdl3-0 package -- on any platform.
 #
-# -DBOGGART_SDL_FROM_SOURCE=OFF falls back to whatever SDL2 the system has,
+# -DBOGGART_SDL_FROM_SOURCE=OFF falls back to whatever SDL3 the system has,
 # which is the right choice for a distribution package: a distro wants to own
 # and patch its own SDL, and it is not shipping our binary anyway.
 option(BOGGART_SDL_FROM_SOURCE
-  "Build SDL2 from source and link it statically (self-contained binary)" ON)
+  "Build SDL3 from source and link it statically (self-contained binary)" ON)
 
 if(BOGGART_BUILD_APP AND BOGGART_SDL_FROM_SOURCE)
-  set(BOGGART_SDL_VERSION 2.32.10)
-  set(BOGGART_SDL_SHA256 5f5993c530f084535c65a6879e9b26ad441169b3e25d789d83287040a9ca5165)
+  set(BOGGART_SDL_VERSION 3.4.14)
+  set(BOGGART_SDL_SHA256 30d4aa2b3037718142b32dffd4e72f917ebb6cc5227150e7bb9c45efb2153aeb)
 
-  set(SDL_SHARED       OFF CACHE BOOL "" FORCE)
-  set(SDL_STATIC       ON  CACHE BOOL "" FORCE)
-  set(SDL_TEST         OFF CACHE BOOL "" FORCE)
-  set(SDL_TESTS        OFF CACHE BOOL "" FORCE)
-  set(SDL2_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
-  set(SDL2_DISABLE_UNINSTALL ON CACHE BOOL "" FORCE)
-  # The studio draws into a window surface and reads keyboard, mouse and
-  # window events. It has never opened an audio device, a joystick or a sensor,
-  # so those subsystems are dead weight in the binary and dead code paths in a
-  # threat model.
-  set(SDL_AUDIO        OFF CACHE BOOL "" FORCE)
-  set(SDL_HAPTIC       OFF CACHE BOOL "" FORCE)
-  set(SDL_JOYSTICK     OFF CACHE BOOL "" FORCE)
-  set(SDL_SENSOR       OFF CACHE BOOL "" FORCE)
-  set(SDL_POWER        OFF CACHE BOOL "" FORCE)
+  set(SDL_SHARED        OFF CACHE BOOL "" FORCE)
+  set(SDL_STATIC        ON  CACHE BOOL "" FORCE)
+  set(SDL_TEST_LIBRARY  OFF CACHE BOOL "" FORCE)
+  set(SDL_TESTS         OFF CACHE BOOL "" FORCE)
+  set(SDL_EXAMPLES      OFF CACHE BOOL "" FORCE)
+  set(SDL_INSTALL       OFF CACHE BOOL "" FORCE)
+  # The studio draws into a window and reads keyboard, mouse and window
+  # events. It has never opened an audio device, a joystick, a camera or a
+  # sensor, so those subsystems are dead weight in the binary and dead code
+  # paths in a threat model. Video and the 2D renderer stay on: they are the
+  # GPU backend. The low-level SDL_GPU API is left at SDL's default so the
+  # renderer can use it as one of its backends.
+  set(SDL_AUDIO         OFF CACHE BOOL "" FORCE)
+  set(SDL_CAMERA        OFF CACHE BOOL "" FORCE)
+  set(SDL_HAPTIC        OFF CACHE BOOL "" FORCE)
+  set(SDL_JOYSTICK      OFF CACHE BOOL "" FORCE)
+  set(SDL_HIDAPI        OFF CACHE BOOL "" FORCE)
+  set(SDL_SENSOR        OFF CACHE BOOL "" FORCE)
+  set(SDL_POWER         OFF CACHE BOOL "" FORCE)
+  set(SDL_DIALOG        OFF CACHE BOOL "" FORCE)
+  set(SDL_TRAY          OFF CACHE BOOL "" FORCE)
 
   include(FetchContent)
-  FetchContent_Declare(sdl2
-    URL https://github.com/libsdl-org/SDL/releases/download/release-${BOGGART_SDL_VERSION}/SDL2-${BOGGART_SDL_VERSION}.tar.gz
+  FetchContent_Declare(sdl3
+    URL https://github.com/libsdl-org/SDL/releases/download/release-${BOGGART_SDL_VERSION}/SDL3-${BOGGART_SDL_VERSION}.tar.gz
     URL_HASH SHA256=${BOGGART_SDL_SHA256})
-  FetchContent_MakeAvailable(sdl2)
+  FetchContent_MakeAvailable(sdl3)
 
-  # SDL2::SDL2-static carries its own interface include dirs and the platform
+  # SDL3::SDL3-static carries its own interface include dirs and the platform
   # libraries a static build needs (the macOS frameworks, dl/pthread/m on
   # Linux, the Win32 import libraries), so nothing below has to know them.
-  set(SDL2_FOUND TRUE)
-  set(BOGGART_SDL_TARGET SDL2::SDL2-static)
+  set(SDL3_FOUND TRUE)
+  set(BOGGART_SDL_TARGET SDL3::SDL3-static)
 elseif(BOGGART_BUILD_APP)
-  find_package(SDL2 QUIET)
-  if(NOT SDL2_FOUND)
+  find_package(SDL3 QUIET CONFIG COMPONENTS SDL3)
+  if(NOT SDL3_FOUND)
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
-      pkg_check_modules(SDL2 QUIET sdl2)
+      pkg_check_modules(SDL3 QUIET sdl3)
     endif()
   endif()
 endif()
 
 # ---- FreeType ---------------------------------------------------------------
-# The text rasteriser. Same mechanism and the same reasoning as the SDL2 block
+# The text rasteriser. Same mechanism and the same reasoning as the SDL3 block
 # above: FetchContent, pinned by release tarball + SHA256, every optional
 # dependency switched off, linked statically, so `otool -L boggart-studio`
 # still lists nothing but system libraries.
@@ -433,7 +496,7 @@ endif()
 # See the comment at the top of studio/src/renderer.c.
 #
 # Cost, measured on an M-series mac: 680 KB of binary (5.14 MB -> 5.82 MB) and
-# five seconds of single-threaded compile, cached after -- next to SDL2's two
+# five seconds of single-threaded compile, cached after -- next to SDL3's two
 # to three minutes it is not the expensive fetch here.
 #
 # Everything optional is off -- no zlib, bzip2, libpng, HarfBuzz or Brotli --
@@ -443,10 +506,10 @@ endif()
 # this renderer draws -- fontfallback.c refuses colour fonts on separate
 # grounds, and there is no shaping engine here for HarfBuzz to help.
 #
-# Guarded on SDL2_FOUND as well as BOGGART_BUILD_APP so that a machine without
-# SDL2, which builds the CLI and skips the studio, does not download a
+# Guarded on SDL3_FOUND as well as BOGGART_BUILD_APP so that a machine without
+# SDL3, which builds the CLI and skips the studio, does not download a
 # rasteriser it will not link.
-if(BOGGART_BUILD_APP AND SDL2_FOUND)
+if(BOGGART_BUILD_APP AND SDL3_FOUND)
   set(BOGGART_FREETYPE_VERSION 2.14.3)
   set(BOGGART_FREETYPE_SHA256 e61b31ab26358b946e767ed7eb7f4bb2e507da1cfefeb7a8861ace7fd5c899a1)
 
@@ -461,11 +524,12 @@ if(BOGGART_BUILD_APP AND SDL2_FOUND)
   include(FetchContent)
   FetchContent_Declare(freetype
     URL https://download.savannah.gnu.org/releases/freetype/freetype-${BOGGART_FREETYPE_VERSION}.tar.gz
-    URL_HASH SHA256=${BOGGART_FREETYPE_SHA256})
+    URL_HASH SHA256=${BOGGART_FREETYPE_SHA256}
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
   FetchContent_MakeAvailable(freetype)
 endif()
 
-if(BOGGART_BUILD_APP AND SDL2_FOUND)
+if(BOGGART_BUILD_APP AND SDL3_FOUND)
   # lite's own C. Deliberately NOT lite's vendored Lua: the studio shares one
   # interpreter with boggart, and that interpreter is the vendored 5.4. lite
   # needs exactly one change for it.
@@ -509,50 +573,31 @@ if(BOGGART_BUILD_APP AND SDL2_FOUND)
   target_include_directories(boggart-studio PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/studio/src
-    ${SDL2_INCLUDE_DIRS})
+    ${SDL3_INCLUDE_DIRS})
   target_compile_definitions(boggart-studio PRIVATE BOGGART_STUDIO=1)
   target_link_libraries(boggart-studio PRIVATE
     boggart_warnings
     lua_vendor sqlite_vendor cjson_vendor luv_lua uv_a isocline_vendor
     CURL::libcurl freetype)
-  # Three spellings, because SDL2 arrives three ways: our own static build sets
-  # BOGGART_SDL_TARGET, a system sdl2-config.cmake gives the SDL2::SDL2 target,
-  # and pkg-config gives bare library names and directories.
+  if(NOT WIN32)
+    target_link_libraries(boggart-studio PRIVATE mbedtls mbedx509 mbedcrypto)
+  endif()
+  # Three spellings, because SDL3 arrives three ways: our own static build sets
+  # BOGGART_SDL_TARGET, a system SDL3Config.cmake gives the SDL3::SDL3 target,
+  # and pkg-config gives bare library names and directories. Installed SDL3
+  # CMake files no longer set SDL3_INCLUDE_DIRS; the imported target carries
+  # them.
   if(BOGGART_SDL_TARGET)
     target_link_libraries(boggart-studio PRIVATE ${BOGGART_SDL_TARGET})
-    # SDL2's static target does not declare every framework it uses. Its CMake
-    # adds them per subsystem, but SDL_cocoamodes.m (display modes -- not
-    # optional) and SDL_hidapi.c both reach into IOKit, and hidapi is compiled
-    # even with joystick and sensor off. Undeclared, not unused: the shared
-    # build gets away with it because the dylib records its own dependencies.
-    if(APPLE)
-      target_link_libraries(boggart-studio PRIVATE
-        "-framework IOKit" "-framework ForceFeedback" "-framework CoreHaptics"
-        "-framework GameController" "-framework AudioToolbox"
-        "-framework CoreAudio" "-framework AVFoundation" "-framework CoreMedia"
-        "-framework UniformTypeIdentifiers")
-    endif()
-  elseif(SDL2_LIBRARIES)
-    target_link_libraries(boggart-studio PRIVATE ${SDL2_LIBRARIES})
-    target_link_directories(boggart-studio PRIVATE ${SDL2_LIBRARY_DIRS})
+  elseif(SDL3_LIBRARIES)
+    target_link_libraries(boggart-studio PRIVATE ${SDL3_LIBRARIES})
+    target_link_directories(boggart-studio PRIVATE ${SDL3_LIBRARY_DIRS})
   else()
-    target_link_libraries(boggart-studio PRIVATE SDL2::SDL2)
+    target_link_libraries(boggart-studio PRIVATE SDL3::SDL3)
   endif()
-  # Windows needs SDL2main, and needs it whichever way SDL2 arrived.
-  #
-  # studio/src/main.c includes SDL.h and defines main(). On Windows SDL_main.h
-  # answers that with `#define main SDL_main` (SDL_main.h:143, reached via
-  # SDL_MAIN_AVAILABLE on __WIN32__), so the entry point the CRT goes looking
-  # for is not in our objects at all -- SDL2main is the library that carries
-  # the main() and WinMain() that call it. Without this the link fails with an
-  # unresolved external, which is why it has never been caught: the studio was
-  # only ever built on macOS and Linux, where SDL2main is an empty stub.
-  #
-  # Linking it only on WIN32 rather than everywhere keeps the Unix link lines
-  # exactly as they were.
-  if(WIN32 AND TARGET SDL2::SDL2main)
-    target_link_libraries(boggart-studio PRIVATE SDL2::SDL2main)
-  endif()
+  # SDL3 removed the SDLmain library. Windows still rewrites main() to
+  # SDL_main via SDL_main.h, which studio/src/main.c includes; the rewrite
+  # is header-only now, so there is nothing extra to link.
   # The editor core came from rxi's lite and still warns; ours build clean.
   set_source_files_properties(${APP_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
   set_target_properties(boggart-studio PROPERTIES
@@ -602,7 +647,7 @@ if(BOGGART_BUILD_APP AND SDL2_FOUND)
     COMMENT "Rendering boggart-studio and checking the agent panel"
     USES_TERMINAL)
 elseif(BOGGART_BUILD_APP)
-  message(STATUS "SDL2 not found -- skipping boggart-studio (the CLI still builds)")
+  message(STATUS "SDL3 not found -- skipping boggart-studio (the CLI still builds)")
 endif()
 
 # ---- tests -----------------------------------------------------------------
@@ -619,7 +664,7 @@ endif()
 # rule itself under test -- it still resolves %LOCALAPPDATA%, that just now
 # points somewhere disposable.
 enable_testing()
-foreach(suite test integration swarm mcp ltui sysfs bus jwriter worker proc sandbox scopes errors studio events lifecycle plan goap claims prompt skills agentmodel skillrouter complete termrender goal tui_input tui_agents vim luatool llmstation dispatch gitcmd)
+foreach(suite test integration swarm mcp ltui sysfs bus jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal tui_input tui_agents vim luatool llmstation dispatch gitcmd)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home}

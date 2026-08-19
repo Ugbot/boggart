@@ -1,7 +1,7 @@
 #ifndef RENDERER_H
 #define RENDERER_H
 
-#include <SDL2/SDL.h>
+#include <SDL3/SDL.h>
 #include <stdint.h>
 #include <stddef.h>
 
@@ -53,6 +53,8 @@ void ren_init(SDL_Window *win);
 void ren_update_rects(RenRect *rects, int count);
 void ren_set_clip_rect(RenRect rect);
 void ren_get_size(int *x, int *y);
+/* Writes the retained backbuffer to a BMP. 0 on success; SDL_GetError() on fail. */
+int ren_save_screenshot(const char *path);
 
 RenImage* ren_new_image(int width, int height);
 void ren_free_image(RenImage *image);

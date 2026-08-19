@@ -1287,6 +1287,13 @@ for name, def in pairs(require("goap").tools) do M.register(name, def) end
 -- agents coordinate on files instead of colliding. See lua/claims.lua.
 for name, def in pairs(require("claims").tools) do M.register(name, def) end
 
+-- plansup tools: durable plans + fleet supervision (plan_new/plan_step/... and
+-- fleet_status/plan_status/swarm_report/panel_refresh). The shared SQLite plans
+-- tables are the coordination medium for multi-agent work; the planner skill
+-- writes them, the supervisor skill reads them. See lua/plansup.lua and
+-- docs/agent-planning.md.
+for name, def in pairs(require("plansup").tools) do M.register(name, def) end
+
 -- git tools: model-facing wrappers (checkpoint/restore/git_diff/worktree) over
 -- the C `git` capability (src/lgit.c). Tooling and policy are C; these are the
 -- thin Lua glue the model calls. See lua/gittools.lua.

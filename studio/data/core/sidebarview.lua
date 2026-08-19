@@ -1,15 +1,9 @@
--- sidebarview.lua -- the left rail: chats, not files.
+-- sidebarview.lua -- the session list that lives in the one sidebar slot.
 --
--- This is the structural decision the app turns on. The editor core this grew
--- out of puts a file tree here, because its subject is a directory. boggart's
--- subject is a conversation, so the rail lists conversations, and the file
--- tree moves behind the Code tab -- present, one click away, and no longer the
--- thing the window is about.
---
--- Shaped after Claude's desktop app: a segmented Chat/Code control at the top,
--- a New button, then Recents. The flat rectangles are not an aesthetic
--- preference -- this renderer draws rectangles and text, and nothing else. No
--- rounded corners, no shadows, no icons beyond what a font provides.
+-- Chat puts this view in the locked leaf. Files swaps the file tree into
+-- the same leaf. More is the rail popover, not a second list here. The
+-- legacy attach (BOGGART_STUDIO_LEGACY) still draws the Chat/Code
+-- segmented control this file grew up with.
 local core = require "core"
 local common = require "core.common"
 local command = require "core.command"
@@ -28,7 +22,7 @@ function SidebarView:new()
   self.scrollable = true
   self.visible = true
   self.init_size = true
-  self.tab = "chat"           -- "chat" | "code"
+  self.tab = "chat"           -- legacy Chat/Code segmented control
   self.sessions = {}
   self.hits = {}
   self.last_refresh = 0
@@ -123,7 +117,9 @@ end
 -- on the field. Search is a chat-tab thing, so switch there first; then take
 -- focus so on_text_input/on_key_pressed start arriving.
 function SidebarView:focus_search()
-  if self.tab ~= "chat" then self:set_tab("chat") end
+  if (core.studio and core.studio.legacy) and self.tab ~= "chat" then
+    self:set_tab("chat")
+  end
   self.searching = true
   core.set_active_view(self)
   core.redraw = true
@@ -193,13 +189,13 @@ function SidebarView:update()
   -- left intact, so the results stay on screen until cleared with escape or ×.
   if self.searching and core.active_view ~= self then self.searching = false end
 
-  -- The segmented control follows what is actually on screen. Opening a file
-  -- from the tree, from ctrl+p or from a tool all put you in code; the control
-  -- would otherwise still claim you were in the chat.
-  local active = core.active_view
-  if active then
-    if active.doc then self.tab = "code"
-    elseif active == (core.studio and core.studio.view) then self.tab = "chat" end
+  -- Legacy only: the segmented control follows what is actually on screen.
+  if core.studio and core.studio.legacy then
+    local active = core.active_view
+    if active then
+      if active.doc then self.tab = "code"
+      elseif active == core.studio.view then self.tab = "chat" end
+    end
   end
 
   SidebarView.super.update(self)
@@ -281,20 +277,24 @@ function SidebarView:draw()
 
   local function add(hit, item) hit.item = item; self.hits[#self.hits + 1] = hit end
 
-  -- ---- Chat / Code --------------------------------------------------------
   local bh = widgets.height(font)
-  local halfw = (w - style.padding.x * widgets.GAP) / 2
-  for i, tab in ipairs { { "chat", "Chat" }, { "code", "Code" } } do
-    local bx = x + (i - 1) * (halfw + style.padding.x * widgets.GAP)
-    local hovered = self.mouse and widgets.inside(
-      { x = bx, y = y, w = halfw, h = bh }, self.mouse.x, self.mouse.y)
-    local r = widgets.button(font, tab[2], bx, y,
-      { w = halfw, active = self.tab == tab[1], hover = hovered })
-    add(r, { label = tab[2], action = function() self:set_tab(tab[1]) end })
-  end
-  y = y + bh + vpad
+  local legacy = core.studio and core.studio.legacy
 
-  if self.tab == "code" then
+  -- ---- Chat / Code (legacy attach only) -----------------------------------
+  if legacy then
+    local halfw = (w - style.padding.x * widgets.GAP) / 2
+    for i, tab in ipairs { { "chat", "Chat" }, { "code", "Code" } } do
+      local bx = x + (i - 1) * (halfw + style.padding.x * widgets.GAP)
+      local hovered = self.mouse and widgets.inside(
+        { x = bx, y = y, w = halfw, h = bh }, self.mouse.x, self.mouse.y)
+      local r = widgets.button(font, tab[2], bx, y,
+        { w = halfw, active = self.tab == tab[1], hover = hovered })
+      add(r, { label = tab[2], action = function() self:set_tab(tab[1]) end })
+    end
+    y = y + bh + vpad
+  end
+
+  if legacy and self.tab == "code" then
     local hov = self.mouse and widgets.inside(
       { x = x, y = y, w = w, h = bh }, self.mouse.x, self.mouse.y)
     add(widgets.button(font, "Open a file...", x, y,
@@ -308,12 +308,21 @@ function SidebarView:draw()
     return
   end
 
-  -- ---- New ----------------------------------------------------------------
+  -- ---- New / Recipes ------------------------------------------------------
+  local gap = style.padding.x * widgets.GAP
+  local halfw = (w - gap) / 2
   local hovered = self.mouse and widgets.inside(
-    { x = x, y = y, w = w, h = bh }, self.mouse.x, self.mouse.y)
-  add(widgets.button(font, "+  New chat", x, y,
-        { w = w, hover = hovered, align = "left" }),
+    { x = x, y = y, w = halfw, h = bh }, self.mouse.x, self.mouse.y)
+  add(widgets.button(font, "+  New", x, y,
+        { w = halfw, hover = hovered, align = "left" }),
       { label = "New", action = function() command.perform("agent:new-session") end })
+  local rx = x + halfw + gap
+  local rhov = self.mouse and widgets.inside(
+    { x = rx, y = y, w = halfw, h = bh }, self.mouse.x, self.mouse.y)
+  add(widgets.button(font, "Recipes", rx, y,
+        { w = halfw, hover = rhov }),
+      { label = "Recipes", command = "agent:run-recipe",
+        action = function() command.perform("agent:run-recipe") end })
   y = y + bh + vpad * 1.5
 
   -- ---- Search -------------------------------------------------------------

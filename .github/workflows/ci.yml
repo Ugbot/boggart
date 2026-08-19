@@ -9,8 +9,8 @@ name: ci
 # fail-fast is off so one red platform does not hide the state of the others.
 #
 # boggart-studio is actually built on every platform here. It was not, for most
-# of this project's life: nothing installed SDL2, so CMakeLists.txt printed
-# "SDL2 not found -- skipping boggart-studio"
+# of this project's life: nothing installed SDL, so CMakeLists.txt printed
+# "SDL3 not found -- skipping boggart-studio"
 # and carries on green, which meant the whole studio -- renderer, font
 # fallback, the SDL event loop -- compiled nowhere but a developer's Mac.
 # `ninja ui-check` and `ui-bench` still cannot run here: they need a window
@@ -74,7 +74,7 @@ jobs:
       - name: CMake and Ninja
         uses: lukka/get-cmake@latest
 
-      # SDL2 is no longer installed anywhere: CMakeLists.txt fetches and builds
+      # SDL3 is no longer installed anywhere: CMakeLists.txt fetches and builds
       # it from source and links it statically, so what CI compiles is what a
       # release ships. What Linux still needs is the X11 and Wayland *headers*
       # SDL compiles its video backends against. Without them SDL configures
@@ -84,7 +84,8 @@ jobs:
       # step below asserts the result rather than trusting this list.
       #
       # Every name here was checked against SDL 2.32.10's own configure summary,
-      # in a container, one group at a time:
+      # in a container, one group at a time, and kept for 3.4.14 because the
+      # X11/Wayland feature flags have the same -dev packages:
       #
       #   libx11-dev                     SDL_X11. On its own it is not enough:
       #                                  SDL then hard-errors on the missing
@@ -113,15 +114,14 @@ jobs:
       # changes -- a Docker run without it fails only the mcp suite, which
       # reads like an MCP bug rather than a missing interpreter.
       #
-      # libcurl is found with find_package(CURL REQUIRED) and ncurses with
-      # find_package(Curses REQUIRED) + CURSES_NEED_NCURSES. libncurses-dev is
-      # the modern name and ships the wide (ncursesw) libraries too.
+      # curl, ncurses and SDL are fetched and built statically by CMake.
+      # The -dev packages below are SDL's video backends, not our runtime.
       - name: Install deps (linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libncurses-dev python3 \
+            python3 \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
             libxfixes-dev libxss-dev libxkbcommon-dev \
             libwayland-dev wayland-protocols libdecor-0-dev \
@@ -144,7 +144,7 @@ jobs:
           arch: x64
 
       # ---- the dependency cache --------------------------------------------
-      # SDL2 (every job) and libcurl (Windows) are built from source: about
+      # SDL3, libcurl and (on Unix) mbedTLS/ncurses are built from source: about
       # four hundred translation units that are pinned by version and SHA256
       # and therefore produce the same objects every time. Rebuilding them on
       # every push is most of what this workflow costs.
@@ -169,23 +169,22 @@ jobs:
       # The key pins both versions and hashes CMakeLists.txt, since that is
       # where their build options live. No restore-keys: a near-miss cache is
       # worth less than a correct build, and the retry below handles the rest.
-      - name: Cache the SDL2/libcurl build
+      - name: Cache the SDL3/libcurl build
         uses: actions/cache@v4
         with:
           path: |
             build/_deps
             build/.ninja_log
             build/.ninja_deps
-          key: deps-${{ matrix.os }}-sdl2.32.10-curl8.20.0-${{ hashFiles('CMakeLists.txt') }}
+          key: deps-${{ matrix.os }}-sdl3.4.14-curl8.20.0-${{ hashFiles('CMakeLists.txt') }}
 
       # ---- build -----------------------------------------------------------
       # No -DCMAKE_BUILD_TYPE: the project defaults to RelWithDebInfo when it
       # is unset, and CI should exercise that default.
       #
-      # On Windows this also fetches and builds libcurl 8.20.0 with the
-      # Schannel backend (see CMakeLists.txt); on a cold cache the first
-      # configure therefore needs network access and takes about a minute
-      # longer.
+      # This also fetches libcurl 8.20.0 (Schannel on Windows, mbedTLS
+      # elsewhere; see CMakeLists.txt). On a cold cache the first configure
+      # therefore needs network access and takes a couple of minutes longer.
       #
       # The restored cache records the absolute path it was built at, which is
       # constant per runner OS -- but a half-written or otherwise unusable one
@@ -215,7 +214,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -eu
-          h=$(find build/_deps/sdl2-build -name SDL_config.h -path '*include-config*' | head -1)
+          h=$(find build/_deps/sdl3-build -name SDL_config.h -path '*include-config*' | head -1)
           test -n "$h" || { echo "no SDL_config.h -- did SDL build from source?"; exit 1; }
           for d in X11 WAYLAND; do
             grep -q "^#define SDL_VIDEO_DRIVER_$d 1" "$h" || {

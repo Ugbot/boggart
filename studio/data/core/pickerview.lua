@@ -4,13 +4,14 @@
 -- the project is one directory, chdir'd at startup, and nothing could add a
 -- second or point at another.
 --
--- In-app rather than the system dialog, deliberately. SDL2 has no file chooser,
--- so a native one means shelling out -- osascript on macOS, zenity or kdialog
--- or portals on Linux, a COM call on Windows -- which is four platform paths,
--- a permission prompt on macOS that can hang a frame, and a dependency on
--- whichever helper the user happens to have installed. This is a list of
--- directory entries drawn with the widgets already here: it works identically
--- everywhere, needs nothing installed, and can be driven by a test.
+-- In-app rather than the system dialog, deliberately. SDL3's file dialog is
+-- compiled out of this binary, so a native one means shelling out -- osascript
+-- on macOS, zenity or kdialog or portals on Linux, a COM call on Windows --
+-- which is four platform paths, a permission prompt on macOS that can hang a
+-- frame, and a dependency on whichever helper the user happens to have
+-- installed. This is a list of directory entries drawn with the widgets already
+-- here: it works identically everywhere, needs nothing installed, and can be
+-- driven by a test.
 --
 -- What it gives up is real: no sidebar of favourites, no iCloud, no "recent
 -- places", no drag-and-drop from Finder. If those matter more than the single

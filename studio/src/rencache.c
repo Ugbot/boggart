@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include "rencache.h"
 
 /* a cache over the software renderer -- all drawing operations are stored as

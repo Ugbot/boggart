@@ -11,7 +11,7 @@ end
 
 function M.list()
   -- known embedded standard agents (overlay may add more, not enumerated here)
-  return { "coordinator", "researcher", "coder", "critic" }
+  return { "coordinator", "planner", "researcher", "coder", "critic" }
 end
 
 return M

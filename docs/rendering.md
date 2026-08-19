@@ -19,34 +19,31 @@ diverged *ahead* of lite here:
 | Smooth scrolling / animation | **Have** — `View:move_towards` + `core.redraw` (`view.lua`) |
 | Redraw-on-demand | **Have** — `core.step` only paints when `core.redraw` is set |
 | Font fallback chain | **Have** — `fontfallback.c`, with a diagnostic listing |
+| GPU retained renderer | **Have** — SDL3 `SDL_Renderer`, retained target texture, glyph atlas |
 | Coroutine, non-blocking agent turn | **Have** — the turn is a `core.threads` coroutine; `api.stream_async` yields, nothing blocks |
 
 So the real borrows are narrower and sharper than "port lite-xl."
 
 ## The visual borrows that remain
 
-### 1. A hardware-accelerated retained renderer (the big one)
-Today `renderer.c` is the lite **software** path: `SDL_GetWindowSurface` +
-`SDL_UpdateWindowSurfaceRects`, glyphs rasterised by stb to grayscale coverage
-and blitted on the CPU. lite-xl moved to a GPU renderer. Borrow that shape:
+### 1. A hardware-accelerated retained renderer — **done**
 
-- Create an `SDL_Renderer` (GPU) instead of drawing into the window surface.
-- Upload each glyph once into a **texture atlas**; draw text as batched textured
-  quads. Rects/lines become GPU primitives.
-- **Keep `rencache`** — it still avoids *re-issuing* unchanged commands; the
-  backend beneath it becomes GPU-composited.
+`renderer.c` is an SDL3 GPU backend behind the same `ren_*` API: an
+`SDL_Renderer`, a window-sized retained target texture (swapchain contents are
+not preserved, so dirty-rect replay still needs a persistent backbuffer),
+FreeType-rasterised glyph atlases uploaded as `NEAREST` textures, batched
+`SDL_RenderGeometry` quads for text, fill rects, and thick-line quads with a
+0.5px alpha fringe. `rencache` is unchanged: it still avoids re-issuing
+unchanged commands; only the compositor beneath it is GPU.
 
-Why it matters here specifically: the studio's whole surface is a growing chat
-transcript, and `ninja ui-bench` already asserts *drawing must not scale with the
-transcript*. A GPU backend makes long-transcript compositing near-constant-cost
-and makes alpha, smooth scroll, and agent-drawn panels cheap. This is a
-`renderer.c`/`rencache.c` rewrite behind the existing `ren_*` API in
-`renderer.h`, so `docview`/`agentview` and the widget layer are unchanged.
+`REN_AA_SUBPIXEL` stays opt-in and falls back to averaged grayscale coverage on
+the GPU (a portable per-channel LCD blend is not worth it on HiDPI). Lua
+`renderer.draw_*`, `ui-check`, and `ui-bench` did not grow new primitives.
 
 ### 2. Font quality without lite-xl's dependencies (a decision to make)
 lite-xl's founding change was subpixel/hinted text via **FreeType + AGG** — which
 rxi rejected as "huge dependencies," and which would break boggart's
-single-self-contained-binary property (`otool -L` shows nothing but libcurl).
+single-self-contained-binary property (`otool -L` shows system frameworks).
 Get most of the perceived win *without* that:
 
 - **Gamma-correct (linear-space) alpha blending** in the glyph blit. The current

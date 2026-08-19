@@ -886,7 +886,11 @@ if not boggart.model then
 end
 
 bog.llmstation = require("llmstation")
-if bog.mode ~= "eval" then
+-- Eval skips MCP so tests do not spawn subprocesses. Embedded (studio)
+-- skips it here too: connect/handshake block the thread, and the window
+-- stays hidden until boot returns. Studio starts the same load after the
+-- first present, from a core thread that yields between servers.
+if bog.mode ~= "eval" and bog.mode ~= "embedded" then
   bog.try(bog.mcphost.load)
   -- Best-effort: if a local LLM Station is installed, expose its deterministic
   -- code-intelligence tools over MCP. Dormant (a no-op) when it is not.

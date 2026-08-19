@@ -77,6 +77,8 @@ function AgentView:new()
   self.tool_policy = {}        -- name -> "allow" | "ask" | "deny", overrides mode
   self.pending = nil           -- { name, input, diff, path, decision }
   self.history, self.hpos = {}, 0
+  self.docked = false
+  self.mode_hit, self.model_hit = nil, nil
 
   -- The composer's modal context, in the neovim sense -- distinct from
   -- self.mode above, which is the approval policy. "insert" is a text field
@@ -633,7 +635,19 @@ function AgentView:tick()
   self:reload_dirty()
 end
 
+function AgentView:get_target_size(axis)
+  if axis ~= "x" then return nil end
+  if not self.docked then return nil end
+  if self.visible == false then return 0 end
+  return config.chat_dock_size or (360 * SCALE)
+end
+
 function AgentView:update()
+  if self.docked then
+    local dest = self:get_target_size("x") or 0
+    self.size.x = dest
+    self.init_size = false
+  end
   self:tick()
   -- One place that retires the progress state, rather than a clear beside
   -- every path that can end a turn -- there are several, and the one I missed
@@ -1605,18 +1619,29 @@ local COLUMN_COLS = 96   -- widest the conversation column gets, in characters
 
 function AgentView:toolbar_items()
   local busy = self.busy
-  local sidebar = core.studio and core.studio.sidebar
+  local studio = core.studio
+  -- The rail owns navigation. The legacy attach still has no rail, so it
+  -- keeps the long strip that used to be the only way to reach those surfaces.
+  if studio and studio.legacy then
+    local sidebar = studio.sidebar
+    return {
+      { label = (sidebar and sidebar.visible) and "<" or ">",
+        command = "studio:toggle-sidebar" },
+      { label = "New chat", command = "agent:new-session" },
+      { label = "Chats",    command = "agent:resume-session" },
+      { label = "Recipes",  command = "agent:run-recipe" },
+      { label = "Files",    command = "studio:toggle-files" },
+      { label = "Open",     command = "studio:open-folder" },
+      { label = "Tools",    command = "agent:show-tools" },
+      { label = "MCP",      command = "agent:list-mcp-servers" },
+      { label = "Settings", command = "agent:settings" },
+      { label = busy and "Stop" or "Compact",
+        command = busy and "agent:cancel" or "agent:compact-now",
+        tone = busy and (style.warn or style.accent) or nil },
+    }
+  end
   return {
-    { label = (sidebar and sidebar.visible) and "<" or ">",
-      command = "studio:toggle-sidebar" },
-    { label = "New chat", command = "agent:new-session" },
-    { label = "Chats",    command = "agent:resume-session" },
-    { label = "Recipes",  command = "agent:run-recipe" },
-    { label = "Files",    command = "studio:toggle-files" },
-    { label = "Open",     command = "studio:open-folder" },
-    { label = "Tools",    command = "agent:show-tools" },
-    { label = "MCP",      command = "agent:list-mcp-servers" },
-    { label = "Settings", command = "agent:settings" },
+    { label = "New", command = "agent:new-session" },
     { label = busy and "Stop" or "Compact",
       command = busy and "agent:cancel" or "agent:compact-now",
       tone = busy and (style.warn or style.accent) or nil },
@@ -1792,13 +1817,14 @@ function AgentView:draw_choice(rec, x, y, w, cols, font, visible)
 end
 
 function AgentView:draw()
+  self.hits = {}
+  if self.docked and self.size.x < 20 then return end
   self:draw_background(style.background)
   local font = style.code_font
   local lh = font:get_height() * config.line_height
   local pad = style.padding.x
   local vpad = style.padding.y
   local charw = font:get_width("0")
-  self.hits = {}
 
   -- ---- toolbar ------------------------------------------------------------
   local bh = widgets.height(font)
@@ -1813,7 +1839,32 @@ function AgentView:draw()
 
   -- ---- composer -----------------------------------------------------------
   local input_lines = math.min(math.max(#self.lines, 1), 8)
-  local composer_h = lh * input_lines + bh + vpad * 4
+  -- Controls wrap onto a second row when the pickers and Send cannot share
+  -- one. Height has to be reserved up front: body_bottom is derived from it,
+  -- and a wrap that grew after the transcript was clipped would draw the
+  -- extra row over the last message.
+  local send_label = (self.busy and not (bog and bog.choice))
+    and (self.status or "working") or "Send"
+  local send_w = widgets.width(font, send_label)
+  local gap = style.padding.x * widgets.GAP
+  local col_w = math.max(20, math.min(COLUMN_COLS,
+    math.floor((self.size.x - pad * 4) / charw))) * charw
+  local one_row_w, wrap_rows, row_w = 0, 1, 0
+  for _, it in ipairs(self:composer_items()) do
+    local iw = widgets.width(font, it.label)
+    one_row_w = one_row_w + iw + gap
+    if row_w > 0 and row_w + iw > col_w then
+      wrap_rows = wrap_rows + 1
+      row_w = 0
+    end
+    row_w = row_w + iw + gap
+  end
+  local controls_wrap = one_row_w + send_w > col_w
+  -- One shared row when everything fits; otherwise pickers wrap and Send
+  -- sits on a row of its own so the two never share pixels.
+  local control_rows = controls_wrap and (wrap_rows + 1) or 1
+  local composer_h = lh * input_lines + vpad * 4
+    + control_rows * bh + (control_rows - 1) * gap
   local pending_h = self.pending
     and (lh + widgets.height(font) + vpad * 3) or 0
   local body_top = top + toolbar_h
@@ -2143,25 +2194,30 @@ function AgentView:draw()
     ty = ty + lh
   end
 
-  -- controls inside the box: attachments and pickers left, send right
-  local crow = iy + composer_h - vpad * 2 - bh
-  -- A pending choose menu turns the button back into Send: the turn is busy,
-  -- but what it wants is the typed answer, not a cancel.
-  local send_label = (self.busy and not (bog and bog.choice))
-    and (self.status or "working") or "Send"
-  local sw = widgets.width(font, send_label)
+  -- controls inside the box: attachments and pickers left, send right.
+  -- When they cannot share a row, the pickers wrap and Send sits on the
+  -- next row -- never drawn on top of a picker.
+  local crow = iy + composer_h - vpad * 2
+    - control_rows * bh - (control_rows - 1) * gap
+  local sw = send_w
   local sx = x + w - sw
-  -- Bounded so the pickers stop where Send begins. In a narrow window they
-  -- used to run underneath it and out through the right-hand border of the box.
-  for _, hit in ipairs(widgets.row(font, self:composer_items(), x, crow,
-      self.mouse, sx - style.padding.x * widgets.GAP)) do
+  local limit = controls_wrap and (x + w) or (sx - gap)
+  local chits, below = widgets.wrap_row(font, self:composer_items(), x, crow,
+    self.mouse, limit)
+  for _, hit in ipairs(chits) do
     self.hits[#self.hits + 1] = hit
+    if hit.item and hit.item.command == "agent:set-mode" then
+      self.mode_hit = hit
+    elseif hit.item and hit.item.command == "agent:set-model" then
+      self.model_hit = hit
+    end
   end
-  local shit = widgets.button(font, send_label, sx, crow, {
+  local send_y = controls_wrap and below + gap or crow
+  local shit = widgets.button(font, send_label, sx, send_y, {
     w = sw,
     active = composing and self:input_text() ~= "",
     dim = not composing,
-    hover = self.mouse and widgets.inside({ x = sx, y = crow, w = sw, h = bh },
+    hover = self.mouse and widgets.inside({ x = sx, y = send_y, w = sw, h = bh },
       self.mouse.x, self.mouse.y),
   })
   shit.item = { label = send_label, action = function()

@@ -76,6 +76,7 @@ local STATE = {
 
 function SwarmView:new()
   SwarmView.super.new(self)
+  if not instance then instance = self end
   -- A scroll surface for the shell's spine: typing() is already false here (this
   -- is no DocView and no composer), so j/k/Ctrl-d/u reach it -- see
   -- on_spine_scroll, which turns them into roster movement.
@@ -775,6 +776,11 @@ function SwarmView:draw()
 end
 
 function SwarmView.open()
+  local studio = core.studio
+  if studio and not studio.legacy and studio.switch_workspace then
+    studio.switch_workspace("fleet")
+    return instance or studio.swarm
+  end
   -- Singleton, reused wherever it lives -- see studio.open_settings for why the
   -- search is over the whole root and not just the primary node. A workspace can
   -- stash a view OUT of the live tree, and get_node_for_view scoped to the

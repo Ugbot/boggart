@@ -611,15 +611,10 @@ function core.init()
   -- defaults. Failing to load must not stop the editor coming up -- an editor
   -- that cannot reach a model is still an editor.
   if bog then
-    -- The ground-up shell (menu bar + switchable AGENT/EDIT/FLEET workspaces +
-    -- an app-wide neovim spine + the ember theme) is now the DEFAULT studio; it
-    -- supersedes the old single-primary-node composition. The old one is kept as
-    -- an opt-in fallback (BOGGART_STUDIO_LEGACY=1) until the shell has enough
-    -- real-world miles to retire it outright. Both reuse the same engine and
-    -- primitives; only the window composition differs.
-    -- The new shell is still WIP (opt in with BOGGART_STUDIO_SHELL=1); the
-    -- proven composition stays the default until the shell actually works.
-    if os.getenv("BOGGART_STUDIO_SHELL") then
+    -- Default composition is the activity rail + workspaces (see studio.attach).
+    -- BOGGART_STUDIO_LEGACY=1 keeps the old "everything is a tab" attach.
+    -- BOGGART_STUDIO_SHELL=1 keeps the experimental menu-bar shell.
+    if os.getenv("BOGGART_STUDIO_SHELL") and not os.getenv("BOGGART_STUDIO_LEGACY") then
       core.shell = core.try(require, "shell") and require "shell" or nil
       if core.shell then core.try(core.shell.attach) end
     else
@@ -643,6 +638,18 @@ function core.init()
   -- module, which is the file a person keeps their own config in.
   local script = os.getenv("BOGGART_STUDIO_SCRIPT")
   if script then core.try(dofile, script) end
+
+  -- First present happens in core.run before run_threads. This thread
+  -- therefore starts after the window is on screen. Yield once more so a
+  -- hung handshake cannot steal the first real frame after that.
+  -- Scripted ui-check skips it so the screenshot is not waiting on MCP.
+  if bog and bog.mode == "embedded" and not script then
+    core.add_thread(function()
+      coroutine.yield(0)
+      if bog.mcphost then bog.try(bog.mcphost.load) end
+      if bog.llmstation then bog.try(bog.llmstation.autostart) end
+    end)
+  end
 
   for _, filename in ipairs(files) do
     core.root_view:open_doc(core.open_doc(filename))
@@ -978,11 +985,17 @@ local run_threads = coroutine.wrap(function()
         local _, wait = assert(coroutine.resume(thread.cr))
         if coroutine.status(thread.cr) == "dead" then
           core.threads[k] = nil
-        elseif wait then
-          thread.wake = system.get_time() + wait
-          minimal_time_to_wake = math.min(minimal_time_to_wake, wait)
         else
-          minimal_time_to_wake = 0
+          -- MCP's C client yields ("io", handle), the same protocol as
+          -- the swarm scheduler. Only a number is a sleep; anything else
+          -- means "run me again after the next frame".
+          wait = tonumber(wait)
+          if wait then
+            thread.wake = system.get_time() + wait
+            minimal_time_to_wake = math.min(minimal_time_to_wake, wait)
+          else
+            minimal_time_to_wake = 0
+          end
         end
       else
         minimal_time_to_wake =

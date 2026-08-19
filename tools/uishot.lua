@@ -16,7 +16,7 @@
 -- no window at all.
 --
 -- Each scenario also writes a BMP, because the last resort for a UI is still a
--- person looking at it. BMP because SDL2 writes one with no extra dependency.
+-- person looking at it. BMP because SDL3 writes one with no extra dependency.
 local core = require "core"
 local command = require "core.command"
 local studio = require "core.studio"
@@ -140,6 +140,7 @@ core.add_thread(function()
     check(core.root_view.root_node:get_node_for_view(v) ~= nil,
       "panel is not attached to the node tree")
     check(studio.sidebar ~= nil, "no sidebar")
+    check(studio.legacy or studio.rail ~= nil, "no activity rail")
     check(core.root_view:get_primary_node():get_node_for_view(v) ~= nil,
       "the conversation is not in the primary node")
 
@@ -149,6 +150,14 @@ core.add_thread(function()
     check(v.size.y > 100, "panel height is " .. tostring(v.size.y) .. " (collapsed)")
     check(studio.sidebar.size.x > 50,
       "sidebar width is " .. tostring(studio.sidebar.size.x) .. " (collapsed)")
+    if studio.rail then
+      check(studio.rail.size.x >= 20 * SCALE and studio.rail.size.x <= 56 * SCALE,
+        "rail width is " .. tostring(studio.rail.size.x) .. " (not a rail)")
+      check(studio.rail.position.x + studio.rail.size.x
+              <= studio.sidebar.position.x + 2,
+        "the rail overlaps the session list")
+      check_hits("rail", studio.rail)
+    end
     check_hits("representative")
 
     -- ---- scrolling reaches the bottom -------------------------------------
@@ -225,47 +234,97 @@ core.add_thread(function()
       frame(1)
       core.set_active_view(v)
     end
-    -- The rail's own "Open a file..." button, used the way a person uses it.
-    -- The rail lives in a locked node, so opening a document while focus is
-    -- still in it used to trip an assert and the file simply never opened.
-    -- Focus goes to the rail first, which is both what the bug needs and what
-    -- the segmented control leaves behind: SidebarView:update() re-derives the
-    -- tab from the active view, so with the conversation focused the Code tab
-    -- would flip straight back to Chat and never draw the button.
-    studio.sidebar.visible = true
-    core.set_active_view(studio.sidebar)
-    studio.sidebar.tab = "code"
-    frame(3)
-    local opened = false
-    for _, r in ipairs(studio.sidebar.hits or {}) do
-      if r.item and (r.item.id == "open" or r.item.label == "open") then
-        core.on_event("mousepressed", "left", r.x + r.w / 2, r.y + r.h / 2, 1)
-        core.on_event("mousereleased", "left", r.x + r.w / 2, r.y + r.h / 2)
-        opened = true
-      end
+    -- Files: tree in the slot, empty (or last) editor in the center, chat
+    -- snapped to a locked right dock. Opening a file fills the center.
+    if studio.switch_workspace then
+      studio.switch_workspace("edit")
+      frame(4)
+      local tree = studio.tree or package.loaded["plugins.treeview"]
+      check(type(tree) == "table" and tree.visible,
+        "Files: the file tree is not visible")
+      check(tree.size.x >= 20, "Files: the tree collapsed to " .. tostring(tree.size.x))
+      local root = core.root_view.root_node
+      local agent_node = root:get_node_for_view(studio.view)
+      check(agent_node ~= nil, "Files: the conversation left the window")
+      check(agent_node.locked, "Files: chat is not a locked right dock")
+      local prim = core.root_view:get_primary_node()
+      check(prim ~= agent_node, "Files: chat is still the center stage")
+      check(prim.active_view ~= studio.view,
+        "Files: the conversation occupies the editor pane")
+      check(root:get_node_for_view(studio.sidebar) == nil,
+        "Files: the session list is still docked next to the tree")
+      check(root:get_node_for_view(tree) ~= nil,
+        "Files: the tree is not in the sidebar slot")
+      core.set_active_view(tree)
+      frame(2)
+    else
+      studio.sidebar.visible = true
+      core.set_active_view(studio.sidebar)
+      studio.sidebar.tab = "code"
+      frame(3)
     end
-    check(opened, "the sidebar has no 'Open a file...' button to click")
+    local oks, errs = pcall(function() command.perform("core:find-file") end)
+    check(oks, "opening a file raised: " .. tostring(errs))
     if core.active_view == core.command_view then
       core.command_view:set_text("README.md")
-      local oks, errs = pcall(function() core.command_view:submit() end)
-      check(oks, "opening a file from the sidebar raised: " .. tostring(errs))
+      local okf, errf = pcall(function() core.command_view:submit() end)
+      check(okf, "opening README.md raised: " .. tostring(errf))
     else
-      check(false, "the sidebar's open button did not raise the file prompt")
+      check(false, "find-file did not raise the file prompt")
     end
-    frame(2)
+    frame(3)
+    if not studio.legacy then
+      local root = core.root_view.root_node
+      local agent_node = root:get_node_for_view(studio.view)
+      check(agent_node ~= nil and agent_node.locked,
+        "Files: opening a file removed the right chat dock")
+      local prim = core.root_view:get_primary_node()
+      check(prim.active_view and prim.active_view.doc,
+        "Files: opening README did not fill the center editor")
+      check(prim ~= agent_node, "Files: the file landed in the chat dock")
+    end
 
-    -- The sweep clicked the sidebar toggle, among everything else, and the
-    -- check above left a document in front of the conversation. Put both back:
-    -- the scenarios below check the rail's width, which a hidden rail would
-    -- satisfy by being zero, and they measure the panel, which only has a
-    -- current size while its node is actually showing it.
+    -- Back to Chat: session list in the slot, conversation still measurable.
+    if studio.switch_workspace then studio.switch_workspace("agent") end
     studio.sidebar.visible = true
-    studio.sidebar.tab = "chat"
     v = studio.open_agent()
     local node = core.root_view.root_node:get_node_for_view(v)
     if node then node:set_active_view(v) end
     core.set_active_view(v)
     frame(3)
+    local recipes
+    for _, r in ipairs(studio.sidebar.hits or {}) do
+      if r.item and r.item.label == "Recipes" then recipes = r end
+    end
+    check(recipes ~= nil, "the session list has no Recipes button")
+    check(not recipes or recipes.item.command == "agent:run-recipe",
+      "Recipes is not wired to agent:run-recipe")
+    if studio.rail then
+      local has_set, has_more
+      for _, r in ipairs(studio.rail.hits or {}) do
+        if r.item and r.item.id == "settings" then has_set = true end
+        if r.item and r.item.id == "more" then has_more = true end
+      end
+      check(has_set, "the rail has no Settings item")
+      check(not has_more, "the rail still has a More overflow")
+    end
+    if not studio.legacy then
+      local okm, errm = pcall(function() command.perform("agent:set-mode") end)
+      check(okm, "opening permission mode raised: " .. tostring(errm))
+      frame(2)
+      local overlay = require "core.menu"
+      check(overlay.open, "permission mode did not open an anchored menu")
+      local mh = overlay.hits[1]
+      check(mh ~= nil, "permission menu has no hits")
+      if mh and v.mode_hit then
+        check(math.abs(mh.x - v.mode_hit.x) < 400,
+          "permission menu is not near the composer button")
+        check(mh.y + mh.h < (core.command_view.position.y or 1e9) + 8,
+          "permission menu is on the command bar")
+      end
+      overlay.hide()
+      frame(1)
+    end
 
     -- ---- content nobody looks at until it breaks ---------------------------
     v.entries = {}
@@ -409,7 +468,7 @@ core.add_thread(function()
     local wv = WelcomeView.open()
     frame(4)
     check(core.root_view:get_primary_node():get_node_for_view(wv) ~= nil,
-      "welcome: not a tab in the primary node")
+      "welcome: not on the agent stage")
     check(wv.size.x > 100 and wv.size.y > 100,
       "welcome: collapsed to " .. wv.size.x .. "x" .. wv.size.y)
     check_hits("welcome", wv)
@@ -896,8 +955,9 @@ end]])
     io.flush()
     os.exit(1)
   end
-  io.write(string.format("ok  conversation %dx%d, sidebar %d  wrote %s (+9 scenarios)\n",
-    v.size.x, v.size.y, studio.sidebar.size.x, OUT))
+  io.write(string.format("ok  conversation %dx%d, sidebar %d, rail %s  wrote %s (+9 scenarios)\n",
+    v.size.x, v.size.y, studio.sidebar.size.x,
+    studio.rail and tostring(math.floor(studio.rail.size.x)) or "off", OUT))
   io.flush()
   os.exit(0)
 end)

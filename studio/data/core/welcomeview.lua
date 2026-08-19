@@ -69,9 +69,9 @@ local INTRO = "A coding agent that reads your files, edits them, runs commands, 
   .. "work by talking to it, and it does the work on this machine."
 
 -- Prose wraps; labels elide. The difference matters at 420 pixels, where a
--- fixed three-line paragraph is simply drawn off the edge of the view -- this
--- renderer does not clip, so text that does not fit is text on top of the
--- window next to it.
+-- fixed three-line paragraph would otherwise run past the column. The view is
+-- clipped to its rect (Node:draw), but hits still have to land inside it -- a
+-- button drawn past the edge is a button you cannot press.
 --
 -- Counting characters is enough here and nowhere else in this app: every string
 -- this wraps is ASCII we wrote, in the monospace font. Anything from a server
@@ -170,9 +170,14 @@ end
 -- Opening
 -- ---------------------------------------------------------------------------
 
--- A tab in the primary node, beside the conversation, like Settings: closable,
--- reopenable, not a mode the window switches into.
+-- The first-run surface. On the rail layout it replaces the agent stage
+-- rather than sitting as a sibling tab; the legacy attach still adds a tab.
 function WelcomeView.open()
+  local studio = core.studio
+  if studio and not studio.legacy and studio.switch_workspace then
+    studio.switch_workspace("welcome")
+    return WelcomeView.instance
+  end
   local node = core.root_view:get_primary_node()
   local existing = WelcomeView.instance
   if existing and node:get_node_for_view(existing) then
@@ -189,6 +194,8 @@ end
 
 function WelcomeView.maybe_open()
   if not WelcomeView.is_first_run() then return nil end
+  -- Rail: the conversation leaf shows this as the empty state, not a second
+  -- tab that hides the agent. Legacy still opens a sibling tab.
   return WelcomeView.open()
 end
 

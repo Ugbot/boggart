@@ -90,7 +90,10 @@ function M.autostart()
   if not names then
     -- couldn't connect: try to start the daemon, give it a moment, retry once
     if M.launch() then
-      pcall(sys.exec, "sleep 1", 3)
+      -- A hard sleep freezes the studio frame loop. Yield a second when
+      -- we are inside a core thread; the CLI still waits in-process.
+      if coroutine.isyieldable() then coroutine.yield(1)
+      else pcall(sys.exec, "sleep 1", 3) end
       names, err = M.attach()
     end
   end

@@ -97,13 +97,13 @@ ctest --test-dir build      # fifteen Lua suites, each against a throwaway HOME
 ```
 
 Both binaries are **genuinely self-contained**. The Lua harness, the studio's
-61 Lua files and its three fonts are baked in; SDL2 is fetched at configure
-time (pinned by SHA256) and linked statically. Copy `boggart-studio` alone into
-an empty directory and it runs: no `data/` beside it, no `SDL2.dll`, no
-`brew install sdl2`, no `libsdl2-2.0-0` package. `otool -L` shows system
-frameworks and libcurl, nothing else.
+61 Lua files and its three fonts are baked in; SDL3, libcurl, mbedTLS, ncurses
+and FreeType are fetched at configure time (pinned by SHA256) and linked
+statically. Copy `boggart` or `boggart-studio` alone into an empty directory
+and it runs: no `data/` beside it, no `SDL3.dll`, no `libcurl.dylib`, no
+`brew install` of anything. `otool -L` shows system frameworks, nothing else.
 
-`-DBOGGART_SDL_FROM_SOURCE=OFF` uses a system SDL2 instead, which is the right
+`-DBOGGART_SDL_FROM_SOURCE=OFF` uses a system SDL3 instead, which is the right
 choice for a distribution package: a distro wants to own and patch its own SDL.
 
 Beyond the fifteen ctest suites there are three checks that need a window, so
@@ -115,10 +115,11 @@ ninja -C build ui-bench      # frame-rate invariants: drawing must not scale wit
 ninja -C build core-parity   # the CLI and the studio are one engine
 ```
 
-Requires CMake ≥ 3.20, Ninja, a C compiler, and libcurl (present in the macOS
-SDK; built from source with the Schannel backend on Windows). Lua 5.5, SQLite,
-cJSON, libuv, luv, ltui/PDCurses and isocline are vendored under `src/vendor/`
-and built statically. The binary is written to the source root so the invocations
+Requires CMake ≥ 3.20, Ninja, and a C compiler. libcurl, mbedTLS (Unix),
+ncurses (Unix) and SDL3 are fetched and linked statically; on Windows curl
+uses Schannel and the TUI uses vendored PDCurses. Lua 5.5, SQLite, cJSON,
+libuv, luv, ltui and isocline are vendored under `src/vendor/` and built
+statically. The binary is written to the source root so the invocations
 below work as documented; everything else stays in `build/`.
 
 On Apple silicon the build re-signs the binary ad-hoc after linking — a stale
@@ -431,7 +432,10 @@ docs/images/    the screenshots above, rendered by the app itself
 - isocline — MIT (© Daan Leijen), the line editor; replaced linenoise, which
   had no Windows port.
 - cJSON — MIT (© Dave Gamble), vendored in `src/vendor/`.
-- SDL2 — zlib, fetched at configure time (pinned by SHA256) and linked
+- libcurl — MIT/curl, fetched at configure time (pinned by SHA256) and linked
+  statically. TLS is Schannel on Windows and mbedTLS (Apache-2.0) elsewhere.
+- ncurses — MIT-X11, fetched and linked statically into the CLI on Unix.
+- SDL3 — zlib, fetched at configure time (pinned by SHA256) and linked
   statically, so `boggart-studio` has no runtime SDL dependency at all.
 - stb_truetype — public domain / MIT (© Sean Barrett), the glyph rasteriser,
   vendored in `studio/src/lib/stb/`.

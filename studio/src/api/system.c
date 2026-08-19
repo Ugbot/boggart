@@ -1,6 +1,7 @@
-#include <SDL2/SDL.h>
+#include <SDL3/SDL.h>
 #include <stdbool.h>
 #include <ctype.h>
+#include <stdlib.h>
 /* Not <dirent.h>/<unistd.h>: MSVC has neither, so this file could not compile
  * on Windows at all -- which nobody noticed, because the studio had never been
  * built there. Upstream lite got away with it by using MinGW. libuv is already
@@ -30,12 +31,10 @@ extern SDL_Window *window;
 
 /* Points -> pixels for pointer input.
  *
- * lite renders into SDL_GetWindowSurface(), which with SDL_WINDOW_ALLOW_HIGHDPI
- * is the pixel-sized backing store, while SDL delivers mouse coordinates in
- * points. Upstream passes them straight through, so on a Retina display the
- * pointer lands at half the position everything was drawn at -- and the error
- * grows the further right and down you click, which is what makes selecting
- * text feel broken rather than merely offset.
+ * lite renders into the pixel-sized backing store, while SDL delivers mouse
+ * coordinates in window points. With SDL_WINDOW_HIGH_PIXEL_DENSITY that ratio
+ * is not 1. Passing points straight through on a Retina display lands the
+ * pointer at half the position everything was drawn at.
  *
  * Converting here is the whole fix: the Lua side already works in the same
  * pixel space it draws into and needs no changes at all.
@@ -55,7 +54,7 @@ static double input_scale(void) {
 
 /* Round rather than truncate: at 2x, truncating biases every coordinate half a
  * pixel up and left, which is visible when clicking between two glyphs. */
-static int px(int points) { return (int)((double)points * input_scale() + 0.5); }
+static int px(float points) { return (int)((double)points * input_scale() + 0.5); }
 
 static const char* button_name(int button) {
   switch (button) {
@@ -67,7 +66,7 @@ static const char* button_name(int button) {
 }
 
 
-static char* key_name(char *dst, int sym) {
+static char* key_name(char *dst, SDL_Keycode sym) {
   strcpy(dst, SDL_GetKeyName(sym));
   char *p = dst;
   while (*p) {
@@ -80,7 +79,8 @@ static char* key_name(char *dst, int sym) {
 
 static int f_poll_event(lua_State *L) {
   char buf[16];
-  int mx, my, wx, wy;
+  float mx, my;
+  int wx, wy;
   SDL_Event e;
 
 top:
@@ -89,61 +89,66 @@ top:
   }
 
   switch (e.type) {
-    case SDL_QUIT:
+    case SDL_EVENT_QUIT:
       lua_pushstring(L, "quit");
       return 1;
 
-    case SDL_WINDOWEVENT:
+    case SDL_EVENT_WINDOW_RESIZED:
       /* Re-measure the backing scale: a window dragged between a Retina
        * display and an external monitor changes the points-to-pixels ratio,
        * and a stale value puts the pointer back in the wrong place. */
       g_input_scale = 0.0;
-      if (e.window.event == SDL_WINDOWEVENT_RESIZED) {
-        lua_pushstring(L, "resized");
-        /* data1/data2 are points; lite's layout is in pixels. */
-        lua_pushnumber(L, px(e.window.data1));
-        lua_pushnumber(L, px(e.window.data2));
-        return 3;
-      } else if (e.window.event == SDL_WINDOWEVENT_EXPOSED) {
-        rencache_invalidate();
-        lua_pushstring(L, "exposed");
-        return 1;
-      }
+      lua_pushstring(L, "resized");
+      /* data1/data2 are points; lite's layout is in pixels. */
+      lua_pushnumber(L, px((float)e.window.data1));
+      lua_pushnumber(L, px((float)e.window.data2));
+      return 3;
+
+    case SDL_EVENT_WINDOW_EXPOSED:
+      g_input_scale = 0.0;
+      rencache_invalidate();
+      lua_pushstring(L, "exposed");
+      return 1;
+
+    case SDL_EVENT_WINDOW_FOCUS_GAINED:
+      g_input_scale = 0.0;
       /* on some systems, when alt-tabbing to the window SDL will queue up
       ** several KEYDOWN events for the `tab` key; we flush all keydown
       ** events on focus so these are discarded */
-      if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
-        SDL_FlushEvent(SDL_KEYDOWN);
-      }
+      SDL_FlushEvent(SDL_EVENT_KEY_DOWN);
       goto top;
 
-    case SDL_DROPFILE:
+    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+    case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
+      g_input_scale = 0.0;
+      goto top;
+
+    case SDL_EVENT_DROP_FILE:
       SDL_GetGlobalMouseState(&mx, &my);
       SDL_GetWindowPosition(window, &wx, &wy);
       lua_pushstring(L, "filedropped");
-      lua_pushstring(L, e.drop.file);
-      lua_pushnumber(L, mx - wx);
-      lua_pushnumber(L, my - wy);
-      SDL_free(e.drop.file);
+      lua_pushstring(L, e.drop.data ? e.drop.data : "");
+      lua_pushnumber(L, px(mx - (float)wx));
+      lua_pushnumber(L, px(my - (float)wy));
       return 4;
 
-    case SDL_KEYDOWN:
+    case SDL_EVENT_KEY_DOWN:
       lua_pushstring(L, "keypressed");
-      lua_pushstring(L, key_name(buf, e.key.keysym.sym));
+      lua_pushstring(L, key_name(buf, e.key.key));
       return 2;
 
-    case SDL_KEYUP:
+    case SDL_EVENT_KEY_UP:
       lua_pushstring(L, "keyreleased");
-      lua_pushstring(L, key_name(buf, e.key.keysym.sym));
+      lua_pushstring(L, key_name(buf, e.key.key));
       return 2;
 
-    case SDL_TEXTINPUT:
+    case SDL_EVENT_TEXT_INPUT:
       lua_pushstring(L, "textinput");
       lua_pushstring(L, e.text.text);
       return 2;
 
-    case SDL_MOUSEBUTTONDOWN:
-      if (e.button.button == 1) { SDL_CaptureMouse(1); }
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+      if (e.button.button == 1) { SDL_CaptureMouse(true); }
       lua_pushstring(L, "mousepressed");
       lua_pushstring(L, button_name(e.button.button));
       lua_pushnumber(L, px(e.button.x));
@@ -151,15 +156,15 @@ top:
       lua_pushnumber(L, e.button.clicks);
       return 5;
 
-    case SDL_MOUSEBUTTONUP:
-      if (e.button.button == 1) { SDL_CaptureMouse(0); }
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+      if (e.button.button == 1) { SDL_CaptureMouse(false); }
       lua_pushstring(L, "mousereleased");
       lua_pushstring(L, button_name(e.button.button));
       lua_pushnumber(L, px(e.button.x));
       lua_pushnumber(L, px(e.button.y));
       return 4;
 
-    case SDL_MOUSEMOTION:
+    case SDL_EVENT_MOUSE_MOTION:
       lua_pushstring(L, "mousemoved");
       lua_pushnumber(L, px(e.motion.x));
       lua_pushnumber(L, px(e.motion.y));
@@ -167,7 +172,7 @@ top:
       lua_pushnumber(L, px(e.motion.yrel));
       return 5;
 
-    case SDL_MOUSEWHEEL:
+    case SDL_EVENT_MOUSE_WHEEL:
       lua_pushstring(L, "mousewheel");
       lua_pushnumber(L, e.wheel.y);
       return 2;
@@ -187,7 +192,7 @@ static int f_wait_event(lua_State *L) {
 }
 
 
-static SDL_Cursor* cursor_cache[SDL_SYSTEM_CURSOR_HAND + 1];
+static SDL_Cursor* cursor_cache[5];
 
 static const char *cursor_opts[] = {
   "arrow",
@@ -198,21 +203,20 @@ static const char *cursor_opts[] = {
   NULL
 };
 
-static const int cursor_enums[] = {
-  SDL_SYSTEM_CURSOR_ARROW,
-  SDL_SYSTEM_CURSOR_IBEAM,
-  SDL_SYSTEM_CURSOR_SIZEWE,
-  SDL_SYSTEM_CURSOR_SIZENS,
-  SDL_SYSTEM_CURSOR_HAND
+static const SDL_SystemCursor cursor_enums[] = {
+  SDL_SYSTEM_CURSOR_DEFAULT,
+  SDL_SYSTEM_CURSOR_TEXT,
+  SDL_SYSTEM_CURSOR_EW_RESIZE,
+  SDL_SYSTEM_CURSOR_NS_RESIZE,
+  SDL_SYSTEM_CURSOR_POINTER
 };
 
 static int f_set_cursor(lua_State *L) {
   int opt = luaL_checkoption(L, 1, "arrow", cursor_opts);
-  int n = cursor_enums[opt];
-  SDL_Cursor *cursor = cursor_cache[n];
+  SDL_Cursor *cursor = cursor_cache[opt];
   if (!cursor) {
-    cursor = SDL_CreateSystemCursor(n);
-    cursor_cache[n] = cursor;
+    cursor = SDL_CreateSystemCursor(cursor_enums[opt]);
+    cursor_cache[opt] = cursor;
   }
   SDL_SetCursor(cursor);
   return 0;
@@ -228,17 +232,11 @@ static int f_set_cursor(lua_State *L) {
  * permission, a focused window, and whatever else happens to be on the desktop
  * in the shot -- none of which a test should depend on.
  *
- * BMP because SDL2 can write it with no extra dependency, which is the whole
+ * BMP because SDL can write it with no extra dependency, which is the whole
  * bar for a diagnostic. */
 static int f_save_screenshot(lua_State *L) {
   const char *path = luaL_checkstring(L, 1);
-  SDL_Surface *surf = SDL_GetWindowSurface(window);
-  if (!surf) {
-    lua_pushnil(L);
-    lua_pushstring(L, "no window surface");
-    return 2;
-  }
-  if (SDL_SaveBMP(surf, path) != 0) {
+  if (ren_save_screenshot(path) != 0) {
     lua_pushnil(L);
     lua_pushstring(L, SDL_GetError());
     return 2;
@@ -254,7 +252,7 @@ static int f_save_screenshot(lua_State *L) {
  * narrow or very wide window is otherwise unreachable without a person dragging
  * the frame, and the developer's display size would silently decide which
  * layouts `ninja ui-check` exercised. There is no matching event to raise --
- * the frame loop reads renderer.get_size() from the window surface every
+ * the frame loop reads renderer.get_size() from the retained backbuffer every
  * iteration, so the next frame already has the new size.
  *
  * Both arities are accepted because both callers exist: a size is all a layout
@@ -277,6 +275,7 @@ static int f_set_window_size(lua_State *L) {
   SDL_RestoreWindow(window);
   if (n >= 4) { SDL_SetWindowPosition(window, x, y); }
   SDL_SetWindowSize(window, w, h);
+  SDL_SyncWindow(window);
   return 0;
 }
 
@@ -293,8 +292,7 @@ enum { WIN_NORMAL, WIN_MAXIMIZED, WIN_FULLSCREEN };
 
 static int f_set_window_mode(lua_State *L) {
   int n = luaL_checkoption(L, 1, "normal", window_opts);
-  SDL_SetWindowFullscreen(window,
-    n == WIN_FULLSCREEN ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+  SDL_SetWindowFullscreen(window, n == WIN_FULLSCREEN);
   if (n == WIN_NORMAL) { SDL_RestoreWindow(window); }
   if (n == WIN_MAXIMIZED) { SDL_MaximizeWindow(window); }
   return 0;
@@ -302,8 +300,8 @@ static int f_set_window_mode(lua_State *L) {
 
 
 static int f_window_has_focus(lua_State *L) {
-  unsigned flags = SDL_GetWindowFlags(window);
-  lua_pushboolean(L, flags & SDL_WINDOW_INPUT_FOCUS);
+  SDL_WindowFlags flags = SDL_GetWindowFlags(window);
+  lua_pushboolean(L, (flags & SDL_WINDOW_INPUT_FOCUS) != 0);
   return 1;
 }
 
