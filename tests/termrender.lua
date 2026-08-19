@@ -73,6 +73,26 @@ do
   ok(longest <= 20, "wrap: prose respects width (longest line " .. longest .. " <= 20)")
 end
 
+-- ---- hanging numbered / lettered lists ------------------------------------
+do
+  local long = "1. " .. string.rep("alpha ", 12)
+  local lines = tr.runs({ role = "assistant", text = long }, { width = 20 })
+  ok(#lines >= 2, "numbered list wraps to more than one row")
+  local function plain_line(ln)
+    local t = {}
+    for _, r in ipairs(ln) do t[#t + 1] = r.text end
+    return table.concat(t)
+  end
+  ok(plain_line(lines[1]):find("^1%. "), "numbered list: first row keeps the marker")
+  if #lines >= 2 then
+    ok(plain_line(lines[2]):match("^%s+") ~= nil, "numbered list: continuation is hanging-indented")
+    ok(not plain_line(lines[2]):find("^1%. "), "numbered list: marker is not repeated on wrap")
+  end
+  local a = tr.runs({ role = "assistant", text = "a) first option\nb) second option" }, { width = 40 })
+  ok(plain_line(a[1]):find("^a%) "), "lettered list: a) marker")
+  ok(#a >= 2 and plain_line(a[2]):find("^b%) "), "lettered list: b) marker")
+end
+
 -- ---- diff: the {diff=..., path=...} structure agentview pushes -------------
 do
   local d = {

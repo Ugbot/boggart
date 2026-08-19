@@ -29,13 +29,103 @@ function M.render(rec)
   return table.concat(t, "\n")
 end
 
--- Map a typed line to a decision: a lone option letter picks it, else it's input.
+local function vis_len(s)
+  s = tostring(s or "")
+  if sys and sys.width then return sys.width(s) end
+  local n = utf8 and utf8.len(s)
+  return n or #s
+end
+
+-- Word-wrap plain text to `width` display columns.
+local function wrap_plain(text, width)
+  width = math.max(1, math.floor(tonumber(width) or 80))
+  local rows, cur, used = {}, {}, 0
+  local function flush()
+    if #cur > 0 then rows[#rows + 1] = table.concat(cur); cur, used = {}, 0 end
+  end
+  for word in tostring(text or ""):gmatch("%S+") do
+    local w = vis_len(word)
+    local extra = (#cur > 0) and 1 or 0
+    if used + extra + w > width and #cur > 0 then flush(); extra = 0 end
+    if w > width then
+      flush()
+      local rest = word
+      while vis_len(rest) > width do
+        local head
+        if sys and sys.wtake then
+          head = sys.wtake(rest, width)
+        else
+          local off = utf8 and utf8.offset(rest, width + 1)
+          head = off and rest:sub(1, off - 1) or rest:sub(1, width)
+        end
+        if head == "" then head = rest:sub(1, 1) end
+        rows[#rows + 1] = head
+        rest = rest:sub(#head + 1)
+      end
+      if rest ~= "" then cur[1] = rest; used = vis_len(rest) end
+    else
+      if extra > 0 then cur[#cur + 1] = " "; used = used + 1 end
+      cur[#cur + 1] = word
+      used = used + w
+    end
+  end
+  flush()
+  if #rows == 0 then rows[1] = "" end
+  return rows
+end
+
+-- Styled run-lines for the cTUI. Prompt and each option wrap to `width` with a
+-- hanging indent under `a) ` so lists stay enumerated instead of clipping.
+function M.runs(rec, width)
+  width = math.max(8, math.floor(tonumber(width) or 80))
+  local ACCENT, TEXT, DIM = "e1e1e6", "97979c", "525257"
+  local lines = {}
+  for _, row in ipairs(wrap_plain(rec.prompt or "Choose:", width)) do
+    lines[#lines + 1] = { { text = row, fg = ACCENT } }
+  end
+  for _, o in ipairs(rec.options or {}) do
+    local prefix = "  " .. tostring(o.key) .. ") "
+    local plen = vis_len(prefix)
+    local inner = math.max(4, width - plen)
+    local body = wrap_plain(o.label, inner)
+    for i, b in ipairs(body) do
+      if i == 1 then
+        lines[#lines + 1] = { { text = prefix, fg = ACCENT }, { text = b, fg = TEXT } }
+      else
+        lines[#lines + 1] = { { text = string.rep(" ", plen) }, { text = b, fg = TEXT } }
+      end
+    end
+  end
+  if rec.allow_input then
+    for _, row in ipairs(wrap_plain("  (press a letter, or type your own + Enter)", width)) do
+      lines[#lines + 1] = { { text = row, fg = DIM } }
+    end
+  end
+  return lines
+end
+
+-- Which option a typed key refers to: the option's own key, or the positional
+-- a/b/c letter (so a numbered menu still answers to `a`).
+function M.index_for_key(rec, k)
+  if type(k) ~= "string" or k == "" then return nil end
+  k = k:lower()
+  for i, o in ipairs(rec.options or {}) do
+    if o.key == k then return i end
+  end
+  if #k == 1 then
+    local idx = KEYS:find(k, 1, true)
+    if idx and rec.options[idx] then return idx end
+  end
+  return nil
+end
+
+-- Map a typed line to a decision: a lone option letter/digit picks it, else input.
 function M.parse_line(rec, line)
   line = (line or ""):gsub("^%s+", ""):gsub("%s+$", "")
   if line == "" then return { cancel = true } end
   if #line == 1 then
-    local k = line:lower()
-    for i, o in ipairs(rec.options) do if o.key == k then return { index = i } end end
+    local i = M.index_for_key(rec, line)
+    if i then return { index = i } end
   end
   return { text = line }
 end
@@ -65,19 +155,26 @@ local function resolve(o)
 end
 
 -- Normalise + validate the tool's arguments into a record.
-local function build(a)
+function M.build(a)
   if type(a.options) ~= "table" or #a.options == 0 then
     return nil, "choose needs a non-empty `options` array of { label, prompt|run }"
   end
-  local opts = {}
+  local opts, used = {}, {}
   for i, o in ipairs(a.options) do
     if type(o) ~= "table" or type(o.label) ~= "string" or o.label == "" then
       return nil, "option " .. i .. " needs a string `label`"
     end
-    opts[i] = {
-      key = (type(o.key) == "string" and o.key ~= "" and o.key:sub(1, 1):lower()) or KEYS:sub(i, i),
-      label = o.label, prompt = o.prompt, run = o.run,
-    }
+    local k = (type(o.key) == "string" and o.key ~= "" and o.key:sub(1, 1):lower()) or nil
+    if not k or used[k] then
+      k = nil
+      for j = 1, #KEYS do
+        local cand = KEYS:sub(j, j)
+        if not used[cand] then k = cand; break end
+      end
+    end
+    if not k then return nil, "too many options (max " .. #KEYS .. ")" end
+    used[k] = true
+    opts[i] = { key = k, label = o.label, prompt = o.prompt, run = o.run }
   end
   return { prompt = tostring(a.prompt or "Choose:"), options = opts,
            allow_input = a.input ~= false, decision = nil }
@@ -85,7 +182,7 @@ end
 
 -- The tool body (a real function -> full access; it must be able to yield).
 function M.run(a)
-  local rec, err = build(a)
+  local rec, err = M.build(a)
   if not rec then return "Tool error: [invalid] " .. err end
 
   if bog.choice_ui and coroutine.isyieldable and coroutine.isyieldable() then

@@ -266,13 +266,20 @@ local function draw(st)
   -- A pending `choose` menu renders at the foot of the transcript (where the eye
   -- is), so a parked turn asks its question in view. Answered in the key loop.
   if bog.choice then
-    lines[#lines + 1] = { { text = "", fg = C.tool } }
-    lines[#lines + 1] = { { text = bog.choice.prompt, fg = C.tool } }
-    for _, o in ipairs(bog.choice.options) do
-      lines[#lines + 1] = { { text = "  " .. o.key .. ") ", fg = C.tool }, { text = o.label } }
-    end
-    if bog.choice.allow_input then
-      lines[#lines + 1] = { { text = "  (press a letter, or type your own + Enter)", fg = C.divider } }
+    lines[#lines + 1] = { { text = "" } }
+    local extra
+    local okc, res = pcall(require("choose").runs, bog.choice, tw)
+    if okc and type(res) == "table" then extra = res end
+    if extra then
+      for _, ln in ipairs(extra) do lines[#lines + 1] = ln end
+    else
+      lines[#lines + 1] = { { text = bog.choice.prompt, fg = C.tool } }
+      for _, o in ipairs(bog.choice.options) do
+        lines[#lines + 1] = { { text = "  " .. o.key .. ") ", fg = C.tool }, { text = o.label } }
+      end
+      if bog.choice.allow_input then
+        lines[#lines + 1] = { { text = "  (press a letter, or type your own + Enter)", fg = C.divider } }
+      end
     end
   end
   st.total = #lines
@@ -447,11 +454,9 @@ local function run_turn(st, text)
           if st.box.line ~= "" then CH.decide(rec, { text = st.box.line }); st.box:_set("") end
           st.dirty = true
         elseif st.box.line == "" and type(ev.char) == "string" and #ev.char == 1 then
-          local k, picked = ev.char:lower(), false
-          for i, o in ipairs(rec.options) do
-            if o.key == k then CH.decide(rec, { index = i }); picked = true; break end
-          end
-          if not picked then st.box:key(ev) end
+          local i = CH.index_for_key(rec, ev.char)
+          if i then CH.decide(rec, { index = i })
+          else st.box:key(ev) end
           st.dirty = true
         else st.box:key(ev); st.dirty = true end
       else

@@ -765,10 +765,9 @@ function AgentView:on_key_pressed(key)
       choose.decide(rec, { cancel = true }); core.redraw = true; return true
     end
     if #key == 1 and (self.edit_mode == "normal" or self:input_text() == "") then
-      for i, o in ipairs(rec.options) do
-        if o.key == key then
-          choose.decide(rec, { index = i }); core.redraw = true; return true
-        end
+      local i = choose.index_for_key(rec, key)
+      if i then
+        choose.decide(rec, { index = i }); core.redraw = true; return true
       end
     end
   end
@@ -1189,7 +1188,14 @@ end
 
 -- Word-wrap a coloured token row. Breaks at spaces where it can and inside a
 -- token only when a single word is wider than the column.
-local function wrap_tokens(tokens, cols)
+-- `hang` is an optional {color, text} prefix: it leads the first wrapped row
+-- and a blank indent of the same width leads continuations, so numbered and
+-- lettered lists keep their marker in a column instead of wrapping into the
+-- body. Matches termrender's wrap_runs hanging indent.
+local function wrap_tokens(tokens, cols, hang)
+  local hang_w = (hang and hang[2] and cols_of(hang[2])) or 0
+  if hang_w >= cols then hang, hang_w = nil, 0 end
+  local inner = math.max(1, cols - hang_w)
   local rows, cur, used = {}, {}, 0
   local function flush()
     if #cur > 0 then rows[#rows + 1] = cur; cur, used = {}, 0 end
@@ -1208,13 +1214,13 @@ local function wrap_tokens(tokens, cols)
       -- read-only, and this loop consumes it.
       local word = lead .. chunk
       local wlen = cols_of(word)
-      if used + wlen > cols and used > 0 then
+      if used + wlen > inner and used > 0 then
         flush()
         word = word:gsub("^%s+", "")   -- no leading space at the start of a row
         wlen = cols_of(word)
       end
-      while wlen > cols do   -- a single word longer than the column
-        local head, tail = split(word, cols)
+      while wlen > inner do   -- a single word longer than the column
+        local head, tail = split(word, inner)
         -- Only when the column is one cell wide and the character is two.
         -- Without it this loop takes nothing and runs forever.
         if head == "" then head = first_char(word); tail = word:sub(#head + 1) end
@@ -1236,6 +1242,17 @@ local function wrap_tokens(tokens, cols)
   end
   flush()
   if #rows == 0 then rows[1] = { { style.text, "" } } end
+  if hang then
+    local hung = {}
+    for i, row in ipairs(rows) do
+      local nr = {}
+      if i == 1 then nr[1] = hang
+      else nr[1] = { hang[1], string.rep(" ", hang_w) } end
+      for j, tok in ipairs(row) do nr[#nr + 1] = tok end
+      hung[i] = nr
+    end
+    rows = hung
+  end
   return rows
 end
 
@@ -1340,7 +1357,8 @@ function AgentView:layout(e, cols)
       local hashes, htext = line:match("^(#+)%s+(.*)$")
       local quote = line:match("^%s*>%s?(.*)$")
       local ind, bullet = line:match("^(%s*)[-*+]%s+()")
-      local num = line:match("^%s*%d+%.%s")
+      local numlead, numbody = line:match("^(%s*%d+[.)]%s+)(.*)$")
+      local letlead, letbody = line:match("^(%s*%l[.)]%s+)(.*)$")
 
       if hashes then
         body, col, bold = htext, style.accent, true
@@ -1350,18 +1368,26 @@ function AgentView:layout(e, cols)
       elseif bullet then
         body = line:sub(bullet)
         prefix = { style.accent, ind .. "- " }
-      elseif num then
-        -- Numbered lists keep their own marker; it is already meaningful.
-        body = line
+      elseif numlead then
+        body = numbody
+        prefix = { style.accent, numlead }
+      elseif letlead then
+        body = letbody
+        prefix = { style.accent, letlead }
       end
 
       local toks = inline(body, col)
       if bold then for _, t in ipairs(toks) do t.bold = true end end
-      if prefix then table.insert(toks, 1, prefix) end
-      if first and r.prefix ~= "" then
-        table.insert(toks, 1, { col, r.prefix })
+      local hang = prefix
+      -- Role prefix (› etc.) only on the first wrapped row of the entry, and
+      -- not mixed into a list hang -- lists already have their marker.
+      local role_prefix = (first and r.prefix ~= "") and { col, r.prefix } or nil
+      local wrap_hang = hang or role_prefix
+      if hang and role_prefix then
+        -- Keep the role glyph on the first list row by widening the hang.
+        wrap_hang = { hang[1], role_prefix[2] .. hang[2] }
       end
-      for _, row in ipairs(wrap_tokens(toks, cols)) do rows[#rows + 1] = row end
+      for _, row in ipairs(wrap_tokens(toks, cols, wrap_hang)) do rows[#rows + 1] = row end
       if hashes and #hashes <= 2 then rows[#rows + 1] = { rule = true, thin = true } end
     end
     first = false
@@ -1735,7 +1761,8 @@ function AgentView:draw_choice(rec, x, y, w, cols, font, visible)
   local opt_rows = {}
   for _, o in ipairs(rec.options) do
     opt_rows[#opt_rows + 1] = wrap_tokens(
-      { { style.accent, o.key .. ") " }, { style.text, o.label } }, cols)
+      inline(o.label, style.text), cols,
+      { style.accent, o.key .. ") " })
   end
   local nrows = #prompt_rows
   for _, rs in ipairs(opt_rows) do nrows = nrows + #rs end

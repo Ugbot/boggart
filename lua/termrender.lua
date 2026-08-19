@@ -481,7 +481,8 @@ local function md_line_runs(line, width)
   local hashes, htext = line:match("^(#+)%s+(.*)$")
   local quote = line:match("^%s*>%s?(.*)$")
   local ind, bullet = line:match("^(%s*)[-*+]%s+(.*)$")
-  local numlead, numbody = line:match("^(%s*%d+%.%s+)(.*)$")
+  local numlead, numbody = line:match("^(%s*%d+[.)]%s+)(.*)$")
+  local letlead, letbody = line:match("^(%s*%l[.)]%s+)(.*)$")
 
   if hashes then
     local toks = inline(htext, PAL.accent)
@@ -501,6 +502,9 @@ local function md_line_runs(line, width)
   elseif numlead then
     return wrap_runs(inline(numbody, PAL.text), width,
       { text = numlead, hex = PAL.accent })
+  elseif letlead then
+    return wrap_runs(inline(letbody, PAL.text), width,
+      { text = letlead, hex = PAL.accent })
   else
     return wrap_runs(inline(line, PAL.text), width, nil)
   end
