@@ -91,10 +91,10 @@ M.tree = {
     { "New automation\u{2026}",    "automations:new" },
     { "Manage automations\u{2026}", "automations:manage" },
     M.SEP,
-    { "Run recipe\u{2026}",        "agent:run-recipe" },
+    { "Run saved prompt\u{2026}",  "agent:run-recipe" },
     { "ReAct until goal\u{2026}",  "agent:react" },
-    { "Save recipe",          "agent:save-recipe" },
-    { "Edit recipe\u{2026}",       "agent:edit-recipe" },
+    { "Save this prompt",          "agent:save-recipe" },
+    { "Edit saved prompt\u{2026}", "agent:edit-recipe" },
     { "Workflows\u{2026}",         "agent:workflows" },
   },
   Fleet = {
@@ -108,7 +108,7 @@ M.tree = {
     { "Add MCP server\u{2026}", "agent:add-mcp-server" },
     { "Edit mcp_servers.lua", "agent:edit-mcp-servers" },
     { "Event handlers", "agent:show-event-handlers" },
-    { "Panels\u{2026}",      "agent:open-panel" },
+    { "Panels\u{2026}",      "studio:open-panel" },
     { "Run command\u{2026}", "agent:run-command" },
   },
   Help = {

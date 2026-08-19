@@ -240,7 +240,10 @@ core.add_thread(function()
     end
     -- Files: tree in the slot, empty (or last) editor in the center, chat
     -- snapped to a locked right dock. Opening a file fills the center.
-    if studio.switch_workspace then
+    -- switch_workspace exists in the legacy attach too, but it is a no-op
+    -- there (set_sidebar returns immediately). The assertions below are
+    -- about the default rail layout; legacy still uses the Chat/Code tab.
+    if studio.switch_workspace and not studio.legacy then
       studio.switch_workspace("edit")
       frame(4)
       local tree = studio.tree or package.loaded["plugins.treeview"]
@@ -289,20 +292,22 @@ core.add_thread(function()
     end
 
     -- Back to Chat: session list in the slot, conversation still measurable.
-    if studio.switch_workspace then studio.switch_workspace("agent") end
+    if studio.switch_workspace and not studio.legacy then
+      studio.switch_workspace("agent")
+    end
     studio.sidebar.visible = true
     v = studio.open_agent()
     local node = core.root_view.root_node:get_node_for_view(v)
     if node then node:set_active_view(v) end
     core.set_active_view(v)
     frame(3)
-    local recipes
+    local prompts
     for _, r in ipairs(studio.sidebar.hits or {}) do
-      if r.item and r.item.label == "Recipes" then recipes = r end
+      if r.item and r.item.label == "Prompts" then prompts = r end
     end
-    check(recipes ~= nil, "the session list has no Recipes button")
-    check(not recipes or recipes.item.command == "agent:run-recipe",
-      "Recipes is not wired to agent:run-recipe")
+    check(prompts ~= nil, "the session list has no Prompts button")
+    check(not prompts or prompts.item.command == "agent:run-recipe",
+      "Prompts is not wired to agent:run-recipe")
     if studio.rail then
       local has_set, has_more
       for _, r in ipairs(studio.rail.hits or {}) do

@@ -15,13 +15,19 @@ local core = require "core"
 
 local recipes = {}
 
--- What a recipe is, in the words the UI uses when it has to explain itself.
+-- User-facing name. Internally these are still "recipes" (files, commands);
+-- the UI says "saved prompt" because "recipe" does not explain itself.
+recipes.UI_NAME = "saved prompt"
+recipes.UI_NAME_PLURAL = "Saved prompts"
+recipes.UI_BUTTON = "Prompts"
+
+-- What it is, in the words the UI uses when it has to explain itself.
 -- Kept here so the empty state, the palette and the README cannot drift into
 -- three different descriptions of the same thing.
 recipes.WHAT_IT_IS =
-  "A recipe is a prompt you keep. Write it once with {{blanks}}, and every " ..
-  "time you run it boggart asks for the blanks and sends the filled-in prompt " ..
-  "to the agent."
+  "A saved prompt is a prompt you keep. Write it once with {{blanks}}, and " ..
+  "every time you run it boggart asks for the blanks and sends the filled-in " ..
+  "prompt to the agent."
 
 -- The distinction people actually need, because boggart has four things that
 -- sound alike:
@@ -33,9 +39,10 @@ recipes.WHAT_IT_IS =
 --   skill     a named bundle of instructions plus the tools an agent is
 --             allowed to use.
 recipes.VERSUS =
-  "A recipe is text; a tool is code. Use a recipe when you want the model to " ..
-  "think about something the same way each time, and define_tool when you " ..
-  "want the same answer every time. A workflow is several recipes in order."
+  "A saved prompt is text; a tool is code. Use a saved prompt when you want " ..
+  "the model to think about something the same way each time, and define_tool " ..
+  "when you want the same answer every time. A workflow is several saved " ..
+  "prompts in order."
 
 -- Shipped so the idea is legible on sight rather than from documentation:
 -- someone with no recipes gets one that obviously works and can be edited.
@@ -200,9 +207,10 @@ workflows.WHAT_IT_IS =
 -- The distinction people actually need, because a recipe and a workflow sit next
 -- to each other: a recipe is one prompt, a workflow is a chain of them.
 workflows.VERSUS =
-  "A recipe is one prompt you fill in and send. A workflow is a chain: the first " ..
-  "step's answer becomes the next step's input, so you can summarise a file in " ..
-  "one step and critique that summary in the next, each with the model that suits it."
+  "A saved prompt is one prompt you fill in and send. A workflow is a chain: " ..
+  "the first step's answer becomes the next step's input, so you can summarise " ..
+  "a file in one step and critique that summary in the next, each with the " ..
+  "model that suits it."
 
 workflows.EXAMPLE_NAME = "summarise-then-critique"
 

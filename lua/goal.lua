@@ -37,16 +37,16 @@ local function trim_tail(s, n)
   return "...(truncated)...\n" .. s:sub(#s - n + 1)
 end
 
--- Run a shell command, capturing stdout+stderr and the exit code. io.popen is
--- blocking (no scheduler yield, unlike sys.exec), which is what the REPL wants;
--- the goal's own turn cap bounds how many times it runs.
+-- Run a shell command, capturing stdout+stderr and the exit code. sys.exec
+-- (lua/proc.lua) yields under a scheduler coroutine so /until does not freeze
+-- the studio frame loop or starve a peer agent's HTTP stream; off a coroutine
+-- it still blocks, which is what the tests and a bare REPL check want.
 local function run_shell(cmd)
-  local f = io.popen(cmd .. " 2>&1", "r")
-  if not f then return 1, "could not launch: " .. cmd end
-  local out = f:read("*a") or ""
-  local ok, _, code = f:close()
-  local exit = code or (ok and 0 or 1)
-  return exit, out
+  local ok, r = pcall(sys.exec, cmd, 30)
+  if not ok or type(r) ~= "table" then
+    return 1, "could not launch: " .. cmd
+  end
+  return r.code or 1, r.out or ""
 end
 
 -- compile a `done` spec into a check function.

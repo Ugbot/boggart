@@ -89,6 +89,35 @@ check(okc and a == "ran", "wrap_run resumes and runs after approve")
 
 perm.set_mode("smart") -- leave the shared state as the default
 
+-- turn_opts is the shared REPL/cTUI/studio wiring: chat withholds schemas,
+-- and wrap_run is installed unless the caller already set run_tool.
+perm.set_mode("chat")
+local topts = perm.turn_opts()
+check(type(topts.tools) == "function" and #(topts.tools()) == 0,
+  "turn_opts in chat withholds tool schemas")
+check(type(topts.run_tool) == "function", "turn_opts installs wrap_run")
+perm.set_mode("smart")
+local topts2 = perm.turn_opts({ tools = function() return { "kept" } end })
+check(topts2.tools()[1] == "kept", "turn_opts does not overwrite an explicit tools fn")
+
+-- REPL uses the same take.parse door as the TUI and studio.
+local mention_line = take.parse("see @lua/complete.lua please")
+check(mention_line.kind == "prompt" and mention_line.notes[1] and mention_line.notes[1].ok,
+  "REPL @file lines parse as prompts with an attachment")
+check(take.parse("!echo hi").kind == "bash", "REPL !bash is not sent to the model")
+check(take.parse("/mode chat").kind == "slash", "REPL /mode is a slash command")
+
+-- sched.drive runs a yielding fn from the main thread.
+local sched = require("sched")
+local drove = 0
+check(sched.drive(function() drove = 1; return 7 end) == 7 and drove == 1,
+  "sched.drive on a non-yielding fn returns its result")
+local inner
+check(coroutine.wrap(function()
+    return sched.drive(function() inner = true; return 3 end)
+  end)() == 3 and inner,
+  "sched.drive inside a coroutine just calls through")
+
 -- ---- help overlay ----------------------------------------------------------
 check(help.too_small(10, 10), "a 10-col terminal is too small")
 check(help.too_small(80, 4), "a 4-row terminal is too small")

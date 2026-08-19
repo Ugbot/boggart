@@ -45,8 +45,9 @@ local EXPLAIN = {
     .. "provenance. Ask the agent to build one and it appears here.",
   skills =
     "A skill is a named bundle of instructions plus the tools an agent is allowed "
-    .. "to use -- the thing that scopes what a swarm agent can do. Eight ship built "
-    .. "in; overlay your own under ~/.boggart/lua/skills/.",
+    .. "to use -- the thing that scopes what a swarm agent can do. Built-in skills "
+    .. "ship in the binary; overlay your own under ~/.boggart/lua/skills/, or store "
+    .. "them in the database with the skills tool.",
   memory =
     "Memory is what the agent keeps across sessions: durable facts it saves with "
     .. "`remember` and searches with `recall`. Tell it something worth keeping and "
@@ -141,31 +142,22 @@ local function skills_module()
   return ok and mod or nil
 end
 
--- Skills are Lua modules, baked into the binary and overlayable under
--- ~/.boggart/lua/skills/. There is no registry to ask, so the names come from
--- both places and the module itself is loaded through skills.load.
+-- Skills come from bog.skills.list() so builtins, overlays and database
+-- skills (and overlay shadowing) match what the agent actually loads.
 local function skill_entries()
-  local origin = {}
-  if boggart and boggart.embedded_names then
-    for _, n in ipairs(boggart.embedded_names()) do
-      local s = n:match("^skills/([%w_%-]+)$")
-      if s then origin[s] = "built-in" end
-    end
-  end
-  local dir = (bog and bog.userdir or "") .. "/lua/skills"
-  if sys.stat(dir) == "dir" then
-    for _, f in ipairs(sys.listdir(dir) or {}) do
-      local s = f:match("^([%w_%-]+)%.lua$")
-      -- An overlay file of the same name is what require() actually loads, so
-      -- say so: "built-in" would be a lie about the code that is running.
-      if s then origin[s] = origin[s] and "overridden" or "user" end
-    end
-  end
-
   local skills = skills_module()
+  if not (skills and skills.list) then return {} end
+  local origin_from = {
+    builtin = "built-in",
+    overlay = "user",
+    ["overlay (shadows builtin)"] = "overridden",
+    database = "database",
+  }
   local out = {}
-  for name, from in pairs(origin) do
-    local mod = skills and skills.load(name) or nil
+  for _, row in ipairs(skills.list() or {}) do
+    local name = row.name
+    local from = origin_from[row.source] or row.source or "built-in"
+    local mod = skills.load and skills.load(name) or nil
     out[#out + 1] = {
       key = name, name = name, origin = from,
       description = (mod and (mod.description or "(no description)"))
@@ -235,6 +227,26 @@ end
 function LibraryView:refresh(force)
   local now = os.time()
   if not force and now - self.last_refresh < REFRESH_SECS then return end
+  -- Force-refresh shells out to git. On the SDL thread that froze the window;
+  -- hop onto a studio thread when the frame loop will resume us.
+  if force and not coroutine.isyieldable() and not self.refreshing then
+    self.refreshing = true
+    local n = 0
+    for _ in pairs(core.threads or {}) do n = n + 1 end
+    core.add_thread(function()
+      self.refreshing = false
+      self:refresh(true)
+    end)
+    local n2 = 0
+    for _ in pairs(core.threads or {}) do n2 = n2 + 1 end
+    if n2 > n then
+      force = false
+    else
+      self.refreshing = false
+    end
+  elseif force and self.refreshing and not coroutine.isyieldable() then
+    force = false
+  end
   self.last_refresh = now
   self.data = {
     tools = tool_entries(force),
@@ -544,7 +556,8 @@ function LibraryView:skill_detail(e, cols, head, body)
   field(head, cols, "source", e.origin == "overridden"
     and "overridden by ~/.boggart/lua/skills/" .. e.name .. ".lua"
     or (e.origin == "user" and ("~/.boggart/lua/skills/" .. e.name .. ".lua")
-        or "built in"))
+        or (e.origin == "database" and "database"
+        or "built in")))
   field(head, cols, "grants", string.format("%d tool pattern%s",
     #e.tools, #e.tools == 1 and "" or "s"))
   blank(head)

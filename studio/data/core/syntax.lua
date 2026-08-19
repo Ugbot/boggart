@@ -21,8 +21,11 @@ local function find(string, field)
 end
 
 function syntax.get(filename, header)
-  return find(filename, "files")
-      or find(header, "headers")
+  -- header is optional: the agent panel asks only by filename ("code.lua").
+  -- Walking headers with nil used to crash match_pattern on the first
+  -- unmatched language, which took the whole window down on first paint.
+  return find(filename or "", "files")
+      or (header and find(header, "headers"))
       or plain_text_syntax
 end
 

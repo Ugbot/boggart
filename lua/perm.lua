@@ -183,4 +183,21 @@ function M.wrap_run(run, st, hooks)
   end
 end
 
+-- Options a turn driver passes to api.run_on so chat-mode, the approval wrap,
+-- and an extra table agree across the REPL, the cTUI and the studio. extra
+-- wins on any key already set (studio's custom run_tool, a coordinator's
+-- tools/system). Chat mode withholds schemas unless extra.tools is already
+-- a function -- denying a tool the model can still see invites retries.
+function M.turn_opts(extra, hooks)
+  extra = extra or {}
+  local st = extra.state or M.state()
+  if extra.run_tool == nil then
+    extra.run_tool = M.wrap_run(bog.tools.run, st, hooks)
+  end
+  if st.mode == "chat" and extra.tools == nil then
+    extra.tools = function() return {} end
+  end
+  return extra
+end
+
 return M

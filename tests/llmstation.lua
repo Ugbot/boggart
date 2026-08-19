@@ -42,6 +42,10 @@ do
   local okc, res = pcall(ls.autostart)
   ok(okc, "autostart never raises")
   eq(type(res), "boolean", "autostart returns a boolean")
+  local ok2, res2 = pcall(ls.autostart)
+  ok(ok2, "a second autostart never raises")
+  eq(type(res2), "boolean", "a second autostart still returns a boolean")
+  if res then eq(res2, true, "a second autostart is a no-op once connected") end
   -- when LLM Station is not installed here, it must be a dormant no-op
   if not ls.available() then
     eq(res, false, "autostart is a no-op when llm-station is absent")

@@ -1,6 +1,6 @@
--- take.lua -- one door for a submitted composer line. The cTUI and the studio
--- both call parse() so `/commands`, `!bash` and `@file` mentions mean the same
--- thing on every surface.
+-- take.lua -- one door for a submitted composer line. The REPL, the cTUI and
+-- the studio all call parse() so `/commands`, `!bash` and `@file` mentions
+-- mean the same thing on every surface.
 local mention = require("mention")
 
 local M = {}

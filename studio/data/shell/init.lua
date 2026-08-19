@@ -301,6 +301,8 @@ function shell.attach()
   end)
   shell.switch("agent")
   core.try(function() require("core.welcomeview").maybe_open() end)
+  -- The shell suppresses studio.attach, which is otherwise the only MCP start.
+  core.try(studio.start_mcp)
 end
 
 -- Workspace switching: Ctrl-1/2/3 now; `gt`/leader added with the modal spine

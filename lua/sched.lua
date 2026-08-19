@@ -230,4 +230,24 @@ end
 -- that owns the loop (the cTUI) uses between its own uv.run and its paint.
 function M.resume_ready() return resume_sweep() end
 
+-- Run a function that may yield the IO/proc protocol, even if the caller is
+-- not already a scheduler actor. Compact, /until, and MCP connect all yield
+-- "io"; calling them on the main thread is a "yield across C-call" abort.
+-- Already inside a coroutine (a studio thread, a turn) we just call through
+-- so the outer driver keeps pumping. Otherwise we become a one-shot actor
+-- and drain until it finishes.
+function M.drive(fn)
+  if coroutine.isyieldable() then return fn() end
+  local id = "drive:" .. tostring({})
+  local pack
+  local co = coroutine.create(function()
+    pack = table.pack(pcall(fn))
+  end)
+  M.add(id, co)
+  M.run({ should_stop = function() return M.by_id[id] == nil end })
+  if not pack then error("sched.drive: actor vanished before returning") end
+  if not pack[1] then error(pack[2]) end
+  return table.unpack(pack, 2, pack.n)
+end
+
 return M

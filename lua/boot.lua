@@ -161,14 +161,17 @@ function bog.set_model(m)
 end
 
 function bog.new_session()
-  local S = bog.session
+  local S = bog.active_session()
   S.messages = {}
   S.title = nil
   S.id = bog.store.sess_create(nil, S.model)
+  if bog.session and bog.session ~= S then
+    bog.session.id, bog.session.messages, bog.session.title = S.id, S.messages, S.title
+  end
   bog.events.emit("session:created", { id = S.id })
 end
 function bog.save_session()
-  local S = bog.session
+  local S = bog.active_session()
   if S.id then
     bog.store.sess_save(S.id, S.title, S.model, S.messages)
     bog.events.emit("session:saved", { id = S.id, count = #S.messages })
@@ -177,12 +180,17 @@ end
 function bog.resume_session(id)
   local s = bog.store.sess_load(id)
   if not s then return false end
-  local S = bog.session
-  S.id = s.id
-  S.title = s.title
-  S.model = s.model or S.model
-  S.messages = s.messages or {}
-  bog.events.emit("session:resumed", { id = S.id, count = #S.messages })
+  local function apply(S)
+    if not S then return end
+    S.id = s.id
+    S.title = s.title
+    S.model = s.model or S.model
+    S.messages = s.messages or {}
+  end
+  apply(bog.session)
+  local active = bog.active_session()
+  if active ~= bog.session then apply(active) end
+  bog.events.emit("session:resumed", { id = s.id, count = #s.messages })
   return true
 end
 
@@ -272,6 +280,13 @@ local function print_help()
   io.write(require("complete").help_text())
 end
 
+-- Compact, /until and anything else that yields the IO protocol cannot run on
+-- the main thread. Already inside a coroutine we just call through.
+local function drive(fn)
+  bog.activate_agents()
+  return bog.sched.drive(fn)
+end
+
 local function handle_command(line)
   local cmd, rest = line:match("^/(%S+)%s*(.*)$")
   if cmd == "help" then print_help()
@@ -290,7 +305,7 @@ local function handle_command(line)
   elseif cmd == "resume" then
     local id = tonumber(rest)
     if id and bog.resume_session(id) then
-      io.write("resumed session ", id, " (", tostring(#bog.session.messages), " messages)\n")
+      io.write("resumed session ", id, " (", tostring(#bog.active_session().messages), " messages)\n")
     else
       io.write("no such session: ", tostring(rest), "\n")
     end
@@ -481,7 +496,7 @@ local function handle_command(line)
       local spec = { task = task or rest, react = (cmd == "react"),
                      on_text = function(t) io.write(t); io.flush() end }
       if shell and shell ~= "" then spec.done = { shell = shell } end
-      local r = bog.goal.run(spec)
+      local r = drive(function() return bog.goal.run(spec) end)
       io.write(string.format("\n[goal %s after %d/%d turn(s)]\n",
         r.met and "met" or "not met -- budget spent", r.turns, r.budget))
       if not r.met and r.detail then io.write(tostring(r.detail):sub(1, 300), "\n") end
@@ -492,7 +507,7 @@ local function handle_command(line)
     -- Common git tasks as slash commands: run git directly, and only fall back
     -- to the model when it fails (see lua/gitcmd.lua). A { run = prompt } return
     -- asks the REPL/cTUI turn driver to hand the failure to the agent.
-    local r = require("gitcmd").run(cmd, rest)
+    local r = drive(function() return require("gitcmd").run(cmd, rest) end)
     if r and r.run then return { run = r.run } end
     if r and r.text and r.text ~= "" then io.write(r.text, "\n") end
   elseif cmd == "dispatch" then
@@ -504,7 +519,7 @@ local function handle_command(line)
   elseif cmd == "new" then
     bog.new_session()
     if bog.clear_ui then pcall(bog.clear_ui) end
-    io.write("started new session ", tostring(bog.session.id), ".\n")
+    io.write("started new session ", tostring(bog.active_session().id), ".\n")
   elseif cmd == "clear" then
     local S = bog.active_session()
     if S then S.messages = {} end
@@ -515,7 +530,7 @@ local function handle_command(line)
     if not S or #(S.messages or {}) == 0 then
       io.write("nothing to compact.\n")
     else
-      local okc, err = pcall(bog.api.compact, S, {})
+      local okc, err = pcall(drive, function() return bog.api.compact(S, {}) end)
       if not okc then io.write("compaction failed: ", tostring(err), "\n")
       else
         local frac, used = bog.api.context_fraction(S)
@@ -642,7 +657,7 @@ end
 -- text == nil resumes an interrupted turn (finish its tool round, then run on)
 -- rather than starting a new one.
 local function run_one_turn(text)
-  local S = bog.session
+  local S = bog.active_session()
   if text and (not S.title or S.title == "") then S.title = text:gsub("%s+", " "):sub(1, 60) end
   -- The runtime, stood up once: the turn runs as a scheduler coroutine that can
   -- spawn a fleet of more, and the whole tree drains on the same uv loop.
@@ -727,16 +742,46 @@ local function run_one_turn(text)
     end
   end
 
+  local perm = require("perm")
+  local st = perm.state()
+  local opts = perm.turn_opts({}, {
+    on_ask = function(rec)
+      -- Blocking readline, same contract as bog.choose_ask: this runs from the
+      -- turn coroutine, sets rec.decision, and wrap_run therefore never parks
+      -- on "approve". Chat mode never reaches here (schemas are empty).
+      io.write("\napprove ", tostring(rec.name),
+        (rec.summary and rec.summary ~= "") and (": " .. rec.summary) or "", "\n")
+      io.write("[y]es  [n]o  [a]lways: ")
+      io.flush()
+      local ans = (sys.readline("approve") or "n"):gsub("^%s+", ""):gsub("%s+$", ""):lower()
+      if ans == "a" or ans == "always" then
+        st.approve_all = true
+        rec.decision = "approve"
+      elseif ans:sub(1, 1) == "n" then
+        rec.decision = "reject"
+      else
+        rec.decision = "approve"
+      end
+    end,
+  })
+  opts.on_tool = function(name, input)
+    flush_render()           -- emit the round's prose before its tool marker
+    bog.log_tool(name, input)
+  end
+  if bog.thread and bog.thread.session_agent then
+    local okrec, rec = pcall(bog.thread.session_agent, S)
+    if okrec and rec and rec.opts then
+      if opts.system == nil then opts.system = rec.opts.system end
+      if opts.checkpoint == nil then opts.checkpoint = rec.opts.checkpoint end
+      if st.mode ~= "chat" and rec.opts.tools then opts.tools = rec.opts.tools end
+    end
+  end
+
   local co = coroutine.create(function()
     local ok, e = pcall(bog.api.run_on, S, text, function(t)
       started = true
       on_delta(t)                -- stream block by block, rendered at each boundary
-    end, {
-      on_tool = function(name, input)
-        flush_render()           -- emit the round's prose before its tool marker
-        bog.log_tool(name, input)
-      end,
-    })
+    end, opts)
     if not ok then turn_err = e end
   end)
   bog.sched.add(myid, co)
@@ -875,15 +920,27 @@ local function do_repl()
     local line = sys.readline("boggart")
     if line == nil then io.write("\n"); break end
     if line ~= "" then sys.add_history(line) end
-    if line:sub(1, 1) == "/" then
-      local r = handle_command(line)
+    local p = require("take").parse(line)
+    if p.kind == "slash" then
+      local r = handle_command(p.line)
       if r == true then break
       elseif type(r) == "table" and r.run then
         local captured = run_one_turn(r.run)
         while captured do captured = run_one_turn(captured) end
-      end -- model fallback
-    elseif line:match("%S") then
-      local captured = run_one_turn(line)
+      end
+    elseif p.kind == "bash" then
+      local okb, out = require("take").run_bash(p.command)
+      io.write(tostring(out or ""), "\n")
+      if not okb then io.write("(command failed)\n") end
+    elseif p.kind == "prompt" then
+      for _, n in ipairs(p.notes or {}) do
+        if n.ok then
+          io.write(string.format("attached %s (%d bytes)\n", n.path, n.bytes))
+        else
+          io.write("no such file: ", n.path, "\n")
+        end
+      end
+      local captured = run_one_turn(p.text)
       while captured do captured = run_one_turn(captured) end
     end
   end

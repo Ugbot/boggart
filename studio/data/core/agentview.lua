@@ -264,6 +264,7 @@ function AgentView:set_mode(id)
   perm.set_mode(id)
   self.mode = id
   self.approve_all = false   -- a mode change is an explicit re-decision
+  perm.state().approve_all = false
   self:push("system", "mode: " .. found.label .. " -- " .. found.help)
   core.redraw = true
   return true
@@ -277,6 +278,7 @@ function AgentView:decide(decision)
   if not self.pending then return end
   if decision == "always" then
     self.approve_all = true
+    perm.state().approve_all = true
     self.pending.decision = "approve"
   else
     self.pending.decision = decision
@@ -303,15 +305,25 @@ function AgentView:submit(text)
   self.tool_running = nil
 
   local fn = function()
+    local extra = {}
+    -- Same agent record the cTUI/REPL build: skills filter the tool set and
+    -- agent_system lands in the prompt. Empty skills still means the whole
+    -- registry, including studio-only drawing tools.
+    if bog.thread and bog.thread.session_agent then
+      local okag, rec = pcall(bog.thread.session_agent, bog.session)
+      if okag and rec and rec.opts then extra = rec.opts end
+    end
     local okrun, err = pcall(bog.api.run_on, bog.session, text,
       function(chunk) self:stream(chunk) end,
       {
         async = true,
+        system = extra.system,
+        checkpoint = extra.checkpoint,
 
         -- Chat-only withholds the schemas rather than only refusing the calls.
         -- Denying a tool the model can see invites it to keep trying; a model
         -- that was never offered one simply answers.
-        tools = (self.mode == "chat") and function() return {} end or nil,
+        tools = (self.mode == "chat") and function() return {} end or extra.tools,
 
         -- Compaction is not a silent event. Losing the earlier conversation
         -- without being told is how you end up puzzled that the agent forgot
@@ -505,8 +517,7 @@ function AgentView:send()
   complete.dismiss(self)
   local p = take.parse(t)
   if p.kind == "slash" then
-    local r = self:run_slash(p.line)
-    if type(r) == "table" and r.run then self:submit(r.run) end
+    self:run_slash(p.line)
     return
   end
   if p.kind == "bash" then
@@ -537,7 +548,8 @@ end
 
 -- Run a `/command` and capture io.write/print into a system transcript entry,
 -- the same trick the cTUI uses so a cell-grid (or here, a GUI) is not shredded
--- by REPL output. Returns the handle_command result.
+-- by REPL output. Git, compact and /until yield; they run on a studio thread
+-- so the SDL frame loop keeps pumping.
 function AgentView:run_slash(line)
   local cmd = line:match("^/(%S+)")
   if cmd == "exit" or cmd == "quit" then
@@ -548,31 +560,54 @@ function AgentView:run_slash(line)
     self:push("system", "commands are unavailable")
     return
   end
-  local buf = {}
-  local real_write, real_print = io.write, print
-  io.write = function(...)
-    for i = 1, select("#", ...) do buf[#buf + 1] = tostring((select(i, ...))) end
+  if self.busy then
+    self:push("system", "busy -- cancel the turn first")
+    return
   end
-  print = function(...)
-    local t = {}
-    for i = 1, select("#", ...) do t[#t + 1] = tostring((select(i, ...))) end
-    buf[#buf + 1] = table.concat(t, "\t") .. "\n"
+  local function body()
+    local buf = {}
+    local real_write, real_print = io.write, print
+    io.write = function(...)
+      for i = 1, select("#", ...) do buf[#buf + 1] = tostring((select(i, ...))) end
+    end
+    print = function(...)
+      local t = {}
+      for i = 1, select("#", ...) do t[#t + 1] = tostring((select(i, ...))) end
+      buf[#buf + 1] = table.concat(t, "\t") .. "\n"
+    end
+    local ok, brk = pcall(bog.handle_command, line)
+    io.write, print = real_write, real_print
+    local out = table.concat(buf):gsub("\27%[[%d;]*m", ""):gsub("%s+$", "")
+    if not ok then out = "command error: " .. tostring(brk) end
+    if cmd == "new" or cmd == "clear" or cmd == "resume" or cmd == "until"
+        or cmd == "react" or cmd == "compact" then
+      self:repaint((bog.session and bog.session.messages) or {})
+    end
+    if out ~= "" then self:push("system", out) end
+    if cmd == "mode" then
+      self.mode = perm.state().mode
+      self.approve_all = perm.state().approve_all
+    end
+    self.busy, self.status = false, "idle"
+    if type(brk) == "table" and brk.run then self:submit(brk.run) end
   end
-  local ok, brk = pcall(bog.handle_command, line)
-  io.write, print = real_write, real_print
-  local out = table.concat(buf):gsub("\27%[[%d;]*m", ""):gsub("%s+$", "")
-  if not ok then out = "command error: " .. tostring(brk) end
-  if cmd == "new" or cmd == "clear" or cmd == "resume" or cmd == "until"
-      or cmd == "react" or cmd == "compact" then
-    self:repaint((bog.session and bog.session.messages) or {})
+  -- Already on a studio thread: run here so sys.exec/compact can yield.
+  -- Live frame loop: hop off the SDL thread. Headless tests stub add_thread
+  -- as a no-op, so we detect that and run inline.
+  if coroutine.isyieldable() then
+    self.busy, self.status = true, "command"
+    body()
+    return
   end
-  if out ~= "" then self:push("system", out) end
-  if cmd == "mode" then
-    self.mode = perm.state().mode
-    self.approve_all = perm.state().approve_all
-  end
-  if type(brk) == "table" and brk.run then return brk end
-  return brk
+  self.busy, self.status = true, "command"
+  local n = 0
+  for _ in pairs(core.threads or {}) do n = n + 1 end
+  core.add_thread(body)
+  local n2 = 0
+  for _ in pairs(core.threads or {}) do n2 = n2 + 1 end
+  if n2 > n then return end
+  self.busy, self.status = false, "idle"
+  body()
 end
 
 function AgentView:cancel()
@@ -1751,7 +1786,7 @@ function AgentView:toolbar_items()
         command = "studio:toggle-sidebar" },
       { label = "New chat", command = "agent:new-session" },
       { label = "Chats",    command = "agent:resume-session" },
-      { label = "Recipes",  command = "agent:run-recipe" },
+      { label = "Prompts",  command = "agent:run-recipe" },
       { label = "Files",    command = "studio:toggle-files" },
       { label = "Open",     command = "studio:open-folder" },
       { label = "Tools",    command = "agent:show-tools" },
@@ -1779,7 +1814,7 @@ function AgentView:toolbar_items()
   local rest = {
     { label = "New chat", command = "agent:new-session" },
     { label = "Chats",    command = "agent:resume-session" },
-    { label = "Recipes",  command = "agent:run-recipe" },
+    { label = "Prompts",  command = "agent:run-recipe" },
     { label = "Files",    command = "studio:toggle-files" },
     { label = "Open",     command = "studio:open-folder" },
     { label = "Tools",    command = "agent:show-tools" },

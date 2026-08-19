@@ -85,15 +85,16 @@ end
 -- one.
 function M.autostart()
   if not M.available() then return false end
+  if bog.mcphost and bog.mcphost.conns[M.SERVER] then return true end
 
   local names, err = M.attach()
   if not names then
     -- couldn't connect: try to start the daemon, give it a moment, retry once
     if M.launch() then
-      -- A hard sleep freezes the studio frame loop. Yield a second when
-      -- we are inside a core thread; the CLI still waits in-process.
-      if coroutine.isyieldable() then coroutine.yield(1)
-      else pcall(sys.exec, "sleep 1", 3) end
+      -- A hard sleep freezes the studio frame loop. Yield a uv timer so
+      -- both the swarm scheduler (which treats a bare `1` as "runnable")
+      -- and a studio thread keep pumping.
+      require("proc").sleep(1)
       names, err = M.attach()
     end
   end

@@ -21,6 +21,9 @@ void boggart_http_shutdown(lua_State *L); /* src/lhttp.c: close raw uv handles b
 #elif __APPLE__
   #include <mach-o/dyld.h>
 #endif
+#ifndef _WIN32
+  #include <signal.h>
+#endif
 
 
 SDL_Window *window;
@@ -94,6 +97,12 @@ int main(int argc, char **argv) {
   HINSTANCE lib = LoadLibrary("user32.dll");
   int (*SetProcessDPIAware)() = (void*) GetProcAddress(lib, "SetProcessDPIAware");
   SetProcessDPIAware();
+#endif
+#ifndef _WIN32
+  /* MCP servers are stdio children. If one abort()s, a later write to the
+   * pipe is SIGPIPE. That must not take the window down; a dead MCP server
+   * is a missing tool, not a crash. The CLI already ignores it in termctl.c. */
+  signal(SIGPIPE, SIG_IGN);
 #endif
 
   if (!SDL_Init(SDL_INIT_VIDEO)) {

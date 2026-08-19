@@ -1289,8 +1289,10 @@ static int connect_stdio(mcpconn *c, lua_State *L, int spec_idx, const char **er
   stdio[0].data.stream = (uv_stream_t *)&io->cin;
   stdio[1].flags = (uv_stdio_flags)(UV_CREATE_PIPE | UV_WRITABLE_PIPE);
   stdio[1].data.stream = (uv_stream_t *)&io->cout;
-  stdio[2].flags = UV_INHERIT_FD; /* stderr stays ours: server logs pass through */
-  stdio[2].data.fd = 2;
+  /* stderr is not ours. A server that abort()s (llm-station does this on a
+   * ZMQ bind race) used to dump its backtrace into the studio's terminal
+   * and look like the window had crashed. UV_IGNORE: we do not care. */
+  stdio[2].flags = UV_IGNORE;
 
   uv_process_options_t opts;
   memset(&opts, 0, sizeof(opts));
@@ -1300,7 +1302,9 @@ static int connect_stdio(mcpconn *c, lua_State *L, int spec_idx, const char **er
   opts.stdio = stdio;
   opts.stdio_count = 3;
   opts.exit_cb = on_proc_exit;
-  opts.flags = UV_PROCESS_WINDOWS_HIDE;
+  /* Detached so a child abort() cannot signal this process group. Hide the
+   * console on Windows. The window must outlive any MCP server. */
+  opts.flags = UV_PROCESS_WINDOWS_HIDE | UV_PROCESS_DETACHED;
 
   io->proc.data = io;
   int rc = uv_spawn(g_loop, &io->proc, &opts);

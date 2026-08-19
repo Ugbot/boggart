@@ -649,17 +649,9 @@ function core.init()
   local script = os.getenv("BOGGART_STUDIO_SCRIPT")
   if script then core.try(dofile, script) end
 
-  -- First present happens in core.run before run_threads. This thread
-  -- therefore starts after the window is on screen. Yield once more so a
-  -- hung handshake cannot steal the first real frame after that.
-  -- Scripted ui-check skips it so the screenshot is not waiting on MCP.
-  if bog and bog.mode == "embedded" and not script then
-    core.add_thread(function()
-      coroutine.yield(0)
-      if bog.mcphost then bog.try(bog.mcphost.load) end
-      if bog.llmstation then bog.try(bog.llmstation.autostart) end
-    end)
-  end
+  -- MCP is started from studio.attach (studio.start_mcp), after the first
+  -- present. Starting it here as well spawned a second llm-station child
+  -- that abort()ed on a ZMQ bind race about two seconds after launch.
 
   for _, filename in ipairs(files) do
     core.root_view:open_doc(core.open_doc(filename))
@@ -996,14 +988,24 @@ local run_threads = coroutine.wrap(function()
         if coroutine.status(thread.cr) == "dead" then
           core.threads[k] = nil
         else
-          -- MCP's C client yields ("io", handle), the same protocol as
-          -- the swarm scheduler. Only a number is a sleep; anything else
-          -- means "run me again after the next frame".
+          -- MCP's C client yields ("io", handle), compact and git yield
+          -- ("proc", handle), the same protocol as the swarm scheduler. Only
+          -- a number is a sleep; anything else means "run me again after the
+          -- next frame", and we drain the uv loop so those handles actually
+          -- progress instead of spinning until the next SDL tick.
           wait = tonumber(wait)
           if wait then
             thread.wake = system.get_time() + wait
             minimal_time_to_wake = math.min(minimal_time_to_wake, wait)
           else
+            pcall(function()
+              local okuv, uv = pcall(require, "uv")
+              if okuv and uv and uv.run then uv.run("nowait") end
+            end)
+            pcall(function()
+              local h = rawget(_G, "http")
+              if h and h.pump then h.pump(0) end
+            end)
             minimal_time_to_wake = 0
           end
         end

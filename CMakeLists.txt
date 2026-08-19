@@ -647,6 +647,14 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
     DEPENDS boggart-studio
     COMMENT "Rendering the legacy studio composition and checking the agent panel"
     USES_TERMINAL)
+
+  add_custom_target(studio-start
+    COMMAND ${CMAKE_COMMAND} -E env
+      BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/uistart.lua
+      $<TARGET_FILE:boggart-studio> ${CMAKE_CURRENT_SOURCE_DIR}
+    DEPENDS boggart-studio
+    COMMENT "Starting boggart-studio and checking the first paint"
+    USES_TERMINAL)
 elseif(BOGGART_BUILD_APP)
   message(STATUS "SDL3 not found -- skipping boggart-studio (the CLI still builds)")
 endif()

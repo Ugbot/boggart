@@ -4,7 +4,7 @@
 -- normal skill allowlists (a skill can grant a whole server via mcp__<name>__*
 -- or individual tools). The client lives in C; this is only registration.
 local json = require("json")
-local M = { conns = {}, tools = {}, info = {} }
+local M = { conns = {}, tools = {}, info = {}, connecting = {} }
 
 -- Flatten an MCP tools/call result (a {content=[...], isError?} object, as JSON
 -- text) into a plain string for the tool_result.
@@ -70,7 +70,28 @@ function M.add(spec)
   if spec.name:find("[^%w_%-]") then
     return nil, "mcp server name must be [A-Za-z0-9_-]"
   end
-  local conn, err = mcp.connect(spec)
+  -- Reuse a live connection. Connecting the same server twice spawned a
+  -- second process that raced the first on a bind and abort()ed. Check the
+  -- in-flight sentinel BEFORE connect: mcp.connect yields, so a parallel
+  -- add of the same name used to pass the conns[] test and spawn a twin.
+  if M.conns[spec.name] then
+    return M.tools[spec.name] or {}
+  end
+  if M.connecting[spec.name] then
+    while M.connecting[spec.name] do
+      if not coroutine.isyieldable() then
+        return nil, "mcp server '" .. spec.name .. "' is already connecting"
+      end
+      coroutine.yield("io")
+    end
+    if M.conns[spec.name] then return M.tools[spec.name] or {} end
+  end
+  M.connecting[spec.name] = true
+  local okc, conn, err = pcall(function()
+    return mcp.connect(spec)
+  end)
+  M.connecting[spec.name] = nil
+  if not okc then return nil, conn end
   if not conn then return nil, err end
   M.conns[spec.name] = conn
   -- Which protocol generation the client negotiated with this server. The C

@@ -62,6 +62,22 @@ for _, must in ipairs {
   ok(loadfile(root .. "/" .. must) ~= nil, "present and compiles: " .. must)
 end
 
+-- MCP must start from one place. Two threads used to spawn two llm-station
+-- children; one abort()ed on a ZMQ bind race ~2s after the window appeared.
+do
+  local function slurp(rel)
+    local f = assert(io.open(root .. "/" .. rel, "r"))
+    local s = f:read("*a"); f:close(); return s
+  end
+  ok(not slurp("studio/data/core/init.lua"):find("llmstation%.autostart"),
+    "core.init does not start MCP a second time")
+  local n = 0
+  for _ in slurp("studio/data/core/studio.lua"):gmatch("llmstation%.autostart") do
+    n = n + 1
+  end
+  ok(n == 1, "studio starts MCP from one place (got " .. n .. ")")
+end
+
 -- ---------------------------------------------------------------------------
 -- The agent panel's text handling, headless
 -- ---------------------------------------------------------------------------
@@ -303,6 +319,13 @@ if loaded then
   -- A ```` block contains ``` blocks; the inner fences are content.
   ok(code_rows("````md\n```lua\nx\n```\n````", 60) == 3,
     "a longer fence is not closed by a shorter one")
+  -- Unknown fence languages used to crash syntax.get (nil header) and take
+  -- the window down on first paint of a resumed transcript.
+  local unk_ok, unk_n = pcall(code_rows, "```unknownlang\nhello\n```", 60)
+  ok(unk_ok and unk_n == 1,
+    "an unknown fence language still lays out as code (got "
+    .. tostring(unk_ok) .. ", " .. tostring(unk_n) .. ")")
+
 
   -- ---- the layout cache --------------------------------------------------
   local e = { role = "assistant", text = "AAAA BBBB" }
@@ -544,6 +567,7 @@ if loaded then
     ok(has_cmd("View", "studio:toggle-files"), "View menu toggles the file tree")
     ok(has_cmd("boggart", "agent:welcome"), "boggart menu has welcome")
     ok(has_cmd("File", "studio:open-folder"), "File menu has open-folder")
+    ok(has_cmd("Tools", "studio:open-panel"), "Tools menu opens the panel picker")
   end
 
   local oks, SV = pcall(require, "core.swarmview")

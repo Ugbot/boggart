@@ -104,6 +104,16 @@ do
   -- A legacy request carries no _meta: that field is the modern generation's.
   local tl = first_of(v1_trace, "tools/list")
   ok(tl and (tl.params == nil or tl.params._meta == nil), "v1: no _meta on requests")
+
+  local conn1 = bog.mcphost.conns["mock"]
+  local names2, err2 = bog.mcphost.add{ name = "mock", command = "python3",
+    args = { "tests/mock_mcp.py", "--era", "v1" } }
+  ok(names2 ~= nil, "second add of the same name succeeds (" .. tostring(err2) .. ")")
+  eq(bog.mcphost.conns["mock"], conn1, "second add reuses the live connection")
+  eq(#names2, 2, "second add still reports the registered tools")
+  ok(type(bog.mcphost.connecting) == "table"
+     and bog.mcphost.connecting["mock"] == nil,
+    "connecting sentinel is clear after add finishes")
 end
 
 -- ---- call MCP tools through the normal tool path ----
@@ -305,6 +315,21 @@ do
     -- adding the modern path must not have cost the legacy one its session.
     eq(hdrs(ltr, "tools/call")["mcp-session-id"], "mock-session-1", "v1 http: session id echoed back")
     eq(hdrs(ltr, "tools/call")["mcp-method"], nil, "v1 http: no modern mirror headers")
+  end
+end
+
+-- A dead MCP server is a failed tool call, not a process abort.
+do
+  local conn = bog.mcphost.conns["mock"]
+  ok(conn ~= nil, "mock conn still live before death test")
+  if conn then
+    conn:close()
+    local res, e = conn:call("echo", '{"text":"after-death"}')
+    ok(res == nil, "call after the server died returns nil, not a crash")
+    ok(e ~= nil, "call after death explains the failure")
+    local tool = bog.tools.run("mcp__mock__echo", { text = "hi" })
+    ok(type(tool) == "string" and tool:find("Tool error", 1, true),
+      "registry call after death is a tool error (got " .. tostring(tool) .. ")")
   end
 end
 

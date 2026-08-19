@@ -9,6 +9,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <signal.h>
+#endif
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -224,6 +227,11 @@ static int early_exit_flags(int argc, char **argv) {
 
 int main(int argc, char **argv) {
   if (early_exit_flags(argc, argv)) return 0;
+#ifndef _WIN32
+  /* MCP stdio children can abort. A later write is SIGPIPE; that is a
+   * dead tool, not a reason for this process to die. */
+  signal(SIGPIPE, SIG_IGN);
+#endif
   /* Counting allocator rather than luaL_newstate: the generated-tool memory
    * limit needs real byte counts, which the GC no longer reports for strings
    * on Lua 5.5. See src/lmem.c. */

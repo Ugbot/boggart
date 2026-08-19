@@ -314,7 +314,7 @@ function SidebarView:draw()
     return
   end
 
-  -- ---- New / Recipes ------------------------------------------------------
+  -- ---- New / Prompts ------------------------------------------------------
   local gap = style.padding.x * widgets.GAP
   local halfw = (w - gap) / 2
   local hovered = self.mouse and widgets.inside(
@@ -325,9 +325,9 @@ function SidebarView:draw()
   local rx = x + halfw + gap
   local rhov = self.mouse and widgets.inside(
     { x = rx, y = y, w = halfw, h = bh }, self.mouse.x, self.mouse.y)
-  add(widgets.button(font, "Recipes", rx, y,
+  add(widgets.button(font, "Prompts", rx, y,
         { w = halfw, hover = rhov }),
-      { label = "Recipes", command = "agent:run-recipe",
+      { label = "Prompts", command = "agent:run-recipe",
         action = function() command.perform("agent:run-recipe") end })
   y = y + bh + vpad * 1.5
 
@@ -407,33 +407,35 @@ function SidebarView:draw()
     if active or hov then
       renderer.draw_rect(x, y, w, lh, active and style.selection or style.line_highlight)
     end
-    -- Room kept for the × at all times, so the title does not reflow the instant
-    -- the row is hovered and the delete target does not jump under the cursor.
-    local xw = font:get_width("×") + pad
-    local label = fit(font, title, w - pad * 2 - xw)
+    -- Room kept for the delete control at all times, so the title does not
+    -- reflow on hover and the target does not jump under the cursor. Sized as
+    -- a real button (not a single × glyph): the hit box is the row height by
+    -- the width of "Yes", which is the armed label.
+    local dw = math.max(lh, widgets.width(font, "Yes"))
+    local label = fit(font, title, w - pad * 2 - dw)
     common.draw_text(font, active and style.text or style.dim, label,
       "left", x + pad / 2, y, w, lh)
 
-    -- Delete, guarded. The × shows on hover, or stays as "×?" on the row armed
-    -- for deletion; the first click arms this row, a second click on it confirms,
-    -- and opening any row disarms it. Registered BEFORE the row's open hit so a
-    -- click on the × lands on it first -- widgets.hit answers with the first rect
-    -- containing the point, so the destructive target has to be registered first.
+    -- Delete, guarded. Shows on hover, or stays as "Yes" on the armed row; the
+    -- first click arms, a second click confirms, opening any row disarms.
+    -- Registered BEFORE the row's open hit so a click on Del lands on it first.
     local armed = (self.confirm_delete == s.id)
     if hov or armed then
+      local bx = x + w - dw
       local dhov = self.mouse and widgets.inside(
-        { x = x + w - xw, y = y, w = xw, h = lh }, self.mouse.x, self.mouse.y)
-      common.draw_text(font,
-        armed and (style.error or style.text) or (dhov and style.text or style.dim),
-        armed and "×?" or "×", "left", x + w - xw + pad / 2, y, xw, lh)
-      add({ x = x + w - xw, y = y, w = xw, h = lh }, {
+        { x = bx, y = y, w = dw, h = lh }, self.mouse.x, self.mouse.y)
+      local r = widgets.button(font, armed and "Yes" or "Del", bx, y, {
+        w = dw, h = lh, hover = dhov, active = armed,
+        tone = armed and (style.error or style.text) or nil,
+      })
+      add(r, {
         id = "del" .. tostring(s.id),
         action = function()
           if self.confirm_delete == s.id then
             self.confirm_delete = nil
             require("core.studio").delete_session(s.id)
           else
-            self.confirm_delete = s.id      -- arm; the next click on × confirms
+            self.confirm_delete = s.id      -- arm; the next click on Yes confirms
           end
           core.redraw = true
         end,

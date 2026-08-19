@@ -160,6 +160,21 @@ function M.start(cmd, timeout_sec)
   return self
 end
 
+-- Cooperative sleep. Under a yieldable coroutine this arms a uv timer and
+-- yields "proc" until it fires, so the studio frame loop and the swarm
+-- scheduler keep turning; off a coroutine it is uv.sleep.
+function M.sleep(sec)
+  local ms = math.max(0, math.floor((tonumber(sec) or 0) * 1000 + 0.5))
+  if ms <= 0 then return end
+  local uv = require("uv")
+  if not coroutine.isyieldable() then uv.sleep(ms); return end
+  local t = uv.new_timer()
+  local done = false
+  uv.timer_start(t, ms, 0, function() done = true end)
+  while not done do coroutine.yield("proc", t) end
+  pcall(uv.close, t)
+end
+
 -- Convenience: run to completion. Under the cooperative scheduler this yields
 -- between polls so every other agent keeps running; off a coroutine it blocks
 -- on the loop.

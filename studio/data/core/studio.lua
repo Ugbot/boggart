@@ -72,16 +72,25 @@ local function attach_common(view)
     if bog.session and bog.session.id then view:repaint(bog.session.messages) end
   end)
   core.try(function() require("core.welcomeview").maybe_open() end)
-  if bog and bog.mode == "embedded" then
-    bog._mcp_loading = true
-    core.add_thread(function()
-      coroutine.yield()
-      if bog.mcphost then bog.try(bog.mcphost.load) end
-      if bog.llmstation then bog.try(bog.llmstation.autostart) end
-      bog._mcp_loading = false
-    end)
-  end
+  studio.start_mcp()
   return view
+end
+
+-- MCP after the first present, once. core.init used to start the same load in
+-- a second thread, so two llm-station children raced to bind ZMQ and one
+-- abort()ed about two seconds after the window appeared -- Crash Reporter,
+-- not a Lua error.txt.
+function studio.start_mcp()
+  if studio.mcp_started then return end
+  studio.mcp_started = true
+  if not (bog and bog.mode == "embedded") then return end
+  bog._mcp_loading = true
+  core.add_thread(function()
+    coroutine.yield()
+    if bog.mcphost then bog.try(bog.mcphost.load) end
+    if bog.llmstation then bog.try(bog.llmstation.autostart) end
+    bog._mcp_loading = false
+  end)
 end
 
 -- The old "agent tab + Chat/Code sidebar" window. Kept behind
@@ -299,8 +308,11 @@ function studio.start_pump()
         -- re-yielding it every frame. Park its actor while the decision is
         -- outstanding instead -- sub-agents are separate actors and keep going.
         local v = studio.agent_view()
+        local park = false
+        if v and v.pending and v.pending.decision == nil then park = true end
+        if bog.choice and bog.choice.decision == nil then park = true end
         if v and v.turn_id and sched.by_id[v.turn_id] then
-          sched.pause(v.turn_id, v.pending ~= nil and v.pending.decision == nil)
+          sched.pause(v.turn_id, park)
         end
         local ok, err = pcall(sched.step, false)
         if not ok then core.log_quiet("swarm scheduler: %s", tostring(err)) end
@@ -965,15 +977,19 @@ command.add(nil, {
     local frac, used = bog.api.context_fraction(bog.session)
     if used == 0 then studio.say("Nothing to compact yet."); return end
     core.log("compacting %d tokens (%d%%)...", used, math.floor(frac * 100 + 0.5))
-    -- Synchronous on purpose: this is a deliberate, user-initiated pause, and
-    -- the alternative is a second concurrent turn against the same session.
-    local ok, err = pcall(bog.api.compact, bog.session, {})
-    if not ok then core.error("compaction failed: %s", tostring(err)); return end
-    if v then
-      v:repaint(bog.session.messages)
-      v:push("system", "context compacted by hand")
-    end
-    core.log("compacted -- now %d tokens", select(2, bog.api.context_fraction(bog.session)))
+    if v then v.busy, v.status = true, "compacting" end
+    -- Compact yields "io" on the HTTP stream. Drive it on a studio thread so
+    -- the frame loop keeps pumping instead of freezing the window.
+    core.add_thread(function()
+      local ok, err = pcall(bog.api.compact, bog.session, {})
+      if v then v.busy, v.status = false, "idle" end
+      if not ok then core.error("compaction failed: %s", tostring(err)); return end
+      if v then
+        v:repaint(bog.session.messages)
+        v:push("system", "context compacted by hand")
+      end
+      core.log("compacted -- now %d tokens", select(2, bog.api.context_fraction(bog.session)))
+    end)
   end,
 
   ["agent:show-context"] = function()
@@ -1165,14 +1181,17 @@ command.add(nil, {
           for word in cmd:gmatch("%S+") do args[#args + 1] = word end
           spec = { name = name, command = table.remove(args, 1), args = args }
         end
-        local names, err = bog.mcphost.add(spec)
-        if not names then
-          core.error("mcp '%s': %s", name, tostring(err))
-          return
-        end
-        studio.save_mcp_server(spec)
-        core.log("connected '%s' (%d tools), saved to mcp_servers.lua",
-          name, #names)
+        local names, err
+        core.add_thread(function()
+          names, err = bog.mcphost.add(spec)
+          if not names then
+            core.error("mcp '%s': %s", name, tostring(err))
+            return
+          end
+          studio.save_mcp_server(spec)
+          core.log("connected '%s' (%d tools), saved to mcp_servers.lua",
+            name, #names)
+        end)
       end)
     end)
   end,
@@ -1244,19 +1263,19 @@ command.add(nil, {
       studio.say(recipes.VERSUS)
       local path = recipes.seed_example()
       if path then
-        studio.say("Wrote an example recipe, '%s'. Run it again to try it, "
-          .. "or edit it with 'agent: edit recipe'.", recipes.EXAMPLE_NAME)
+        studio.say("Wrote an example saved prompt, '%s'. Run it again to try it, "
+          .. "or edit it from Run → Edit saved prompt.", recipes.EXAMPLE_NAME)
         core.log_quiet("  %s", path)
       end
       return
     end
-    core.command_view:enter("Recipe:", function(text, item)
+    core.command_view:enter("Saved prompt:", function(text, item)
       local name = item or text
       local body = recipes.load(name)
-      if not body then core.error("no recipe '%s'", name); return end
+      if not body then core.error("no saved prompt '%s'", name); return end
       local v = studio.open_agent()
       recipes.prompt_params(body, function(filled)
-        v:push("system", "recipe: " .. name)
+        v:push("system", "saved prompt: " .. name)
         if v.send_prompt then v:send_prompt(filled)
         else v:submit(v:expand_mentions(filled)) end
       end)
@@ -1282,14 +1301,14 @@ command.add(nil, {
       core.error("nothing in the input to save -- type the prompt first")
       return
     end
-    prompt("Recipe name:", function(name)
+    prompt("Name this saved prompt:", function(name)
       if name == "" then return end
       name = name:gsub("[^%w_%-]", "-")
       local path = recipes.save(name, draft)
       local params = recipes.params(draft)
       core.log("saved %s%s", path, #params > 0
         and (" (parameters: " .. table.concat(params, ", ") .. ")") or "")
-      v:push("system", "saved recipe '" .. name .. "' -- {{name}} marks a parameter")
+      v:push("system", "saved prompt '" .. name .. "' -- {{name}} marks a parameter")
     end)
   end,
 
@@ -1301,7 +1320,7 @@ command.add(nil, {
       if path then core.log("Wrote an example to edit: %s", path) end
       return
     end
-    core.command_view:enter("Edit recipe:", function(text, item)
+    core.command_view:enter("Edit saved prompt:", function(text, item)
       local name = item or text
       if recipes.load(name) then
         core.root_view:open_doc(core.open_doc(recipes.path(name)))
@@ -1317,8 +1336,8 @@ command.add(nil, {
   -- version: repeat a recipe on an interval, visibly, in front of you.
   ["agent:schedule-recipe"] = function()
     local names = recipes.list()
-    if #names == 0 then studio.say("No recipes to schedule yet."); return end
-    core.command_view:enter("Schedule recipe:", function(text, item)
+    if #names == 0 then studio.say("No saved prompts to schedule yet."); return end
+    core.command_view:enter("Schedule saved prompt:", function(text, item)
       local name = item or text
       local body = recipes.load(name)
       if not body then return end

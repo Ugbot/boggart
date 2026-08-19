@@ -103,6 +103,7 @@ end
 
 
 function common.match_pattern(text, pattern, ...)
+  if type(text) ~= "string" then return false end
   if type(pattern) == "string" then
     return text:find(pattern, ...)
   end

@@ -1516,6 +1516,10 @@ end
 -- so this is behaviour-identical to the old direct call until skills are set.
 function M.run_turn(user_text, on_text)
   local sess = bog.session
+  if bog.active_session then
+    local ok, s = pcall(bog.active_session)
+    if ok and s then sess = s end
+  end
   local opts = sess.agent and sess.agent.opts
   if not opts and bog.thread and bog.thread.session_agent then
     local ok, rec = pcall(bog.thread.session_agent, sess)
