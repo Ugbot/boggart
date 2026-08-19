@@ -288,7 +288,8 @@ static int l_poll(lua_State *L) {
   const char *type =
       ev.type == TCEV_KEY    ? "key"    :
       ev.type == TCEV_RESIZE ? "resize" :
-      ev.type == TCEV_MOUSE  ? "mouse"  : "none";
+      ev.type == TCEV_MOUSE  ? "mouse"  :
+      ev.type == TCEV_PASTE  ? "paste"  : "none";
   lua_pushstring(L, type);
   lua_setfield(L, -2, "type");
 
@@ -299,6 +300,9 @@ static int l_poll(lua_State *L) {
       push_utf8(L, ev.codepoint);
       lua_setfield(L, -2, "char");
     }
+    if (ev.mods & TC_MOD_SHIFT) { lua_pushboolean(L, 1); lua_setfield(L, -2, "shift"); }
+    if (ev.mods & TC_MOD_ALT)   { lua_pushboolean(L, 1); lua_setfield(L, -2, "alt"); }
+    if (ev.mods & TC_MOD_CTRL)  { lua_pushboolean(L, 1); lua_setfield(L, -2, "ctrl"); }
   } else if (ev.type == TCEV_RESIZE) {
     lua_pushinteger(L, ev.mx);   /* termctl: width in mx  */
     lua_setfield(L, -2, "w");
@@ -311,6 +315,9 @@ static int l_poll(lua_State *L) {
     lua_setfield(L, -2, "my");
     lua_pushinteger(L, ev.mbutton);
     lua_setfield(L, -2, "button");
+  } else if (ev.type == TCEV_PASTE) {
+    lua_pushlstring(L, tc_paste_text(), tc_paste_len());
+    lua_setfield(L, -2, "text");
   }
   return 1;
 }

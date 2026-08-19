@@ -7,6 +7,10 @@ SQLite/FTS5 + linenoise) with a fully-mutable Lua harness, an Anthropic Messages
 API client, a durable local store (memory/sessions/kv), and a `swarm` mode that
 adds cooperative multi-agent fan-out over a C pub/sub bus with a SQLite journal.
 
+Product-surface comparisons (TUI chrome, studio, permissions, MCP UX) against
+**Codex, Goose, and Claude Code** live in [`peers.md`](./peers.md). This file
+stays the rebuild-the-kernel studies.
+
 ---
 
 ## 1. OpenClaw — personal AI assistant framework
@@ -125,6 +129,8 @@ boggart even **exceeds** Codex on two axes it doesn't have (runtime
 self-modification, and native multi-agent). The reachable-but-missing pieces are
 a well-defined additive list — with one heavy C lift (sandboxing) that is also
 the single most important gap.
+
+Front-end snapshot (composer vs permission bar vs studio): [`peers.md` §1](./peers.md).
 
 ### Scorecard
 

@@ -775,6 +775,13 @@ function SwarmView:draw()
   end
 end
 
+-- The FLEET workspace and `swarm:open` must share one roster: constructing
+-- a second SwarmView over the same scheduler is two UIs on one fleet.
+function SwarmView.ensure()
+  if not instance then instance = SwarmView() end
+  return instance
+end
+
 function SwarmView.open()
   local studio = core.studio
   if studio and not studio.legacy and studio.switch_workspace then
@@ -783,23 +790,15 @@ function SwarmView.open()
   end
   -- Singleton, reused wherever it lives -- see studio.open_settings for why the
   -- search is over the whole root and not just the primary node. A workspace can
-  -- stash a view OUT of the live tree, and get_node_for_view scoped to the
-  -- primary node would miss it, so a cross-workspace reopen built a SECOND
-  -- roster over the one process-global swarm. Search the whole root: bring a
-  -- found instance forward, re-home a stashed one, and construct only when there
-  -- is no instance at all.
-  if instance then
-    local node = core.root_view.root_node:get_node_for_view(instance)
-    if node then
-      node:set_active_view(instance)
-    else
-      core.root_view:get_primary_node():add_view(instance)
-    end
-    core.set_active_view(instance)
-    return instance
+  -- stash a view OUT of the live tree, so a cross-workspace reopen used to
+  -- build a SECOND roster over the one process-global swarm.
+  SwarmView.ensure()
+  local node = core.root_view.root_node:get_node_for_view(instance)
+  if node then
+    node:set_active_view(instance)
+  else
+    core.root_view:get_primary_node():add_view(instance)
   end
-  instance = SwarmView()
-  core.root_view:get_primary_node():add_view(instance)
   core.set_active_view(instance)
   return instance
 end

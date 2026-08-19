@@ -32,6 +32,11 @@ local syntax = require "core.syntax"
 -- view is one such front end. Reachable because boggart's own lua modules are
 -- on the require path (registered in C, bogembed) independently of lite's.
 local choose = require "choose"
+local perm = require "perm"
+local complete = require "core.agentcomplete"
+local mention = require "mention"
+local take = require "take"
+local keymap = require "core.keymap"
 
 local AgentView = View:extend()
 
@@ -45,25 +50,9 @@ local ROLE = {
   thinking  = { prefix = "",   color = "dim" },
 }
 
--- Tools that change the world. These are what an approval gate is for; read,
--- list and the model's own helpers are not worth interrupting for.
-local GATED = { write = true, edit = true, bash = true }
-
--- Permission modes. The same four goose settled on, because the space really
--- does have four useful points in it: never ask, always ask, ask about the
--- things that can break something, and do not use tools at all.
---
--- "smart" is the default and is not a risk model -- it is the GATED list
--- above. Calling it a judgement about risk would be overselling a table.
-local MODES = {
-  { id = "auto",   label = "Autonomous",     help = "tools run without asking" },
-  { id = "smart",  label = "Smart approval", help = "ask before writes, edits and commands" },
-  { id = "manual", label = "Manual approval", help = "ask before every tool" },
-  { id = "chat",   label = "Chat only",      help = "no tools at all" },
-}
-local MODE_BY_ID = {}
-for _, m in ipairs(MODES) do MODE_BY_ID[m.id] = m end
-AgentView.MODES = MODES
+-- Permission modes and the gated-tool list live in lua/perm.lua so a mode
+-- means the same thing in the studio, the cTUI and any other front end.
+AgentView.MODES = perm.MODES
 
 function AgentView:new()
   AgentView.super.new(self)
@@ -73,12 +62,20 @@ function AgentView:new()
   self.co = nil
   self.status = "idle"
   self.approve_all = false     -- "always allow" for this session
-  self.mode = "smart"          -- approval on by default, like goose/codex
-  self.tool_policy = {}        -- name -> "allow" | "ask" | "deny", overrides mode
+  self.mode = perm.state().mode -- shared with /mode and the cTUI
+  self.tool_policy = perm.state().tool_policy
+  if bog then
+    bog.copy_text = function(s) pcall(system.set_clipboard, s) end
+    bog.clear_ui = function()
+      self.entries = {}
+      self:push("system", "conversation cleared")
+    end
+  end
   self.pending = nil           -- { name, input, diff, path, decision }
   self.history, self.hpos = {}, 0
   self.docked = false
   self.mode_hit, self.model_hit = nil, nil
+  self:_load_history()
 
   -- The composer's modal context, in the neovim sense -- distinct from
   -- self.mode above, which is the approval policy. "insert" is a text field
@@ -100,7 +97,7 @@ function AgentView:new()
   self:push("system", "boggart " .. (bog and bog.version or "?")
     .. "   model " .. self:model())
   self:push("system",
-    "enter sends · shift+enter newline · esc cancels · ctrl+g toggles approval")
+    "enter sends · !cmd runs a shell · shift+enter / ctrl+j newline · tab completes · /commands · esc cancels · shift+tab cycles approval · ? shortcuts")
   if bog and not self:has_creds() then
     self:push("system", "No credentials. Command palette: 'agent: set api key',")
     self:push("system", "or 'agent: set endpoint' for a local server (ds4 on :8000).")
@@ -154,42 +151,18 @@ function AgentView:close_stream()
   if last then last.open = nil end
 end
 
--- @-mentions: "explain @src/lauth.c" attaches the file.
---
--- Expanded here, at the keystroke, rather than inside submit(): submit() is
--- also how studio sends a selection, and that payload is already a fenced
--- block which may legitimately contain an @. Attaching inline costs a turn of
--- context but saves a round trip through the read tool, which is the trade
--- every other coding agent makes for the file you have explicitly named.
-local MENTION_MAX = 64 * 1024
-
+-- @-mentions: "explain @src/lauth.c" attaches the file. Expanded at send
+-- time via lua/mention.lua so the cTUI and the studio attach the same files.
 function AgentView:expand_mentions(text)
-  local seen, attach = {}, {}
-  for path in text:gmatch("@([%w%._%-/~]+)") do
-    if not seen[path] then
-      seen[path] = true
-      local real = path:gsub("^~", sys.home())
-      -- Relative paths need no base: lite chdirs to the project directory at
-      -- startup, so the process cwd is already the project root.
-      local body = bog.util.read_file(real)
-      if body then
-        local note = ""
-        if #body > MENTION_MAX then
-          body = body:sub(1, MENTION_MAX)
-          note = string.format("\n... (truncated at %d KB)", MENTION_MAX // 1024)
-        end
-        attach[#attach + 1] = string.format("--- %s ---\n%s%s", path, body, note)
-        self:push("system", string.format("attached %s (%d bytes)", path, #body))
-      else
-        -- Not silently: an @ that did not resolve is nearly always a typo, and
-        -- the model answering confidently about a file it never saw is worse
-        -- than being told the path was wrong.
-        self:push("error", "no such file: " .. path)
-      end
+  local expanded, notes = mention.expand(text)
+  for _, n in ipairs(notes) do
+    if n.ok then
+      self:push("system", string.format("attached %s (%d bytes)", n.path, n.bytes))
+    else
+      self:push("error", "no such file: " .. n.path)
     end
   end
-  if #attach == 0 then return text end
-  return text .. "\n\n" .. table.concat(attach, "\n\n")
+  return expanded
 end
 
 -- Repaint the panel from a stored transcript.
@@ -260,29 +233,14 @@ end
 -- ---------------------------------------------------------------------------
 
 -- Build the record the UI shows and the coroutine waits on.
+-- Diffs use the studio differ (patience); the mode/policy decision is perm's.
 function AgentView:request_approval(name, input)
-  local rec = { name = name, input = input, decision = nil }
-  if name == "write" or name == "edit" then
-    local path = input.path
-    rec.path = path
-    local old = (path and bog.util.read_file(path)) or ""
-    local new
-    if name == "write" then
-      new = input.content or ""
-    else
-      -- Show what the edit would produce, without performing it. If `old`
-      -- does not occur exactly once the tool will refuse anyway, so we let it
-      -- through unreviewed and the model gets its normal validation error.
-      local first = old:find(input.old or "", 1, true)
-      local second = first and old:find(input.old or "", first + 1, true)
-      if not first or second then return nil end
-      new = old:sub(1, first - 1) .. (input.new or "")
-          .. old:sub(first + #(input.old or ""))
-    end
-    rec.diff = difflib.compute(old, new)
-    rec.summary = difflib.summary(rec.diff, path or "(no path)")
-  else
-    rec.summary = tostring(input.command or "")
+  local rec = perm.request(name, input)
+  -- An edit whose `old` is not unique is left for the tool to refuse; parking
+  -- a review of "we don't know what would change" is worse than letting it
+  -- fail with the normal validation error.
+  if (name == "write" or name == "edit") and rec.path and not rec.diff then
+    return nil
   end
   return rec
 end
@@ -292,28 +250,27 @@ end
 -- having one -- "manual approval, except never ask about read" is a reasonable
 -- thing to want and a mode alone cannot express it.
 function AgentView:policy_for(name)
-  local explicit = self.tool_policy[name]
-  if explicit then return explicit end
-  if self.mode == "chat" then return "deny" end
-  if self.mode == "auto" then return "allow" end
-  if self.approve_all then return "allow" end
-  if self.mode == "manual" then return "ask" end
-  return GATED[name] and "ask" or "allow"   -- smart
+  return perm.policy_for(name, self)
 end
 
 function AgentView:mode_label()
-  local m = MODE_BY_ID[self.mode]
-  return m and m.label or self.mode
+  return perm.mode_at(self.mode).label
 end
 
 function AgentView:set_mode(id)
-  if not MODE_BY_ID[id] then return false end
+  local found
+  for _, m in ipairs(perm.MODES) do if m.id == id then found = m end end
+  if not found then return false end
+  perm.set_mode(id)
   self.mode = id
   self.approve_all = false   -- a mode change is an explicit re-decision
-  self:push("system", "mode: " .. self:mode_label()
-    .. " -- " .. MODE_BY_ID[id].help)
+  self:push("system", "mode: " .. found.label .. " -- " .. found.help)
   core.redraw = true
   return true
+end
+
+function AgentView:cycle_mode()
+  return self:set_mode((perm.cycle(self.mode)))
 end
 
 function AgentView:decide(decision)
@@ -339,6 +296,7 @@ function AgentView:submit(text)
   end
   self.history[#self.history + 1] = text
   self.hpos = 0
+  self:_save_history()
   self:push("user", text)
   self.busy, self.status = true, "thinking"
   self.busy_since = system.get_time()
@@ -544,7 +502,77 @@ function AgentView:send()
   if t == "" then return end
   self:set_input("")
   self:set_edit_mode("insert")   -- sending is composing; land ready to type again
-  self:submit(self:expand_mentions(t))
+  complete.dismiss(self)
+  local p = take.parse(t)
+  if p.kind == "slash" then
+    local r = self:run_slash(p.line)
+    if type(r) == "table" and r.run then self:submit(r.run) end
+    return
+  end
+  if p.kind == "bash" then
+    self:push("user", "!" .. p.command)
+    local okb, out = take.run_bash(p.command)
+    self:push(okb and "system" or "error", out)
+    return
+  end
+  for _, n in ipairs(p.notes or {}) do
+    if n.ok then
+      self:push("system", string.format("attached %s (%d bytes)", n.path, n.bytes))
+    else
+      self:push("error", "no such file: " .. n.path)
+    end
+  end
+  self:submit(p.text)
+end
+
+-- Put `text` in the composer and send it, so recipes, automations and the
+-- "@ file" picker share slash commands, @-mentions and history with typing
+-- Enter. send() is the one door.
+function AgentView:send_prompt(text)
+  text = tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  if text == "" then return end
+  self:set_input(text)
+  self:send()
+end
+
+-- Run a `/command` and capture io.write/print into a system transcript entry,
+-- the same trick the cTUI uses so a cell-grid (or here, a GUI) is not shredded
+-- by REPL output. Returns the handle_command result.
+function AgentView:run_slash(line)
+  local cmd = line:match("^/(%S+)")
+  if cmd == "exit" or cmd == "quit" then
+    self:push("system", "this is the studio -- close the window to quit")
+    return
+  end
+  if not (bog and bog.handle_command) then
+    self:push("system", "commands are unavailable")
+    return
+  end
+  local buf = {}
+  local real_write, real_print = io.write, print
+  io.write = function(...)
+    for i = 1, select("#", ...) do buf[#buf + 1] = tostring((select(i, ...))) end
+  end
+  print = function(...)
+    local t = {}
+    for i = 1, select("#", ...) do t[#t + 1] = tostring((select(i, ...))) end
+    buf[#buf + 1] = table.concat(t, "\t") .. "\n"
+  end
+  local ok, brk = pcall(bog.handle_command, line)
+  io.write, print = real_write, real_print
+  local out = table.concat(buf):gsub("\27%[[%d;]*m", ""):gsub("%s+$", "")
+  if not ok then out = "command error: " .. tostring(brk) end
+  if cmd == "new" or cmd == "clear" or cmd == "resume" or cmd == "until"
+      or cmd == "react" or cmd == "compact" then
+    self:repaint((bog.session and bog.session.messages) or {})
+  end
+  if out ~= "" then self:push("system", out) end
+  if cmd == "mode" then
+    self.mode = perm.state().mode
+    self.approve_all = perm.state().approve_all
+  end
+  if type(brk) == "table" and brk.run then return brk end
+  return brk
 end
 
 function AgentView:cancel()
@@ -693,6 +721,47 @@ function AgentView:set_input(s)
   if #self.lines == 0 then self.lines = { "" } end
   self.cy = #self.lines
   self.cx = #self.lines[self.cy] + 1
+  complete.dismiss(self)
+end
+
+function AgentView:_hist_path()
+  return (bog and bog.userdir or "") .. "/history"
+end
+
+function AgentView:_load_history()
+  local f = io.open(self:_hist_path(), "r")
+  if not f then return end
+  for line in f:lines() do
+    if line ~= "" then self.history[#self.history + 1] = line end
+  end
+  f:close()
+end
+
+function AgentView:_save_history()
+  local h = self.history
+  while #h > 200 do table.remove(h, 1) end
+  local f = io.open(self:_hist_path(), "w")
+  if not f then return end
+  f:write(table.concat(h, "\n"))
+  if #h > 0 then f:write("\n") end
+  f:close()
+end
+
+function AgentView:jump_user(dir)
+  local idxs = {}
+  for i, e in ipairs(self.entries) do
+    if e.role == "user" then idxs[#idxs + 1] = i end
+  end
+  if #idxs == 0 then return end
+  local cur = self._user_i or (#idxs + (dir < 0 and 1 or 0))
+  cur = math.max(1, math.min(#idxs, cur + dir))
+  self._user_i = cur
+  local e = self.entries[idxs[cur]]
+  if e and e.content_y then
+    self.scroll.to.y = math.max(0, e.content_y)
+    self.scroll_to_end = false
+    core.redraw = true
+  end
 end
 
 -- Caret arithmetic. self.cx is a byte offset into the line -- the same index
@@ -757,7 +826,10 @@ function AgentView:on_text_input(text)
   -- spine's motions (j/k/gg/G) are claimed before they reach here, and anything
   -- else is swallowed rather than typed into the draft.
   if self.edit_mode == "normal" then
-    if text:match("^[iaoc:]$") then self:set_edit_mode("insert") end
+    if text:match("^[iaoc:]$") then self:set_edit_mode("insert")
+    elseif text == "{" then self:jump_user(-1)
+    elseif text == "}" then self:jump_user(1)
+    end
     return
   end
   -- Typing over a selection replaces it, which is what every text field does
@@ -767,6 +839,7 @@ function AgentView:on_text_input(text)
   local l = self.lines[self.cy]
   self.lines[self.cy] = l:sub(1, self.cx - 1) .. text .. l:sub(self.cx)
   self.cx = self.cx + #text
+  complete.refresh(self)
   core.redraw = true
 end
 
@@ -791,12 +864,19 @@ function AgentView:on_key_pressed(key)
       choose.decide(rec, { cancel = true }); core.redraw = true; return true
     end
     if #key == 1 and (self.edit_mode == "normal" or self:input_text() == "") then
-      for i, o in ipairs(rec.options) do
-        if o.key == key then
-          choose.decide(rec, { index = i }); core.redraw = true; return true
-        end
+      local i = choose.index_for_key(rec, key)
+      if i then
+        choose.decide(rec, { index = i }); core.redraw = true; return true
       end
     end
+  end
+
+  -- Tab completion overlay (and Shift-Tab mode cycle when the menu is closed).
+  -- Claimed before clipboard/history so a visible menu owns up/down/enter/esc.
+  if complete.on_key(self, key) then core.redraw = true; return true end
+  if key == "shift+tab" then
+    self:cycle_mode()
+    return true
   end
 
   -- ---- clipboard ---------------------------------------------------------
@@ -845,6 +925,7 @@ function AgentView:on_key_pressed(key)
         self.cx = #lines[#lines] + 1
       end
       self.sel_anchor = nil
+      complete.refresh(self)
       core.redraw = true
     end
     return true
@@ -869,7 +950,7 @@ function AgentView:on_key_pressed(key)
     self:send()
     return true
 
-  elseif key == "shift+return" then
+  elseif key == "shift+return" or key == "ctrl+j" then
     local l = self.lines[self.cy]
     local rest = l:sub(self.cx)
     self.lines[self.cy] = l:sub(1, self.cx - 1)
@@ -892,6 +973,7 @@ function AgentView:on_key_pressed(key)
       table.remove(self.lines, self.cy)
       self.cy = self.cy - 1
     end
+    complete.refresh(self)
     core.redraw = true
     return true
 
@@ -904,6 +986,7 @@ function AgentView:on_key_pressed(key)
     local head = l:sub(1, self.cx - 1):gsub("%s*%S+%s*$", "")
     self.lines[self.cy] = head .. l:sub(self.cx)
     self.cx = #head + 1
+    complete.refresh(self)
     core.redraw = true
     return true
 
@@ -1215,7 +1298,14 @@ end
 
 -- Word-wrap a coloured token row. Breaks at spaces where it can and inside a
 -- token only when a single word is wider than the column.
-local function wrap_tokens(tokens, cols)
+-- `hang` is an optional {color, text} prefix: it leads the first wrapped row
+-- and a blank indent of the same width leads continuations, so numbered and
+-- lettered lists keep their marker in a column instead of wrapping into the
+-- body. Matches termrender's wrap_runs hanging indent.
+local function wrap_tokens(tokens, cols, hang)
+  local hang_w = (hang and hang[2] and cols_of(hang[2])) or 0
+  if hang_w >= cols then hang, hang_w = nil, 0 end
+  local inner = math.max(1, cols - hang_w)
   local rows, cur, used = {}, {}, 0
   local function flush()
     if #cur > 0 then rows[#rows + 1] = cur; cur, used = {}, 0 end
@@ -1234,13 +1324,13 @@ local function wrap_tokens(tokens, cols)
       -- read-only, and this loop consumes it.
       local word = lead .. chunk
       local wlen = cols_of(word)
-      if used + wlen > cols and used > 0 then
+      if used + wlen > inner and used > 0 then
         flush()
         word = word:gsub("^%s+", "")   -- no leading space at the start of a row
         wlen = cols_of(word)
       end
-      while wlen > cols do   -- a single word longer than the column
-        local head, tail = split(word, cols)
+      while wlen > inner do   -- a single word longer than the column
+        local head, tail = split(word, inner)
         -- Only when the column is one cell wide and the character is two.
         -- Without it this loop takes nothing and runs forever.
         if head == "" then head = first_char(word); tail = word:sub(#head + 1) end
@@ -1262,6 +1352,17 @@ local function wrap_tokens(tokens, cols)
   end
   flush()
   if #rows == 0 then rows[1] = { { style.text, "" } } end
+  if hang then
+    local hung = {}
+    for i, row in ipairs(rows) do
+      local nr = {}
+      if i == 1 then nr[1] = hang
+      else nr[1] = { hang[1], string.rep(" ", hang_w) } end
+      for j, tok in ipairs(row) do nr[#nr + 1] = tok end
+      hung[i] = nr
+    end
+    rows = hung
+  end
   return rows
 end
 
@@ -1366,7 +1467,8 @@ function AgentView:layout(e, cols)
       local hashes, htext = line:match("^(#+)%s+(.*)$")
       local quote = line:match("^%s*>%s?(.*)$")
       local ind, bullet = line:match("^(%s*)[-*+]%s+()")
-      local num = line:match("^%s*%d+%.%s")
+      local numlead, numbody = line:match("^(%s*%d+[.)]%s+)(.*)$")
+      local letlead, letbody = line:match("^(%s*%l[.)]%s+)(.*)$")
 
       if hashes then
         body, col, bold = htext, style.accent, true
@@ -1376,18 +1478,26 @@ function AgentView:layout(e, cols)
       elseif bullet then
         body = line:sub(bullet)
         prefix = { style.accent, ind .. "- " }
-      elseif num then
-        -- Numbered lists keep their own marker; it is already meaningful.
-        body = line
+      elseif numlead then
+        body = numbody
+        prefix = { style.accent, numlead }
+      elseif letlead then
+        body = letbody
+        prefix = { style.accent, letlead }
       end
 
       local toks = inline(body, col)
       if bold then for _, t in ipairs(toks) do t.bold = true end end
-      if prefix then table.insert(toks, 1, prefix) end
-      if first and r.prefix ~= "" then
-        table.insert(toks, 1, { col, r.prefix })
+      local hang = prefix
+      -- Role prefix (› etc.) only on the first wrapped row of the entry, and
+      -- not mixed into a list hang -- lists already have their marker.
+      local role_prefix = (first and r.prefix ~= "") and { col, r.prefix } or nil
+      local wrap_hang = hang or role_prefix
+      if hang and role_prefix then
+        -- Keep the role glyph on the first list row by widening the hang.
+        wrap_hang = { hang[1], role_prefix[2] .. hang[2] }
       end
-      for _, row in ipairs(wrap_tokens(toks, cols)) do rows[#rows + 1] = row end
+      for _, row in ipairs(wrap_tokens(toks, cols, wrap_hang)) do rows[#rows + 1] = row end
       if hashes and #hashes <= 2 then rows[#rows + 1] = { rule = true, thin = true } end
     end
     first = false
@@ -1652,12 +1762,35 @@ function AgentView:toolbar_items()
         tone = busy and (style.warn or style.accent) or nil },
     }
   end
-  return {
-    { label = "New", command = "agent:new-session" },
+  if studio and studio.legacy == false then
+    return {
+      { label = "New", command = "agent:new-session" },
+      { label = busy and "Stop" or "Compact",
+        command = busy and "agent:cancel" or "agent:compact-now",
+        tone = busy and (style.warn or style.accent) or nil },
+    }
+  end
+  local sidebar = studio and studio.sidebar
+  local items = {}
+  if sidebar then
+    items[#items + 1] = { label = sidebar.visible and "<" or ">",
+      command = "studio:toggle-sidebar" }
+  end
+  local rest = {
+    { label = "New chat", command = "agent:new-session" },
+    { label = "Chats",    command = "agent:resume-session" },
+    { label = "Recipes",  command = "agent:run-recipe" },
+    { label = "Files",    command = "studio:toggle-files" },
+    { label = "Open",     command = "studio:open-folder" },
+    { label = "Tools",    command = "agent:show-tools" },
+    { label = "MCP",      command = "agent:list-mcp-servers" },
+    { label = "Settings", command = "agent:settings" },
     { label = busy and "Stop" or "Compact",
       command = busy and "agent:cancel" or "agent:compact-now",
       tone = busy and (style.warn or style.accent) or nil },
   }
+  for i = 1, #rest do items[#items + 1] = rest[i] end
+  return items
 end
 
 function AgentView:composer_items()
@@ -1772,7 +1905,8 @@ function AgentView:draw_choice(rec, x, y, w, cols, font, visible)
   local opt_rows = {}
   for _, o in ipairs(rec.options) do
     opt_rows[#opt_rows + 1] = wrap_tokens(
-      { { style.accent, o.key .. ") " }, { style.text, o.label } }, cols)
+      inline(o.label, style.text), cols,
+      { style.accent, o.key .. ") " })
   end
   local nrows = #prompt_rows
   for _, rs in ipairs(opt_rows) do nrows = nrows + #rs end
@@ -1911,6 +2045,7 @@ function AgentView:draw()
   self.char_w = charw
 
   for ei, e in ipairs(self.entries) do
+    e.content_y = (y + self.scroll.y) - body_top
     if e.role == "diff" and e.diff then
       if visible(y) then
         common.draw_text(font, style.dim, difflib.summary(e.diff, e.path or ""),
@@ -2241,7 +2376,27 @@ function AgentView:draw()
   end }
   self.hits[#self.hits + 1] = shit
 
+  complete.draw(self, {
+    font = font, x = x, w = w, y = iy, lh = lh, pad = pad,
+  })
+
   self:draw_scrollbar()
 end
+
+command.add(AgentView, {
+  ["agent:history-search"] = function()
+    local v = core.active_view
+    if not v or not v.history then return end
+    local items = {}
+    for i = #v.history, 1, -1 do items[#items + 1] = v.history[i] end
+    core.command_view:enter("History:", function(text, item)
+      v:set_input(item or text or "")
+      core.set_active_view(v)
+    end, function(text)
+      return common.fuzzy_match(items, text)
+    end)
+  end,
+})
+keymap.add { ["ctrl+r"] = "agent:history-search" }
 
 return AgentView

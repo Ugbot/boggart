@@ -640,11 +640,12 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
 
   add_custom_target(ui-check
     COMMAND ${CMAKE_COMMAND} -E env
+      BOGGART_STUDIO_LEGACY=1
       BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/uishot.lua
       BOGGART_STUDIO_SHOT=${CMAKE_CURRENT_BINARY_DIR}/studio-shot.bmp
       $<TARGET_FILE:boggart-studio> ${CMAKE_CURRENT_SOURCE_DIR}
     DEPENDS boggart-studio
-    COMMENT "Rendering boggart-studio and checking the agent panel"
+    COMMENT "Rendering the legacy studio composition and checking the agent panel"
     USES_TERMINAL)
 elseif(BOGGART_BUILD_APP)
   message(STATUS "SDL3 not found -- skipping boggart-studio (the CLI still builds)")
@@ -664,7 +665,7 @@ endif()
 # rule itself under test -- it still resolves %LOCALAPPDATA%, that just now
 # points somewhere disposable.
 enable_testing()
-foreach(suite test integration swarm mcp ltui sysfs bus jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal tui_input tui_agents vim luatool llmstation dispatch gitcmd choose)
+foreach(suite test integration swarm mcp ltui sysfs bus jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home}

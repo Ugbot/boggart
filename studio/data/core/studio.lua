@@ -1,8 +1,15 @@
--- studio.lua -- boggart-studio: the app layer over lite.
+-- studio.lua -- LEGACY window composition (boggart-studio app layer over lite).
 --
 -- Adds the agent panel, the commands that drive it, and the configuration
 -- surfaces (credentials, model, MCP servers, sessions). Loaded from
 -- core/init.lua after the editor is up.
+--
+-- THIS FILE'S attach() IS THE LEGACY LAYOUT: everything is a tab in the
+-- primary node, with SidebarView as the left rail. The default studio is the
+-- shell (studio/data/shell): menu bar + AGENT/EDIT/FLEET workspaces. Set
+-- BOGGART_STUDIO_LEGACY=1 to restore this composition. The engine -- AgentView,
+-- swarm setup, commands, recipes -- is still required by the shell; only the
+-- window chrome here is legacy.
 --
 -- Everything here is ordinary lite Lua and ordinary boggart Lua in one
 -- interpreter, which is the point: the agent can edit this file and reload it,
@@ -345,6 +352,12 @@ end
 -- Chat or Code. The rail layout maps these onto workspaces; the legacy
 -- attach still flips the Chat/Code segmented control and the file tree.
 function studio.show_surface(which)
+  -- In the shell those two surfaces are workspaces, not tabs in one node.
+  local sh = package.loaded["shell"]
+  if sh and sh.attached then
+    if which == "code" then sh.switch("edit") else studio.open_agent() end
+    return
+  end
   if not studio.legacy then
     if which == "code" then workspaces.show_files() else workspaces.show_chat() end
     return
@@ -410,6 +423,14 @@ function studio.delete_session(id)
 end
 
 function studio.toggle_agent()
+  -- In the shell, Chat/Code is AGENT/EDIT: the same two surfaces the legacy
+  -- sidebar's segmented control switched, now as workspaces.
+  local shell = package.loaded["shell"]
+  if shell and shell.attached then
+    if shell.current == "agent" then shell.switch("edit")
+    else studio.open_agent() end
+    return
+  end
   local v = studio.agent_view()
   if v and core.active_view == v then
     -- Focus back to the code rather than closing: losing the transcript
@@ -1236,9 +1257,22 @@ command.add(nil, {
       local v = studio.open_agent()
       recipes.prompt_params(body, function(filled)
         v:push("system", "recipe: " .. name)
-        v:submit(v:expand_mentions(filled))
+        if v.send_prompt then v:send_prompt(filled)
+        else v:submit(v:expand_mentions(filled)) end
       end)
     end, function(text) return common.fuzzy_match(names, text) end)
+  end,
+
+  -- ReAct: the goal supervisor with Thought → Act → Observe prompts. Sends
+  -- through /react so slash handling, the turn budget and the session save
+  -- stay one path with the REPL.
+  ["agent:react"] = function()
+    prompt("ReAct goal:", function(text)
+      if not text or text == "" then return end
+      local v = studio.open_agent()
+      if v.send_prompt then v:send_prompt("/react " .. text)
+      else v:submit(text) end
+    end)
   end,
 
   ["agent:save-recipe"] = function()
@@ -1411,6 +1445,11 @@ command.add(nil, {
   end,
 
   ["studio:toggle-files"] = function()
+    local sh = package.loaded["shell"]
+    if sh and sh.attached and sh.current ~= "edit" then
+      sh.switch("edit")
+      return
+    end
     if not studio.legacy then
       if workspaces.sidebar_mode == "tree" then
         workspaces.show_chat()
@@ -1423,7 +1462,19 @@ command.add(nil, {
   end,
 
   ["studio:toggle-sidebar"] = function()
-    if studio.sidebar then studio.sidebar:toggle() end
+    if studio.sidebar then
+      local sh = package.loaded["shell"]
+      if sh and sh.attached and sh.current ~= "agent" then
+        sh.switch("agent")
+        studio.sidebar.visible = true
+        return
+      end
+      studio.sidebar:toggle()
+    else
+      -- No rail (tests, or a composition that never docked one): the file tree
+      -- is the equivalent surface.
+      command.perform("treeview:toggle")
+    end
   end,
 
   ["studio:open-panel"] = function()

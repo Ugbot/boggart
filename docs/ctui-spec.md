@@ -39,12 +39,18 @@ colour language (the same hexes termrender uses).
 underline=true, reverse=true} (any subset), or nil. `x,y` 0-based, clipped.
 
 `ev` (event) is a table:
-    { type = "key" | "resize" | "mouse" | "none",
+    { type = "key" | "resize" | "mouse" | "paste" | "none",
       key  = "up|down|left|right|home|end|pageup|pagedown|enter|tab|backspace|
               esc|delete|insert|char|ctrl|f1..f12",   -- when type=="key"
       char = <codepoint>,   -- when key=="char" (the scalar) or key=="ctrl" (the letter)
+      shift, alt, ctrl,     -- booleans, when a modifier was held (type=="key")
+      text,                 -- when type=="paste" (bracketed-paste payload)
       w, h,                 -- when type=="resize"
       mx, my, button }      -- when type=="mouse" (0-based cell)
+
+Shift-Tab is `key="tab"` with `shift=true`. Ctrl-J / Shift-Enter are `key="enter"`
+with `ctrl` / `shift`. Alt+char is `key="char"` with `alt=true`. Bracketed paste
+is enabled for the life of `tc.init` and restored on shutdown.
 
 `tc.init` degrades gracefully with no tty (returns false; other calls are safe
 no-ops) so `--eval` harnesses do not wedge. Register in src/boggart.c and add
@@ -78,21 +84,22 @@ policy: `bog.complete` for Tab, `bog.repl_style` for colour. Pure state + logic,
 no terminal control of its own -- it renders to runs the layout blits.
 
     local Input = require("tui.input")
-    local box = Input.new{ history = {...} }        -- optional seeded history
-    local action, value = box:key(ev)               -- feed one tc key event
-      -- action: "submit" (value = the line), "cancel", or nil (edited in place)
-    box:runs(width) -> line_runs, cursor_col        -- styled runs + cursor column
-    box.line                                         -- current text
-    box.cursor                                       -- byte/'col' index
+    local box = Input.new{ history = {...}, history_file = path }
+    local action, value = box:key(ev)
+      -- action: "submit" (value = the line), "cancel", "stash", "editor",
+      --         "eof", "search", "redraw", or nil (edited in place)
+    box:runs(width) -> line_runs, cursor_col   -- one scrolled row (tests)
+    box:visual(width) -> rows, cursor_row, cursor_col
+    box:overlay_runs(width) -> menu or history-search run-lines
+    box.line / box.cursor
 
-Behaviour: insert printable chars; backspace/delete; left/right/home/end; history
-up/down; Enter -> "submit"; Ctrl-C or Esc on empty -> "cancel". Tab calls
-`bog.complete(line_up_to_cursor)`: with one candidate, insert it; with several,
-insert the common prefix (cycling is optional). `:runs` colours the line via
-`bog.repl_style` (a leading /command good or error, @file references marked),
-matching the scrolling REPL. Testable with synthetic events and stubbed
-bog.complete/bog.repl_style: assert line, cursor and submit for a scripted
-sequence, with no tty.
+Behaviour: insert printable chars and pastes; backspace/delete; left/right/home/end
+(and Alt-left/right for words); Up/Down move physical lines or history; Shift-Enter
+/ Ctrl-Enter / Ctrl-J insert a newline; Enter submits; Ctrl-C or Esc on empty
+cancels. Tab completes via `bog.complete` (one hit replaces; several insert the
+common prefix and open a pick menu). Ctrl-A/E/K/U/W/Y are readline. Ctrl-R is
+history search. Ctrl-S stashes the buffer. History is optional in-memory, or
+persisted when `history_file` is set.
 
 ## Integration (owned by the main agent, not fanned out)
 

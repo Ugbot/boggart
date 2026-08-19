@@ -74,11 +74,17 @@ extern "C" {
 #define TC_DEFAULT (-1)
 
 /* ---- event model -------------------------------------------------------- */
+/* Modifier bits for .mods (xterm encoding minus one: shift=1, alt=2, ctrl=4). */
+#define TC_MOD_SHIFT 1
+#define TC_MOD_ALT   2
+#define TC_MOD_CTRL  4
+
 enum tc_evtype {
     TCEV_NONE = 0,   /* poll timed out; nothing happened                     */
     TCEV_KEY,        /* a key was pressed; inspect .key / .codepoint         */
     TCEV_RESIZE,     /* terminal was resized; new size in .mx (w), .my (h)   */
-    TCEV_MOUSE       /* a mouse event; .mx/.my (0-based cell), .mbutton      */
+    TCEV_MOUSE,      /* a mouse event; .mx/.my (0-based cell), .mbutton      */
+    TCEV_PASTE       /* bracketed paste finished; bytes in tc_paste_text()   */
 };
 
 /* Logical keys. For TCK_CHAR the Unicode scalar is in .codepoint. For
@@ -103,10 +109,15 @@ typedef struct {
     int      type;       /* enum tc_evtype                                   */
     int      key;        /* enum tc_key (valid when type == TCEV_KEY)        */
     uint32_t codepoint;  /* Unicode scalar (TCK_CHAR) or ctrl letter (TCK_CTRL) */
-    int      mods;       /* reserved for modifier flags; currently 0         */
+    int      mods;       /* TC_MOD_* bits (shift/alt/ctrl)                   */
     int      mx, my;     /* mouse col/row (0-based) or, for RESIZE, w/h      */
     int      mbutton;    /* mouse button (0=left,1=middle,2=right,...)       */
 } tc_event;
+
+/* Bracketed-paste payload for the most recent TCEV_PASTE. Valid until the
+ * next paste event. Never NULL; length 0 when none. */
+const char *tc_paste_text(void);
+size_t      tc_paste_len(void);
 
 /* ---- lifecycle ---------------------------------------------------------- */
 

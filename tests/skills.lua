@@ -21,7 +21,7 @@ package.path = bog.userdir .. "/lua/?.lua;" .. package.path
 
 local MD = [[
 ---
-name: code-review
+name: diff-notes
 description: Review a diff for correctness
 allowed-tools: read, git_diff, bash
 ---
@@ -36,7 +36,7 @@ ok(skills.normalize_name("9lives") == nil, "leading digit rejected")
 
 -- ---- markdown parsing ------------------------------------------------------
 local skill, name = skills.parse_markdown(MD)
-ok(skill and name == "code_review", "frontmatter name parsed and normalised")
+ok(skill and name == "diff_notes", "frontmatter name parsed and normalised")
 ok(skill.description == "Review a diff for correctness", "description parsed")
 ok(#skill.tools == 3 and skill.tools[2] == "git_diff", "allowed-tools parsed")
 ok(skill.instructions:find("real defects"), "body becomes instructions")
@@ -48,7 +48,7 @@ ok(skills.validate({ tools = "nope" }):find("list of tool names"), "tools must b
 ok(skills.validate({ instructions = 5 }):find("string or a function"), "instructions type checked")
 
 -- ---- the compile step ------------------------------------------------------
-local src = skills.to_lua("code_review", skill, "SKILL.md")
+local src = skills.to_lua("diff_notes", skill, "SKILL.md")
 ok(load(src) ~= nil, "generated Lua compiles")
 ok(load(src)().description == skill.description, "generated Lua round-trips")
 local tricky = skills.to_lua("t", { description = "d", instructions = "has ]] inside", tools = {} })
@@ -57,24 +57,24 @@ ok(load(tricky) and load(tricky)().instructions == "has ]] inside",
 
 -- ---- import produces a real, requireable skill -----------------------------
 local iname, path = skills.import(MD, nil, "SKILL.md")
-ok(iname == "code_review" and path:find("code_review%.lua$"), "import writes a Lua skill file")
-local loaded = skills.load("code_review")
+ok(iname == "diff_notes" and path:find("diff_notes%.lua$"), "import writes a Lua skill file")
+local loaded = skills.load("diff_notes")
 ok(loaded and loaded.description == "Review a diff for correctness", "imported skill loads")
 
-local instr, allow, unknown = skills.resolve({ "code_review" })
-ok(instr:find("## Skill: code_review"), "resolve emits instructions")
+local instr, allow, unknown = skills.resolve({ "diff_notes" })
+ok(instr:find("## Skill: diff_notes"), "resolve emits instructions")
 ok(allow.git_diff and allow.read, "resolve grants the skill's tools")
 ok(#unknown == 0, "no unknowns for a real skill")
 
 -- ---- the gap that mattered: unknown skills are reported, not dropped -------
-local _, _, unk = skills.resolve({ "code_review", "gti_worktree" })
+local _, _, unk = skills.resolve({ "diff_notes", "gti_worktree" })
 ok(#unk == 1 and unk[1] == "gti_worktree", "a misspelled skill is reported")
 
 -- ---- listing ---------------------------------------------------------------
 local byname = {}
 for _, r in ipairs(skills.list()) do byname[r.name] = r.source end
 ok(byname.core == "builtin", "list includes baked-in skills")
-ok(byname.code_review == "overlay", "list includes imported overlay skills")
+ok(byname.diff_notes == "overlay", "list includes imported overlay skills")
 
 -- ---- wiring + the tools through the real registry --------------------------
 ok(tools.registry.skills ~= nil, "skills tool registered")
@@ -90,7 +90,7 @@ ok(tools.run("define_skill", { name = "hand-made", instructions = "do the thing"
 ok(skills.load("hand_made").tools[1] == "read", "defined skill persisted with its tools")
 ok(tools.run("define_skill", { name = "1bad", instructions = "x" }):find("invalid skill name"),
    "define_skill rejects a bad name")
-ok(tools.run("skills"):find("code_review"), "skills tool lists them")
+ok(tools.run("skills"):find("diff_notes"), "skills tool lists them")
 ok(tools.run("skills", { name = "nope" }):find("no skill named"), "skills tool reports unknown")
 
 -- ---- skills that carry CODE (`provides`, a table keyed by tool name) --------
@@ -197,6 +197,39 @@ do
   ok(allow["bash"], "resolve also grants the fallback skill's tools")
   ok(instr:find("prefer station") and not instr:find("use grep"),
      "a fallback contributes tools, not a second instruction block")
+end
+
+-- ---- invocation (model vs user) --------------------------------------------
+ok(skills.validate({ instructions = "i", invocation = "model" }) == nil, "invocation=model ok")
+ok(skills.validate({ instructions = "i", invocation = "user" }) == nil, "invocation=user ok")
+ok(skills.validate({ instructions = "i", invocation = "both" }):find("invocation"),
+   "bad invocation rejected")
+
+local UMD = [[
+---
+name: only-user
+description: User-only interview skill
+disable-model-invocation: true
+---
+Ask hard questions.
+]]
+local uskill = skills.parse_markdown(UMD)
+ok(uskill and uskill.invocation == "user", "disable-model-invocation maps to user")
+
+-- baked gold skills load and lint clean
+for _, n in ipairs({ "tdd", "diagnosing_bugs", "code_review", "research",
+                     "resolving_merge_conflicts", "grilling", "grill_me" }) do
+  local s = skills.load(n)
+  ok(s ~= nil, "gold skill loads: " .. n)
+  if s then
+    local lint = skills.lint(n)
+    ok(lint.ok, "gold skill lints: " .. n .. (lint.ok and "" or (" " .. table.concat(lint.issues, "; "))))
+    if n == "grill_me" then
+      ok(s.invocation == "user", "grill_me is user-invoked")
+    else
+      ok(s.invocation == "model", n .. " is model-invoked")
+    end
+  end
 end
 
 sys.rmtree(bog.userdir)

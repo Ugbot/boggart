@@ -1,5 +1,10 @@
 -- sidebarview.lua -- the session list that lives in the one sidebar slot.
 --
+-- Used by the default workspaces attach and by the legacy studio composition
+-- (core.studio.attach_legacy / BOGGART_STUDIO_LEGACY=1). The experimental
+-- shell does not reuse this view as a Chat/Code control: sessions live in the
+-- Agent menu when it is docked as a recents rail (`shell_rail`).
+--
 -- Chat puts this view in the locked leaf. Files swaps the file tree into
 -- the same leaf. More is the rail popover, not a second list here. The
 -- legacy attach (BOGGART_STUDIO_LEGACY) still draws the Chat/Code
@@ -189,12 +194,13 @@ function SidebarView:update()
   -- left intact, so the results stay on screen until cleared with escape or ×.
   if self.searching and core.active_view ~= self then self.searching = false end
 
-  -- Legacy only: the segmented control follows what is actually on screen.
-  if core.studio and core.studio.legacy then
+  -- Follow Chat/Code when this is the legacy segmented rail, not the
+  -- workspaces sidebar (studio.legacy == false) or a shell recents dock.
+  if not self.shell_rail and not (core.studio and core.studio.legacy == false) then
     local active = core.active_view
     if active then
       if active.doc then self.tab = "code"
-      elseif active == core.studio.view then self.tab = "chat" end
+      elseif active == (core.studio and core.studio.view) then self.tab = "chat" end
     end
   end
 
@@ -466,6 +472,8 @@ end
 -- time rather than captured now.
 command.add(nil, {
   ["agent:search-sessions"] = function()
+    local sh = package.loaded["shell"]
+    if sh and sh.attached then sh.switch("agent") end
     local sb = core.studio and core.studio.sidebar
     if sb then sb:focus_search() end
   end,

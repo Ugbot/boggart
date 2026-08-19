@@ -273,12 +273,17 @@ end
 
 -- Greedy word wrap to `width` columns. Leading whitespace is dropped at the
 -- start of a wrapped row, and a single word wider than the column is hard-split
--- (so a long URL wraps rather than blowing past the margin). width nil == no
--- wrap: one row.
+-- (so a long URL wraps rather than blowing past the margin). Trailing whitespace
+-- on a flushed row is dropped so a space that fitted before an overflowing word
+-- does not pad the line out to the margin (and, in the scrolling REPL, trip the
+-- terminal's autowrap). width nil == no wrap: one row.
 local function pack(pieces, width)
   if not width or width < 1 then return { pieces } end
   local rows, cur, used = {}, {}, 0
-  local function flush() rows[#rows + 1] = cur; cur, used = {}, 0 end
+  local function flush()
+    while #cur > 0 and cur[#cur].kind == "ws" do cur[#cur] = nil end
+    rows[#rows + 1] = cur; cur, used = {}, 0
+  end
   for _, p in ipairs(pieces) do
     local pl = vis_len(p.text)
     if p.kind == "ws" then
@@ -314,6 +319,13 @@ end
 -- run of same-styled words becomes a single span rather than one per word.
 local function wrap_runs(tokens, width, prefix)
   local plen = prefix and vis_len(prefix.text) or 0
+  -- A hang wider than the column cannot lead a row without overflowing. Fold
+  -- the marker into the body and wrap at full width so the line still fits.
+  if width and prefix and plen >= width then
+    local folded = { { text = prefix.text, hex = prefix.hex, bold = prefix.bold } }
+    for i = 1, #tokens do folded[#folded + 1] = tokens[i] end
+    tokens, prefix, plen = folded, nil, 0
+  end
   local inner = width and math.max(1, width - plen) or nil
   local rows = pack(split_pieces(tokens), inner)
   local lines = {}
@@ -481,7 +493,8 @@ local function md_line_runs(line, width)
   local hashes, htext = line:match("^(#+)%s+(.*)$")
   local quote = line:match("^%s*>%s?(.*)$")
   local ind, bullet = line:match("^(%s*)[-*+]%s+(.*)$")
-  local numlead, numbody = line:match("^(%s*%d+%.%s+)(.*)$")
+  local numlead, numbody = line:match("^(%s*%d+[.)]%s+)(.*)$")
+  local letlead, letbody = line:match("^(%s*%l[.)]%s+)(.*)$")
 
   if hashes then
     local toks = inline(htext, PAL.accent)
@@ -501,6 +514,9 @@ local function md_line_runs(line, width)
   elseif numlead then
     return wrap_runs(inline(numbody, PAL.text), width,
       { text = numlead, hex = PAL.accent })
+  elseif letlead then
+    return wrap_runs(inline(letbody, PAL.text), width,
+      { text = letlead, hex = PAL.accent })
   else
     return wrap_runs(inline(line, PAL.text), width, nil)
   end
@@ -818,6 +834,21 @@ function M.runs(entry, opts)
   entry = entry or {}
   local fn = RUNS[entry.role or "assistant"] or assistant_runs
   return fn(entry, opts)
+end
+
+-- The one wrap. tokens are { { text, hex, bold?, italic?, underline? }, ... };
+-- prefix is an optional hanging { text, hex, bold } that leads the first row
+-- (continuations get a blank indent of the same width). Callers that are not
+-- markdown -- choose menus, a status line -- wrap here rather than minting a
+-- second packer.
+function M.wrap(tokens, width, prefix)
+  tokens = tokens or { { text = "", hex = PAL.text } }
+  return wrap_runs(tokens, width, prefix)
+end
+
+-- Serialise already-built run-lines to ANSI (or plain text when colour is off).
+function M.ansi(lines, opts)
+  return serialise(lines or {}, opts)
 end
 
 -- ---------------------------------------------------------------------------

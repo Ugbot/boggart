@@ -61,6 +61,20 @@ local function session_items()
   return out
 end
 
+-- Skills as slash completions. Names collide with commands are skipped so /help
+-- and /model stay commands; everything else is offered as /<skill>.
+local function skill_items()
+  local out = {}
+  local rows = safe(function() return require("skills").list() end) or {}
+  for _, r in ipairs(rows) do
+    if r.name and not M.map[r.name] then
+      out[#out + 1] = { text = "/" .. r.name, help = "skill" }
+    end
+  end
+  table.sort(out, function(a, b) return a.text < b.text end)
+  return out
+end
+
 -- Overlay files under ~/.boggart/lua, which is what /reset deletes. Names only,
 -- without the .lua, because that is how /reset names them.
 local function overlay_names()
@@ -103,7 +117,14 @@ M.commands = {
   { name = "effort",   help = "reasoning effort: minimal | low | medium | high | none (models that support it)" },
   { name = "agents",   help = "live fleet status: how many agents are running and what each is doing" },
   { name = "until",    help = "run turns until a goal is met, or the budget is spent" },
+  { name = "react",    help = "ReAct loop: Thought → Act → Observe until the goal is met" },
   { name = "new",      help = "start a fresh conversation (new saved session)" },
+  { name = "clear",    help = "clear the conversation (same as /new, also wipes the transcript)" },
+  { name = "compact",  help = "summarise the conversation to free context" },
+  { name = "cost",     help = "show estimated token spend for this conversation" },
+  { name = "copy",     help = "copy the last assistant reply" },
+  { name = "mode",     help = "approval mode: auto | smart | manual | chat",
+                       args = { "auto", "smart", "manual", "chat" } },
   { name = "dispatch", help = "optional auto-routing: hand different-enough requests to a specialist",
                        args = { "on", "off" } },
   -- common git tasks: run directly, fall back to the model on failure
@@ -130,7 +151,7 @@ function M.help_text()
     local arg = c.args and " <arg>" or ""
     L[#L + 1] = string.format("  /%-14s %s", c.name .. arg, c.help)
   end
-  L[#L + 1] = "Anything else is sent to the agent. @path references a file."
+  L[#L + 1] = "Anything else is sent to the agent. @path references a file. /<skill> follows a named skill."
   return table.concat(L, "\n") .. "\n"
 end
 
@@ -143,21 +164,86 @@ local filter
 -- for path arguments. The '@' (when present) is kept on the returned text so the
 -- token round-trips; a directory gets a trailing '/'. Dotfiles are hidden unless
 -- the leaf being typed already starts with a dot.
+--
+-- `@lua/comp` is path-shaped: list that directory. `@complete` has no slash, so
+-- also search the tree by basename (lua/complete.lua), which is what people
+-- mean by "at-symbol autocomplete".
+local SKIP_WALK = {
+  [".git"] = true, [".hg"] = true, [".svn"] = true, [".cache"] = true,
+  node_modules = true, __pycache__ = true, CMakeFiles = true,
+  vendor = true, build = true,
+}
+local WALK_CAP, WALK_DEPTH = 48, 8
+
+local function expand_path(p)
+  if p == "" or p == "." then return "." end
+  if p == "~" then return (sys.home and sys.home()) or "." end
+  if p:sub(1, 2) == "~/" then
+    return ((sys.home and sys.home()) or ".") .. p:sub(2)
+  end
+  return p
+end
+
 local function file_items(word)
   local at = word:sub(1, 1) == "@"
   local raw = at and word:sub(2) or word
+  local prefix = at and "@" or ""
   local dir, leaf = raw:match("^(.*/)([^/]*)$")
   if not dir then dir, leaf = "", raw end
-  local listdir = (dir == "" and ".") or dir
-  local out = {}
-  for _, f in ipairs(safe(function() return sys.listdir(listdir) end) or {}) do
-    local hit = f:sub(1, #leaf) == leaf
-    if hit and (leaf:sub(1, 1) == "." or f:sub(1, 1) ~= ".") then
-      local full = dir .. f
-      if sys.stat(full) == "dir" then full = full .. "/" end
-      out[#out + 1] = { text = (at and "@" or "") .. full }
+  local hide_dot = leaf:sub(1, 1) ~= "."
+  local out, seen = {}, {}
+
+  local function add(rel, isdir)
+    if isdir and rel:sub(-1) ~= "/" then rel = rel .. "/" end
+    local text = prefix .. rel
+    if seen[text] then return end
+    seen[text] = true
+    out[#out + 1] = { text = text, help = isdir and "dir" or "file" }
+  end
+
+  local function list_dir(typed, real, leaf_pfx)
+    real = expand_path(real)
+    local names = safe(function() return sys.listdir(real) end) or {}
+    table.sort(names)
+    for _, f in ipairs(names) do
+      if f:sub(1, #leaf_pfx) == leaf_pfx and (not hide_dot or f:sub(1, 1) ~= ".") then
+        local disk = (real == "." and f) or (real:gsub("/$", "") .. "/" .. f)
+        add(typed .. f, sys.stat(disk) == "dir")
+      end
     end
   end
+
+  list_dir(dir, dir == "" and "." or dir, leaf)
+
+  -- `@name` with no slash: cwd listing is not enough. Walk for a basename or
+  -- relative-path prefix, skipping build/vcs trees so Tab stays snappy.
+  if dir == "" and leaf ~= "" then
+    local q = leaf:lower()
+    local function walk(base, depth)
+      if #out >= WALK_CAP or depth > WALK_DEPTH then return end
+      local names = safe(function() return sys.listdir(base) end) or {}
+      for _, f in ipairs(names) do
+        if #out >= WALK_CAP then return end
+        if not SKIP_WALK[f] and not (hide_dot and f:sub(1, 1) == ".") then
+          local rel = (base == "." and f) or (base .. "/" .. f)
+          local kind = sys.stat(rel)
+          local fl, rl = f:lower(), rel:lower()
+          if fl:sub(1, #q) == q or rl:sub(1, #q) == q then
+            add(rel, kind == "dir")
+          end
+          if kind == "dir" then walk(rel, depth + 1) end
+        end
+      end
+    end
+    walk(".", 0)
+  end
+
+  table.sort(out, function(a, b)
+    local da, db = a.text:sub(-1) == "/", b.text:sub(-1) == "/"
+    if da ~= db then return da end
+    if #a.text ~= #b.text then return #a.text < #b.text end
+    return a.text < b.text
+  end)
   return out
 end
 
@@ -186,8 +272,10 @@ function M.complete(prefix)
   local first_word = not before:find("%S")     -- nothing but space before us
 
   -- An @file reference is completed wherever it appears -- as a command
-  -- argument, or in free prose the agent will read.
-  if word:sub(1, 1) == "@" then return filter(file_items(word), word) end
+  -- argument, or in free prose the agent will read. file_items already
+  -- filters (including basename search), so a second prefix filter would
+  -- drop `@lua/complete.lua` when the user typed `@complete`.
+  if word:sub(1, 1) == "@" then return file_items(word) end
 
   if first_word then
     -- Completing the command itself. Only offer when it looks like a command;
@@ -195,6 +283,7 @@ function M.complete(prefix)
     if word:sub(1, 1) ~= "/" and word ~= "" then return {} end
     local out = {}
     for _, c in ipairs(M.commands) do out[#out + 1] = { text = "/" .. c.name, help = c.help } end
+    for _, s in ipairs(skill_items()) do out[#out + 1] = s end
     return filter(out, word)
   end
 

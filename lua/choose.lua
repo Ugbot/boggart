@@ -22,25 +22,93 @@
 --   bog.choose_ask  -- a SYNC resolver a REPL registers: fn(rec) -> decision
 -- A decision is { index = i } | { text = "…" } | { cancel = true }.
 local events = require("events")
+local termrender = require("termrender")
 
 local M = {}
 local KEYS = "abcdefghijklmnopqrstuvwxyz"
+local ACCENT, TEXT, DIM = "e1e1e6", "97979c", "525257"
 
--- Render the menu as plain text -- the REPL prompt, and the headless fallback.
-function M.render(rec)
-  local t = { rec.prompt }
-  for _, o in ipairs(rec.options) do t[#t + 1] = "  " .. o.key .. ") " .. o.label end
-  if rec.allow_input then t[#t + 1] = "  (or type your own answer)" end
+local function vis_len(s)
+  s = tostring(s or "")
+  if sys and sys.width then return sys.width(s) end
+  local n = utf8 and utf8.len(s)
+  return n or #s
+end
+
+local function wrap_width(width)
+  if width == nil then return nil end
+  return math.max(8, math.floor(tonumber(width) or 80))
+end
+
+-- Styled run-lines for every surface. Prompt and each option wrap through
+-- termrender.wrap (Contract B: one wrap) with a hanging indent under `a) `
+-- so lists stay enumerated instead of clipping or autowrapping at column 0.
+function M.runs(rec, width)
+  width = wrap_width(width)
+  local lines = {}
+  local function add(tokens, prefix)
+    for _, ln in ipairs(termrender.wrap(tokens, width, prefix)) do
+      lines[#lines + 1] = ln
+    end
+  end
+  for line in (tostring(rec.prompt or "Choose:") .. "\n"):gmatch("(.-)\n") do
+    add({ { text = line, hex = ACCENT } })
+  end
+  for _, o in ipairs(rec.options or {}) do
+    local pfx = { text = tostring(o.key) .. ") ", hex = ACCENT }
+    local hang = string.rep(" ", vis_len(pfx.text))
+    local first = true
+    for line in (tostring(o.label) .. "\n"):gmatch("(.-)\n") do
+      if first then
+        add({ { text = line, hex = TEXT } }, pfx)
+        first = false
+      else
+        add({ { text = line, hex = TEXT } }, { text = hang })
+      end
+    end
+  end
+  if rec.allow_input then
+    add({ { text = "(press a letter, or type your own answer)", hex = DIM } })
+  end
+  return lines
+end
+
+-- Plain text (or ANSI when color=true). `width` is display columns; nil means
+-- no wrap -- one source line per option, for headless logs.
+function M.render(rec, width, color)
+  local lines = M.runs(rec, width)
+  if color then return termrender.ansi(lines, { width = wrap_width(width), color = true }) end
+  local t = {}
+  for i, ln in ipairs(lines) do
+    local row = {}
+    for _, r in ipairs(ln) do row[#row + 1] = r.text end
+    t[i] = table.concat(row)
+  end
   return table.concat(t, "\n")
 end
 
--- Map a typed line to a decision: a lone option letter picks it, else it's input.
+-- Which option a typed key refers to: the option's own key, or the positional
+-- a/b/c letter (so a numbered menu still answers to `a`).
+function M.index_for_key(rec, k)
+  if type(k) ~= "string" or k == "" then return nil end
+  k = k:lower()
+  for i, o in ipairs(rec.options or {}) do
+    if o.key == k then return i end
+  end
+  if #k == 1 then
+    local idx = KEYS:find(k, 1, true)
+    if idx and rec.options[idx] then return idx end
+  end
+  return nil
+end
+
+-- Map a typed line to a decision: a lone option letter/digit picks it, else input.
 function M.parse_line(rec, line)
   line = (line or ""):gsub("^%s+", ""):gsub("%s+$", "")
   if line == "" then return { cancel = true } end
   if #line == 1 then
-    local k = line:lower()
-    for i, o in ipairs(rec.options) do if o.key == k then return { index = i } end end
+    local i = M.index_for_key(rec, line)
+    if i then return { index = i } end
   end
   return { text = line }
 end
@@ -74,16 +142,22 @@ function M.build(a)
   if type(a.options) ~= "table" or #a.options == 0 then
     return nil, "choose needs a non-empty `options` array of { label, prompt|run }"
   end
-  local opts = {}
+  local opts, used = {}, {}
   for i, o in ipairs(a.options) do
     if type(o) ~= "table" or type(o.label) ~= "string" or o.label == "" then
       return nil, "option " .. i .. " needs a string `label`"
     end
-    opts[i] = {
-      key = (type(o.key) == "string" and o.key ~= "" and o.key:sub(1, 1):lower())
-        or KEYS:sub(i, i),
-      label = o.label, prompt = o.prompt, run = o.run,
-    }
+    local k = (type(o.key) == "string" and o.key ~= "" and o.key:sub(1, 1):lower()) or nil
+    if not k or used[k] then
+      k = nil
+      for j = 1, #KEYS do
+        local cand = KEYS:sub(j, j)
+        if not used[cand] then k = cand; break end
+      end
+    end
+    if not k then return nil, "too many options (max " .. #KEYS .. ")" end
+    used[k] = true
+    opts[i] = { key = k, label = o.label, prompt = o.prompt, run = o.run }
   end
   return { prompt = tostring(a.prompt or "Choose:"), options = opts,
            allow_input = a.input ~= false, decision = nil }

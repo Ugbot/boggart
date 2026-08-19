@@ -59,6 +59,31 @@ ok(out:find("git_worktree"), "find_skill surfaces the match")
 ok(tools.run("find_skill", {}):find("requires 'query'"), "missing query is a typed error")
 ok(tools.run("find_skill", { query = "zzznope" }):find("no skills match"), "no-match points at `skills`")
 
+-- user-invoked skills stay out of the default corpus / find_skill
+assert(skills.save("secret_grill", {
+  description = "user only grilling interview stress test",
+  instructions = "ask hard questions about the plan",
+  tools = {}, invocation = "user",
+}))
+local corp = router.corpus()
+local has_secret = false
+for _, r in ipairs(corp) do if r.name == "secret_grill" then has_secret = true end end
+ok(not has_secret, "corpus hides user-invoked skills by default")
+ok(router.corpus({ include_user = true })[1] ~= nil, "include_user corpus is non-empty")
+local with_user = false
+for _, r in ipairs(router.corpus({ include_user = true })) do
+  if r.name == "secret_grill" then with_user = true end
+end
+ok(with_user, "include_user surfaces user-invoked skills")
+local hide = tools.run("find_skill", { query = "grilling interview stress" })
+ok(not hide:find("secret_grill"), "find_skill hides user-invoked by default")
+local show = tools.run("find_skill", { query = "grilling interview stress", include_user = true })
+ok(show:find("secret_grill"), "find_skill include_user finds user-invoked")
+
+-- gold model skills are findable
+ok(tools.run("find_skill", { query = "test-driven red green refactor" }):find("tdd"),
+   "find_skill surfaces tdd gold skill")
+
 sys.rmtree(bog.userdir)
 bog.userdir = saved_userdir
 

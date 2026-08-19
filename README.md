@@ -149,7 +149,10 @@ echo "task" | ./boggart --headless   # scriptable: prompt on stdin, reply on std
 ./boggart --help          # every flag, subcommand and environment variable
 
 ./boggart-studio          # the desktop app; ./boggart-studio <dir> opens a project
+# BOGGART_STUDIO_LEGACY=1 restores the old single-primary-node + sidebar layout
 ```
+
+The studio's composer shares the cTUI's engines: **Tab** completes `/` commands and skills and `@` file mentions (typing `@` opens a filterable file menu), a leading `/command` runs the same handler the REPL uses (`/help`, `/tdd`, `/clear`, `/mode`, …), **`!command`** runs a shell command, and **Shift-Tab** cycles the shared permission modes (auto / smart / manual / chat). Both surfaces persist composer history to the same file.
 
 The studio's code editor has an optional **neovim-style modal layer** (modes,
 motions, operators, text objects, `:` ex-commands, search, dot-repeat,
@@ -173,10 +176,14 @@ the same error taxonomy the agent itself uses.
 
 REPL commands (Tab-completed; `/help` is generated from the registry, so it is
 always current): `/help /tools /auth /doctor /memory /sessions /resume <id>
-/reload /reset [file] /model /until <task> /new /quit`. `/until <task>` runs turns
-toward a goal until it is met or a turn budget is spent (`/until <shell-check> ::
-<task>` stops when the command exits 0). `/model` shows the running model and
-whether it is local or remote; `/model <id>` switches.
+/reload /reset [file] /model /until <task> /react <task> /new /clear /compact
+/cost /copy /mode /quit`. `/until`
+and `/react` run turns toward a goal until it is met or a turn budget is spent
+(`/until <shell-check> :: <task>` stops when the command exits 0; `/react` is
+the same loop with Thought → Act → Observe prompts). `/model` shows the running model and
+whether it is local or remote; `/model <id>` switches. `/mode` sets the shared
+approval policy (auto / smart / manual / chat). `!command` in the TUI or studio
+composer runs a shell command without a model turn.
 Swarm commands: `/help /threads /journal [n] /agents /model <id> /quit`.
 
 ### Where boggart keeps its files
@@ -230,6 +237,7 @@ scheduler — no OS threads for actors) and report back.
   only agent *behaviour* and a ~60-line scheduler (`lua/sched.lua`).
 - **Standard agents** (`lua/agents/*.lua`: coordinator, researcher, coder,
   critic) and **skills** (`lua/skills/*.lua`: core, comms, orchestrate, memory,
+  data, selfmod, plus gold engineering skills like tdd / code_review / grilling)
   data, selfmod) are overlay-mutable like everything else.
 - **Coordination tools**: `spawn`, `await`, `send`, `publish`, `subscribe`,
   `inbox`, `threads` — an agent only gets the tools its skills permit.
@@ -394,8 +402,11 @@ src/vendor/     vendored Lua 5.5 + sqlite (FTS5) + cJSON + libuv + luv
                 + ltui/PDCurses + isocline
 studio/         boggart-studio, the desktop app: an SDL window whose main
   src/            surface is the conversation, with an editor behind it.
-  data/core/      agentview (chat), sidebarview (chats + Chat/Code),
-                  widgets (buttons), studio (commands), recipes, diff
+  data/shell/     DEFAULT window: menu bar + AGENT/EDIT/FLEET workspaces
+  data/core/      agentview (chat), agentcomplete (Tab/@//), studio (commands;
+                  attach() is LEGACY chrome), sidebarview (LEGACY rail),
+                  widgets, recipes, diff. Default window is data/shell/;
+                  BOGGART_STUDIO_LEGACY=1 restores the old layout.
 lua/            the golden default harness, baked into the binary:
   boot.lua        overlay loader, wiring, hot-reload, sessions, REPL, dispatch
   api.lua         Anthropic client: shared SSE decoder + sync & async transports + turn loop
@@ -409,7 +420,7 @@ lua/            the golden default harness, baked into the binary:
   gold.lua gold/  golden stdlib: str, tbl, fs, pp, args, test, sh
   sched.lua       cooperative actor scheduler (swarm)
   thread.lua      an agent = session + journal + skills + mailbox + tools (swarm)
-  skills.lua skills/    skill bundles (core, comms, orchestrate, memory, data, selfmod)
+  skills.lua skills/    skill bundles (core, …, gold: tdd, diagnosing_bugs, code_review, …)
   agents.lua agents/    standard agents (coordinator, researcher, coder, critic)
   tools_swarm.lua swarmmode.lua      swarm tools + the swarm mode entry
   mcphost.lua     MCP glue: register server tools as mcp__<server>__<tool>

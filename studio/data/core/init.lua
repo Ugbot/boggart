@@ -614,12 +614,22 @@ function core.init()
     -- Default composition is the activity rail + workspaces (see studio.attach).
     -- BOGGART_STUDIO_LEGACY=1 keeps the old "everything is a tab" attach.
     -- BOGGART_STUDIO_SHELL=1 keeps the experimental menu-bar shell.
-    if os.getenv("BOGGART_STUDIO_SHELL") and not os.getenv("BOGGART_STUDIO_LEGACY") then
-      core.shell = core.try(require, "shell") and require "shell" or nil
-      if core.shell then core.try(core.shell.attach) end
-    else
+    local function attach_studio()
       core.studio = core.try(require, "core.studio") and require "core.studio" or nil
       if core.studio then core.try(core.studio.attach) end
+    end
+    local function attach_shell()
+      -- The engine (commands, AgentView, swarm) still lives in core.studio;
+      -- the shell replaces only the window chrome.
+      core.studio = core.try(require, "core.studio") and require "core.studio" or nil
+      core.shell = core.try(require, "shell") and require "shell" or nil
+      if core.shell then core.try(core.shell.attach) end
+      return core.shell and core.shell.attached
+    end
+    if os.getenv("BOGGART_STUDIO_SHELL") and not os.getenv("BOGGART_STUDIO_LEGACY") then
+      if not attach_shell() then attach_studio() end
+    else
+      attach_studio()
     end
   end
   -- Modal (neovim-style) editing. Loaded unconditionally so its commands and

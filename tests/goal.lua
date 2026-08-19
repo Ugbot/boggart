@@ -123,6 +123,33 @@ do
   check(ok == false, "guardrail: run without a task errors")
 end
 
+-- ---- ReAct: same supervisor, Thought → Action → Observation prompts --------
+do
+  local seen = {}
+  local r = G.react{
+    task = "ship it",
+    max_turns = 2,
+    done = function() return false, "still blocked: no tests" end,
+    runner = function(text) seen[#seen + 1] = text end,
+  }
+  check(r.met == false and r.turns == 2, "react: unmet check runs to the budget")
+  check(type(seen[1]) == "string" and seen[1]:find("ReAct", 1, true),
+    "react: first prompt names the loop")
+  check(seen[1]:find("Thought", 1, true) and seen[1]:find("Action", 1, true),
+    "react: first prompt asks for Thought then Action")
+  check(type(seen[2]) == "string" and seen[2]:find("Observation", 1, true),
+    "react: continuation labels the check as Observation")
+  check(seen[2]:find("still blocked", 1, true),
+    "react: observation carries the check detail")
+end
+
+do
+  local seen
+  G.run{ task = "x", max_turns = 1, runner = function(text) seen = text end }
+  check(type(seen) == "string" and not seen:find("ReAct", 1, true),
+    "until: default prompts are not ReAct-shaped")
+end
+
 if fails == 0 then
   io.write("ok  goal: all assertions passed\n")
 else

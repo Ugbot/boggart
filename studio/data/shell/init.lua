@@ -1,14 +1,12 @@
--- shell/init.lua -- the new studio shell (behind BOGGART_STUDIO_SHELL).
+-- shell/init.lua -- the studio shell (default window composition).
 --
--- Ground-up redesign that SUPERSEDES the old composition (core/studio.lua +
+-- Ground-up redesign that SUPERSEDES the legacy composition (core/studio.lua +
 -- sidebarview + the everything-is-a-tab primary node). It reuses the proven
 -- engine (the agent turn loop, the scheduler pump, the Node split layout, marks)
 -- and rebuilds the shell on top: a menu bar, switchable full-screen workspaces
--- (AGENT / EDIT / FLEET), and -- from P1 -- an app-wide neovim spine.
+-- (AGENT / EDIT / FLEET), and an app-wide neovim spine.
 --
--- P0 is the skeleton: it boots, draws the menu bar, and switches between the
--- EXISTING views hosted in the primary node (a compat shim). Later phases give
--- each workspace its own docks and retire the old views one at a time.
+-- Restore the legacy window with BOGGART_STUDIO_LEGACY=1.
 local core = require "core"
 local command = require "core.command"
 local keymap = require "core.keymap"
@@ -195,9 +193,24 @@ function shell.cycle_workspace(dir)
   shell.switch(order[((i - 1 + (dir or 1)) % #order) + 1])
 end
 
--- Compose the window: reuse the agent engine, drop the old chrome, dock the menu
--- bar, and open the AGENT workspace. Called from core.init in place of
--- core.studio.attach() when the shell flag is set.
+-- Docks that belong to one workspace. AGENT gets the session list (the same
+-- recents rail the legacy sidebar was), EDIT gets the file tree, FLEET gets
+-- neither. Called from each workspace's enter() so a Files-button toggle in
+-- AGENT cannot leak the tree into FLEET, and leaving AGENT hides the recents.
+function shell.set_docks(which)
+  local studio = package.loaded["core.studio"]
+  if studio and studio.sidebar then
+    studio.sidebar.visible = (which == "agent")
+  end
+  local ok, tree = pcall(require, "plugins.treeview")
+  if ok and type(tree) == "table" and tree.visible ~= nil then
+    tree.visible = (which == "edit")
+  end
+end
+
+-- Compose the window: reuse the agent engine, drop the legacy chrome, dock the
+-- menu bar, and open the AGENT workspace. Called from core.init in place of
+-- the legacy core.studio.attach().
 function shell.attach()
   if shell.attached then return end
   shell.attached = true
@@ -226,12 +239,27 @@ function shell.attach()
 
   -- engine + look, without the old composition
   core.try(function() require("core.uitools").register(studio) end)
-  core.try(function() require("core.fonts").apply() end)
+  core.try(function()
+    local problems = require("core.fonts").apply()
+    for _, p2 in ipairs(problems or {}) do core.log("%s", p2) end
+  end)
 
   -- menu bar across the top of the content area (locked dock) + its dropdown overlay
   shell.menubar = MenuBar()
   primary():split("up", shell.menubar, true)
   shell.install_menu_overlay()
+
+  -- Recents rail, the same SidebarView the legacy layout used, minus the
+  -- Chat/Code control (workspaces replace that). Docked left of the content
+  -- leaf so AGENT has conversations on the left the way EDIT has files.
+  -- Visibility is owned by shell.set_docks, called from each workspace enter.
+  core.try(function()
+    local SidebarView = require "core.sidebarview"
+    local rail = SidebarView()
+    rail.shell_rail = true
+    studio.sidebar = rail
+    primary():split("left", rail, true)
+  end)
 
   -- AGENT is the default workspace: build its AgentView, then enter it (which
   -- docks the sessions rail and shows the conversation).
@@ -261,6 +289,16 @@ function shell.attach()
   core.try(function() require("shell.modal").install() end)
   -- swarm approval gate: spawned sub-agents honour the coordinator's mode
   core.try(function() require("shell.agent.approval").install() end)
+  -- FLEET is the swarm surface. `agent:swarm` / `swarm:open` used to add a
+  -- second roster as a tab in whichever workspace you were in; they now switch
+  -- here so there is one view on one scheduler.
+  core.try(function()
+    local SwarmView = require "core.swarmview"
+    function SwarmView.open()
+      shell.switch("fleet")
+      return SwarmView.current()
+    end
+  end)
   shell.switch("agent")
   core.try(function() require("core.welcomeview").maybe_open() end)
 end

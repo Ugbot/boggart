@@ -30,7 +30,8 @@ check(help:find("@path", 1, true), "help mentions @path references")
 local want = { help = true, tools = true, auth = true, doctor = true,
   memory = true, sessions = true, resume = true, reload = true, reset = true,
   trust = true, model = true, endpoint = true, effort = true, agents = true,
-  ["until"] = true, new = true, dispatch = true,
+  ["until"] = true, react = true, new = true, clear = true, compact = true,
+  cost = true, copy = true, mode = true, dispatch = true,
   status = true, diff = true, commit = true, push = true, sync = true, quit = true }
 for _, c in ipairs(C.commands) do
   check(want[c.name], "unexpected command in registry: /" .. c.name)
@@ -40,10 +41,17 @@ for name in pairs(want) do check(false, "command missing from registry: /" .. na
 
 -- ---- completing the command itself -----------------------------------------
 local all = C.complete("/")
-check(count(all) == #C.commands, "'/' offers every command (" .. count(all) .. ")")
+for _, c in ipairs(C.commands) do
+  check(has(all, "/" .. c.name), "'/' offers /" .. c.name)
+end
+check(count(all) >= #C.commands, "'/' offers every command plus skills")
 for _, it in ipairs(all) do
   check(it.text:sub(1, 1) == "/", "command completion '" .. it.text .. "' keeps its slash")
 end
+check(has(all, "/tdd"), "'/' offers the tdd skill")
+check(has(all, "/grill_me"), "'/' offers a user-invoked skill so Tab can reach it")
+local tdd = C.complete("/td")
+check(has(tdd, "/tdd"), "'/td' -> /tdd skill")
 
 local mo = C.complete("/mo")
 check(has(mo, "/model"), "'/mo' -> /model")
@@ -80,6 +88,16 @@ local mid = C.complete("tell me about @lua/ap")
 check(has(mid, "@lua/api.lua"), "mid-prose '@lua/ap' -> @lua/api.lua")
 local dir = C.complete("@lu")
 check(has(dir, "@lua/"), "'@lu' -> @lua/ (directory gets a trailing slash)")
+
+-- Basename search: `@complete` finds files not in cwd (the whole point of @).
+local by_name = C.complete("@complete")
+check(has(by_name, "@lua/complete.lua"), "'@complete' -> @lua/complete.lua")
+check(has(by_name, "@tests/complete.lua"), "'@complete' also finds tests/complete.lua")
+local nested = C.complete("@input")
+check(has(nested, "@lua/tui/input.lua"), "'@input' -> lua/tui/input.lua")
+local src = C.complete("@src/term")
+check(has(src, "@src/termctl.c"), "'@src/term' still lists inside that directory")
+check(has(src, "@src/termctl.h"), "'@src/term' offers headers too")
 
 -- ---- report -----------------------------------------------------------------
 if fails == 0 then

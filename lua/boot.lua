@@ -103,7 +103,7 @@ end
 -- putting it in the reload set means an edited ~/.boggart/lua/events.lua takes
 -- effect like any other module. Registrations themselves survive the reload --
 -- they live on bog.__events, not in the module (see lua/events.lua).
-local CORE = { "events", "json", "util", "lifecycle", "store", "memory", "mcphost", "prompt", "tools", "api", "workers", "complete", "goal", "termrender" }
+local CORE = { "events", "json", "util", "lifecycle", "store", "memory", "mcphost", "prompt", "tools", "api", "workers", "complete", "perm", "diff", "goal", "termrender" }
 
 local function wire()
   for _, m in ipairs(CORE) do package.loaded[m] = nil end
@@ -131,6 +131,9 @@ local function wire()
   -- complete come from the same registry, so a command is completed and coloured
   -- from one source.
   bog.repl_style = require("complete").style
+  -- Shared permission modes (auto/smart/manual/chat). The studio and the cTUI
+  -- both call perm.policy_for so a mode means the same thing on every surface.
+  bog.perm = require("perm")
   -- Run-until-a-goal: the supervisor that runs turns toward an objective until a
   -- done-check passes or the turn budget is spent.
   bog.goal = require("goal")
@@ -465,14 +468,17 @@ local function handle_command(line)
         napprove > 0 and string.format(", %d awaiting approval", napprove) or ""))
       for _, line in ipairs(out) do io.write(line, "\n") end
     end
-  elseif cmd == "until" then
+  elseif cmd == "until" or cmd == "react" then
     -- /until <task>                    -- run until the model judges it done
     -- /until <shell-check> :: <task>   -- run until the shell command exits 0
+    -- /react is the same supervisor with ReAct-shaped prompts (Thought → Act →
+    -- Observe). The inner turn is already that loop via tools; this is the
+    -- outer one, with a budget.
     if rest == "" then
-      io.write("usage: /until <task>   |   /until <shell-check> :: <task>\n")
+      io.write("usage: /" .. cmd .. " <task>   |   /" .. cmd .. " <shell-check> :: <task>\n")
     else
       local shell, task = rest:match("^(.-)%s*::%s*(.+)$")
-      local spec = { task = task or rest,
+      local spec = { task = task or rest, react = (cmd == "react"),
                      on_text = function(t) io.write(t); io.flush() end }
       if shell and shell ~= "" then spec.done = { shell = shell } end
       local r = bog.goal.run(spec)
@@ -497,8 +503,74 @@ local function handle_command(line)
       "   (/dispatch on | /dispatch off)\n")
   elseif cmd == "new" then
     bog.new_session()
+    if bog.clear_ui then pcall(bog.clear_ui) end
     io.write("started new session ", tostring(bog.session.id), ".\n")
+  elseif cmd == "clear" then
+    local S = bog.active_session()
+    if S then S.messages = {} end
+    if bog.clear_ui then pcall(bog.clear_ui) end
+    io.write("conversation cleared.\n")
+  elseif cmd == "compact" then
+    local S = bog.active_session()
+    if not S or #(S.messages or {}) == 0 then
+      io.write("nothing to compact.\n")
+    else
+      local okc, err = pcall(bog.api.compact, S, {})
+      if not okc then io.write("compaction failed: ", tostring(err), "\n")
+      else
+        local frac, used = bog.api.context_fraction(S)
+        io.write(string.format("compacted -- now %d tokens (%.0f%%)\n",
+          used or 0, (frac or 0) * 100))
+      end
+    end
+  elseif cmd == "cost" then
+    local S = bog.active_session()
+    local frac, used = 0, 0
+    pcall(function() frac, used = bog.api.context_fraction(S) end)
+    local limit = bog.api.context_limit and bog.api.context_limit(S)
+    local dollars
+    if bog.api.cost then
+      local okd, d = pcall(bog.api.cost, S)
+      if okd then dollars = d end
+    end
+    local money = (dollars == nil) and "local (no per-token cost)"
+      or string.format("$%.4f", dollars)
+    io.write(string.format("context %s / %s tokens (%d%%) -- %s\n",
+      tostring(used or "?"), tostring(limit or "?"),
+      math.floor((frac or 0) * 100 + 0.5), money))
+  elseif cmd == "copy" then
+    local text = require("take").last_assistant()
+    if text == "" then io.write("nothing to copy.\n")
+    else
+      if bog.copy_text then pcall(bog.copy_text, text) end
+      io.write("copied last assistant reply (", #text, " bytes)\n")
+    end
+  elseif cmd == "mode" then
+    local id = rest:match("^(%S*)") or ""
+    if id == "" then
+      local m = bog.perm.mode_at(bog.perm.state().mode)
+      io.write("mode: ", m.id, " (", m.label, ") -- ", m.help, "\n")
+      io.write("  /mode auto | smart | manual | chat\n")
+    else
+      local m, okm = bog.perm.set_mode(id)
+      if not okm then io.write("unknown mode: ", id, "  (auto|smart|manual|chat)\n")
+      else io.write("mode: ", m.label, " -- ", m.help, "\n") end
+    end
   else
+    -- A skill name as a slash command: hand its instructions to the agent as
+    -- the next turn. Commands always win the name; see lua/complete.lua.
+    local skill = bog.skills and bog.skills.load and bog.skills.load(cmd)
+    if skill then
+      local instr = skill.instructions
+      if type(instr) == "function" then
+        local ok, r = pcall(instr)
+        instr = ok and r or skill.description
+      end
+      local prompt = "Follow the `" .. cmd .. "` skill.\n\n"
+        .. tostring(instr or skill.description or "")
+      if rest ~= "" then prompt = prompt .. "\n\n" .. rest end
+      return { run = prompt }
+    end
     io.write("unknown command: /", tostring(cmd), " (try /help)\n")
   end
   return false
@@ -541,6 +613,21 @@ local function control_input()
   return repl_input
 end
 
+-- Display columns the scrolling REPL wraps printed output to. term.size() is
+-- the live tty (or COLUMNS). On a real terminal a line that fills every column
+-- plus a newline autowraps then advances -- a blank row between wrapped lines
+-- -- so we keep one column spare. Pipes and logs wrap at the full width.
+local function repl_wrap_width()
+  local width = 80
+  if term and term.size then
+    local ok, w = pcall(term.size)
+    if ok and w and w > 0 then width = w end
+  end
+  local tty = term and term.istty and term.istty()
+  if tty and width > 1 then width = width - 1 end
+  return width
+end
+
 -- Run a turn on the libuv loop rather than blocking in a read().
 --
 -- The old path called the blocking transport (stream_once): the whole process
@@ -577,8 +664,7 @@ local function run_one_turn(text)
   -- Column width, read FRESH each turn (not cached at start-up) so a terminal
   -- resized between prompts -- or a COLUMNS override -- is honoured. term.size()
   -- asks the tty via TIOCGWINSZ and falls back to COLUMNS/80 (src/lterm.c).
-  local width = 80
-  if term and term.size then local ok, w = pcall(term.size); if ok and w and w > 0 then width = w end end
+  local width = repl_wrap_width()
 
   -- Assistant text is rendered through termrender at the real terminal width
   -- instead of echoed raw -- raw streaming dumped the model's markdown verbatim,
@@ -772,7 +858,8 @@ local function do_repl()
   -- one line (a letter picks; anything else is a typed answer). See lua/choose.lua.
   bog.choose_ask = function(rec)
     local choose = require("choose")
-    io.write("\n", choose.render(rec), "\n")
+    local tty = term and term.istty and term.istty()
+    io.write("\n", choose.render(rec, repl_wrap_width(), tty), "\n")
     local line = sys.readline("choose> ")
     return choose.parse_line(rec, line or "")
   end

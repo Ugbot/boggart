@@ -51,6 +51,7 @@ end
 for _, must in ipairs {
   "studio/data/core/init.lua",
   "studio/data/core/agentview.lua",
+  "studio/data/core/agentcomplete.lua",
   "studio/data/core/sidebarview.lua",
   "studio/data/core/studio.lua",
   "studio/data/core/widgets.lua",
@@ -351,6 +352,12 @@ if loaded then
   v:on_key_pressed("down"); v:on_key_pressed("down")
   ok(v:input_text() == "", "down walks back out to an empty input")
 
+  v:set_input("hello")
+  v:on_key_pressed("ctrl+j")
+  ok(v:input_text() == "hello\n",
+    "ctrl+j inserts a newline (got '" .. v:input_text():gsub("\n", "\\n") .. "')")
+
+
   -- ---- the transcript ----------------------------------------------------
   v.entries = {}
   v:push("user", "hi")
@@ -395,6 +402,154 @@ if loaded then
   end
   ok(said == "hello there",
     "fallback: streamed text landed in the transcript (got '" .. said .. "')")
+
+  -- ---- completion, slash commands, shared permission modes ----------------
+  -- The cTUI's Tab/`@`/`/` work through bog.complete and bog.handle_command.
+  -- The studio composer has to use the same engines so a skill or a file
+  -- mention means the same thing in both windows.
+  local okp, perm = pcall(require, "perm")
+  ok(okp, "perm loads" .. (okp and "" or ("  -- " .. tostring(perm))))
+  if okp then
+    ok(v:policy_for("read") == "allow", "smart mode allows read")
+    ok(v:policy_for("write") == "ask", "smart mode asks before write")
+    ok(v:policy_for("bash") == "ask", "smart mode asks before bash")
+    v:set_mode("chat")
+    ok(v:policy_for("write") == "deny", "chat mode denies write")
+    v:set_mode("manual")
+    ok(v:policy_for("read") == "ask", "manual mode asks before read")
+    v:set_mode("auto")
+    ok(v:policy_for("write") == "allow", "auto mode allows write")
+    v:set_mode("smart")
+    v:on_key_pressed("shift+tab")
+    ok(v.mode == "manual", "shift+tab cycles smart -> manual (got " .. tostring(v.mode) .. ")")
+    v:set_mode("smart")
+  end
+
+  v:set_input("@lua/comp")
+  v:on_key_pressed("tab")
+  ok(v:input_text() == "@lua/complete.lua",
+    "Tab completes @lua/comp to @lua/complete.lua (got '" .. v:input_text() .. "')")
+
+  v:set_input("@complete")
+  v:on_key_pressed("tab")
+  ok(v._complete_menu and #v._complete_menu.items >= 2,
+    "Tab on @complete opens a menu (lua/ and tests/ both match)")
+  v:on_key_pressed("escape")
+  ok(v._complete_menu == nil, "escape dismisses the completion menu")
+
+  v:set_input("")
+  v:on_text_input("@")
+  ok(v._complete_menu and #v._complete_menu.items > 0,
+    "typing @ opens the file menu")
+
+  v.entries, v.busy = {}, false
+  v:set_input("/help")
+  v:send()
+  local help_out = ""
+  for _, e in ipairs(v.entries) do
+    if e.role == "system" then help_out = help_out .. (e.text or "") end
+  end
+  ok(help_out:find("/model", 1, true),
+    "/help in the composer prints the command list (got '"
+    .. help_out:sub(1, 80) .. "')")
+  ok(not v.busy, "/help does not start a model turn")
+
+  local saved_run = bog.api.run_on
+  local ran
+  bog.api.run_on = function(_, text, on_text)
+    ran = text
+    on_text("ok")
+    return true
+  end
+  v.entries, v.busy, v.co, v.turn_id = {}, false, nil, nil
+  v:set_input("/tdd")
+  v:send()
+  for _ = 1, 50 do if not v.busy then break end v:tick() end
+  bog.api.run_on = saved_run
+  ok(type(ran) == "string" and ran:find("tdd", 1, true),
+    "/tdd hands the skill instructions to the agent")
+
+  -- The shell docks the same recents rail; the chevron that toggled it must
+  -- not appear as a dead button when there is no sidebar, and must appear
+  -- when there is one (AGENT workspace).
+  local has_side = false
+  local has_new = false
+  for _, it in ipairs(v:toolbar_items()) do
+    if it.command == "studio:toggle-sidebar" then has_side = true end
+    if it.command == "agent:new-session" then has_new = true end
+  end
+  ok(not has_side, "toolbar has no sidebar chevron without a sidebar")
+  ok(has_new, "toolbar still has New chat")
+
+  local core = require "core"
+  core.studio = { sidebar = { visible = true } }
+  has_side = false
+  for _, it in ipairs(v:toolbar_items()) do
+    if it.command == "studio:toggle-sidebar" then has_side = true end
+  end
+  ok(has_side, "toolbar shows the recents chevron when a sidebar is docked")
+  core.studio = nil
+
+  v.entries, v.busy, v.co, v.turn_id = {}, false, nil, nil
+  v:send_prompt("/help")
+  local help2 = ""
+  for _, e in ipairs(v.entries) do
+    if e.role == "system" then help2 = help2 .. (e.text or "") end
+  end
+  ok(help2:find("/model", 1, true), "send_prompt('/help') runs the slash command")
+
+  -- Shared take.lua door: !bash, /mode, /clear mean the same thing as the TUI.
+  v.entries, v.busy, v.co, v.turn_id = {}, false, nil, nil
+  v:send_prompt("!echo studio-ok")
+  local bash_out = ""
+  for _, e in ipairs(v.entries) do bash_out = bash_out .. (e.text or "") end
+  ok(bash_out:find("studio-ok", 1, true),
+    "!echo studio-ok runs a shell command in the composer (got '"
+    .. bash_out:sub(1, 80) .. "')")
+  ok(not v.busy, "!bash does not start a model turn")
+
+  v.entries, v.busy = {}, false
+  v:send_prompt("/mode chat")
+  ok(v.mode == "chat", "/mode chat updates the studio permission mode (got "
+    .. tostring(v.mode) .. ")")
+  v:send_prompt("/mode smart")
+  ok(v.mode == "smart", "/mode smart restores smart")
+
+  v.entries = { { role = "user", text = "keep me" } }
+  v:send_prompt("/clear")
+  local still = false
+  for _, e in ipairs(v.entries) do
+    if e.text == "keep me" then still = true end
+  end
+  ok(not still, "/clear wipes the studio transcript")
+
+  -- The newer (shell) studio must surface the same agent commands the legacy
+  -- window had: attach-file, recipes, session search, the recents rail toggle.
+  local okr, reg = pcall(require, "shell.registry")
+  ok(okr, "shell.registry loads" .. (okr and "" or ("  -- " .. tostring(reg))))
+  if okr then
+    local function has_cmd(menu, cmd)
+      for _, r in ipairs(reg.tree[menu] or {}) do
+        if r[2] == cmd then return true end
+      end
+      return false
+    end
+    ok(has_cmd("Agent", "agent:attach-file"), "Agent menu has attach-file")
+    ok(has_cmd("Agent", "agent:search-sessions"), "Agent menu has search chats")
+    ok(has_cmd("Agent", "agent:tool-permission"), "Agent menu has per-tool permissions")
+    ok(has_cmd("Run", "agent:run-recipe"), "Run menu has recipes")
+    ok(has_cmd("Run", "agent:react"), "Run menu has ReAct until goal")
+    ok(has_cmd("Run", "automations:run"), "Run menu has automations")
+    ok(has_cmd("View", "studio:toggle-sidebar"), "View menu toggles the session list")
+    ok(has_cmd("View", "studio:toggle-files"), "View menu toggles the file tree")
+    ok(has_cmd("boggart", "agent:welcome"), "boggart menu has welcome")
+    ok(has_cmd("File", "studio:open-folder"), "File menu has open-folder")
+  end
+
+  local oks, SV = pcall(require, "core.swarmview")
+  ok(oks and type(SV) == "table" and type(SV.ensure) == "function",
+    "SwarmView.ensure exists so FLEET and agent:swarm share one roster"
+    .. (oks and "" or ("  -- " .. tostring(SV))))
 end
 
 -- ---------------------------------------------------------------------------

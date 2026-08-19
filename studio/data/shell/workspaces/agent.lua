@@ -1,14 +1,12 @@
--- shell/workspaces/agent.lua -- the AGENT workspace: the conversation. Kept
--- deliberately clean -- just the AgentView in the primary node. Sessions are
--- reached from the Agent menu (New session / Resume session); Settings and
--- Library open as utility tabs. (The old SidebarView with its Chat/Code control
--- and "the tree is on the right" text is NOT reused here -- that faking is what
--- the shell replaces.)
+-- shell/workspaces/agent.lua -- the AGENT workspace: the conversation plus the
+-- recents rail (legacy SidebarView, Chat/Code stripped). Sessions are also in
+-- the Agent menu; the rail is the same list you can click without a picker.
 local core = require "core"
 
 local M = {}
 
 function M.enter()
+  require("shell").set_docks("agent")
   local studio = package.loaded["core.studio"]
   local view = studio and studio.view
   if not view then return end
@@ -20,6 +18,8 @@ function M.enter()
   core.set_active_view(view)
 end
 
-function M.leave() end
+function M.leave()
+  require("shell").set_docks(nil)
+end
 
 return M
