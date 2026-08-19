@@ -224,7 +224,10 @@ function shell.attach()
 
   -- engine + look, without the old composition
   core.try(function() require("core.uitools").register(studio) end)
-  core.try(function() require("core.fonts").apply() end)
+  core.try(function()
+    local problems = require("core.fonts").apply()
+    for _, p2 in ipairs(problems or {}) do core.log("%s", p2) end
+  end)
 
   -- menu bar across the top of the content area (locked dock) + its dropdown overlay
   shell.menubar = MenuBar()
@@ -259,6 +262,16 @@ function shell.attach()
   core.try(function() require("shell.modal").install() end)
   -- swarm approval gate: spawned sub-agents honour the coordinator's mode
   core.try(function() require("shell.agent.approval").install() end)
+  -- FLEET is the swarm surface. `agent:swarm` / `swarm:open` used to add a
+  -- second roster as a tab in whichever workspace you were in; they now switch
+  -- here so there is one view on one scheduler.
+  core.try(function()
+    local SwarmView = require "core.swarmview"
+    function SwarmView.open()
+      shell.switch("fleet")
+      return SwarmView.current()
+    end
+  end)
   shell.switch("agent")
   core.try(function() require("core.welcomeview").maybe_open() end)
 end

@@ -40,6 +40,14 @@ local SECTIONS = {
     { "gg / G",          "jump to top / bottom" },
     { "Ctrl-d / Ctrl-u", "half-page down / up" },
   } },
+  { "Composer  (Agent workspace)", {
+    { "Tab",             "complete / commands, skills, @files" },
+    { "@ then type",     "filter the file menu" },
+    { "/command",        "same slash commands as the REPL" },
+    { "Shift-Tab",       "cycle approval mode" },
+    { "Shift-Enter",     "newline" },
+    { "Esc",             "cancel turn / normal mode" },
+  } },
 }
 
 -- A curated set of command bindings, resolved live from the keymap so the sheet
@@ -50,6 +58,8 @@ local COMMANDS = {
   { "doc:save",           "Save" },
   { "agent:new-session",  "New agent session" },
   { "agent:cancel",       "Cancel turn" },
+  { "agent:set-mode",     "Approval mode" },
+  { "agent:attach-file",  "Attach a file" },
   { "shell:toggle-theme", "Toggle theme" },
   { "help:shortcuts",     "This cheatsheet" },
 }

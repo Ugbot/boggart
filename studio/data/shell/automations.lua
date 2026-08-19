@@ -46,7 +46,10 @@ function M.run(name)
   require("shell").switch("agent")
   local studio = package.loaded["core.studio"]
   local v = studio and studio.view
-  if v and v.submit then
+  if v and v.send_prompt then
+    if v.busy then core.log("agent is busy; try again when the turn finishes"); return end
+    v:send_prompt(prompt)
+  elseif v and v.submit then
     if v.busy then core.log("agent is busy; try again when the turn finishes"); return end
     v:submit(v.expand_mentions and v:expand_mentions(prompt) or prompt)
   end

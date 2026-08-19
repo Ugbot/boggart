@@ -376,6 +376,14 @@ function studio.delete_session(id)
 end
 
 function studio.toggle_agent()
+  -- In the shell, Chat/Code is AGENT/EDIT: the same two surfaces the legacy
+  -- sidebar's segmented control switched, now as workspaces.
+  local shell = package.loaded["shell"]
+  if shell and shell.attached then
+    if shell.current == "agent" then shell.switch("edit")
+    else studio.open_agent() end
+    return
+  end
   local v = studio.agent_view()
   if v and core.active_view == v then
     -- Focus back to the code rather than closing: losing the transcript
@@ -1175,7 +1183,8 @@ command.add(nil, {
       local v = studio.open_agent()
       recipes.prompt_params(body, function(filled)
         v:push("system", "recipe: " .. name)
-        v:submit(v:expand_mentions(filled))
+        if v.send_prompt then v:send_prompt(filled)
+        else v:submit(v:expand_mentions(filled)) end
       end)
     end, function(text) return common.fuzzy_match(names, text) end)
   end,
@@ -1354,7 +1363,12 @@ command.add(nil, {
   end,
 
   ["studio:toggle-sidebar"] = function()
-    if studio.sidebar then studio.sidebar:toggle() end
+    if studio.sidebar then
+      studio.sidebar:toggle()
+    else
+      -- Shell: no rail. The file tree is the equivalent surface.
+      command.perform("treeview:toggle")
+    end
   end,
 
   ["studio:open-panel"] = function()

@@ -524,6 +524,16 @@ function AgentView:send()
   self:submit(self:expand_mentions(t))
 end
 
+-- Put `text` in the composer and send it, so recipes, automations and the
+-- "@ file" picker share slash commands, @-mentions and history with typing
+-- Enter. send() is the one door.
+function AgentView:send_prompt(text)
+  text = tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  if text == "" then return end
+  self:set_input(text)
+  self:send()
+end
+
 -- Run a `/command` and capture io.write/print into a system transcript entry,
 -- the same trick the cTUI uses so a cell-grid (or here, a GUI) is not shredded
 -- by REPL output. Returns the handle_command result.
@@ -1671,9 +1681,15 @@ local COLUMN_COLS = 96   -- widest the conversation column gets, in characters
 function AgentView:toolbar_items()
   local busy = self.busy
   local sidebar = core.studio and core.studio.sidebar
-  return {
-    { label = (sidebar and sidebar.visible) and "<" or ">",
-      command = "studio:toggle-sidebar" },
+  local items = {}
+  -- The chevron toggles the LEGACY left rail. The shell has no SidebarView
+  -- (sessions live in the Agent menu; files live in EDIT), so drawing it
+  -- there is a button that does nothing.
+  if sidebar then
+    items[#items + 1] = { label = sidebar.visible and "<" or ">",
+      command = "studio:toggle-sidebar" }
+  end
+  local rest = {
     { label = "New chat", command = "agent:new-session" },
     { label = "Chats",    command = "agent:resume-session" },
     { label = "Recipes",  command = "agent:run-recipe" },
@@ -1686,6 +1702,8 @@ function AgentView:toolbar_items()
       command = busy and "agent:cancel" or "agent:compact-now",
       tone = busy and (style.warn or style.accent) or nil },
   }
+  for i = 1, #rest do items[#items + 1] = rest[i] end
+  return items
 end
 
 function AgentView:composer_items()

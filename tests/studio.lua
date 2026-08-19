@@ -462,6 +462,25 @@ if loaded then
   bog.api.run_on = saved_run
   ok(type(ran) == "string" and ran:find("tdd", 1, true),
     "/tdd hands the skill instructions to the agent")
+
+  -- The shell has no SidebarView; the chevron that toggled it must not appear
+  -- as a dead button on the shared AgentView toolbar.
+  local has_side = false
+  local has_new = false
+  for _, it in ipairs(v:toolbar_items()) do
+    if it.command == "studio:toggle-sidebar" then has_side = true end
+    if it.command == "agent:new-session" then has_new = true end
+  end
+  ok(not has_side, "toolbar has no legacy sidebar chevron without a sidebar")
+  ok(has_new, "toolbar still has New chat")
+
+  v.entries, v.busy, v.co, v.turn_id = {}, false, nil, nil
+  v:send_prompt("/help")
+  local help2 = ""
+  for _, e in ipairs(v.entries) do
+    if e.role == "system" then help2 = help2 .. (e.text or "") end
+  end
+  ok(help2:find("/model", 1, true), "send_prompt('/help') runs the slash command")
 end
 
 -- ---------------------------------------------------------------------------
