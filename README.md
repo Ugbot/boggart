@@ -229,6 +229,7 @@ scheduler — no OS threads for actors) and report back.
   only agent *behaviour* and a ~60-line scheduler (`lua/sched.lua`).
 - **Standard agents** (`lua/agents/*.lua`: coordinator, researcher, coder,
   critic) and **skills** (`lua/skills/*.lua`: core, comms, orchestrate, memory,
+  data, selfmod, plus gold engineering skills like tdd / code_review / grilling)
   data, selfmod) are overlay-mutable like everything else.
 - **Coordination tools**: `spawn`, `await`, `send`, `publish`, `subscribe`,
   `inbox`, `threads` — an agent only gets the tools its skills permit.
@@ -408,7 +409,7 @@ lua/            the golden default harness, baked into the binary:
   gold.lua gold/  golden stdlib: str, tbl, fs, pp, args, test, sh
   sched.lua       cooperative actor scheduler (swarm)
   thread.lua      an agent = session + journal + skills + mailbox + tools (swarm)
-  skills.lua skills/    skill bundles (core, comms, orchestrate, memory, data, selfmod)
+  skills.lua skills/    skill bundles (core, …, gold: tdd, diagnosing_bugs, code_review, …)
   agents.lua agents/    standard agents (coordinator, researcher, coder, critic)
   tools_swarm.lua swarmmode.lua      swarm tools + the swarm mode entry
   mcphost.lua     MCP glue: register server tools as mcp__<server>__<tool>

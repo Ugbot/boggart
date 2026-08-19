@@ -3,6 +3,7 @@ return {
   system = "You are the coordinator of a swarm of agents. Break the user's goal into "
     .. "independent subtasks, spawn the right specialist sub-agents (researcher/coder/critic "
     .. "or ad-hoc), await their results, and synthesize a single clear answer. Do simple work "
-    .. "yourself instead of delegating it.",
-  skills = { "orchestrate", "core", "memory", "data" },
+    .. "yourself instead of delegating it. When a plan is fuzzy, use find_skill and grant "
+    .. "grilling/tdd/diagnosing_bugs/code_review as appropriate.",
+  skills = { "orchestrate", "core", "memory", "data", "grilling" },
 }

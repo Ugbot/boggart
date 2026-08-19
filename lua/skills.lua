@@ -70,6 +70,15 @@ function M.validate(s)
       end
     end
   end
+  -- invocation: who may reach for this skill.
+  --   "model" -- the agent (and find_skill) may adopt it when the task fits
+  --   "user"  -- only when the user explicitly grants it (slash / spawn skills=)
+  -- Absent means "model" for discoverability; capability packs (core, …) omit it.
+  if s.invocation ~= nil then
+    if s.invocation ~= "model" and s.invocation ~= "user" then
+      return "'invocation' must be \"model\" or \"user\""
+    end
+  end
   -- fallback: another skill (or list of skills) whose tools are granted as
   -- backups when this one's preferred tools are unavailable.
   if s.fallback ~= nil then
@@ -385,8 +394,16 @@ function M.parse_markdown(text)
   -- of the ## Tools this document provides); resolve appends the standard nudge.
   local verify = meta.verify
   if verify == "" then verify = nil end
+  -- Matt Pocock / Agent Skills: disable-model-invocation: true => user-only.
+  local invocation
+  local dmi = meta["disable-model-invocation"] or meta.disable_model_invocation
+  if dmi == "true" or dmi == true or dmi == "yes" then
+    invocation = "user"
+  elseif meta.invocation == "model" or meta.invocation == "user" then
+    invocation = meta.invocation
+  end
   return { description = desc, instructions = instructions, tools = tools or {},
-           provides = provides, verify = verify }, name
+           provides = provides, verify = verify, invocation = invocation }, name
 end
 
 -- Render a skill as a Lua module. This is the "turned into Lua" step: the result
@@ -399,6 +416,9 @@ function M.to_lua(name, skill, origin)
     "return {",
     "  description = " .. string.format("%q", skill.description or name) .. ",",
   }
+  if skill.invocation == "model" or skill.invocation == "user" then
+    parts[#parts + 1] = "  invocation = " .. string.format("%q", skill.invocation) .. ","
+  end
   local it = skill.instructions
   if type(it) == "string" and it ~= "" then
     -- A long block reads far better as [[...]] than an escaped one-liner, but
@@ -551,7 +571,8 @@ M.tools = {
       local out = {}
       for _, r in ipairs(rows) do
         local s = M.load(r.name)
-        out[#out + 1] = string.format("%-16s %-22s %s", r.name, r.source,
+        local inv = (s and s.invocation) or "model"
+        out[#out + 1] = string.format("%-16s %-6s %-22s %s", r.name, inv, r.source,
           (s and s.description) or "?")
       end
       return table.concat(out, "\n")
@@ -592,6 +613,9 @@ M.tools = {
           .. "'did it actually work?' pass. boggart appends a standard 'run it and fix "
           .. "everything it flags before you finish' nudge to the instructions, so "
           .. "verification is part of the skill, not prose you rewrite each time." },
+        invocation = { type = "string", enum = { "model", "user" },
+          description = "who may reach for this skill: \"model\" (default discoverable "
+            .. "via find_skill) or \"user\" (only when explicitly granted)" },
         store = { type = "string", enum = { "file", "db" },
           description = "where to persist (default file)" },
       }, required = { "name", "instructions" } },
@@ -614,7 +638,8 @@ M.tools = {
         end
       end
       local skill = { description = a.description or name, instructions = a.instructions,
-                      tools = a.tools or {}, provides = a.provides or {}, verify = a.verify }
+                      tools = a.tools or {}, provides = a.provides or {}, verify = a.verify,
+                      invocation = a.invocation }
       local path, err = M.save(name, skill, nil, a.store)
       if not path then return "Tool error: [validation_error] " .. tostring(err) end
       return string.format("Defined skill '%s' (%d tools, %d provided). %s",

@@ -16,6 +16,10 @@ return {
 `description`/`instructions`/`tools` are prose + permissions. **`provides` is the code
 half** — a described table of the tools the skill carries.
 
+Optional **`invocation`**: `"model"` (default — `find_skill` / auto-dispatch may
+surface it) or `"user"` (only when explicitly granted; hidden from default
+`find_skill`). Markdown imports map `disable-model-invocation: true` → `"user"`.
+
 ## `provides` — a table keyed by tool name
 
 `provides` maps a tool name to its described definition. Each value has an optional
