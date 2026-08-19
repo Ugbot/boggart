@@ -731,6 +731,9 @@ local function run_one_turn(text)
   if tty then io.write(CURSOR_SHOW); io.flush() end -- restore the cursor for the prompt
   print_turn_error(ok and turn_err == nil, turn_err or (not ok and "scheduler error") or nil)
   bog.save_session() -- persist transcript for /resume and crash recovery
+  if not abort then
+    return require("choose").capture_after_turn(S)
+  end
 end
 
 -- The dim status row printed above each prompt: which model, local or remote
@@ -788,9 +791,13 @@ local function do_repl()
     if line:sub(1, 1) == "/" then
       local r = handle_command(line)
       if r == true then break
-      elseif type(r) == "table" and r.run then run_one_turn(r.run) end -- model fallback
+      elseif type(r) == "table" and r.run then
+        local captured = run_one_turn(r.run)
+        while captured do captured = run_one_turn(captured) end
+      end -- model fallback
     elseif line:match("%S") then
-      run_one_turn(line)
+      local captured = run_one_turn(line)
+      while captured do captured = run_one_turn(captured) end
     end
   end
   return 0

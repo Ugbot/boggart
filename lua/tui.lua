@@ -333,6 +333,55 @@ local function setup_swarm() bog.activate_agents() end
 
 local function page(st) local _, h = tc.size(); return math.max(1, h - 3) end
 
+-- Shared keyboard handling for a pending choose menu (mid-turn or after-turn).
+local function handle_choice_input(st, ev)
+  if not bog.choice then return false end
+  local rec, CH = bog.choice, require("choose")
+  if ev.key == "escape" then CH.decide(rec, { cancel = true }); st.dirty = true; return true
+  elseif ev.key == "enter" then
+    if st.box.line ~= "" then CH.decide(rec, { text = st.box.line }); st.box:_set("") end
+    st.dirty = true; return true
+  elseif st.box.line == "" and type(ev.char) == "string" and #ev.char == 1 then
+    local k, picked = ev.char:lower(), false
+    for i, o in ipairs(rec.options) do
+      if o.key == k then CH.decide(rec, { index = i }); picked = true; break end
+    end
+    if not picked then st.box:key(ev) end
+    st.dirty = true; return true
+  else st.box:key(ev); st.dirty = true; return true
+  end
+end
+
+-- After a turn, offer a captured prose question as the same choose UX.
+local function maybe_capture_choice(st)
+  local choose = require("choose")
+  local rec = choose.capture_from_session(st.coord.session)
+  if not rec then return nil end
+  st.captured_reply = nil
+  choose.present_after_turn(rec, function(decision, r)
+    st.captured_reply = choose.format_user_reply(r, decision)
+    st.dirty = true
+  end)
+  while bog.choice do
+    local ev = tc.poll(0)
+    while ev.type ~= "none" do
+      if ev.type == "resize" then st.dirty = true
+      elseif ev.type == "mouse" then
+        if ev.button == 64 then st.scroll = math.min(st.total, st.scroll + 3); st.dirty = true
+        elseif ev.button == 65 then st.scroll = math.max(0, st.scroll - 3); st.dirty = true end
+      elseif ev.type == "key" then
+        if not handle_choice_input(st, ev) then st.box:key(ev); st.dirty = true end
+      end
+      ev = tc.poll(0)
+    end
+    if st.dirty then draw(st) end
+    uv.run("once")
+  end
+  local reply = st.captured_reply
+  st.captured_reply = nil
+  return reply
+end
+
 -- Run one turn under the scheduler. The coordinator streams into a live entry;
 -- the should_stop hook paints one frame per iteration and lets the user scroll
 -- or interrupt (Ctrl-C) while the fleet works.
@@ -438,29 +487,9 @@ local function run_turn(st, text)
         if ev.button == 64 then st.scroll = math.min(st.total, st.scroll + 3); st.dirty = true
         elseif ev.button == 65 then st.scroll = math.max(0, st.scroll - 3); st.dirty = true end
       elseif ev.type == "key" then
-      if bog.choice then
-        -- A parked `choose` menu owns the keyboard: a letter picks (while the box
-        -- is empty), Enter submits a typed answer, Esc dismisses.
-        local rec, CH = bog.choice, require("choose")
-        if ev.key == "escape" then CH.decide(rec, { cancel = true }); st.dirty = true
-        elseif ev.key == "enter" then
-          if st.box.line ~= "" then CH.decide(rec, { text = st.box.line }); st.box:_set("") end
-          st.dirty = true
-        elseif st.box.line == "" and type(ev.char) == "string" and #ev.char == 1 then
-          local k, picked = ev.char:lower(), false
-          for i, o in ipairs(rec.options) do
-            if o.key == k then CH.decide(rec, { index = i }); picked = true; break end
-          end
-          if not picked then st.box:key(ev) end
-          st.dirty = true
-        else st.box:key(ev); st.dirty = true end
-      else
-      -- The input field stays LIVE while the turn runs: you can keep composing,
-      -- and now you can SEND too. Enter queues the line onto the coordinator's
-      -- inbox (api.run_on folds it into the next request, so it steers the
-      -- agent mid-turn) rather than being withheld. Ctrl-C aborts, Ctrl-P
-      -- pauses/resumes the sub-agents, PageUp/Down scroll; every other key edits.
-      if ev.key == "ctrl" and ev.char == "c" then st.abort = true
+      if handle_choice_input(st, ev) then
+        -- choice menu owns the keyboard
+      elseif ev.key == "ctrl" and ev.char == "c" then st.abort = true
       elseif ev.key == "ctrl" and ev.char == "p" then
         st.paused = not st.paused
         for _, a in ipairs(bog.sched.actors) do
@@ -479,7 +508,6 @@ local function run_turn(st, text)
           st.dirty = true
         end
       else st.box:key(ev); st.dirty = true end
-      end
       end
       ev = tc.poll(0)
     end
@@ -518,6 +546,8 @@ local function run_turn(st, text)
     { messages = st.coord.session.messages, status = "idle" })
   st.running = false
   draw(st)
+  if st.abort or turn_err then return nil end
+  return maybe_capture_choice(st)
 end
 
 -- run() -> true if the cTUI ran, false if there is no terminal for it. Restores
@@ -614,22 +644,32 @@ function M.run()
           elseif ev.key == "pagedown" then
             st.scroll = math.max(0, st.scroll - page(st)); draw(st)
           else
+            if bog.choice and handle_choice_input(st, ev) then draw(st)
+            else
             local action, value = st.box:key(ev)
             if action == "cancel" then
               quit = true; break
             elseif action == "submit" then
-              if value and value:sub(1, 1) == "/" and value:match("^/%a") then
+              if bog.choice and handle_choice_input(st, { type = "key", key = "enter" }) then
+                draw(st)
+              elseif value and value:sub(1, 1) == "/" and value:match("^/%a") then
                 local s = slash(st, value)
                 if s == "quit" then quit = true; break
-                elseif type(s) == "table" and s.run then run_turn(st, s.run) end -- model fallback
+                elseif type(s) == "table" and s.run then
+                  local reply = run_turn(st, s.run)
+                  while reply do reply = run_turn(st, reply) end
+                end
               elseif value and value:match("%S") then
-                run_turn(st, value)                       -- new prompt (abandons any interrupted turn)
+                local reply = run_turn(st, value)
+                while reply do reply = run_turn(st, reply) end
               elseif bog.api.incomplete_turn and bog.api.incomplete_turn(st.coord.session) then
-                run_turn(st, nil)                         -- empty Enter resumes the interrupted turn
+                local reply = run_turn(st, nil)
+                while reply do reply = run_turn(st, reply) end
               end
               draw(st)
             else
               draw(st)
+            end
             end
           end
         end
