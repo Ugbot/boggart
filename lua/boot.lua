@@ -468,14 +468,17 @@ local function handle_command(line)
         napprove > 0 and string.format(", %d awaiting approval", napprove) or ""))
       for _, line in ipairs(out) do io.write(line, "\n") end
     end
-  elseif cmd == "until" then
+  elseif cmd == "until" or cmd == "react" then
     -- /until <task>                    -- run until the model judges it done
     -- /until <shell-check> :: <task>   -- run until the shell command exits 0
+    -- /react is the same supervisor with ReAct-shaped prompts (Thought → Act →
+    -- Observe). The inner turn is already that loop via tools; this is the
+    -- outer one, with a budget.
     if rest == "" then
-      io.write("usage: /until <task>   |   /until <shell-check> :: <task>\n")
+      io.write("usage: /" .. cmd .. " <task>   |   /" .. cmd .. " <shell-check> :: <task>\n")
     else
       local shell, task = rest:match("^(.-)%s*::%s*(.+)$")
-      local spec = { task = task or rest,
+      local spec = { task = task or rest, react = (cmd == "react"),
                      on_text = function(t) io.write(t); io.flush() end }
       if shell and shell ~= "" then spec.done = { shell = shell } end
       local r = bog.goal.run(spec)

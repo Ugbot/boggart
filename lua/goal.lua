@@ -90,6 +90,11 @@ end
 -- Model-judged goals get the sentinel instruction; checked goals do not (the
 -- check, not the model, decides). The continuation carries the last check's
 -- detail so the model sees the current obstacle.
+--
+-- spec.react shapes the same supervisor as a ReAct loop (Yao et al.): Thought
+-- then Action (tools) then Observation (the check / tool results). The inner
+-- turn is already that loop via tool_use; these prompts make the outer turns
+-- the same contract, instead of a vague "keep going".
 
 local function sentinel_note(model_judged)
   if not model_judged then return "" end
@@ -98,11 +103,20 @@ local function sentinel_note(model_judged)
     .. "not emit it while any part remains undone."
 end
 
-local function first_prompt(task, model_judged)
-  return "Goal: " .. task .. "\n\nWork toward this goal now." .. sentinel_note(model_judged)
+local function react_note()
+  return "\n\nThis is a ReAct loop (Reason + Act). Each turn:\n"
+    .. "1. Thought -- what you know, what is blocking, the next move. Keep it short.\n"
+    .. "2. Action -- call tools. Prefer one focused action, or a tight related batch.\n"
+    .. "3. Observation -- tool results are the environment; do not invent them."
 end
 
-local function continue_prompt(task, detail, turn, max, model_judged)
+local function first_prompt(task, model_judged, react)
+  local body = "Goal: " .. task .. "\n\nWork toward this goal now."
+  if react then body = body .. react_note() end
+  return body .. sentinel_note(model_judged)
+end
+
+local function continue_prompt(task, detail, turn, max, model_judged, react)
   local L = {
     "Goal: " .. task,
     "",
@@ -110,12 +124,14 @@ local function continue_prompt(task, detail, turn, max, model_judged)
   }
   if detail and detail ~= "" then
     L[#L + 1] = ""
-    L[#L + 1] = "Current obstacle:"
+    L[#L + 1] = react and "Observation (the environment, not a guess):" or "Current obstacle:"
     L[#L + 1] = detail
   end
   L[#L + 1] = ""
-  L[#L + 1] = "Continue working toward the goal."
-  return table.concat(L, "\n") .. sentinel_note(model_judged)
+  L[#L + 1] = react and "Thought, then Action." or "Continue working toward the goal."
+  local body = table.concat(L, "\n")
+  if react then body = body .. react_note() end
+  return body .. sentinel_note(model_judged)
 end
 
 -- ---- the supervisor --------------------------------------------------------
@@ -123,6 +139,7 @@ end
 --   task      = string,                       -- required
 --   done      = function | {shell=} | {exists=} | {fact=,is=},  -- optional
 --   max_turns = number,                       -- optional, capped default
+--   react     = boolean,                      -- ReAct-shaped prompts
 --   on_text   = function(chunk),              -- optional stream sink
 --   runner    = function(text, sink) -> ...,  -- optional; defaults to a real turn
 -- }
@@ -135,6 +152,7 @@ function M.run(spec)
   local check = spec.done and compile(spec.done) or nil
   local model_judged = (check == nil)
 
+  local react = spec.react and true or false
   local turns, met, detail = 0, false, nil
 
   -- A deterministic goal might already be satisfied before we spend a turn.
@@ -143,8 +161,8 @@ function M.run(spec)
   while not met and turns < max do
     turns = turns + 1
     local text = (turns == 1)
-      and first_prompt(spec.task, model_judged)
-      or continue_prompt(spec.task, detail, turns, max, model_judged)
+      and first_prompt(spec.task, model_judged, react)
+      or continue_prompt(spec.task, detail, turns, max, model_judged, react)
 
     local saw_sentinel = false
     runner(text, function(chunk)
@@ -162,6 +180,15 @@ function M.run(spec)
   end
 
   return { met = met, turns = turns, detail = detail, budget = max }
+end
+
+-- ReAct: the same supervisor, with Thought → Action → Observation prompts.
+function M.react(spec)
+  spec = spec or {}
+  local s = {}
+  for k, v in pairs(spec) do s[k] = v end
+  s.react = true
+  return M.run(s)
 end
 
 return M

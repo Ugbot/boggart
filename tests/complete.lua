@@ -30,7 +30,7 @@ check(help:find("@path", 1, true), "help mentions @path references")
 local want = { help = true, tools = true, auth = true, doctor = true,
   memory = true, sessions = true, resume = true, reload = true, reset = true,
   trust = true, model = true, endpoint = true, effort = true, agents = true,
-  ["until"] = true, new = true, dispatch = true,
+  ["until"] = true, react = true, new = true, dispatch = true,
   status = true, diff = true, commit = true, push = true, sync = true, quit = true }
 for _, c in ipairs(C.commands) do
   check(want[c.name], "unexpected command in registry: /" .. c.name)

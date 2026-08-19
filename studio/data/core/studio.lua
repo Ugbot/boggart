@@ -1195,6 +1195,18 @@ command.add(nil, {
     end, function(text) return common.fuzzy_match(names, text) end)
   end,
 
+  -- ReAct: the goal supervisor with Thought → Act → Observe prompts. Sends
+  -- through /react so slash handling, the turn budget and the session save
+  -- stay one path with the REPL.
+  ["agent:react"] = function()
+    prompt("ReAct goal:", function(text)
+      if not text or text == "" then return end
+      local v = studio.open_agent()
+      if v.send_prompt then v:send_prompt("/react " .. text)
+      else v:submit(text) end
+    end)
+  end,
+
   ["agent:save-recipe"] = function()
     local v = studio.open_agent()
     local draft = v:input_text()

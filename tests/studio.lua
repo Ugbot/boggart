@@ -513,6 +513,7 @@ if loaded then
     ok(has_cmd("Agent", "agent:search-sessions"), "Agent menu has search chats")
     ok(has_cmd("Agent", "agent:tool-permission"), "Agent menu has per-tool permissions")
     ok(has_cmd("Run", "agent:run-recipe"), "Run menu has recipes")
+    ok(has_cmd("Run", "agent:react"), "Run menu has ReAct until goal")
     ok(has_cmd("Run", "automations:run"), "Run menu has automations")
     ok(has_cmd("View", "studio:toggle-sidebar"), "View menu toggles the session list")
     ok(has_cmd("View", "studio:toggle-files"), "View menu toggles the file tree")

@@ -117,6 +117,7 @@ M.commands = {
   { name = "effort",   help = "reasoning effort: minimal | low | medium | high | none (models that support it)" },
   { name = "agents",   help = "live fleet status: how many agents are running and what each is doing" },
   { name = "until",    help = "run turns until a goal is met, or the budget is spent" },
+  { name = "react",    help = "ReAct loop: Thought → Act → Observe until the goal is met" },
   { name = "new",      help = "start a fresh conversation (new saved session)" },
   { name = "dispatch", help = "optional auto-routing: hand different-enough requests to a specialist",
                        args = { "on", "off" } },

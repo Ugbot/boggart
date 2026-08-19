@@ -562,7 +562,7 @@ function AgentView:run_slash(line)
   local out = table.concat(buf):gsub("\27%[[%d;]*m", ""):gsub("%s+$", "")
   if not ok then out = "command error: " .. tostring(brk) end
   if out ~= "" then self:push("system", out) end
-  if cmd == "new" or cmd == "resume" then
+  if cmd == "new" or cmd == "resume" or cmd == "until" or cmd == "react" then
     self:repaint((bog.session and bog.session.messages) or {})
   end
   if type(brk) == "table" and brk.run then return brk end

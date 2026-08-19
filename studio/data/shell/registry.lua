@@ -92,6 +92,7 @@ M.tree = {
     { "Manage automations\u{2026}", "automations:manage" },
     M.SEP,
     { "Run recipe\u{2026}",        "agent:run-recipe" },
+    { "ReAct until goal\u{2026}",  "agent:react" },
     { "Save recipe",          "agent:save-recipe" },
     { "Edit recipe\u{2026}",       "agent:edit-recipe" },
     { "Workflows\u{2026}",         "agent:workflows" },

@@ -175,9 +175,10 @@ the same error taxonomy the agent itself uses.
 
 REPL commands (Tab-completed; `/help` is generated from the registry, so it is
 always current): `/help /tools /auth /doctor /memory /sessions /resume <id>
-/reload /reset [file] /model /until <task> /new /quit`. `/until <task>` runs turns
-toward a goal until it is met or a turn budget is spent (`/until <shell-check> ::
-<task>` stops when the command exits 0). `/model` shows the running model and
+/reload /reset [file] /model /until <task> /react <task> /new /quit`. `/until`
+and `/react` run turns toward a goal until it is met or a turn budget is spent
+(`/until <shell-check> :: <task>` stops when the command exits 0; `/react` is
+the same loop with Thought → Act → Observe prompts). `/model` shows the running model and
 whether it is local or remote; `/model <id>` switches.
 Swarm commands: `/help /threads /journal [n] /agents /model <id> /quit`.
 
