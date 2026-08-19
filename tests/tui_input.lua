@@ -245,6 +245,29 @@ do
   bog.complete = saved
 end
 
+-- ---- @ file autocomplete: typing @ opens a menu; basename search works -----
+do
+  local box = Input.new()
+  feed(box, chars("@"))
+  check(box._menu ~= nil and #box._menu.items > 0, "typing @ opens the file menu")
+  feed(box, chars("complete"))
+  check(box._menu ~= nil, "further typing keeps the @ menu open (filters, does not dismiss)")
+  local found = false
+  for i, it in ipairs(box._menu.items) do
+    if (it.text or it) == "@lua/complete.lua" then found = true; box._menu.sel = i end
+  end
+  check(found, "@complete menu includes @lua/complete.lua")
+  box:key(ENTER)
+  check(box.line == "@lua/complete.lua", "Enter on an @ hit replaces the token with the path")
+end
+
+do
+  local box = Input.new()
+  feed(box, chars("@lua/comp"))
+  box:key(TAB)
+  check(box.line:find("complete", 1, true), "Tab on @lua/comp completes inside that directory")
+end
+
 -- ---- paste inserts without submitting --------------------------------------
 do
   local box = Input.new()

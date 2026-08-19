@@ -88,6 +88,16 @@ check(has(mid, "@lua/api.lua"), "mid-prose '@lua/ap' -> @lua/api.lua")
 local dir = C.complete("@lu")
 check(has(dir, "@lua/"), "'@lu' -> @lua/ (directory gets a trailing slash)")
 
+-- Basename search: `@complete` finds files not in cwd (the whole point of @).
+local by_name = C.complete("@complete")
+check(has(by_name, "@lua/complete.lua"), "'@complete' -> @lua/complete.lua")
+check(has(by_name, "@tests/complete.lua"), "'@complete' also finds tests/complete.lua")
+local nested = C.complete("@input")
+check(has(nested, "@lua/tui/input.lua"), "'@input' -> lua/tui/input.lua")
+local src = C.complete("@src/term")
+check(has(src, "@src/termctl.c"), "'@src/term' still lists inside that directory")
+check(has(src, "@src/termctl.h"), "'@src/term' offers headers too")
+
 -- ---- report -----------------------------------------------------------------
 if fails == 0 then
   io.write("ok  complete: all assertions passed\n")

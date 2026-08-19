@@ -75,18 +75,20 @@ function Input:_insert(str)
   local bp = byteat(self.line, self.cursor)
   self.line = self.line:sub(1, bp - 1) .. str .. self.line:sub(bp)
   self.cursor = self.cursor + ulen(str)
-  self._menu = nil
+  self:_refresh_menu()
 end
 function Input:_backspace()
   if self.cursor <= 0 then return end
   local a, b = byteat(self.line, self.cursor - 1), byteat(self.line, self.cursor)
   self.line = self.line:sub(1, a - 1) .. self.line:sub(b)
   self.cursor = self.cursor - 1
+  self:_refresh_menu()
 end
 function Input:_delete()
   if self.cursor >= ulen(self.line) then return end
   local a, b = byteat(self.line, self.cursor), byteat(self.line, self.cursor + 1)
   self.line = self.line:sub(1, a - 1) .. self.line:sub(b)
+  self:_refresh_menu()
 end
 function Input:_set(text)
   self.line = text or ""; self.cursor = ulen(self.line); self._menu = nil
@@ -179,24 +181,40 @@ local function common_prefix(items)
   return utf8_trim(first:sub(1, n))
 end
 
-function Input:_complete()
+function Input:_apply_item(item)
+  local bp = byteat(self.line, self.cursor)
+  local head, tail = self.line:sub(1, bp - 1), self.line:sub(bp)
+  local word = head:match("(%S*)$") or ""
+  local newhead = head:sub(1, #head - #word) .. item_text(item)
+  self.line = newhead .. tail
+  self.cursor = ulen(newhead)
+end
+
+function Input:_complete(opts)
+  opts = opts or {}
+  local apply = opts.apply_unique ~= false
+  local hops = opts.hops or 0
   local bp = byteat(self.line, self.cursor)
   local head, tail = self.line:sub(1, bp - 1), self.line:sub(bp)
   local items = safe(bog.complete, head)
-  if type(items) ~= "table" or #items == 0 then return end
+  if type(items) ~= "table" or #items == 0 then self._menu = nil; return end
   local word = head:match("(%S*)$") or ""
-  if #items == 1 then
-    local newhead = head:sub(1, #head - #word) .. item_text(items[1])
-    self.line = newhead .. tail
-    self.cursor = ulen(newhead)
+  if #items == 1 and apply then
+    self:_apply_item(items[1])
+    if item_text(items[1]):sub(-1) == "/" and hops < 8 then
+      return self:_complete({ hops = hops + 1 })
+    end
     self._menu = nil
     return
   end
-  local lcp = common_prefix(items)
-  if #lcp > #word then
-    local newhead = head:sub(1, #head - #word) .. lcp
-    self.line = newhead .. tail
-    self.cursor = ulen(newhead)
+  if apply and #items > 1 and hops < 8 then
+    local lcp = common_prefix(items)
+    if #lcp > #word and lcp:sub(1, #word) == word then
+      local newhead = head:sub(1, #head - #word) .. lcp
+      self.line = newhead .. tail
+      self.cursor = ulen(newhead)
+      return self:_complete({ hops = hops + 1 })
+    end
   end
   self._menu = { items = items, sel = 1 }
 end
@@ -204,14 +222,19 @@ function Input:_pick_menu()
   local m = self._menu
   if not m then return end
   local item = m.items[m.sel]
-  if not item then return end
-  local bp = byteat(self.line, self.cursor)
-  local head, tail = self.line:sub(1, bp - 1), self.line:sub(bp)
-  local word = head:match("(%S*)$") or ""
-  local newhead = head:sub(1, #head - #word) .. item_text(item)
-  self.line = newhead .. tail
-  self.cursor = ulen(newhead)
   self._menu = nil
+  if not item then return end
+  self:_apply_item(item)
+  if item_text(item):sub(-1) == "/" then self:_complete() end
+end
+function Input:_refresh_menu()
+  local bp = byteat(self.line, self.cursor)
+  local word = self.line:sub(1, bp - 1):match("(%S*)$") or ""
+  if word:sub(1, 1) == "@" or self._menu then
+    self:_complete({ apply_unique = false })
+  else
+    self._menu = nil
+  end
 end
 
 function Input:_ctrl(ch)

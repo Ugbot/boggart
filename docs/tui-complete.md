@@ -16,6 +16,9 @@ Component contracts live in [`ctui-spec.md`](./ctui-spec.md).
 - [x] **Completion overlay + skills in `/`** — Tab with several hits opens a
       pick menu; `/` completion includes skill names; `/<skill>` hands that
       skill's instructions to the agent.
+- [x] **`@` file autocomplete** — `@lua/comp` lists that directory; `@complete`
+      finds `lua/complete.lua` by basename; typing `@` opens the file menu and
+      further keys filter it; Tab into a unique directory keeps descending.
 
 ## Next
 
