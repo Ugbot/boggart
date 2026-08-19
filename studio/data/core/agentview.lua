@@ -449,6 +449,7 @@ function AgentView:submit(text)
     self.busy, self.status, self.pending = false, "idle", nil
     self.turn_id = nil
     if bog.save_session then pcall(bog.save_session) end
+    self:maybe_capture_question()
     core.redraw = true
   end
 
@@ -510,12 +511,23 @@ function AgentView:delete_composer_selection()
   return true
 end
 
+function AgentView:maybe_capture_question()
+  if not bog or bog.choice or self.busy then return end
+  local rec = choose.capture_from_session(bog.session)
+  if not rec then return end
+  choose.present_after_turn(rec, function(decision, r)
+    local reply = choose.format_user_reply(r, decision)
+    if reply then self:submit(reply) end
+  end)
+end
+
 function AgentView:send()
   -- A pending choose menu claims the composer: submitting text while it is up is
   -- the user's typed answer, handed to the parked turn via choose.decide, not a
-  -- new turn. Checked before the busy guard below, because the turn IS busy --
-  -- parked inside the choose tool waiting on exactly this. The tool clears
-  -- bog.choice and resumes on its own; we only deliver the text and clear input.
+  -- new turn (unless after_turn -- then it starts the next turn). Checked before
+  -- the busy guard below, because the turn IS busy when parked inside the choose
+  -- tool waiting on exactly this. The tool clears bog.choice and resumes on its
+  -- own; we only deliver the text and clear input.
   if bog and bog.choice then
     local a = self:input_text():gsub("^%s+", ""):gsub("%s+$", "")
     if a ~= "" then
