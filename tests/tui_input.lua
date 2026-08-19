@@ -192,6 +192,93 @@ do
   check(col == 2 + 2, "cursor_col after two rights")
 end
 
+-- ---- multiline: Shift-Enter / Ctrl-Enter insert a newline, Enter submits ----
+do
+  local box = Input.new()
+  feed(box, chars("one"))
+  local a = box:key({ key = "enter", shift = true })
+  check(a == nil, "Shift-Enter does not submit")
+  check(box.line == "one\n", "Shift-Enter inserts a newline")
+  feed(box, chars("two"))
+  a = box:key({ key = "enter", ctrl = true })
+  check(box.line == "one\ntwo\n", "Ctrl-Enter inserts a newline")
+  local vis, row, col = box:visual(80)
+  check(#vis >= 2, "visual() has a row per physical line")
+  check(type(vis[1][1].text) == "string", "visual rows are Contract B run-lines")
+  a = box:key(ENTER)
+  check(a == "submit", "plain Enter still submits a multiline buffer")
+end
+
+-- ---- readline: Ctrl-A/E/K/U/W/Y -------------------------------------------
+do
+  local box = Input.new()
+  feed(box, chars("hello world"))
+  box:key({ key = "ctrl", char = "a" })
+  check(box.cursor == 0, "Ctrl-A is beginning of line")
+  box:key({ key = "ctrl", char = "e" })
+  check(box.cursor == 11, "Ctrl-E is end of line")
+  box:key({ key = "ctrl", char = "u" })
+  check(box.line == "", "Ctrl-U kills to beginning of line")
+  box:key({ key = "ctrl", char = "y" })
+  check(box.line == "hello world", "Ctrl-Y yanks the kill buffer")
+  box:key({ key = "ctrl", char = "w" })
+  check(box.line == "hello ", "Ctrl-W kills the last word")
+end
+
+-- ---- completion menu: several candidates open an overlay -------------------
+do
+  local saved = bog.complete
+  bog.complete = function()
+    return { { text = "/reset", help = "h" }, { text = "/resume", help = "h" } }
+  end
+  local box = Input.new()
+  feed(box, chars("/re"))
+  box:key(TAB)
+  check(box.line == "/res", "Tab still inserts the common prefix")
+  check(box._menu ~= nil and #box._menu.items == 2, "several candidates open a menu")
+  local rows = box:menu_runs(80)
+  check(#rows == 2, "menu_runs lists both candidates")
+  box:key(K("down"))
+  box:key(ENTER)
+  check(box.line == "/resume", "Enter on the menu picks the selected item")
+  check(box._menu == nil, "picking closes the menu")
+  bog.complete = saved
+end
+
+-- ---- paste inserts without submitting --------------------------------------
+do
+  local box = Input.new()
+  local a = box:key({ type = "paste", text = "pasted\nlines" })
+  check(a == nil, "paste does not submit")
+  check(box.line == "pasted\nlines", "paste inserts the payload")
+end
+
+-- ---- Ctrl-R history search -------------------------------------------------
+do
+  local box = Input.new{ history = { "alpha", "bravo", "charlie" } }
+  box:key({ key = "ctrl", char = "r" })
+  check(box._search ~= nil, "Ctrl-R opens history search")
+  box:key({ key = "char", char = "a" })
+  box:key({ key = "char", char = "l" })
+  box:key({ key = "char", char = "p" })
+  local rows = box:search_runs(80)
+  check(#rows >= 2, "search overlay lists matches")
+  box:key(ENTER)
+  check(box.line == "alpha", "Enter takes the matching history line")
+  check(box._search == nil, "Enter closes search")
+end
+
+-- ---- history file persists submissions -------------------------------------
+do
+  local path = (os.tmpname and os.tmpname()) or "/tmp/boggart-hist-test"
+  local box = Input.new{ history_file = path }
+  feed(box, chars("remember me")); box:key(ENTER)
+  local box2 = Input.new{ history_file = path }
+  box2:key(K("up"))
+  check(box2.line == "remember me", "a new box reloads history from the file")
+  os.remove(path)
+end
+
 -- ---- runs never raise on a bad line (repl_style guarded) -------------------
 do
   local saved = bog.repl_style

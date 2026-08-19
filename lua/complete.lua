@@ -61,6 +61,20 @@ local function session_items()
   return out
 end
 
+-- Skills as slash completions. Names collide with commands are skipped so /help
+-- and /model stay commands; everything else is offered as /<skill>.
+local function skill_items()
+  local out = {}
+  local rows = safe(function() return require("skills").list() end) or {}
+  for _, r in ipairs(rows) do
+    if r.name and not M.map[r.name] then
+      out[#out + 1] = { text = "/" .. r.name, help = "skill" }
+    end
+  end
+  table.sort(out, function(a, b) return a.text < b.text end)
+  return out
+end
+
 -- Overlay files under ~/.boggart/lua, which is what /reset deletes. Names only,
 -- without the .lua, because that is how /reset names them.
 local function overlay_names()
@@ -130,7 +144,7 @@ function M.help_text()
     local arg = c.args and " <arg>" or ""
     L[#L + 1] = string.format("  /%-14s %s", c.name .. arg, c.help)
   end
-  L[#L + 1] = "Anything else is sent to the agent. @path references a file."
+  L[#L + 1] = "Anything else is sent to the agent. @path references a file. /<skill> follows a named skill."
   return table.concat(L, "\n") .. "\n"
 end
 
@@ -195,6 +209,7 @@ function M.complete(prefix)
     if word:sub(1, 1) ~= "/" and word ~= "" then return {} end
     local out = {}
     for _, c in ipairs(M.commands) do out[#out + 1] = { text = "/" .. c.name, help = c.help } end
+    for _, s in ipairs(skill_items()) do out[#out + 1] = s end
     return filter(out, word)
   end
 

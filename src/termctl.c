@@ -58,9 +58,12 @@ static struct {
     size_t           oblen, obcap;
 
     /* input buffer: bytes read but not yet parsed into events */
-    unsigned char    inbuf[128];
+    unsigned char    inbuf[4096];
     int              inlen;
     int              eof;                /* stdin reached EOF                */
+    int              pasting;            /* inside ESC[200~ ... ESC[201~     */
+    char            *paste;
+    size_t           pastelen, pastecap;
 
     volatile sig_atomic_t resized;       /* SIGWINCH flag                    */
 
@@ -112,12 +115,15 @@ static void raw_str(const char *s) { raw_write(s, strlen(s)); }
 #define SEQ_SGR_RST  "\x1b[0m"
 #define SEQ_MOUSE_ON  "\x1b[?1000h\x1b[?1006h"
 #define SEQ_MOUSE_OFF "\x1b[?1006l\x1b[?1000l"
+#define SEQ_PASTE_ON  "\x1b[?2004h"
+#define SEQ_PASTE_OFF "\x1b[?2004l"
 
 /* Async-signal-safe terminal restore. Safe to call more than once. */
 static void restore_tty(void) {
     if (T.tty_out) {
         raw_str(SEQ_SGR_RST);
         raw_str(SEQ_MOUSE_OFF);
+        raw_str(SEQ_PASTE_OFF);
         raw_str(SEQ_CUR_SHOW);
         raw_str(SEQ_ALT_OFF);
     }
@@ -523,174 +529,315 @@ static void set_key(tc_event *ev, int key) {
     ev->key = key;
 }
 
+static int paste_append(const void *s, size_t n) {
+    if (n == 0) return 0;
+    if (T.pastelen + n + 1 > T.pastecap) {
+        size_t cap = T.pastecap ? T.pastecap * 2 : 4096;
+        while (cap < T.pastelen + n + 1) cap *= 2;
+        if (cap > 1024 * 1024) cap = 1024 * 1024;
+        if (T.pastelen + n + 1 > cap) n = cap - T.pastelen - 1;
+        char *p = (char *)realloc(T.paste, cap);
+        if (!p) return -1;
+        T.paste = p;
+        T.pastecap = cap;
+    }
+    memcpy(T.paste + T.pastelen, s, n);
+    T.pastelen += n;
+    T.paste[T.pastelen] = 0;
+    return 0;
+}
+
+const char *tc_paste_text(void) { return T.paste ? T.paste : ""; }
+size_t      tc_paste_len(void)  { return T.pastelen; }
+
+static void emit_paste(tc_event *ev) {
+    ev->type = TCEV_PASTE;
+    T.pasting = 0;
+}
+
+/* Map an xterm function/key number (the CSI ~ parameter) onto a logical key. */
+static int tilde_key(int num) {
+    switch (num) {
+        case 1: case 7: return TCK_HOME;
+        case 2:         return TCK_INSERT;
+        case 3:         return TCK_DELETE;
+        case 4: case 8: return TCK_END;
+        case 5:         return TCK_PAGEUP;
+        case 6:         return TCK_PAGEDOWN;
+        case 11:        return TCK_F1;
+        case 12:        return TCK_F2;
+        case 13:        return TCK_F3;
+        case 14:        return TCK_F4;
+        case 15:        return TCK_F5;
+        case 17:        return TCK_F6;
+        case 18:        return TCK_F7;
+        case 19:        return TCK_F8;
+        case 20:        return TCK_F9;
+        case 21:        return TCK_F10;
+        case 23:        return TCK_F11;
+        case 24:        return TCK_F12;
+        default:        return TCK_NONE;
+    }
+}
+
+static int letter_key(unsigned char f) {
+    switch (f) {
+        case 'A': return TCK_UP;
+        case 'B': return TCK_DOWN;
+        case 'C': return TCK_RIGHT;
+        case 'D': return TCK_LEFT;
+        case 'H': return TCK_HOME;
+        case 'F': return TCK_END;
+        case 'P': return TCK_F1;
+        case 'Q': return TCK_F2;
+        case 'R': return TCK_F3;
+        case 'S': return TCK_F4;
+        default:  return TCK_NONE;
+    }
+}
+
+/* Find ESC [ 201 ~ in b[0..n). Returns start index or -1. */
+static int find_paste_end(const unsigned char *b, int n) {
+    for (int i = 0; i + 5 <= n; i++) {
+        if (b[i] == 0x1b && b[i + 1] == '[' && b[i + 2] == '2' &&
+            b[i + 3] == '0' && b[i + 4] == '1' && b[i + 5] == '~')
+            return i;
+    }
+    return -1;
+}
+
 /* Parse a single event from the front of inbuf. Returns the number of bytes
  * consumed, or 0 if the buffer holds an incomplete sequence and we should wait
- * for more input (unless at EOF, in which case we always make progress). */
+ * for more input (unless at EOF, in which case we always make progress).
+ * A return > 0 with ev->type == TCEV_NONE means bytes were swallowed (paste
+ * payload) without producing an event yet. */
 static int parse_one(tc_event *ev) {
     unsigned char *b = T.inbuf;
     int n = T.inlen;
     if (n == 0) return 0;
+
+    /* ---- bracketed paste payload --------------------------------------- */
+    if (T.pasting) {
+        int end = find_paste_end(b, n);
+        if (end < 0) {
+            paste_append(b, (size_t)n);
+            if (!T.eof) return n;          /* consumed; still no event */
+            emit_paste(ev);
+            return n;
+        }
+        paste_append(b, (size_t)end);
+        emit_paste(ev);
+        return end + 6;                    /* ... ESC [ 2 0 1 ~ */
+    }
+
     unsigned char c = b[0];
 
     if (c == 0x1b) { /* ESC */
         if (n == 1) {
-            if (!T.eof) return 0; /* maybe the rest of a sequence is coming */
+            if (!T.eof) return 0;
             set_key(ev, TCK_ESC);
             return 1;
         }
-        if (b[1] == '[' || b[1] == 'O') {
-            char t = (char)b[1];
-            if (n < 3) {
+
+        /* Alt+key: ESC followed by a non-CSI byte. */
+        if (b[1] != '[' && b[1] != 'O') {
+            if (b[1] == '\r' || b[1] == '\n') {
+                set_key(ev, TCK_ENTER);
+                ev->mods = TC_MOD_ALT;
+                return 2;
+            }
+            if (b[1] == '\t') {
+                set_key(ev, TCK_TAB);
+                ev->mods = TC_MOD_ALT;
+                return 2;
+            }
+            if (b[1] >= 0x20) {
+                int len = utf8_len(b[1]);
+                if (1 + len > n) {
+                    if (!T.eof) return 0;
+                    set_key(ev, TCK_ESC);
+                    return 1;
+                }
+                set_key(ev, TCK_CHAR);
+                ev->mods = TC_MOD_ALT;
+                ev->codepoint = utf8_decode(b + 1, len);
+                return 1 + len;
+            }
+            set_key(ev, TCK_ESC);
+            return 1;
+        }
+
+        char t = (char)b[1];
+        if (n < 3) {
+            if (!T.eof) return 0;
+            set_key(ev, TCK_ESC);
+            return 1;
+        }
+        unsigned char f = b[2];
+
+        /* X10 mouse: ESC [ M b x y */
+        if (t == '[' && f == 'M') {
+            if (n < 6) {
                 if (!T.eof) return 0;
                 set_key(ev, TCK_ESC);
                 return 1;
             }
-            unsigned char f = b[2];
-
-            /* CSI/SS3 letter forms: ESC [ A / ESC O A ... */
-            switch (f) {
-                case 'A': set_key(ev, TCK_UP);    return 3;
-                case 'B': set_key(ev, TCK_DOWN);  return 3;
-                case 'C': set_key(ev, TCK_RIGHT); return 3;
-                case 'D': set_key(ev, TCK_LEFT);  return 3;
-                case 'H': set_key(ev, TCK_HOME);  return 3;
-                case 'F': set_key(ev, TCK_END);   return 3;
-                case 'P': set_key(ev, TCK_F1);    return 3;
-                case 'Q': set_key(ev, TCK_F2);    return 3;
-                case 'R': set_key(ev, TCK_F3);    return 3;
-                case 'S': set_key(ev, TCK_F4);    return 3;
-                default: break;
+            ev->type = TCEV_MOUSE;
+            {
+                int code = (int)b[3] - 32;
+                ev->mbutton = (code & 0x40) ? 64 + (code & 0x01) : (code & 0x03);
             }
+            ev->mx = (int)b[4] - 33;
+            ev->my = (int)b[5] - 33;
+            if (ev->mx < 0) ev->mx = 0;
+            if (ev->my < 0) ev->my = 0;
+            return 6;
+        }
 
-            if (t == '[' && f == 'M') { /* X10 mouse: ESC [ M b x y */
-                if (n < 6) {
-                    if (!T.eof) return 0;
-                    set_key(ev, TCK_ESC);
-                    return 1;
-                }
-                ev->type = TCEV_MOUSE;
-                {   /* Bit 0x40 marks the wheel; masking it off (& 0x03) turned a
-                     * scroll into a phantom left/middle click. Report the wheel
-                     * distinctly: 64 = up, 65 = down. */
-                    int code = (int)b[3] - 32;
-                    ev->mbutton = (code & 0x40) ? 64 + (code & 0x01) : (code & 0x03);
-                }
-                ev->mx = (int)b[4] - 33;
-                ev->my = (int)b[5] - 33;
-                if (ev->mx < 0) ev->mx = 0;
-                if (ev->my < 0) ev->my = 0;
-                return 6;
+        /* SGR mouse: ESC [ < b ; x ; y (M|m) */
+        if (t == '[' && f == '<') {
+            int i = 3, fin = -1;
+            while (i < n) {
+                if (b[i] == 'M' || b[i] == 'm') { fin = i; break; }
+                i++;
             }
+            if (fin < 0) {
+                if (!T.eof) return 0;
+                set_key(ev, TCK_ESC);
+                return 1;
+            }
+            int bt = 0, mx = 0, my = 0, field = 0;
+            for (int j = 3; j < fin; j++) {
+                if (b[j] == ';') field++;
+                else if (b[j] >= '0' && b[j] <= '9') {
+                    int d = b[j] - '0';
+                    if (field == 0) bt = bt * 10 + d;
+                    else if (field == 1) mx = mx * 10 + d;
+                    else my = my * 10 + d;
+                }
+            }
+            ev->type = TCEV_MOUSE;
+            ev->mbutton = (bt & 0x40) ? 64 + (bt & 0x01) : (bt & 0x03);
+            ev->mx = mx > 0 ? mx - 1 : 0;
+            ev->my = my > 0 ? my - 1 : 0;
+            return fin + 1;
+        }
 
-            if (t == '[' && f == '<') { /* SGR mouse: ESC [ < b ; x ; y (M|m) */
-                int i = 3, fin = -1;
-                while (i < n) {
-                    if (b[i] == 'M' || b[i] == 'm') {
-                        fin = i;
-                        break;
-                    }
+        /* CSI / SS3 with optional numeric parameters: ESC [ / ESC O ... final */
+        {
+            int i = 2;
+            int params[8];
+            int np = 0;
+            int cur = 0;
+            int saw_digit = 0;
+            unsigned char fin = 0;
+            while (i < n) {
+                unsigned char ch = b[i];
+                if (ch >= '0' && ch <= '9') {
+                    saw_digit = 1;
+                    cur = cur * 10 + (ch - '0');
+                    if (cur > 1000000) cur = 1000000;
                     i++;
-                }
-                if (fin < 0) {
-                    if (!T.eof) return 0;
-                    set_key(ev, TCK_ESC);
-                    return 1;
-                }
-                int bt = 0, mx = 0, my = 0, field = 0;
-                for (int j = 3; j < fin; j++) {
-                    if (b[j] == ';') {
-                        field++;
-                    } else if (b[j] >= '0' && b[j] <= '9') {
-                        int d = b[j] - '0';
-                        if (field == 0) bt = bt * 10 + d;
-                        else if (field == 1) mx = mx * 10 + d;
-                        else my = my * 10 + d;
-                    }
-                }
-                ev->type = TCEV_MOUSE;
-                /* 64 = wheel up, 65 = wheel down (bit 0x40); other buttons 0-2. */
-                ev->mbutton = (bt & 0x40) ? 64 + (bt & 0x01) : (bt & 0x03);
-                ev->mx = mx > 0 ? mx - 1 : 0;
-                ev->my = my > 0 ? my - 1 : 0;
-                return fin + 1;
-            }
-
-            if (f >= '0' && f <= '9') { /* CSI number (~) forms */
-                int i = 2, num = 0;
-                while (i < n && b[i] >= '0' && b[i] <= '9') {
-                    num = num * 10 + (b[i] - '0');
+                } else if (ch == ';') {
+                    if (np < 8) params[np++] = cur;
+                    cur = 0;
+                    saw_digit = 0;
                     i++;
-                }
-                if (i >= n) {
-                    if (!T.eof) return 0;
-                    set_key(ev, TCK_ESC);
-                    return 1;
-                }
-                unsigned char fin = b[i];
-                if (fin == ';') { /* modifier present: skip to final byte */
-                    int j = i + 1;
-                    while (j < n && !((b[j] >= 'A' && b[j] <= 'Z') ||
-                                      b[j] == '~'))
-                        j++;
-                    if (j >= n) {
-                        if (!T.eof) return 0;
-                        set_key(ev, TCK_ESC);
-                        return 1;
+                } else if ((ch >= 0x40 && ch <= 0x7E) || ch == '~' || ch == 'u') {
+                    if (saw_digit || np > 0 || ch == 'Z' || (ch >= 'A' && ch <= 'Z')) {
+                        if (np < 8) params[np++] = cur;
                     }
-                    fin = b[j];
-                    i = j;
+                    fin = ch;
+                    i++;
+                    break;
+                } else {
+                    break;
                 }
-                if (fin == '~') {
-                    switch (num) {
-                        case 1: case 7: set_key(ev, TCK_HOME);     break;
-                        case 2:         set_key(ev, TCK_INSERT);   break;
-                        case 3:         set_key(ev, TCK_DELETE);   break;
-                        case 4: case 8: set_key(ev, TCK_END);      break;
-                        case 5:         set_key(ev, TCK_PAGEUP);   break;
-                        case 6:         set_key(ev, TCK_PAGEDOWN); break;
-                        case 11:        set_key(ev, TCK_F1);       break;
-                        case 12:        set_key(ev, TCK_F2);       break;
-                        case 13:        set_key(ev, TCK_F3);       break;
-                        case 14:        set_key(ev, TCK_F4);       break;
-                        case 15:        set_key(ev, TCK_F5);       break;
-                        case 17:        set_key(ev, TCK_F6);       break;
-                        case 18:        set_key(ev, TCK_F7);       break;
-                        case 19:        set_key(ev, TCK_F8);       break;
-                        case 20:        set_key(ev, TCK_F9);       break;
-                        case 21:        set_key(ev, TCK_F10);      break;
-                        case 23:        set_key(ev, TCK_F11);      break;
-                        case 24:        set_key(ev, TCK_F12);      break;
-                        default:        set_key(ev, TCK_ESC);      break;
-                    }
-                    return i + 1;
-                }
-                if (fin >= 'A' && fin <= 'Z') { /* e.g. ESC [ 1 ; 5 A */
-                    switch (fin) {
-                        case 'A': set_key(ev, TCK_UP);    break;
-                        case 'B': set_key(ev, TCK_DOWN);  break;
-                        case 'C': set_key(ev, TCK_RIGHT); break;
-                        case 'D': set_key(ev, TCK_LEFT);  break;
-                        case 'H': set_key(ev, TCK_HOME);  break;
-                        case 'F': set_key(ev, TCK_END);   break;
-                        default:  set_key(ev, TCK_ESC);   break;
-                    }
-                    return i + 1;
+            }
+            if (!fin) {
+                if (!T.eof) return 0;
+                set_key(ev, TCK_ESC);
+                return 1;
+            }
+
+            int mods = 0;
+            /* xterm: CSI 1 ; <1+mods> <letter>   or   CSI <num> ; <1+mods> ~ */
+            if (np >= 2 && params[1] > 0) mods = params[1] - 1;
+            /* kitty CSI u: ESC [ code ; mods u */
+            if (fin == 'u' && np >= 2 && params[1] > 0) mods = params[1] - 1;
+            /* xterm modifyOtherKeys: ESC [ 27 ; mods ; key ~ */
+            if (fin == '~' && np >= 3 && params[0] == 27) {
+                mods = params[1] > 0 ? params[1] - 1 : 0;
+                int key = params[2];
+                if (key == 13) { set_key(ev, TCK_ENTER); ev->mods = mods; return i; }
+                if (key == 9)  { set_key(ev, TCK_TAB);   ev->mods = mods; return i; }
+                if (key == 27) { set_key(ev, TCK_ESC);   ev->mods = mods; return i; }
+                if (key >= 32 && key < 127) {
+                    set_key(ev, TCK_CHAR);
+                    ev->codepoint = (uint32_t)key;
+                    ev->mods = mods;
+                    return i;
                 }
             }
 
-            /* Unknown CSI/SS3: consume the 3 bytes we understood as ESC. */
+            if (fin == '~') {
+                int num = np > 0 ? params[0] : 0;
+                if (num == 200) {          /* paste start */
+                    T.pasting = 1;
+                    T.pastelen = 0;
+                    if (T.paste) T.paste[0] = 0;
+                    return i;              /* NONE: wait for payload */
+                }
+                if (num == 201) {          /* stray paste end */
+                    emit_paste(ev);
+                    return i;
+                }
+                int k = tilde_key(num);
+                if (k != TCK_NONE) {
+                    set_key(ev, k);
+                    ev->mods = mods;
+                    return i;
+                }
+                set_key(ev, TCK_ESC);
+                return 1;
+            }
+
+            if (fin == 'u') {              /* kitty CSI u */
+                int code = np > 0 ? params[0] : 0;
+                if (code == 13) { set_key(ev, TCK_ENTER); ev->mods = mods; return i; }
+                if (code == 9)  { set_key(ev, TCK_TAB);   ev->mods = mods; return i; }
+                if (code == 27) { set_key(ev, TCK_ESC);   ev->mods = mods; return i; }
+                if (code == 127 || code == 8) {
+                    set_key(ev, TCK_BACKSPACE); ev->mods = mods; return i;
+                }
+                set_key(ev, TCK_CHAR);
+                ev->codepoint = (uint32_t)code;
+                ev->mods = mods;
+                return i;
+            }
+
+            if (fin == 'Z') {              /* Shift-Tab */
+                set_key(ev, TCK_TAB);
+                ev->mods = TC_MOD_SHIFT;
+                return i;
+            }
+
+            int k = letter_key(fin);
+            if (k != TCK_NONE) {
+                set_key(ev, k);
+                ev->mods = mods;
+                return i;
+            }
+
             set_key(ev, TCK_ESC);
             return 1;
         }
-
-        /* ESC followed by something else: report ESC, leave the rest. */
-        set_key(ev, TCK_ESC);
-        return 1;
     }
 
-    /* Named control keys */
-    if (c == '\r' || c == '\n') { set_key(ev, TCK_ENTER);     return 1; }
-    if (c == '\t')              { set_key(ev, TCK_TAB);       return 1; }
+    /* Named control keys. Enter is CR; LF is Ctrl-J (newline without submit). */
+    if (c == '\r') { set_key(ev, TCK_ENTER); return 1; }
+    if (c == '\n') { set_key(ev, TCK_ENTER); ev->mods = TC_MOD_CTRL; return 1; }
+    if (c == '\t') { set_key(ev, TCK_TAB);   return 1; }
     if (c == 0x7F || c == 0x08) { set_key(ev, TCK_BACKSPACE); return 1; }
 
     if (c < 0x20) { /* other control byte -> ctrl-<letter> */
@@ -705,7 +852,7 @@ static int parse_one(tc_event *ev) {
     {
         int len = utf8_len(c);
         if (len > n) {
-            if (!T.eof) return 0; /* wait for the rest of the sequence */
+            if (!T.eof) return 0;
             set_key(ev, TCK_CHAR);
             ev->codepoint = 0xFFFD;
             return 1;
@@ -771,6 +918,19 @@ void tc_detach_loop(void) {
     T.attached = 0;
 }
 
+/* Parse buffered input into one event. Returns 1 if ev is filled. Consumes
+ * paste-payload bytes that produce no event and keeps going. */
+static int take_event(tc_event *ev) {
+    while (T.inlen > 0) {
+        memset(ev, 0, sizeof(*ev));
+        int used = parse_one(ev);
+        if (used <= 0) return 0;
+        inbuf_consume(used);
+        if (ev->type != TCEV_NONE) return 1;
+    }
+    return 0;
+}
+
 tc_event tc_poll(int timeout_ms) {
     tc_event ev;
     memset(&ev, 0, sizeof(ev));
@@ -788,14 +948,7 @@ tc_event tc_poll(int timeout_ms) {
     }
 
     /* Drain any already-buffered event without polling. */
-    if (T.inlen > 0) {
-        int used = parse_one(&ev);
-        if (used > 0) {
-            inbuf_consume(used);
-            return ev;
-        }
-        /* incomplete: fall through to read more (unless at EOF) */
-    }
+    if (take_event(&ev)) return ev;
 
     /* Attached: the uv callback owns the fd read and the caller does the waiting
      * in uv.run. Here we never poll or block -- we parse what has been buffered
@@ -803,10 +956,7 @@ tc_event tc_poll(int timeout_ms) {
      * covers bytes that arrived between the callback and now. */
     if (T.attached) {
         if (!T.eof) inbuf_fill();
-        if (T.inlen > 0) {
-            int used = parse_one(&ev);
-            if (used > 0) inbuf_consume(used);
-        }
+        take_event(&ev);
         return ev;
     }
 
@@ -854,8 +1004,7 @@ tc_event tc_poll(int timeout_ms) {
     }
     T.inlen += (int)got;
 
-    int used = parse_one(&ev);
-    if (used > 0) inbuf_consume(used);
+    take_event(&ev);
     return ev; /* event, or NONE if still incomplete */
 }
 
@@ -870,6 +1019,8 @@ int tc_init(void) {
     T.inlen = 0;
     T.eof = 0;
     T.resized = 0;
+    T.pasting = 0;
+    T.pastelen = 0;
 
     /* Raw mode (only meaningful on a real tty). */
     if (T.tty_in && tcgetattr(T.infd, &T.orig) == 0) {
@@ -896,6 +1047,7 @@ int tc_init(void) {
         raw_str(SEQ_ALT_ON);
         raw_str(SEQ_CUR_HIDE);
         raw_str(SEQ_MOUSE_ON);
+        raw_str(SEQ_PASTE_ON);
         raw_str(SEQ_CLEAR);
     }
 
@@ -910,9 +1062,12 @@ void tc_shutdown(void) {
     free(T.front);
     free(T.back);
     free(T.ob);
+    free(T.paste);
     T.front = T.back = NULL;
-    T.ob = NULL;
+    T.ob = T.paste = NULL;
     T.oblen = T.obcap = 0;
+    T.pastecap = T.pastelen = 0;
+    T.pasting = 0;
     T.w = T.h = 0;
     T.inited = 0;
 }

@@ -256,12 +256,18 @@ local function draw(st)
   if h < 3 or w < 8 then return end
   tc.clear()
 
-  -- Split the height: input (h-1), status (h-2), then the activity strip, then
-  -- the transcript/pane get whatever is left. The strip is dropped if the
-  -- terminal is too short to keep a usable transcript.
+  local vis, cursor_row, cursor_col = st.box:visual(w)
+  local overlay = st.box:overlay_runs(w)
+  local ih = math.max(1, #vis)
+  local oh = #overlay
   local sh = strip_rows(st)
-  local body = h - 2 - sh
-  if body < 3 then sh, body = 0, h - 2 end
+  -- input rows + overlay + status + optional activity strip
+  local body = h - 1 - ih - oh - sh
+  if body < 3 then sh, body = 0, h - 1 - ih - oh end
+  if body < 1 then body = 1 end
+
+  local pw = pane_width(st, w)
+  local tw = pw > 0 and (w - pw - 1) or w
 
   local pw = pane_width(st, w)
   local tw = pw > 0 and (w - pw - 1) or w
@@ -321,13 +327,21 @@ local function draw(st)
     end
   end
 
-  -- status row, then the input row with a block cursor
-  fill_row(h - 2, w, C.bar_bg)
-  blit(0, h - 2, status_runs(st), w)
-  local iruns, cursor_col = st.box:runs(w)
-  blit(0, h - 1, iruns, w)
+  -- status row, then the completion/search overlay, then the (possibly
+  -- multiline) composer with a block cursor on the focused visual row.
+  local status_y = body + sh
+  fill_row(status_y, w, C.bar_bg)
+  blit(0, status_y, status_runs(st), w)
+  for i, ln in ipairs(overlay) do
+    blit(0, status_y + i, ln, w)
+  end
+  local input_y = status_y + 1 + oh
+  for i, ln in ipairs(vis) do
+    blit(0, input_y + i - 1, ln, w)
+  end
   local cx = math.min(math.max(0, cursor_col or 0), w - 1)
-  tc.set(cx, h - 1, 32, nil, C.cursor, nil)
+  local cy = math.min(input_y + (cursor_row or 1) - 1, h - 1)
+  tc.set(cx, cy, 32, nil, C.cursor, nil)
 
   tc.flush()
   if SNAP and tc.snapshot then
@@ -449,6 +463,8 @@ local function run_turn(st, text)
       if ev.type == "mouse" then
         if ev.button == 64 then st.scroll = math.min(st.total, st.scroll + 3); st.dirty = true
         elseif ev.button == 65 then st.scroll = math.max(0, st.scroll - 3); st.dirty = true end
+      elseif ev.type == "paste" then
+        st.box:paste(ev.text); st.dirty = true
       elseif ev.type == "key" then
       if bog.choice then
         -- A parked `choose` menu owns the keyboard: a letter picks (while the box
@@ -551,7 +567,9 @@ function M.run()
   bog.swarm_root = coord
   bog.choice_ui = true   -- an async chooser is live: the `choose` tool parks here
 
-  local st = { coord = coord, entries = {}, activity = {}, box = Input.new{},
+  local hist_file = (bog.userdir or "") .. "/history"
+  local st = { coord = coord, entries = {}, activity = {},
+               box = Input.new{ history_file = hist_file },
                scroll = 0, total = 0, running = false, wake = uv.new_timer() }
   st.entries[1] = { role = "art", text = require("logo").art } -- the mascot, on launch
 
@@ -613,6 +631,8 @@ function M.run()
       while ev.type ~= "none" do
         if ev.type == "resize" then
           draw(st)
+        elseif ev.type == "paste" then
+          st.box:paste(ev.text); draw(st)
         elseif ev.type == "mouse" then
           -- Wheel scrolls the transcript (64 = up, 65 = down).
           if ev.button == 64 then st.scroll = math.min(st.total, st.scroll + 3); draw(st)

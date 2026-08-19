@@ -40,10 +40,17 @@ for name in pairs(want) do check(false, "command missing from registry: /" .. na
 
 -- ---- completing the command itself -----------------------------------------
 local all = C.complete("/")
-check(count(all) == #C.commands, "'/' offers every command (" .. count(all) .. ")")
+for _, c in ipairs(C.commands) do
+  check(has(all, "/" .. c.name), "'/' offers /" .. c.name)
+end
+check(count(all) >= #C.commands, "'/' offers every command plus skills")
 for _, it in ipairs(all) do
   check(it.text:sub(1, 1) == "/", "command completion '" .. it.text .. "' keeps its slash")
 end
+check(has(all, "/tdd"), "'/' offers the tdd skill")
+check(has(all, "/grill_me"), "'/' offers a user-invoked skill so Tab can reach it")
+local tdd = C.complete("/td")
+check(has(tdd, "/tdd"), "'/td' -> /tdd skill")
 
 local mo = C.complete("/mo")
 check(has(mo, "/model"), "'/mo' -> /model")

@@ -499,6 +499,20 @@ local function handle_command(line)
     bog.new_session()
     io.write("started new session ", tostring(bog.session.id), ".\n")
   else
+    -- A skill name as a slash command: hand its instructions to the agent as
+    -- the next turn. Commands always win the name; see lua/complete.lua.
+    local skill = bog.skills and bog.skills.load and bog.skills.load(cmd)
+    if skill then
+      local instr = skill.instructions
+      if type(instr) == "function" then
+        local ok, r = pcall(instr)
+        instr = ok and r or skill.description
+      end
+      local prompt = "Follow the `" .. cmd .. "` skill.\n\n"
+        .. tostring(instr or skill.description or "")
+      if rest ~= "" then prompt = prompt .. "\n\n" .. rest end
+      return { run = prompt }
+    end
     io.write("unknown command: /", tostring(cmd), " (try /help)\n")
   end
   return false
