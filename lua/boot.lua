@@ -541,6 +541,21 @@ local function control_input()
   return repl_input
 end
 
+-- Display columns the scrolling REPL wraps printed output to. term.size() is
+-- the live tty (or COLUMNS). On a real terminal a line that fills every column
+-- plus a newline autowraps then advances -- a blank row between wrapped lines
+-- -- so we keep one column spare. Pipes and logs wrap at the full width.
+local function repl_wrap_width()
+  local width = 80
+  if term and term.size then
+    local ok, w = pcall(term.size)
+    if ok and w and w > 0 then width = w end
+  end
+  local tty = term and term.istty and term.istty()
+  if tty and width > 1 then width = width - 1 end
+  return width
+end
+
 -- Run a turn on the libuv loop rather than blocking in a read().
 --
 -- The old path called the blocking transport (stream_once): the whole process
@@ -577,8 +592,7 @@ local function run_one_turn(text)
   -- Column width, read FRESH each turn (not cached at start-up) so a terminal
   -- resized between prompts -- or a COLUMNS override -- is honoured. term.size()
   -- asks the tty via TIOCGWINSZ and falls back to COLUMNS/80 (src/lterm.c).
-  local width = 80
-  if term and term.size then local ok, w = pcall(term.size); if ok and w and w > 0 then width = w end end
+  local width = repl_wrap_width()
 
   -- Assistant text is rendered through termrender at the real terminal width
   -- instead of echoed raw -- raw streaming dumped the model's markdown verbatim,
@@ -769,7 +783,8 @@ local function do_repl()
   -- one line (a letter picks; anything else is a typed answer). See lua/choose.lua.
   bog.choose_ask = function(rec)
     local choose = require("choose")
-    io.write("\n", choose.render(rec), "\n")
+    local tty = term and term.istty and term.istty()
+    io.write("\n", choose.render(rec, repl_wrap_width(), tty), "\n")
     local line = sys.readline("choose> ")
     return choose.parse_line(rec, line or "")
   end

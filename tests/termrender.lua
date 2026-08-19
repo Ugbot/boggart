@@ -380,5 +380,50 @@ do
   end
 end
 
+-- ---- wrap(): the public packer choose / non-markdown callers use -----------
+do
+  local function vis(s)
+    if sys and sys.width then return sys.width(s) end
+    return (utf8 and utf8.len(s)) or #s
+  end
+  local function plain(ln)
+    local t = {}
+    for _, r in ipairs(ln) do t[#t + 1] = r.text end
+    return table.concat(t)
+  end
+  local function line_w(ln)
+    local n = 0
+    for _, r in ipairs(ln) do n = n + vis(r.text or "") end
+    return n
+  end
+
+  local long = "a quite long option label that should wrap onto the next line"
+  local lines = tr.wrap({ { text = long, hex = "97979c" } }, 24,
+    { text = "a) ", hex = "e1e1e6" })
+  ok(#lines >= 2, "wrap: hanging prefix wraps the body")
+  ok(plain(lines[1]):find("^a%) "), "wrap: first row keeps the marker")
+  ok(plain(lines[2]):match("^%s+") ~= nil, "wrap: continuation is hanging-indented")
+  ok(not plain(lines[2]):find("^a%) "), "wrap: marker is not repeated on wrap")
+  local worst = 0
+  for _, ln in ipairs(lines) do if line_w(ln) > worst then worst = line_w(ln) end end
+  ok(worst <= 24, "wrap: no line exceeds width (max " .. worst .. ")")
+
+  -- A hang wider than the column folds into the body instead of overflowing.
+  local fat = tr.wrap({ { text = "body text here", hex = "97979c" } }, 8,
+    { text = "########## ", hex = "e1e1e6" })
+  local fat_w = 0
+  for _, ln in ipairs(fat) do if line_w(ln) > fat_w then fat_w = line_w(ln) end end
+  ok(fat_w <= 8, "wrap: over-wide hang still fits the column (max " .. fat_w .. ")")
+
+  -- Wrapped rows do not keep a trailing space that padded out to the margin.
+  local prose = tr.wrap({ { text = string.rep("word ", 12), hex = "97979c" } }, 20)
+  local trail = false
+  for _, ln in ipairs(prose) do
+    if plain(ln):match("%s$") then trail = true end
+    ok(line_w(ln) <= 20, "wrap: prose row within width")
+  end
+  ok(not trail, "wrap: flushed rows have no trailing space")
+end
+
 io.write(string.format("\ntermrender: %d passed, %d failed\n", passed, failed))
 return failed == 0 and 0 or 1

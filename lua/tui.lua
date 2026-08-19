@@ -67,10 +67,15 @@ local SNAP = os.getenv("BOGGART_TUI_SNAP")
 
 -- ---- painting helpers ------------------------------------------------------
 
--- Truncate a string to at most `cols` columns (one per codepoint, the same
--- approximation termrender wraps by), so a run cannot bleed past its region.
+-- Truncate a string to at most `cols` display columns (sys.width / wcwidth, the
+-- same unit termrender wraps by), so a run cannot bleed past its region. CJK
+-- and emoji occupy two cells; clipping by codepoint would let them overprint
+-- the agents pane.
 local function clip_cols(s, cols)
   if cols <= 0 then return "" end
+  s = tostring(s or "")
+  if sys and sys.width and sys.width(s) <= cols then return s end
+  if sys and sys.wtake then return sys.wtake(s, cols) end
   if not utf8 then return s:sub(1, cols) end
   local n = utf8.len(s)
   if not n or n <= cols then return s end

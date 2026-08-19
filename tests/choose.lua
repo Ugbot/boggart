@@ -68,5 +68,38 @@ for _, ln in ipairs(runs) do
 end
 ok(max <= 24, "runs: no line exceeds width (max " .. max .. ")")
 
+-- Plain render at a column width wraps the same way (the scrolling REPL path).
+local rendered = choose.render(wide, 24)
+ok(rendered:find("a%) "), "render(width): keeps the lettered marker")
+local rmax = 0
+for line in (rendered .. "\n"):gmatch("(.-)\n") do
+  local n = (sys.width and sys.width(line)) or #line
+  if n > rmax then rmax = n end
+end
+ok(rmax <= 24, "render(width): no line exceeds width (max " .. rmax .. ")")
+
+-- A multi-line prompt stays two source lines, not one flattened paragraph.
+local multi = choose.build({
+  prompt = "First line of the question\nAnd a second line",
+  options = { { label = "yes" }, { label = "no" } },
+})
+local mtext = choose.render(multi, 40)
+ok(mtext:find("First line of the question") and mtext:find("And a second line"),
+   "render: keeps prompt newlines")
+ok(not mtext:find("First line of the question And a second"),
+   "render: does not flatten prompt newlines into one paragraph")
+
+-- Narrow and wide columns both stay inside the budget.
+for _, w in ipairs({ 20, 32, 40, 80 }) do
+  local rs = choose.runs(wide, w)
+  local worst = 0
+  for _, ln in ipairs(rs) do
+    local n = 0
+    for _, r in ipairs(ln) do n = n + ((sys.width and sys.width(r.text)) or #r.text) end
+    if n > worst then worst = n end
+  end
+  ok(worst <= w, "runs: width " .. w .. " (max " .. worst .. ")")
+end
+
 io.write(string.format("choose: %d passed, %d failed\n", passed, failed))
 if failed > 0 then os.exit(1) end

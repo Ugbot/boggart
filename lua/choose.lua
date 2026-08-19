@@ -17,17 +17,11 @@
 --   bog.choose_ask  -- a SYNC resolver a REPL registers: fn(rec) -> decision
 -- A decision is { index = i } | { text = "…" } | { cancel = true }.
 local events = require("events")
+local termrender = require("termrender")
 
 local M = {}
 local KEYS = "abcdefghijklmnopqrstuvwxyz"
-
--- Render the menu as plain text -- the REPL prompt, and the headless fallback.
-function M.render(rec)
-  local t = { rec.prompt }
-  for _, o in ipairs(rec.options) do t[#t + 1] = "  " .. o.key .. ") " .. o.label end
-  if rec.allow_input then t[#t + 1] = "  (or type your own answer)" end
-  return table.concat(t, "\n")
-end
+local ACCENT, TEXT, DIM = "e1e1e6", "97979c", "525257"
 
 local function vis_len(s)
   s = tostring(s or "")
@@ -36,72 +30,56 @@ local function vis_len(s)
   return n or #s
 end
 
--- Word-wrap plain text to `width` display columns.
-local function wrap_plain(text, width)
-  width = math.max(1, math.floor(tonumber(width) or 80))
-  local rows, cur, used = {}, {}, 0
-  local function flush()
-    if #cur > 0 then rows[#rows + 1] = table.concat(cur); cur, used = {}, 0 end
-  end
-  for word in tostring(text or ""):gmatch("%S+") do
-    local w = vis_len(word)
-    local extra = (#cur > 0) and 1 or 0
-    if used + extra + w > width and #cur > 0 then flush(); extra = 0 end
-    if w > width then
-      flush()
-      local rest = word
-      while vis_len(rest) > width do
-        local head
-        if sys and sys.wtake then
-          head = sys.wtake(rest, width)
-        else
-          local off = utf8 and utf8.offset(rest, width + 1)
-          head = off and rest:sub(1, off - 1) or rest:sub(1, width)
-        end
-        if head == "" then head = rest:sub(1, 1) end
-        rows[#rows + 1] = head
-        rest = rest:sub(#head + 1)
-      end
-      if rest ~= "" then cur[1] = rest; used = vis_len(rest) end
-    else
-      if extra > 0 then cur[#cur + 1] = " "; used = used + 1 end
-      cur[#cur + 1] = word
-      used = used + w
-    end
-  end
-  flush()
-  if #rows == 0 then rows[1] = "" end
-  return rows
+local function wrap_width(width)
+  if width == nil then return nil end
+  return math.max(8, math.floor(tonumber(width) or 80))
 end
 
--- Styled run-lines for the cTUI. Prompt and each option wrap to `width` with a
--- hanging indent under `a) ` so lists stay enumerated instead of clipping.
+-- Styled run-lines for every surface. Prompt and each option wrap through
+-- termrender.wrap (Contract B: one wrap) with a hanging indent under `a) `
+-- so lists stay enumerated instead of clipping or autowrapping at column 0.
 function M.runs(rec, width)
-  width = math.max(8, math.floor(tonumber(width) or 80))
-  local ACCENT, TEXT, DIM = "e1e1e6", "97979c", "525257"
+  width = wrap_width(width)
   local lines = {}
-  for _, row in ipairs(wrap_plain(rec.prompt or "Choose:", width)) do
-    lines[#lines + 1] = { { text = row, fg = ACCENT } }
+  local function add(tokens, prefix)
+    for _, ln in ipairs(termrender.wrap(tokens, width, prefix)) do
+      lines[#lines + 1] = ln
+    end
+  end
+  for line in (tostring(rec.prompt or "Choose:") .. "\n"):gmatch("(.-)\n") do
+    add({ { text = line, hex = ACCENT } })
   end
   for _, o in ipairs(rec.options or {}) do
-    local prefix = "  " .. tostring(o.key) .. ") "
-    local plen = vis_len(prefix)
-    local inner = math.max(4, width - plen)
-    local body = wrap_plain(o.label, inner)
-    for i, b in ipairs(body) do
-      if i == 1 then
-        lines[#lines + 1] = { { text = prefix, fg = ACCENT }, { text = b, fg = TEXT } }
+    local pfx = { text = tostring(o.key) .. ") ", hex = ACCENT }
+    local hang = string.rep(" ", vis_len(pfx.text))
+    local first = true
+    for line in (tostring(o.label) .. "\n"):gmatch("(.-)\n") do
+      if first then
+        add({ { text = line, hex = TEXT } }, pfx)
+        first = false
       else
-        lines[#lines + 1] = { { text = string.rep(" ", plen) }, { text = b, fg = TEXT } }
+        add({ { text = line, hex = TEXT } }, { text = hang })
       end
     end
   end
   if rec.allow_input then
-    for _, row in ipairs(wrap_plain("  (press a letter, or type your own + Enter)", width)) do
-      lines[#lines + 1] = { { text = row, fg = DIM } }
-    end
+    add({ { text = "(press a letter, or type your own answer)", hex = DIM } })
   end
   return lines
+end
+
+-- Plain text (or ANSI when color=true). `width` is display columns; nil means
+-- no wrap -- one source line per option, for headless logs.
+function M.render(rec, width, color)
+  local lines = M.runs(rec, width)
+  if color then return termrender.ansi(lines, { width = wrap_width(width), color = true }) end
+  local t = {}
+  for i, ln in ipairs(lines) do
+    local row = {}
+    for _, r in ipairs(ln) do row[#row + 1] = r.text end
+    t[i] = table.concat(row)
+  end
+  return table.concat(t, "\n")
 end
 
 -- Which option a typed key refers to: the option's own key, or the positional
