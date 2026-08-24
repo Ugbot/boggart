@@ -30,7 +30,14 @@ M.default_token_budget = 200000
 M.default_effort = "medium"
 
 function M.at_capacity()
-  return M.max_agents >= 0 and M.live >= M.max_agents
+  local cap = M.max_agents
+  -- A local server has a fixed number of parallel slots (llama.cpp total_slots);
+  -- spawning more concurrent agents than slots only queues them behind the
+  -- server, so cap the fanout at the slot count. Remote endpoints report no
+  -- slots, so their cap stays exactly what the user asked for.
+  local slots = bog.api and bog.api.local_slots and bog.api.local_slots()
+  if slots and slots > 0 and (cap < 0 or slots < cap) then cap = slots end
+  return cap >= 0 and M.live >= cap
 end
 
 -- The tool/prompt policy an agent runs under. Shared by the lone agent and every

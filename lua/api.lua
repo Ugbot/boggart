@@ -15,6 +15,10 @@ local util = require("util")
 local M = {}
 
 local cached_headers = nil
+-- A local server's self-reported settings (/props), by base_url. Warmed once per
+-- endpoint from the turn path and read cheaply everywhere else; cleared with the
+-- rest of the auth cache when the endpoint changes.
+local props_cache = {}
 
 -- Where to send the request.
 --
@@ -143,7 +147,7 @@ function M.is_error(e) return type(e) == "table" and e.boggart_error == true end
 
 -- Drop the cached auth headers. Needed after /auth changes a credential, or a
 -- key set mid-session would not take effect until restart.
-function M.forget_auth() cached_headers = nil end
+function M.forget_auth() cached_headers = nil; props_cache = {} end
 
 -- Turn an HTTP status into one of the kinds above, with the server's body as
 -- the detail (it usually says exactly what is wrong).
@@ -987,11 +991,52 @@ function M.use_provider(name, model)
 end
 M.COMPACT_RATIO = 0.8   -- compact at 80% of the window, as goose does
 
+-- One-time probe of a LOCAL server's /props for its real context window and slot
+-- count. llama.cpp (and compatible servers) publish these; a cloud endpoint has
+-- no /props (or no base_url at all), so remote models never match here and keep
+-- the user's own context/agent settings. BLOCKS on a GET, so it is only ever
+-- called from the turn path (warm_local, below), never from a render.
+local function fetch_props()
+  local base = auth.base_url()
+  if not base or base == "" then return nil end        -- default/cloud: no probe
+  if props_cache[base] ~= nil then return props_cache[base] or nil end
+  local url = base:gsub("/+$", "") .. "/props"
+  local ok, status, body = pcall(http.request, { url = url, method = "GET", timeout = 2 })
+  local out
+  if ok and status == 200 and type(body) == "string" then
+    local dok, p = pcall(json.decode, body)
+    if dok and type(p) == "table" then
+      local g = p.default_generation_settings
+      local n = tonumber(g and g.n_ctx)
+      local s = tonumber(p.total_slots)
+      if n or s then out = { n_ctx = n, slots = s } end
+    end
+  end
+  props_cache[base] = out or false     -- false = probed, not a llama.cpp endpoint
+  return out
+end
+
+-- Read-only view of the cached probe (nil if remote, or not warmed yet). Never
+-- touches the network -- safe from the status bar / any render path.
+local function local_props()
+  local base = auth.base_url()
+  if not base or base == "" then return nil end
+  return props_cache[base] or nil
+end
+
+-- Warm the probe once for the current endpoint. Called from run_on; cached, so
+-- it costs one fast localhost GET per endpoint, never per turn.
+function M.warm_local() pcall(fetch_props) end
+-- A local server's real context window / slot count, or nil for remote.
+function M.local_context() local p = local_props(); return p and p.n_ctx end
+function M.local_slots()   local p = local_props(); return p and p.slots end
+
 function M.context_limit(sess)
   sess = sess or bog.session
   local cfg = M.context_config()
-  return sess.context_limit
+  return sess.context_limit                 -- an explicit user override always wins
     or (cfg and cfg[sess.model])
+    or M.local_context()                    -- a local server's real, self-reported window
     or M.CONTEXT[sess.model]
     or (cfg and cfg.default)
     or M.CONTEXT.default
@@ -1343,6 +1388,10 @@ M.MAX_ROUNDS = 80
 -- opts: { async, system=fn, tools=fn, run_tool=fn(name,input), on_tool=fn(name,input) }
 function M.run_on(sess, user_text, on_text, opts)
   opts = opts or {}
+  -- Learn a local server's real context window / slot count once (a fast
+  -- localhost GET, cached per endpoint). Off the turn's hot path but before the
+  -- first request, so context_limit and the agent cap are right from turn one.
+  fetch_props()
   -- The transport is overridable so a test/bench can inject a scripted model and
   -- drive the whole loop deterministically with no network (boggart had no such
   -- seam -- the "mock wire" was only "point at a local server"). A scripted
