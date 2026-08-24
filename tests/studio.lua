@@ -55,7 +55,6 @@ for _, must in ipairs {
   "studio/data/core/sidebarview.lua",
   "studio/data/core/studio.lua",
   "studio/data/core/widgets.lua",
-  "studio/data/core/recipes.lua",
   "studio/data/core/diff.lua",
   "studio/data/core/rootview.lua",
 } do
@@ -592,9 +591,9 @@ if loaded then
     ok(has_cmd("Agent", "agent:attach-file"), "Agent menu has attach-file")
     ok(has_cmd("Agent", "agent:search-sessions"), "Agent menu has search chats")
     ok(has_cmd("Agent", "agent:tool-permission"), "Agent menu has per-tool permissions")
-    ok(has_cmd("Run", "agent:run-recipe"), "Run menu has recipes")
+    ok(has_cmd("Run", "automations:run"), "Run menu runs automations")
+    ok(has_cmd("Run", "automations:schedule"), "Run menu schedules automations")
     ok(has_cmd("Run", "agent:react"), "Run menu has ReAct until goal")
-    ok(has_cmd("Run", "automations:run"), "Run menu has automations")
     ok(has_cmd("View", "studio:toggle-sidebar"), "View menu toggles the session list")
     ok(has_cmd("View", "studio:toggle-files"), "View menu toggles the file tree")
     ok(has_cmd("boggart", "agent:welcome"), "boggart menu has welcome")

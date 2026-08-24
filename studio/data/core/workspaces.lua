@@ -207,10 +207,6 @@ function workspaces.present(name)
   elseif name == "settings" then
     if not studio.settings then studio.settings = require("core.settingsview")() end
     set_stage(studio.settings)
-  elseif name == "workflows" then
-    if not studio.workflows then studio.workflows = require("core.workflowview")() end
-    studio.workflows:refresh()
-    set_stage(studio.workflows)
   elseif name == "welcome" then
     local WelcomeView = require "core.welcomeview"
     if not WelcomeView.instance then WelcomeView.instance = WelcomeView() end

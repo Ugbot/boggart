@@ -21,12 +21,10 @@ local config = require "core.config"
 local keymap = require "core.keymap"
 local style = require "core.style"
 local AgentView = require "core.agentview"
-local recipes = require "core.recipes"
 local SidebarView = require "core.sidebarview"
 local workspaces = require "core.workspaces"
 local SettingsView = require "core.settingsview"
 local PanelView = require "core.panelview"
-local WorkflowView = require "core.workflowview"
 local LibraryView = require "core.libraryview"
 local PickerView = require "core.pickerview"
 local fonts = require "core.fonts"
@@ -514,10 +512,11 @@ function studio.status_items()
     end
   end
 
-  if studio.schedule then
+  local A = package.loaded["shell.automations"]
+  if A and A.scheduled then
     out[#out + 1] = style.dim
     out[#out + 1] = string.format("  [every %gm: %s]",
-      studio.schedule.minutes, studio.schedule.name)
+      A.scheduled.minutes, A.scheduled.name)
   end
 
   if v then
@@ -602,33 +601,6 @@ function studio.open_library(section)
   core.root_view:get_primary_node():add_view(studio.library)
   core.set_active_view(studio.library)
   return studio.library
-end
-
--- One workflow builder, opened as a tab beside the conversation. Refreshed on
--- reopen because the files can change under it -- by hand, or by the agent.
-function studio.open_workflows()
-  if not studio.legacy then
-    workspaces.switch("workflows")
-    return studio.workflows
-  end
-  -- Singleton, reused wherever it lives -- see open_settings for the whole-root
-  -- search and the re-home-instead-of-duplicate rule. Refresh on every reopen,
-  -- live or re-homed, because the files can change under it.
-  if studio.workflows then
-    studio.workflows:refresh()
-    local node = core.root_view.root_node:get_node_for_view(studio.workflows)
-    if node then
-      node:set_active_view(studio.workflows)
-    else
-      core.root_view:get_primary_node():add_view(studio.workflows)
-    end
-    core.set_active_view(studio.workflows)
-    return studio.workflows
-  end
-  studio.workflows = WorkflowView()
-  core.root_view:get_primary_node():add_view(studio.workflows)
-  core.set_active_view(studio.workflows)
-  return studio.workflows
 end
 
 -- ---------------------------------------------------------------------------
@@ -761,12 +733,6 @@ function studio.add_folder(path)
   return true
 end
 
-function studio.stop_schedule()
-  if not studio.schedule then return false end
-  studio.schedule.stop = true
-  studio.schedule = nil
-  return true
-end
 
 -- ---------------------------------------------------------------------------
 -- MCP persistence
@@ -1215,45 +1181,18 @@ command.add(nil, {
     end, function(text) return common.fuzzy_match(items, text) end)
   end,
 
-  -- ---- recipes ------------------------------------------------------------
-  ["agent:run-recipe"] = function()
-    local names = recipes.list()
-    if #names == 0 then
-      -- An empty list is where someone learns what this is, so it explains
-      -- itself and then hands them a working one rather than a definition.
-      studio.say(recipes.WHAT_IT_IS)
-      studio.say(recipes.VERSUS)
-      local path = recipes.seed_example()
-      if path then
-        studio.say("Wrote an example saved prompt, '%s'. Run it again to try it, "
-          .. "or edit it from Run → Edit saved prompt.", recipes.EXAMPLE_NAME)
-        core.log_quiet("  %s", path)
-      end
-      return
-    end
-    core.command_view:enter("Saved prompt:", function(text, item)
-      local name = item or text
-      local body = recipes.load(name)
-      if not body then core.error("no saved prompt '%s'", name); return end
-      local v = studio.open_agent()
-      recipes.prompt_params(body, function(filled)
-        v:push("system", "saved prompt: " .. name)
-        if v.send_prompt then v:send_prompt(filled)
-        else v:submit(v:expand_mentions(filled)) end
-      end)
-    end, function(text) return common.fuzzy_match(names, text) end)
-  end,
-
-  -- ReAct: the goal supervisor with Thought → Act → Observe prompts. Sends
-  -- through /react so slash handling, the turn budget and the session save
-  -- stay one path with the REPL.
-  ["agent:react"] = function()
-    prompt("ReAct goal:", function(text)
-      if not text or text == "" then return end
-      local v = studio.open_agent()
-      if v.send_prompt then v:send_prompt("/react " .. text)
-      else v:submit(text) end
-    end)
+  -- ---- saved prompts (the automations store) ------------------------------
+  -- The saved-prompt feature is the automations store now (shell/automations),
+  -- which folded in what used to be recipes / workflows / schedule. These agent:*
+  -- names are the toolbar and sidebar entry points -- and the only ones the
+  -- legacy composition has, since it draws no shell menu -- so they route into
+  -- exactly the same pickers the Run menu uses.
+  ["agent:run-recipe"]      = function() require("shell.automations").run_picker() end,
+  ["agent:edit-recipe"]     = function() require("shell.automations").edit_picker() end,
+  ["agent:schedule-recipe"] = function() require("shell.automations").schedule_picker() end,
+  ["agent:stop-schedule"]   = function()
+    if require("shell.automations").stop_schedule() then core.log("schedule stopped")
+    else core.log("nothing scheduled") end
   end,
 
   ["agent:save-recipe"] = function()
@@ -1263,78 +1202,28 @@ command.add(nil, {
       core.error("nothing in the input to save -- type the prompt first")
       return
     end
-    prompt("Name this saved prompt:", function(name)
+    prompt("Name this automation:", function(name)
       if name == "" then return end
       name = name:gsub("[^%w_%-]", "-")
-      local path = recipes.save(name, draft)
-      local params = recipes.params(draft)
-      core.log("saved %s%s", path, #params > 0
+      local A = require "shell.automations"
+      A.save(name, draft)
+      local params = A.params(draft)
+      core.log("saved automation '%s'%s", name, #params > 0
         and (" (parameters: " .. table.concat(params, ", ") .. ")") or "")
-      v:push("system", "saved prompt '" .. name .. "' -- {{name}} marks a parameter")
+      v:push("system", "saved automation '" .. name .. "' -- {{name}} marks a parameter")
     end)
   end,
 
-  ["agent:edit-recipe"] = function()
-    local names = recipes.list()
-    if #names == 0 then
-      core.log("%s", recipes.WHAT_IT_IS)
-      local path = recipes.seed_example()
-      if path then core.log("Wrote an example to edit: %s", path) end
-      return
-    end
-    core.command_view:enter("Edit saved prompt:", function(text, item)
-      local name = item or text
-      if recipes.load(name) then
-        core.root_view:open_doc(core.open_doc(recipes.path(name)))
-      end
-    end, function(text) return common.fuzzy_match(names, text) end)
-  end,
-
-  -- ---- scheduler ----------------------------------------------------------
-  -- In-process and while-the-window-is-open only. A scheduler that outlives
-  -- the app would need a daemon, a persisted queue and a story for what
-  -- happens when a run wants approval while nobody is watching -- and boggart
-  -- already has `boggart swarm` for unattended work. This is the small honest
-  -- version: repeat a recipe on an interval, visibly, in front of you.
-  ["agent:schedule-recipe"] = function()
-    local names = recipes.list()
-    if #names == 0 then studio.say("No saved prompts to schedule yet."); return end
-    core.command_view:enter("Schedule saved prompt:", function(text, item)
-      local name = item or text
-      local body = recipes.load(name)
-      if not body then return end
-      if #recipes.params(body) > 0 then
-        core.error("'%s' takes parameters; schedule only runs fixed prompts", name)
-        return
-      end
-      prompt("Every how many minutes:", function(mins)
-        local n = tonumber(mins)
-        if not n or n <= 0 then core.error("not a number of minutes"); return end
-        studio.stop_schedule()
-        local v = studio.open_agent()
-        studio.schedule = { name = name, minutes = n, runs = 0, stop = false }
-        core.add_thread(function()
-          while studio.schedule and not studio.schedule.stop do
-            for _ = 1, math.floor(n * 60 / 0.5) do
-              if not studio.schedule or studio.schedule.stop then return end
-              coroutine.yield(0.5)
-            end
-            if studio.schedule and not studio.schedule.stop and not v.busy then
-              studio.schedule.runs = studio.schedule.runs + 1
-              v:push("system", string.format("scheduled run %d of '%s'",
-                studio.schedule.runs, name))
-              v:submit(body)
-            end
-          end
-        end)
-        core.log("'%s' every %g min -- 'agent: stop schedule' to cancel", name, n)
-      end, "30")
-    end, function(text) return common.fuzzy_match(names, text) end)
-  end,
-
-  ["agent:stop-schedule"] = function()
-    if studio.stop_schedule() then core.log("schedule stopped")
-    else core.log("nothing scheduled") end
+  -- ReAct: the goal supervisor with Thought → Act → Observe prompts. Sends
+  -- through /react so slash handling, the turn budget and the session save
+  -- stay one path with the REPL. (Orthogonal to saved prompts -- kept.)
+  ["agent:react"] = function()
+    prompt("ReAct goal:", function(text)
+      if not text or text == "" then return end
+      local v = studio.open_agent()
+      if v.send_prompt then v:send_prompt("/react " .. text)
+      else v:submit(text) end
+    end)
   end,
 
   -- ---- things the buttons call --------------------------------------------
@@ -1492,10 +1381,6 @@ command.add(nil, {
     require("core.welcomeview").open()
   end,
 
-  ["agent:workflows"] = function()
-    studio.open_workflows()
-  end,
-
   ["agent:library"] = function()
     studio.open_library()
   end,
@@ -1512,7 +1397,6 @@ command.add(nil, {
       { "Font",                   "studio:set-font" },
       { "Font size",              "studio:font-size" },
       { "Reset fonts",            "studio:reset-fonts" },
-      { "Workflows",              "agent:workflows" },
       { "Library (tools, memory)", "agent:library" },
       { "Swarm (multi-agent)",    "agent:swarm" },
       { "Event handlers",         "agent:show-event-handlers" },

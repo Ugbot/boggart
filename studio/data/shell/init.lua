@@ -314,35 +314,16 @@ command.add(nil, {
   ["shell:toggle-theme"]    = function() require("shell.theme").toggle() end,
 
   -- Automations: one saved-prompt concept (Run menu), superseding the old
-  -- recipes / workflows / schedule split.
-  ["automations:run"] = function()
-    local A = require "shell.automations"
-    local choices = A.choices()
-    if #choices == 0 then
-      core.log("no automations yet -- Run \u{25b8} New automation\u{2026}"); return
-    end
-    require("shell.modal").chooser("Run automation", choices, function(p) A.run(p.name) end)
-  end,
-  ["automations:new"] = function()
-    core.command_view:enter("Automation name", function(name)
-      if not name or name == "" then return end
-      core.command_view:enter("Prompt for '" .. name .. "'", function(prompt)
-        require("shell.automations").save(name, prompt)
-        core.log("saved automation '" .. name .. "'")
-      end)
-    end)
-  end,
-  ["automations:manage"] = function()
-    local A = require "shell.automations"
-    local choices = A.choices()
-    if #choices == 0 then core.log("no automations yet"); return end
-    for _, c in ipairs(choices) do c.info = "edit / delete" end
-    require("shell.modal").chooser("Edit automation", choices, function(p)
-      core.command_view:enter("Prompt for '" .. p.name .. "' (blank = delete)", function(prompt)
-        if not prompt or prompt == "" then A.remove(p.name); core.log("deleted '" .. p.name .. "'")
-        else A.save(p.name, prompt); core.log("updated '" .. p.name .. "'") end
-      end, nil, nil, A.load(p.name) or "")
-    end)
+  -- recipes / workflows / schedule split. The pickers live in shell.automations
+  -- so the toolbar/sidebar agent:* entry points (and the legacy composition)
+  -- share exactly this flow.
+  ["automations:run"]      = function() require("shell.automations").run_picker() end,
+  ["automations:new"]      = function() require("shell.automations").new_prompt() end,
+  ["automations:manage"]   = function() require("shell.automations").edit_picker() end,
+  ["automations:schedule"] = function() require("shell.automations").schedule_picker() end,
+  ["automations:stop-schedule"] = function()
+    if require("shell.automations").stop_schedule() then core.log("schedule stopped")
+    else core.log("nothing scheduled") end
   end,
 })
 keymap.add {
