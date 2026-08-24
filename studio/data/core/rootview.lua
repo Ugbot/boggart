@@ -62,6 +62,13 @@ end
 
 function Node:on_mouse_moved(x, y, ...)
   self.hovered_tab = self:get_tab_overlapping_point(x, y)
+  self.hovered_close = nil
+  if self.hovered_tab then
+    local cx, cy, cs = self:get_tab_close_rect(self.hovered_tab)
+    if x >= cx and x < cx + cs and y >= cy and y < cy + cs then
+      self.hovered_close = self.hovered_tab
+    end
+  end
   if self.type == "leaf" then
     self.active_view:on_mouse_moved(x, y, ...)
   else
@@ -230,16 +237,57 @@ function Node:should_show_tabs()
   if self.type ~= "leaf" or self.locked then return false end
   if self.active_view:is(EmptyView) and #self.views <= 1 then return false end
   if #self.views > 1 then return true end
-  return self.active_view.doc ~= nil
+  -- A single non-empty, non-docked view still gets a strip so it is named and
+  -- closable -- a lone log or search view was otherwise stuck open with no tab
+  -- and no close affordance.
+  return not self.active_view:is(EmptyView)
+end
+
+
+-- One source of truth for the tab strip's geometry, shared by draw and
+-- hit-testing so they cannot disagree. Tabs never shrink below MIN_TAB_WIDTH;
+-- when they would overflow the strip we show a scrolled window of them (kept
+-- around the active tab) with chevrons marking the hidden ones.
+local MIN_TAB_WIDTH = 80
+function Node:tab_metrics()
+  local n = #self.views
+  local avail = self.size.x
+  local tw = math.max(MIN_TAB_WIDTH,
+    math.min(style.tab_width, math.ceil(avail / math.max(1, n))))
+  local nfit = math.max(1, math.floor(avail / tw))
+  local first = math.max(1, math.min(self.tab_scroll or 1, math.max(1, n - nfit + 1)))
+  -- Keep the active tab inside the visible window.
+  local ai
+  for i, v in ipairs(self.views) do if v == self.active_view then ai = i; break end end
+  if ai then
+    if ai < first then first = ai
+    elseif ai > first + nfit - 1 then first = ai - nfit + 1 end
+    first = math.max(1, math.min(first, math.max(1, n - nfit + 1)))
+  end
+  self.tab_scroll = first
+  local last = math.min(n, first + nfit - 1)
+  return tw, first, last, nfit
 end
 
 
 function Node:get_tab_overlapping_point(px, py)
   if not self:should_show_tabs() then return nil end
-  local x, y, w, h = self:get_tab_rect(1)
-  if px >= x and py >= y and px < x + w * #self.views and py < y + h then
-    return math.floor((px - x) / w) + 1
-  end
+  local tw, first, last = self:tab_metrics()
+  local _, _, _, h = self:get_tab_rect(first)
+  local x0 = self.position.x
+  if py < self.position.y or py >= self.position.y + h or px < x0 then return nil end
+  local idx = first + math.floor((px - x0) / tw)
+  if idx >= first and idx <= last then return idx end
+  return nil
+end
+
+
+-- The close box on a tab, right-aligned inside it. Returned separately so the
+-- click handler can consume a hit on it before selecting the tab.
+function Node:get_tab_close_rect(idx)
+  local x, y, w, h = self:get_tab_rect(idx)
+  local s = style.font:get_height()
+  return x + w - s - math.floor(style.padding.x / 2), y + math.floor((h - s) / 2), s, s
 end
 
 
@@ -257,9 +305,13 @@ end
 
 
 function Node:get_tab_rect(idx)
-  local tw = math.min(style.tab_width, math.ceil(self.size.x / #self.views))
+  local tw = math.max(MIN_TAB_WIDTH,
+    math.min(style.tab_width, math.ceil(self.size.x / math.max(1, #self.views))))
+  local first = self.tab_scroll or 1
   local h = style.font:get_height() + style.padding.y * 2
-  return self.position.x + (idx-1) * tw, self.position.y, tw, h
+  -- idx is the absolute tab index; place it relative to the first visible tab so
+  -- off-window tabs land off the strip (and so never hit-test).
+  return self.position.x + (idx - first) * tw, self.position.y, tw, h
 end
 
 
@@ -367,14 +419,17 @@ end
 
 
 function Node:draw_tabs()
-  local x, y, _, h = self:get_tab_rect(1)
+  local tw, first, last = self:tab_metrics()
+  local ox, oy = self.position.x, self.position.y
   local ds = style.divider_size
-  core.push_clip_rect(x, y, self.size.x, h)
-  renderer.draw_rect(x, y, self.size.x, h, style.background2)
-  renderer.draw_rect(x, y + h - ds, self.size.x, ds, style.divider)
+  local h = style.font:get_height() + style.padding.y * 2
+  core.push_clip_rect(ox, oy, self.size.x, h)
+  renderer.draw_rect(ox, oy, self.size.x, h, style.background2)
+  renderer.draw_rect(ox, oy + h - ds, self.size.x, ds, style.divider)
 
-  for i, view in ipairs(self.views) do
-    local x, y, w, h = self:get_tab_rect(i)
+  for i = first, last do
+    local view = self.views[i]
+    local x, y, w = self:get_tab_rect(i)
     local text = view:get_name()
     local color = style.dim
     if view == self.active_view then
@@ -383,14 +438,32 @@ function Node:draw_tabs()
       renderer.draw_rect(x + w, y, ds, h, style.divider)
       renderer.draw_rect(x - ds, y, ds, h, style.divider)
     end
-    if i == self.hovered_tab then
-      color = style.text
-    end
+    if i == self.hovered_tab then color = style.text end
     core.push_clip_rect(x, y, w, h)
-    x, w = x + style.padding.x, w - style.padding.x * 2
-    local align = style.font:get_width(text) > w and "left" or "center"
-    common.draw_text(style.font, color, text, align, x, y, w, h)
+    -- Close box (×), painted on the active or hovered tab; its hit region is
+    -- consistent for every tab so a click there closes regardless of paint.
+    local show_close = (view == self.active_view or i == self.hovered_tab)
+    local cw = show_close and (style.font:get_height() + style.padding.x) or 0
+    if show_close then
+      local cx, cy, cs = self:get_tab_close_rect(i)
+      common.draw_text(style.font,
+        i == self.hovered_close and style.text or style.dim,
+        "\u{00d7}", "center", cx, cy, cs, cs)
+    end
+    local tx, tw2 = x + style.padding.x, w - style.padding.x * 2 - cw
+    local align = style.font:get_width(text) > tw2 and "left" or "center"
+    common.draw_text(style.font, color, text, align, tx, y, tw2, h)
     core.pop_clip_rect()
+  end
+
+  -- Chevrons for tabs scrolled out of view on either side.
+  if first > 1 then
+    common.draw_text(style.font, style.dim, "\u{2039}", "left",
+      ox + style.padding.x / 2, oy, tw, h)
+  end
+  if last < #self.views then
+    common.draw_text(style.font, style.dim, "\u{203a}", "right",
+      ox + self.size.x - tw - style.padding.x / 2, oy, tw, h)
   end
 
   core.pop_clip_rect()
@@ -485,8 +558,12 @@ function RootView:on_mouse_pressed(button, x, y, clicks)
   local node = self.root_node:get_child_overlapping_point(x, y)
   local idx = node:get_tab_overlapping_point(x, y)
   if idx then
+    -- A left-click on the tab's × closes it (as does middle-click anywhere on
+    -- the tab); otherwise the tab just becomes active.
+    local cx, cy, cs = node:get_tab_close_rect(idx)
+    local on_close = x >= cx and x < cx + cs and y >= cy and y < cy + cs
     node:set_active_view(node.views[idx])
-    if button == "middle" then
+    if button == "middle" or (button == "left" and on_close) then
       node:close_active_view(self.root_node)
     end
   else
