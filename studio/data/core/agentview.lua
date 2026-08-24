@@ -406,7 +406,10 @@ function AgentView:submit(text)
               end
               self.pending = rec
               self.status = "waiting for approval"
-              while rec.decision == nil do coroutine.yield("approve") end
+              -- Park on the scheduler until the decision lands, rather than
+              -- re-yielding every frame (the scheduler owns the wait now via the
+              -- "block" kind, keyed on rec.decision -- see lua/sched.lua).
+              while rec.decision == nil do coroutine.yield("block", rec) end
               self.pending = nil
               if rec.decision == "reject" then
                 self:push("system", "rejected: " .. name)

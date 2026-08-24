@@ -210,6 +210,28 @@ do
   eq(seen[9003].detail, nil, "a clean finish carries no crash detail")
 end
 
+-- ===== the "block" yield: parked on a decision, not busy-polled =============
+do
+  bog.sched.actors, bog.sched.by_id = {}, {}
+  local rec = { decision = nil }
+  local finished = false
+  bog.sched.add(701, coroutine.create(function()
+    while rec.decision == nil do coroutine.yield("block", rec) end
+    finished = true
+  end))
+  bog.sched.resume_ready()                    -- runs to the block and parks
+  local a = bog.sched.by_id[701]
+  ok(a and a.status == "blocked", "a 'block' yield parks the actor")
+  bog.sched.resume_ready(); bog.sched.resume_ready()
+  ok(not finished and a.status == "blocked", "...stays parked while decision is nil")
+  local run, _, paused = bog.sched.classify()
+  ok(paused and not run, "classify keeps a blocked actor alive, not runnable/wedged")
+  rec.decision = "approve"
+  bog.sched.resume_ready()                     -- decision landed: resume once
+  ok(finished, "setting rec.decision wakes the blocked actor")
+  ok(bog.sched.by_id[701] == nil, "...and it finishes and leaves the scheduler")
+end
+
 os.getenv = real_getenv
 if bog.db then bog.db:close() end
 sys.rmtree(bog.userdir) -- not a shell command: cmd.exe has no rm

@@ -243,10 +243,10 @@ end
 
 function SwarmView:state_of(rec)
   if self.killed[rec.id] then return "stopped" end
-  -- A sub-agent parked on the approval gate re-yields "approve" every sweep, so
-  -- the scheduler still reports it "runnable" and dash would say "run". The gate
-  -- is the truth here: if it is holding a request for this agent, the agent is
-  -- waiting on approval, whatever the scheduler thinks it is doing.
+  -- The swarm gate holds approval requests out of band in bog.approvals; if one
+  -- is outstanding for this agent it is waiting on approval, whatever its
+  -- scheduler status. (The in-process turn parks as "blocked" now, which the
+  -- scheduler reports honestly, but the swarm gate is a separate request queue.)
   if self:pending_for(rec.id) then return "approve" end
   local a = bog.sched and bog.sched.by_id and bog.sched.by_id[rec.id]
   if a and a.paused then return "paused" end

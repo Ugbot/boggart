@@ -329,12 +329,11 @@ local function wait_for_decision(rec)
   if bog.choice_ui and coroutine.isyieldable and coroutine.isyieldable() then
     bog.choice = rec
     pcall(events.emit, "ui:choice", rec)
-    local spins = 0
-    while rec.decision == nil do
-      spins = spins + 1
-      if spins > 6000 then rec.decision = { cancel = true } end
-      coroutine.yield("choose")
-    end
+    -- Park on the scheduler until the chooser is answered. The "block" kind is
+    -- keyed on rec.decision, so the actor sleeps instead of busy-yielding every
+    -- frame; the old spin counter that forced a cancel after ~6000 frames is
+    -- gone with it -- an unanswered prompt now just waits, cheaply.
+    while rec.decision == nil do coroutine.yield("block", rec) end
     bog.choice = nil
     return true
   elseif type(bog.choose_ask) == "function" then

@@ -180,6 +180,7 @@ function M.status_word(rec)
   if s == "runnable" then return "run" end
   if s == "io" then return "io" end
   if s == "recv" then return "mail" end
+  if s == "blocked" then return "wait" end   -- parked on an approval / chooser
   if s then return tostring(s) end
   if rec.db == "error" then return "err" end
   if rec.db == "idle" then return "idle" end

@@ -303,17 +303,10 @@ function studio.start_pump()
     while true do
       local sched = bog.sched
       if sched and #sched.actors > 0 then
-        -- The approval gate. lua/sched.lua treats the gate's "approve" yield as
-        -- runnable, so a coordinator waiting on a yes/no would busy-spin
-        -- re-yielding it every frame. Park its actor while the decision is
-        -- outstanding instead -- sub-agents are separate actors and keep going.
-        local v = studio.agent_view()
-        local park = false
-        if v and v.pending and v.pending.decision == nil then park = true end
-        if bog.choice and bog.choice.decision == nil then park = true end
-        if v and v.turn_id and sched.by_id[v.turn_id] then
-          sched.pause(v.turn_id, park)
-        end
+        -- The approval gate parks itself now: an actor awaiting a decision yields
+        -- "block" and the scheduler holds it on rec.decision (lua/sched.lua), so
+        -- this pump no longer peeks at UI state or hand-parks the coordinator --
+        -- it just steps. Sub-agents are separate actors and keep going.
         local ok, err = pcall(sched.step, false)
         if not ok then core.log_quiet("swarm scheduler: %s", tostring(err)) end
         core.redraw = true

@@ -87,10 +87,16 @@ local function resume(a)
     remove(a)
     return
   end
-  if kind == "recv" then a.status = "recv"; a.req = nil
-  elseif kind == "io" then a.status = "io"; a.req = arg
-  elseif kind == "proc" then a.status = "proc"; a.req = arg
-  else a.status = "runnable"; a.req = nil end
+  -- "block" parks an actor on a pending decision record (an approval, a chooser)
+  -- until that record's .decision is filled in. The record itself is the wake
+  -- condition -- the scheduler owns the wait, so a surface no longer has to peek
+  -- at UI state every frame and re-park the actor by hand. a.wait is cleared on
+  -- any other yield so a resumed actor never carries a stale condition.
+  if kind == "recv" then a.status, a.req, a.wait = "recv", nil, nil
+  elseif kind == "io" then a.status, a.req, a.wait = "io", arg, nil
+  elseif kind == "proc" then a.status, a.req, a.wait = "proc", arg, nil
+  elseif kind == "block" then a.status, a.req, a.wait = "blocked", nil, arg
+  else a.status, a.req, a.wait = "runnable", nil, nil end
 end
 
 -- Stop resuming one actor without discarding it. Its coroutine keeps whatever
@@ -134,6 +140,8 @@ local function resume_sweep()
         resume(a); did = true
       elseif a.status == "recv" and swarm.pending(a.id) > 0 then
         a.status = "runnable"; resume(a); did = true
+      elseif a.status == "blocked" and a.wait and a.wait.decision ~= nil then
+        a.status = "runnable"; resume(a); did = true
       end
     end
   end
@@ -150,7 +158,13 @@ local function classify()
     if a.paused then paused = true
     elseif a.status == "io" or a.status == "proc" then in_flight = true
     elseif a.status == "runnable" then runnable = true
-    elseif a.status == "recv" and swarm.pending(a.id) > 0 then runnable = true end
+    elseif a.status == "recv" and swarm.pending(a.id) > 0 then runnable = true
+    elseif a.status == "blocked" then
+      -- A decision just landed -> runnable (the sweep will resume it); still
+      -- waiting -> treat like paused: keep the run alive and sleep until an
+      -- event (the approving keypress) wakes the loop, never wedge-and-stop.
+      if a.wait and a.wait.decision ~= nil then runnable = true else paused = true end
+    end
   end
   return runnable, in_flight, paused
 end
