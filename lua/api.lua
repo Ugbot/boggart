@@ -319,7 +319,7 @@ M.msg_text = msg_text
 -- Accumulates streamed content blocks and the stop_reason; on_text (optional)
 -- receives text deltas live. feed(chunk) is chunk-boundary safe; finish()
 -- returns (assistant_message, stop_reason, stream_err).
-local function new_decoder(on_text)
+local function new_decoder(on_text, on_think)
   local blocks, tool_json = {}, {}
   local stop_reason, stream_err, buf = nil, nil, ""
   -- Token usage, so the UI can show what a conversation is costing and how
@@ -353,6 +353,8 @@ local function new_decoder(on_text)
         tool_json[idx] = (tool_json[idx] or "") .. (d.partial_json or "")
       elseif d.type == "thinking_delta" then
         b.thinking = (b.thinking or "") .. (d.thinking or "")
+        if on_think then on_think(d.thinking or "") end   -- live extended-thinking
+
       elseif d.type == "signature_delta" then
         b.signature = (b.signature or "") .. (d.signature or "")
       end
@@ -531,7 +533,7 @@ end
 -- delta.reasoning_content -> a thinking block (qwen3 streams its reasoning
 -- separately), delta.tool_calls -> tool_use blocks (name + JSON args arrive in
 -- fragments, accumulated by index).
-local function new_openai_decoder(on_text)
+local function new_openai_decoder(on_text, on_think)
   local text, thinking, tool_acc = "", "", {}
   local stop_reason, stream_err, buf = nil, nil, ""
   local usage = { input_tokens = 0, output_tokens = 0,
@@ -558,6 +560,7 @@ local function new_openai_decoder(on_text)
     end
     if type(d.reasoning_content) == "string" and d.reasoning_content ~= "" then
       thinking = thinking .. d.reasoning_content
+      if on_think then on_think(d.reasoning_content) end   -- live: reasoning models stream this first
     end
     if type(d.tool_calls) == "table" then
       for _, tc in ipairs(d.tool_calls) do
@@ -682,7 +685,7 @@ end
 -- Decode the Responses typed SSE stream into (assistant_message, stop_reason,
 -- stream_err). Each frame is `event: <type>` + `data: {json}`; we read the type
 -- from the data object (it carries its own `type`), so only `data:` lines matter.
-local function new_responses_decoder(on_text)
+local function new_responses_decoder(on_text, on_think)
   local text, thinking, tool_acc, order = "", "", {}, {}
   local stop_reason, stream_err, buf = nil, nil, ""
   local usage = { input_tokens = 0, output_tokens = 0,
@@ -694,6 +697,7 @@ local function new_responses_decoder(on_text)
       text = text .. (evt.delta or ""); if on_text then on_text(evt.delta or "") end
     elseif t == "response.reasoning_summary_text.delta" or t == "response.reasoning_text.delta" then
       thinking = thinking .. (evt.delta or "")
+      if on_think then on_think(evt.delta or "") end   -- live reasoning summary
     elseif t == "response.output_item.added" then
       local it = evt.item
       if type(it) == "table" and it.type == "function_call" then
@@ -767,10 +771,10 @@ local function new_responses_decoder(on_text)
 end
 
 -- ---- the transport (always runs inside a scheduler coroutine) --------------
-local function stream_async_once(body, on_text, w)
-  local dec = (w == "responses" and new_responses_decoder(on_text))
-    or (w == "openai" and new_openai_decoder(on_text))
-    or new_decoder(on_text)
+local function stream_async_once(body, on_text, w, on_think)
+  local dec = (w == "responses" and new_responses_decoder(on_text, on_think))
+    or (w == "openai" and new_openai_decoder(on_text, on_think))
+    or new_decoder(on_text, on_think)
   local raw = {}
   local req = http.begin{
     url = endpoint(), method = "POST", headers = auth_headers(), auth = true,
@@ -793,7 +797,7 @@ end
 
 -- Same policy as the sync path. The backoff yields rather than sleeping, so a
 -- rate-limited agent does not stop the others from working.
-local function stream_async(body_tbl, on_text)
+local function stream_async(body_tbl, on_text, on_think)
   -- Belt-and-suspenders: the primary fix scrubs content at ingest, but a
   -- session resumed from the store that was written *before* that fix could
   -- still carry invalid bytes. Scrubbing the fully-encoded body once here
@@ -806,7 +810,7 @@ local function stream_async(body_tbl, on_text)
     or body_tbl
   local body = util.to_valid_utf8(json.encode(tbl))
   for attempt = 1, M.RETRY.attempts do
-    local msg, stop, serr, status, terr, raw = stream_async_once(body, on_text, w)
+    local msg, stop, serr, status, terr, raw = stream_async_once(body, on_text, w, on_think)
     if status == 200 and not serr then return msg, stop end
     if status == 401 or status == 403 then cached_headers = nil end
 
@@ -1355,6 +1359,10 @@ function M.run_on(sess, user_text, on_text, opts)
     or (bog.perm and bog.perm.wrap_run(bog.tools.run, bog.perm.state()))
     or bog.tools.run
   local on_tool = opts.on_tool or bog.log_tool
+  -- Optional live-reasoning sink. Reasoning models (gpt-oss, qwen3, o-series,
+  -- extended-thinking Claude) stream a long reasoning phase before the answer;
+  -- a front end that passes on_think shows it live instead of sitting silent.
+  local on_think = opts.on_think
   -- Durable checkpoint: persist the transcript after the assistant message and
   -- after every tool result, so a crash/cancel loses at most the tool that was
   -- in flight. Front ends pass save_session / thread_save; default is a no-op.
@@ -1511,7 +1519,17 @@ function M.run_on(sess, user_text, on_text, opts)
     if #tools > 0 then body.tools = tools end
 
     ttfb_t0 = tel and tel.now_ms() or nil; ttfb_ms = nil
-    local msg, stop = stream(body, sink)
+    -- on_think streams the model's reasoning live (reasoning models emit a long
+    -- reasoning phase before any answer -- without this the UI is silent the
+    -- whole time and looks hung). ttfb counts the first *reasoning* token too, so
+    -- "time to first output" reflects when the model actually started talking.
+    local think_sink = on_think and function(chunk)
+      if ttfb_t0 and not ttfb_ms and chunk and chunk ~= "" then
+        ttfb_ms = tel and (tel.now_ms() - ttfb_t0) or nil
+      end
+      on_think(chunk)
+    end
+    local msg, stop = stream(body, sink, think_sink)
     stop_reason = stop -- what turn:end reports on the way out
     -- One turn span: model / TTFB / tokens / tool-calls / think-vs-output.
     -- Emitted before usage is scrubbed off msg, counted from the blocks the

@@ -825,6 +825,7 @@ local RUNS = {
   tool  = function(e, o) return simple_runs(textof(e), "\194\187 ", PAL.keyword, o) end,           -- "» "
   error = function(e, o) return simple_runs(textof(e), "\226\156\151 ", PAL.err, o, true) end,     -- "✗ "
   system = function(e, o) return simple_runs(textof(e), "\194\183 ", PAL.dim, o) end,              -- "· "
+  thinking = function(e, o) return simple_runs(textof(e), "\226\128\166 ", PAL.dim, o) end,        -- "… " the model reasoning, dim
   diff  = diff_runs,
 }
 
@@ -860,6 +861,7 @@ function M.user(entry, opts)  return serialise(RUNS.user(entry, opts), opts) end
 function M.tool(entry, opts)  return serialise(RUNS.tool(entry, opts), opts) end
 function M.error(entry, opts) return serialise(RUNS.error(entry, opts), opts) end
 function M.system(entry, opts) return serialise(RUNS.system(entry, opts), opts) end
+function M.thinking(entry, opts) return serialise(RUNS.thinking(entry, opts), opts) end
 function M.diff(x, opts) return serialise(diff_runs(x, opts), opts) end
 
 -- ---------------------------------------------------------------------------
@@ -867,7 +869,7 @@ function M.diff(x, opts) return serialise(diff_runs(x, opts), opts) end
 -- ---------------------------------------------------------------------------
 M.kinds = {
   user = M.user, assistant = M.assistant, tool = M.tool,
-  diff = M.diff, error = M.error, system = M.system,
+  diff = M.diff, error = M.error, system = M.system, thinking = M.thinking,
 }
 
 -- entry(entry, opts) -> string. Unknown roles fall back to assistant, which is

@@ -547,7 +547,7 @@ local function run_turn(st, text)
       pcall(bog.store.thread_save, st.coord.id, { title = text:gsub("%s+", " "):sub(1, 60) })
     end
   end
-  st.cur = nil -- the first assistant chunk opens a fresh entry, after any tool call
+  st.cur, st.think = nil, nil -- first answer/reasoning chunk opens a fresh entry
   st.scroll, st.running, st.t0, st.abort = 0, true, os.time(), false
   st.dirty, st.last_paint = true, 0
 
@@ -571,6 +571,19 @@ local function run_turn(st, text)
     -- it, so the next chunk opens a new entry and the conversation reads as clean
     -- prose segments. Never write here -- everything is an entry the cell grid
     -- draws, or it would shred the frame.
+    -- Reasoning models (gpt-oss, qwen3, o-series, extended-thinking Claude)
+    -- stream a long reasoning phase before any answer. Show it live in a dim
+    -- "thinking" entry so the turn plainly reads as working instead of sitting
+    -- silent -- which looked like a hang. The first answer chunk opens the
+    -- assistant entry below it.
+    topts.on_think = function(chunk)
+      if not st.think then
+        st.think = { role = "thinking", text = "" }
+        st.entries[#st.entries + 1] = st.think
+      end
+      st.think.text = st.think.text .. chunk
+      st.dirty = true
+    end
     local tok, terr = pcall(bog.api.run_on, st.coord.session, text, function(chunk)
       if not st.cur then
         st.cur = { role = "assistant", text = "" }
@@ -635,7 +648,7 @@ local function run_turn(st, text)
           st.coord.session.inbox = st.coord.session.inbox or {}
           st.coord.session.inbox[#st.coord.session.inbox + 1] = value
           st.entries[#st.entries + 1] = { role = "user", text = value }
-          st.cur = nil        -- a following assistant chunk opens a fresh entry
+          st.cur, st.think = nil, nil   -- a following chunk opens a fresh entry
           st.dirty = true
         end
       else st.box:key(ev); st.dirty = true end
@@ -754,7 +767,7 @@ function M.run()
   local function activity(line)
     st.activity[#st.activity + 1] = line
     if #st.activity > ACTIVITY_KEEP then table.remove(st.activity, 1) end
-    st.cur, st.dirty = nil, true
+    st.cur, st.think, st.dirty = nil, nil, true
   end
   bog.log_tool = function(name, input)
     if not is_coord() then return end
