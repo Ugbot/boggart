@@ -105,8 +105,12 @@ function AgentView:new()
   self:push("system",
     "enter sends · !cmd runs a shell · shift+enter / ctrl+j newline · tab completes · /commands · esc cancels · shift+tab cycles approval · ? shortcuts")
   if bog and not self:has_creds() then
-    self:push("system", "No credentials. Command palette: 'agent: set api key',")
-    self:push("system", "or 'agent: set endpoint' for a local server (ds4 on :8000).")
+    -- Tag these so welcomeview can retract them once credentials arrive without
+    -- matching on their English text (which drifts the moment the copy changes).
+    self:push("system", "No credentials. Command palette: 'agent: set api key',",
+      { hint = "no-creds" })
+    self:push("system", "or 'agent: set endpoint' for a local server (ds4 on :8000).",
+      { hint = "no-creds" })
   end
 end
 

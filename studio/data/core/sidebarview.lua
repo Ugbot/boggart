@@ -392,8 +392,12 @@ function SidebarView:draw()
   local n = #rows
   local first = math.max(1, math.floor(self.scroll.y / lh) + 1)
   local current = bog.session and bog.session.id
-  if n == 0 and self.search ~= "" then
-    common.draw_text(font, style.dim, "No matches", "left", x + pad / 2, y, w, lh)
+  if n == 0 then
+    -- An empty list is either "your filter matched nothing" or "you have no
+    -- sessions yet"; a bare header under a blank panel reads as broken, so say
+    -- which it is.
+    local msg = self.search ~= "" and "No matches" or "No sessions yet"
+    common.draw_text(font, style.dim, msg, "left", x + pad / 2, y, w, lh)
   end
   for i = first, n do
     local s = rows[i]

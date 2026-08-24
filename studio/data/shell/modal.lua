@@ -20,7 +20,10 @@ local function typing()
   if not v then return false end
   if v == core.command_view then return true end
   local DocView = require "core.docview"
-  if getmetatable(v) == DocView then
+  -- v:is(DocView), not getmetatable(v) == DocView: LogView and other DocView
+  -- subclasses are editors too, and an exact-class test called them read-only
+  -- surfaces, so the spine's j/k stole keystrokes from them.
+  if v.is and v:is(DocView) then
     local vim = package.loaded["core.vim"]
     if vim and vim.enabled and vim.state then
       local st = vim.state(v)
@@ -28,7 +31,8 @@ local function typing()
     end
     return true -- modeless editor: always typing
   end
-  if getmetatable(v) == package.loaded["core.agentview"] then
+  local AgentView = package.loaded["core.agentview"]
+  if AgentView and v.is and v:is(AgentView) then
     -- The composer has two contexts. Insert mode is a text field and owns every
     -- key (current behaviour); normal mode is a viewport over the transcript, so
     -- the spine's j/k/gg/G must fire there just as they do in a read-only view.
@@ -139,12 +143,12 @@ function modal.intercept(k)
     return leader_key(k)
   end
 
-  -- Ctrl-w (the pane/window prefix) works even while typing: it's a modified
-  -- chord that never collides with text entry, so a nvim user gets pane focus
-  -- movement and splits everywhere, not just on read-only surfaces.
-  if stroke == "ctrl+w" then modal.pending = "window"; return true end
-
   if typing() then return false end
+
+  -- Ctrl-w is the pane/window prefix on read-only surfaces, but in a text field
+  -- it is the word-delete every editor binds -- so it is claimed only once the
+  -- typing() guard above has let a field keep it.
+  if stroke == "ctrl+w" then modal.pending = "window"; return true end
 
   if k == "g" then modal.pending = "g"; return true end
   if k == "space" then return modal.leader_open() end

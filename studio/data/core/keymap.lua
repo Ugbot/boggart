@@ -60,8 +60,15 @@ function keymap.add(map, overwrite)
         table.insert(keymap.map[stroke], 1, commands[i])
       end
     end
+    -- reverse_map answers "what stroke shows for this command" (the cheatsheet).
+    -- Keep the first stroke a command is bound to rather than letting the last
+    -- keymap.add win: add-order is not fixed once plugins and the Cmd mirror run,
+    -- so last-writer-wins made get_binding flip between runs. An explicit
+    -- overwrite is a deliberate rebind and does update the shown stroke.
     for _, cmd in ipairs(commands) do
-      keymap.reverse_map[cmd] = stroke
+      if overwrite or keymap.reverse_map[cmd] == nil then
+        keymap.reverse_map[cmd] = stroke
+      end
     end
   end
 end

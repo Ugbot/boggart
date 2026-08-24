@@ -568,16 +568,11 @@ function WelcomeView:finish(commit)
     if v and configured() then
       -- The panel says "No credentials" in its opening lines, decided once when
       -- it was constructed -- which was before any of this. Leaving that on
-      -- screen underneath "ready" would be the application contradicting
-      -- itself. Matching on the text is duplicated knowledge and it is the
-      -- weak part of this: the durable fix is for agentview.lua to derive that
-      -- hint when it draws rather than push it once at construction.
+      -- screen underneath "ready" would be the application contradicting itself.
+      -- The hint entries are tagged { hint = "no-creds" } at construction, so
+      -- retract them by tag rather than by matching their (mutable) English text.
       for i = #v.entries, 1, -1 do
-        local e = v.entries[i]
-        if e.role == "system" and (e.text:find("^No credentials")
-            or e.text:find("^or 'agent: set endpoint'")) then
-          table.remove(v.entries, i)
-        end
+        if v.entries[i].hint == "no-creds" then table.remove(v.entries, i) end
       end
       v:push("system", "ready -- model " .. tostring((bog.session or {}).model)
         .. " at " .. bog.api.endpoint())

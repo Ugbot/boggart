@@ -84,7 +84,10 @@ function M.set_register(text, linewise)
   local rec = { text = text, linewise = linewise }
   M.register = rec
   if M.active_reg then M.registers[M.active_reg] = rec end
-  if not linewise then pcall(system.set_clipboard, text) end
+  -- Mirror to the system clipboard for linewise yanks too (yy/dd): skipping them
+  -- meant a whole-line yank never left the app, so Cmd-V elsewhere pasted a stale
+  -- charwise copy. The linewise flag still governs how *vim's* p re-inserts it.
+  pcall(system.set_clipboard, text)
 end
 
 local function register_text()
@@ -620,10 +623,14 @@ local function toggle_case(dv, count)
   end
 end
 
-function M.paste(dv, after)
+function M.paste(dv, after, count)
   local doc = dv.doc
   local text, linewise = register_text()
   if text == "" then return end
+  -- `3p` pastes the register three times (vim). Repeating the register text is
+  -- the whole of it: for linewise text each copy already carries its newline, so
+  -- three copies are three lines; charwise, three copies sit end to end.
+  if count and count > 1 then text = text:rep(count) end
   mark_change()
   if linewise then
     local l = doc:get_selection()
@@ -694,8 +701,8 @@ local function do_action(dv, ch, v)
   elseif ch == "r" then v.await = "r"; return -- keep pending for the argument
   elseif ch == "~" then toggle_case(dv, count)
   elseif ch == "J" then mark_change(); for _ = 1, math.max(count - 1, 1) do command.perform("doc:join-lines") end
-  elseif ch == "p" then M.paste(dv, true)
-  elseif ch == "P" then M.paste(dv, false)
+  elseif ch == "p" then M.paste(dv, true, count)
+  elseif ch == "P" then M.paste(dv, false, count)
   elseif ch == "u" then for _ = 1, count do command.perform("doc:undo") end
   elseif ch == "v" then M.start_visual(dv, "visual")
   elseif ch == "V" then M.start_visual(dv, "vline")
@@ -1150,6 +1157,15 @@ end
 function M.dispatch_motion(dv, name)
   local v = vstate(dv)
   local doc = dv.doc
+  -- vim's cw quirk: cw / cW on a non-blank acts like ce / cE. It changes to the
+  -- END of the word rather than the start of the next one, so it does not also
+  -- swallow the whitespace after the word (which plain `w` as an operator target
+  -- would). Only when sitting on a non-blank -- on whitespace, cw keeps meaning w.
+  if v.op == "c" and (name == "w" or name == "W") then
+    local sl, sc = doc:get_selection()
+    local ch = doc:get_char(sl, sc)
+    if ch and ch:match("%S") then name = (name == "w") and "e" or "E" end
+  end
   local count = eff_count(v)
   local l, c = doc:get_selection()
   local tl, tc, kind = M.motion(dv, name, count, nil, l, c, had_count(v))

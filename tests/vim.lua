@@ -205,6 +205,22 @@ do
   ok(d.lines[1] == "a bbbb\n", "3x deletes three chars -> '"..d.lines[1].."'")
 end
 
+-- cw on a non-blank behaves like ce: it changes to the word end and leaves the
+-- following space, unlike dw which eats the space.
+do
+  local dv, d = setup("foo bar\n", 1, 1)
+  keys(dv, "cwX")
+  ok(d.lines[1] == "X bar\n", "cw changes the word but keeps the space -> '"..d.lines[1].."'")
+end
+
+-- count applies to p: 3p pastes the register three times.
+do
+  local dv, d = setup("ab\n", 1, 1)
+  keys(dv, "x")     -- delete 'a', register = "a", buffer "b"
+  keys(dv, "3p")    -- paste "a" three times after the cursor
+  ok(d.lines[1] == "baaa\n", "3p pastes three copies -> '"..d.lines[1].."'")
+end
+
 -- ---- Phase 2: ex command parsing (pure) ------------------------------------
 do
   local p = vim.parse_ex("%s/foo/bar/g")
