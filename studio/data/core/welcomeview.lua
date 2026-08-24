@@ -170,14 +170,8 @@ end
 -- Opening
 -- ---------------------------------------------------------------------------
 
--- The first-run surface. On the rail layout it replaces the agent stage
--- rather than sitting as a sibling tab; the legacy attach still adds a tab.
+-- The first-run surface, opened as a sibling tab beside the conversation.
 function WelcomeView.open()
-  local studio = core.studio
-  if studio and not studio.legacy and studio.switch_workspace then
-    studio.switch_workspace("welcome")
-    return WelcomeView.instance
-  end
   local node = core.root_view:get_primary_node()
   local existing = WelcomeView.instance
   if existing and node:get_node_for_view(existing) then

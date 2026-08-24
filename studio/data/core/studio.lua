@@ -22,7 +22,6 @@ local keymap = require "core.keymap"
 local style = require "core.style"
 local AgentView = require "core.agentview"
 local SidebarView = require "core.sidebarview"
-local workspaces = require "core.workspaces"
 local SettingsView = require "core.settingsview"
 local PanelView = require "core.panelview"
 local LibraryView = require "core.libraryview"
@@ -109,8 +108,12 @@ function studio.attach_legacy()
   return attach_common(view)
 end
 
+-- Kept for the few callers that still guard on it (swarmview/welcomeview);
+-- the shell owns workspace switching, so route there. There is no rail layout
+-- anymore and legacy has no workspaces, so off the shell this is a no-op.
 function studio.switch_workspace(name)
-  workspaces.switch(name)
+  local sh = package.loaded["shell"]
+  if sh and sh.attached and sh.switch then sh.switch(name) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -142,13 +145,13 @@ end
 require("core.engine").install(studio)
 
 function studio.open_agent()
-  if not studio.legacy then
-    local ws = require "core.workspaces"
-    if ws.layout == "files" and studio.view then
-      core.set_active_view(studio.view)
-      return studio.view
-    end
-    workspaces.show_chat()
+  -- In the shell, the conversation is the AGENT workspace; switching there
+  -- re-homes and focuses the view (shell.workspaces.agent.enter re-adds it),
+  -- which is all this used to do via workspaces.show_chat. The fallthrough below
+  -- still handles a closed/never-built panel in either composition.
+  local sh = package.loaded["shell"]
+  if sh and sh.attached and sh.switch then
+    sh.switch("agent")
     if studio.view and core.root_view.root_node:get_node_for_view(studio.view) then
       core.set_active_view(studio.view)
       return studio.view
@@ -181,10 +184,6 @@ function studio.show_surface(which)
   local sh = package.loaded["shell"]
   if sh and sh.attached then
     if which == "code" then sh.switch("edit") else studio.open_agent() end
-    return
-  end
-  if not studio.legacy then
-    if which == "code" then workspaces.show_files() else workspaces.show_chat() end
     return
   end
   local tree = package.loaded["plugins.treeview"]
@@ -401,18 +400,12 @@ function studio.project_paths()
   return out
 end
 
--- One settings view. On the rail layout it is a destination, not a tab
--- beside the conversation.
+-- One settings view, opened as a tab beside the conversation.
 function studio.open_settings()
-  if not studio.legacy then
-    workspaces.switch("settings")
-    return studio.settings
-  end
-  -- One settings view, ever. Reuse the singleton wherever it lives: an inactive
-  -- workspace stashes its views OUT of the live Node tree, so searching only the
-  -- primary node would miss a stashed instance and build a duplicate. Search the
-  -- whole root -- if found in a node, bring it forward; if stashed (no node),
-  -- re-home it into the current primary node instead of constructing a new one.
+  -- Reuse the singleton wherever it lives: a stashed (inactive-workspace) view is
+  -- OUT of the live Node tree, so searching only the primary node would miss it
+  -- and build a duplicate. Search the whole root -- if found in a node, bring it
+  -- forward; if stashed (no node), re-home it into the current primary node.
   if studio.settings then
     local node = core.root_view.root_node:get_node_for_view(studio.settings)
     if node then
@@ -437,26 +430,18 @@ function studio.open_swarm() return SwarmView.open() end
 -- its MCP servers. A tab beside the conversation, like settings, because it is
 -- a place you look at rather than a command you have to know the name of.
 function studio.open_library(section)
-  if not studio.legacy then
-    workspaces.switch("library")
-    if section and studio.library then studio.library:set_section(section) end
-    return studio.library
-  end
   -- Singleton, reused wherever it lives -- see open_settings for why the search
   -- is over the whole root and why a stashed instance is re-homed rather than
   -- duplicated across workspaces.
-  if studio.library then
+  if not studio.library then
+    studio.library = LibraryView()
+    core.root_view:get_primary_node():add_view(studio.library)
+  else
     local node = core.root_view.root_node:get_node_for_view(studio.library)
-    if node then
-      node:set_active_view(studio.library)
-    else
-      core.root_view:get_primary_node():add_view(studio.library)
-    end
-    core.set_active_view(studio.library)
-    return studio.library
+    if node then node:set_active_view(studio.library)
+    else core.root_view:get_primary_node():add_view(studio.library) end
   end
-  studio.library = LibraryView()
-  core.root_view:get_primary_node():add_view(studio.library)
+  if section then studio.library:set_section(section) end
   core.set_active_view(studio.library)
   return studio.library
 end
@@ -1193,14 +1178,6 @@ command.add(nil, {
     local sh = package.loaded["shell"]
     if sh and sh.attached and sh.current ~= "edit" then
       sh.switch("edit")
-      return
-    end
-    if not studio.legacy then
-      if workspaces.sidebar_mode == "tree" then
-        workspaces.show_chat()
-      else
-        workspaces.show_files()
-      end
       return
     end
     command.perform("treeview:toggle")
