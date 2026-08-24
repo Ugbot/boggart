@@ -54,6 +54,7 @@ for _, must in ipairs {
   "studio/data/core/agentcomplete.lua",
   "studio/data/core/sidebarview.lua",
   "studio/data/core/studio.lua",
+  "studio/data/core/engine.lua",
   "studio/data/core/widgets.lua",
   "studio/data/core/reviewview.lua",
   "studio/data/core/diff.lua",
