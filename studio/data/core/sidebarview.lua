@@ -11,6 +11,7 @@
 -- segmented control this file grew up with.
 local core = require "core"
 local common = require "core.common"
+local ui = require "core.ui"
 local command = require "core.command"
 local config = require "core.config"
 local style = require "core.style"
@@ -132,9 +133,19 @@ end
 
 -- Typed characters land here only while the box holds focus; every other key
 -- (backspace, escape, return) is a stroke and arrives via on_key_pressed.
+-- Search-box edits go through the shared field (core/ui.lua) -- paste, UTF-8
+-- backspace and word-delete in one place -- then re-run the query. The caret sits
+-- at the end here (the box takes no arrow keys), so a transient field per edit is
+-- enough and self.search stays the source of truth the query reads.
+function SidebarView:edit_search(fn)
+  local f = ui.textfield(self.search)
+  fn(f)
+  self:set_search(f.text)
+end
+
 function SidebarView:on_text_input(text)
   if not self.searching then return end
-  self:set_search(self.search .. text)
+  self:edit_search(function(f) f:input(text) end)
 end
 
 -- Editing keys for the search box. keymap hands a view the strokes no command
@@ -150,16 +161,11 @@ function SidebarView:on_key_pressed(stroke)
     if core.last_active_view then core.set_active_view(core.last_active_view) end
     core.redraw = true
     return true
-  elseif stroke == "backspace" then
-    local q = self.search
-    if q ~= "" then
-      -- Drop one whole UTF-8 character, not one byte.
-      local n = utf8.len(q)
-      if n and n > 0 then
-        self:set_search(q:sub(1, (utf8.offset(q, n) or #q) - 1))
-      else
-        self:set_search(q:sub(1, -2))
-      end
+  elseif stroke == "backspace" or stroke == "ctrl+backspace"
+      or stroke == "ctrl+v" or stroke == "cmd+v" then
+    -- Backspace / word-delete / paste, all through the shared field.
+    if self.search ~= "" or stroke == "ctrl+v" or stroke == "cmd+v" then
+      self:edit_search(function(f) f:key(stroke) end)
     end
     return true
   elseif stroke == "return" or stroke == "keypad enter" then

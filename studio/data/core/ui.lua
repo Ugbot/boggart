@@ -28,6 +28,7 @@
 -- many times.
 local style = require "core.style"
 local config = require "core.config"
+local common = require "core.common"
 
 local ui = {}
 
@@ -138,6 +139,124 @@ function ui.box(s, x, y, w, h)
     renderer.draw_rect(x, y + h - t, w, t, s.border)
     renderer.draw_rect(x, y, t, h, s.border)
     renderer.draw_rect(x + w - t, y, t, h, s.border)
+  end
+end
+
+-- Truncate `text` to `width` with a trailing ellipsis. UTF-8-safe, and safe on
+-- text that is not valid UTF-8 at all (a stored credential can be anything).
+-- Was hand-copied into settingsview and welcomeview; one home now.
+function ui.elide(font, text, width)
+  if font:get_width(text) <= width then return text end
+  local n = utf8.len(text)
+  local function upto(chars)
+    if n then return text:sub(1, (utf8.offset(text, chars + 1) or (#text + 1)) - 1) end
+    local i = math.min(chars, #text)
+    while i > 0 and common.is_utf8_cont(text:sub(i + 1, i + 1)) do i = i - 1 end
+    return text:sub(1, i)
+  end
+  local lo, hi = 0, n or #text
+  while lo < hi do
+    local mid = (lo + hi + 1) // 2
+    if font:get_width(upto(mid) .. "...") <= width then lo = mid else hi = mid - 1 end
+  end
+  return upto(lo) .. "..."
+end
+
+-- ---------------------------------------------------------------------------
+-- ui.textfield -- one single-line editable field
+-- ---------------------------------------------------------------------------
+--
+-- settingsview / welcomeview / the sidebar search / the file picker each rolled
+-- their own: a plain string appended to on input and trimmed from the END on
+-- backspace, with no caret, no arrows, and no paste -- so pasting a key or fixing
+-- a typo mid-string was impossible, and each got a slightly different subset of
+-- UTF-8 right. This is the one implementation: a caret (a byte offset into text),
+-- UTF-8-safe insert/delete, word-delete, Home/End, arrows, and clipboard paste.
+-- A view holds one and forwards on_text_input -> :input and on_key_pressed -> :key.
+local TextField = {}
+TextField.__index = TextField
+
+function ui.textfield(text)
+  return setmetatable({ text = text or "", caret = #(text or "") }, TextField)
+end
+
+-- Byte offset of the codepoint boundary before / after `i`.
+local function prev_cp(s, i)
+  if i <= 0 then return 0 end
+  i = i - 1
+  while i > 0 and common.is_utf8_cont(s:sub(i + 1, i + 1)) do i = i - 1 end
+  return i
+end
+local function next_cp(s, i)
+  local len = #s
+  if i >= len then return len end
+  i = i + 1
+  while i < len and common.is_utf8_cont(s:sub(i + 1, i + 1)) do i = i + 1 end
+  return i
+end
+
+-- Replace the whole value (and drop the caret at the end), for a view seeding
+-- the field from stored state.
+function TextField:set(text)
+  self.text = text or ""
+  self.caret = #self.text
+  return self
+end
+
+function TextField:value() return self.text end
+
+function TextField:input(t)
+  t = tostring(t or ""):gsub("[\n\r]", "")
+  if t == "" then return end
+  self.text = self.text:sub(1, self.caret) .. t .. self.text:sub(self.caret + 1)
+  self.caret = self.caret + #t
+end
+
+-- Handle an editing key; returns true if it consumed it (so the view knows to
+-- redraw and stop). Non-editing keys (escape/return/tab) are the view's own.
+function TextField:key(k)
+  local text, caret = self.text, self.caret
+  if k == "backspace" then
+    if caret > 0 then
+      local p = prev_cp(text, caret)
+      self.text, self.caret = text:sub(1, p) .. text:sub(caret + 1), p
+    end
+  elseif k == "delete" then
+    if caret < #text then
+      local nx = next_cp(text, caret)
+      self.text = text:sub(1, caret) .. text:sub(nx + 1)
+    end
+  elseif k == "ctrl+backspace" then
+    local i = caret
+    while i > 0 and text:sub(i, i):match("%s") do i = prev_cp(text, i) end
+    while i > 0 and not text:sub(i, i):match("%s") do i = prev_cp(text, i) end
+    self.text, self.caret = text:sub(1, i) .. text:sub(caret + 1), i
+  elseif k == "left" then self.caret = prev_cp(text, caret)
+  elseif k == "right" then self.caret = next_cp(text, caret)
+  elseif k == "home" or k == "ctrl+a" then self.caret = 0
+  elseif k == "end" or k == "ctrl+e" then self.caret = #text
+  elseif k == "ctrl+v" or k == "cmd+v" then
+    local ok, clip = pcall(system.get_clipboard)
+    self:input(ok and clip or "")
+  else
+    return false
+  end
+  return true
+end
+
+-- Draw the field's text and caret at (x, y), elided to `width`. Returns nothing;
+-- the view owns the box/background. `focused` draws the caret.
+function ui.draw_field(font, field, x, y, w, h, color, focused)
+  local text = field.text
+  local before = text:sub(1, field.caret)
+  local shown = ui.elide(font, text, w)
+  local voff = (h - font:get_height()) / 2
+  renderer.draw_text(font, shown, x, y + voff, color or style.text)
+  if focused then
+    -- Caret at the caret offset, clamped into the box so it stays visible even
+    -- when the text is elided.
+    local cx = math.min(x + font:get_width(before), x + w - 1)
+    renderer.draw_rect(cx, y + voff, math.max(1, SCALE), font:get_height(), style.caret or color or style.text)
   end
 end
 

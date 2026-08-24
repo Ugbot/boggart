@@ -45,30 +45,14 @@ end
 -- model name from a server, a home directory with a non-ASCII username -- and
 -- both the measurement and the drawn result are then made from a string the
 -- decoder cannot read.
-local function elide(font, text, width)
-  if font:get_width(text) <= width then return text end
-  local n = utf8.len(text)
-  local function upto(chars)
-    if n then return text:sub(1, (utf8.offset(text, chars + 1) or (#text + 1)) - 1) end
-    -- Not valid UTF-8 (nothing stops a stored value being anything): step back
-    -- off continuation bytes by hand, because utf8.offset raises on one.
-    local i = math.min(chars, #text)
-    while i > 0 and common.is_utf8_cont(text:sub(i + 1, i + 1)) do i = i - 1 end
-    return text:sub(1, i)
-  end
-  local lo, hi = 0, n or #text
-  while lo < hi do
-    local mid = (lo + hi + 1) // 2
-    if font:get_width(upto(mid) .. "...") <= width then lo = mid else hi = mid - 1 end
-  end
-  return upto(lo) .. "..."
-end
+local ui = require "core.ui"
+local elide = ui.elide   -- one shared implementation now (core/ui.lua)
 
 function SettingsView:new()
   SettingsView.super.new(self)
   self.scrollable = true
   self.focus = nil       -- index of the field being edited
-  self.buffer = ""
+  self.field = nil       -- the ui.textfield while a field is being edited
   self.hits = {}
   self.notice = nil
 end
@@ -214,8 +198,8 @@ end
 function SettingsView:commit()
   local f = self:fields()[self.focus or 0]
   if not f then return end
-  local value = tidy(self.buffer)
-  self.focus, self.buffer = nil, ""
+  local value = tidy(self.field and self.field:value() or "")
+  self.focus, self.field = nil, nil
   if value == "" then
     -- Said out loud. Committing an empty field did nothing and reported
     -- nothing, which is indistinguishable from a form that has stopped
@@ -233,28 +217,24 @@ end
 
 function SettingsView:edit(i)
   self.focus = i
-  self.buffer = ""
+  self.field = ui.textfield("")
   core.set_active_view(self)
   core.redraw = true
 end
 
 function SettingsView:on_text_input(text)
-  if self.focus then self.buffer = self.buffer .. text; core.redraw = true end
+  if self.field then self.field:input(text); core.redraw = true end
 end
 
 function SettingsView:on_key_pressed(key)
   if not self.focus then return false end
+  -- The shared field handles the editing keys (arrows, Home/End, paste, UTF-8
+  -- backspace, word-delete); this view only owns escape/return/tab.
+  if self.field and self.field:key(key) then core.redraw = true; return true end
   if key == "escape" then
-    self.focus, self.buffer = nil, ""
+    self.focus, self.field = nil, nil
   elseif key == "return" then
     self:commit()
-  elseif key == "backspace" then
-    -- By character, not by byte: one press over an accented character used to
-    -- leave a dangling continuation byte, which was then drawn and, on Enter,
-    -- stored as part of the credential.
-    local i = #self.buffer
-    while i > 1 and common.is_utf8_cont(self.buffer:sub(i, i)) do i = i - 1 end
-    self.buffer = self.buffer:sub(1, i - 1)
   elseif key == "tab" then
     local n = #self:fields()
     local next_i = (self.focus % n) + 1
@@ -330,16 +310,23 @@ function SettingsView:draw()
     renderer.draw_rect(x, y, 1, boxh, border)
     renderer.draw_rect(x + w - 1, y, 1, boxh, border)
 
-    local shown, colour
+    local tx, tw = x + pad / 2, w - pad * 1.5
     if editing then
-      shown = (f.secret and string.rep("*", #self.buffer) or self.buffer) .. "|"
-      colour = style.accent
+      -- The shared field owns the text and caret; mask a secret's glyphs but
+      -- keep the caret at its real (per-codepoint) offset.
+      local t = self.field.text
+      local before = t:sub(1, self.field.caret)
+      local disp = f.secret and string.rep("*", utf8.len(t) or #t) or t
+      local dispbefore = f.secret and string.rep("*", utf8.len(before) or #before) or before
+      common.draw_text(font, style.accent, elide(font, disp, tw), "left", tx, y, w - pad, boxh)
+      local voff = (boxh - font:get_height()) / 2
+      local cx = math.min(tx + font:get_width(dispbefore), x + w - pad / 2 - 1)
+      renderer.draw_rect(cx, y + voff, math.max(1, SCALE), font:get_height(),
+        style.caret or style.accent)
     else
-      shown = f.value
-      colour = (f.value == NOT_SET) and style.dim or style.accent
+      local colour = (f.value == NOT_SET) and style.dim or style.accent
+      common.draw_text(font, colour, elide(font, f.value, tw), "left", tx, y, w - pad, boxh)
     end
-    common.draw_text(font, colour, elide(font, shown, w - pad * 1.5), "left",
-      x + pad / 2, y, w - pad, boxh)
     add({ x = x, y = y, w = w, h = boxh }, "field" .. i, function() self:edit(i) end)
     y = y + boxh + vpad / 2
 

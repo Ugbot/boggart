@@ -829,5 +829,34 @@ do
   end
 end
 
+-- ---- ui.textfield (the one editable-field model) --------------------------
+do
+  local ok_u, ui = pcall(require, "core.ui")
+  ok(ok_u and ui.textfield, "core.ui exposes textfield" .. (ok_u and "" or ("  -- " .. tostring(ui))))
+  if ok_u and ui.textfield then
+    local f = ui.textfield("abc")
+    ok(f.text == "abc" and f.caret == 3, "seeds text with caret at end")
+    f:key("left"); f:key("left")
+    ok(f.caret == 1, "left arrow moves the caret by a codepoint")
+    f:input("X")
+    ok(f.text == "aXbc" and f.caret == 2, "insert happens at the caret, not the end")
+    f:key("backspace")
+    ok(f.text == "abc" and f.caret == 1, "backspace deletes before the caret")
+    f:key("delete")
+    ok(f.text == "ac", "delete removes the character after the caret")
+    f:key("home"); ok(f.caret == 0, "home jumps to the start")
+    f:key("end");  ok(f.caret == 2, "end jumps to the end")
+    -- UTF-8: a caret move / delete never splits a codepoint
+    local g = ui.textfield("é")   -- 2 bytes
+    ok(g.caret == 2, "caret is a byte offset (past the 2-byte codepoint)")
+    g:key("backspace")
+    ok(g.text == "" and g.caret == 0, "backspace removes a whole multibyte codepoint")
+    -- word delete
+    local h = ui.textfield("hello world")
+    ok(h:key("ctrl+backspace") and h.text == "hello " and h.caret == 6,
+      "ctrl+backspace deletes the previous word")
+  end
+end
+
 io.write(string.format("\n%d passed, %d failed\n", passed, failed))
 return failed == 0 and 0 or 1

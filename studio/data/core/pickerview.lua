@@ -260,11 +260,21 @@ function PickerView:page_rows()
   return math.max(1, math.floor(((self.position.y + self.size.y) - top) / lh) - 1)
 end
 
-function PickerView:on_text_input(text)
-  self.filter = self.filter .. text
+-- Route filter edits through the shared field (core/ui.lua) so paste, UTF-8
+-- backspace and word-delete are one implementation. The picker's caret is always
+-- at the end -- left/right are folder navigation here, not caret motion -- so a
+-- transient field per edit is enough and keeps self.filter the source of truth.
+function PickerView:edit_filter(fn)
+  local f = ui.textfield(self.filter)
+  fn(f)
+  self.filter = f.text
   self.selected = 1
   self.scroll.to.y = 0
   core.redraw = true
+end
+
+function PickerView:on_text_input(text)
+  self:edit_filter(function(f) f:input(text) end)
 end
 
 function PickerView:on_key_pressed(key)
@@ -299,18 +309,15 @@ function PickerView:on_key_pressed(key)
   elseif key == "left" then
     self:cd(self.dir .. PATHSEP .. "..")
     return true
+  elseif key == "ctrl+backspace" or key == "ctrl+v" or key == "cmd+v" then
+    -- Word-delete and paste, through the shared field.
+    self:edit_filter(function(f) f:key(key) end)
+    return true
   elseif key == "backspace" then
     if self.filter ~= "" then
-      -- By character, not by byte: a filter is whatever the keyboard produced,
-      -- and lopping one byte off a multi-byte character leaves a string the
-      -- renderer cannot decode.
-      local i = #self.filter
-      while i > 1 and common.is_utf8_cont(self.filter:sub(i, i)) do i = i - 1 end
-      self.filter = self.filter:sub(1, i - 1)
-      self.selected = 1
-      self.scroll.to.y = 0
+      self:edit_filter(function(f) f:key("backspace") end)
     else
-      self:cd(self.dir .. PATHSEP .. "..")
+      self:cd(self.dir .. PATHSEP .. "..")   -- empty filter: backspace goes up a dir
     end
     core.redraw = true; return true
   elseif key == "up" then
