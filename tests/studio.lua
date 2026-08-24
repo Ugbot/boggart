@@ -55,6 +55,7 @@ for _, must in ipairs {
   "studio/data/core/sidebarview.lua",
   "studio/data/core/studio.lua",
   "studio/data/core/widgets.lua",
+  "studio/data/core/reviewview.lua",
   "studio/data/core/diff.lua",
   "studio/data/core/rootview.lua",
 } do
@@ -789,6 +790,23 @@ if okm and okdoc then
     "the line wash for a kind is one shared table")
   ok(marks.wash({ kind = "added", hl = { 1, 2, 3, 4 } })[1] == 1,
     "...and an explicit hl wins over it")
+
+  -- ---- cross-file review -------------------------------------------------
+  -- marks.review() is what the ReviewView reads: one entry per saved file that
+  -- carries marks, counting HUNK GROUPS (not marks) in line order.
+  do
+    local a, b = "/tmp/bog-review-a.lua", "/tmp/bog-review-b.lua"
+    marks.set(a, 40, { kind = "added",   group = "g2" })
+    marks.set(a, 10, { kind = "changed", group = "g1" })
+    marks.set(a, 11, { kind = "changed", group = "g1" })  -- same hunk, one group
+    marks.set(b, 3,  { kind = "removed", group = "g3" })
+    local rv = marks.review()
+    local by = {}
+    for _, f in ipairs(rv) do by[f.path] = f end
+    ok(by[a] and by[a].hunks == 2, "a file's marks collapse to hunk groups")
+    ok(by[a] and by[a].groups[1].line == 10, "...listed in line order")
+    ok(by[b] and by[b].hunks == 1, "each file is its own review entry")
+  end
 end
 
 -- ---- core.settings normalisers (the one config write-path) ----------------

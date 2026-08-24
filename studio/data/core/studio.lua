@@ -603,6 +603,23 @@ function studio.open_library(section)
   return studio.library
 end
 
+-- The cross-file review: every unreviewed edit in one list, walk or accept-all.
+-- A tab beside the conversation like Settings; a singleton reused wherever it
+-- lives so a second open surfaces the existing panel rather than a duplicate.
+function studio.open_review()
+  if studio.review then
+    local node = core.root_view.root_node:get_node_for_view(studio.review)
+    if node then node:set_active_view(studio.review)
+    else core.root_view:get_primary_node():add_view(studio.review) end
+  else
+    studio.review = require("core.reviewview")()
+    core.root_view:get_primary_node():add_view(studio.review)
+  end
+  studio.review:refresh()
+  core.set_active_view(studio.review)
+  return studio.review
+end
+
 -- ---------------------------------------------------------------------------
 -- Agent-written panels
 -- ---------------------------------------------------------------------------
@@ -1383,6 +1400,10 @@ command.add(nil, {
 
   ["agent:library"] = function()
     studio.open_library()
+  end,
+
+  ["agent:review"] = function()
+    studio.open_review()
   end,
 
   ["agent:swarm"] = function()

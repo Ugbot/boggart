@@ -330,6 +330,7 @@ keymap.add {
   ["ctrl+1"] = "shell:workspace-agent",
   ["ctrl+2"] = "shell:workspace-edit",
   ["ctrl+3"] = "shell:workspace-fleet",
+  ["ctrl+shift+r"] = "agent:review",   -- cross-file review of the agent's edits
 }
 
 return shell

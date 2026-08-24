@@ -207,6 +207,30 @@ function marks.count(target)
   return st and st.n or 0
 end
 
+-- Every saved file that currently carries marks, for the cross-file review:
+--   { { path=, hunks=, groups={ { group=, line=, kind= }, ... } }, ... }
+-- One entry per hunk group, in file order then line order. Anonymous (unsaved)
+-- buffers are skipped -- there is no path to walk to.
+function marks.review()
+  local out = {}
+  for path, st in pairs(stores) do
+    if st.n and st.n > 0 then
+      local groups, seen = {}, {}
+      for _, m in ipairs(st.list) do
+        local g = m.group or (m.data and m.data.group) or ("line" .. m.line)
+        if not seen[g] then
+          seen[g] = true
+          groups[#groups + 1] = { group = g, line = m.line, kind = m.kind }
+        end
+      end
+      table.sort(groups, function(a, b) return a.line < b.line end)
+      out[#out + 1] = { path = path, hunks = #groups, groups = groups }
+    end
+  end
+  table.sort(out, function(a, b) return a.path < b.path end)
+  return out
+end
+
 function marks.by_id(target, id)
   local st = marks.store(target)
   for _, m in ipairs(st and st.list or {}) do

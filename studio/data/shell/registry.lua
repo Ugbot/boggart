@@ -97,8 +97,9 @@ M.tree = {
     { "ReAct until goal\u{2026}",  "agent:react" },
   },
   Fleet = {
-    { "Open fleet",       "shell:workspace-fleet" },
-    { "Swarm dashboard",  "agent:swarm" },
+    { "Open fleet",        "shell:workspace-fleet" },
+    { "Swarm dashboard",   "agent:swarm" },
+    { "Review changes\u{2026}", "agent:review" },
   },
   Tools = {
     { "Library\u{2026}",     "agent:library" },
