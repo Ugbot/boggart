@@ -156,9 +156,18 @@ command.add(nil, {
     core.redraw = true
   end,
 })
+-- "?" (shift+/) opens the cheatsheet ONLY when not typing, so it can still be
+-- typed in the composer or the editor. F1 always works. Bound to a separate
+-- predicated command; a swallowed keypress would otherwise eat the "?".
+command.add(function()
+  local ok, modal = pcall(require, "shell.modal")
+  return not (ok and modal and modal.typing and modal.typing())
+end, {
+  ["help:shortcuts-key"] = function() command.perform("help:shortcuts") end,
+})
 keymap.add {
   ["f1"] = "help:shortcuts",
-  ["shift+/"] = "help:shortcuts",  -- "?"
+  ["shift+/"] = "help:shortcuts-key",  -- "?" when not typing
 }
 
 return shortcuts

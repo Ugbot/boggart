@@ -16,7 +16,9 @@ typedef struct {
 } FontFallback;
 
 /* The discovered chain, in the order it should be consulted. Built on first
- * call and cached; safe to call from anywhere, returns count via *n. */
+ * call and cached in a plain static with no lock, so the first call must happen
+ * on the main thread (it does -- renderer bring-up); not safe to call
+ * concurrently. Returns count via *n. */
 FontFallback* fontfallback_chain(int *n);
 
 /* Map the file behind a chain entry, returning its bytes or NULL. Idempotent,

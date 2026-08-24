@@ -1035,6 +1035,7 @@ command.add(nil, {
     prompt("Base URL (blank for the Anthropic API):", function(text)
       if text == "" then
         auth.clear("base_url")
+        if bog.api and bog.api.forget_auth then bog.api.forget_auth() end
         core.log("using the Anthropic API")
       else
         auth.set("base_url", text)
@@ -1085,25 +1086,13 @@ command.add(nil, {
   end,
 
   ["agent:resume-session"] = function()
-    local rows = bog.store.sess_list(30)
-    local items, byname = {}, {}
-    for _, s in ipairs(rows) do
-      local label = string.format("%d  %s  %s", s.id,
-        os.date("%m-%d %H:%M", s.updated), s.title or "(untitled)")
-      items[#items + 1] = label
-      byname[label] = s.id
-    end
-    core.command_view:enter("Resume session:", function(text, item)
-      local id = byname[item or text]
-      if not id then return end
+    session_picker("Resume session:", function(id)
       if bog.resume_session(id) then
         local v = studio.open_agent()
         v:repaint(bog.session.messages)
         v:push("system", string.format("resumed session %d (%d messages, model %s)",
           id, #bog.session.messages, bog.session.model))
       end
-    end, function(text)
-      return common.fuzzy_match(items, text)
     end)
   end,
 
@@ -1603,10 +1592,18 @@ command.add(nil, {
   ["agent:run-command"] = function()
     prompt("Run:", function(text)
       if text == "" then return end
+      studio.last_command = text
       local v = studio.open_agent()
       v:push("tool", text, "bash")
-      local r = bog.tools.run("bash", { command = text })
-      v:push("assistant", r)
+      -- Off the frame loop: bog.tools.run("bash") yields to the scheduler (which
+      -- the studio pumps), so the window keeps painting instead of freezing while
+      -- the command runs. Negative id -> not a thread row, no FLEET entry.
+      local co = coroutine.create(function()
+        local r = bog.tools.run("bash", { command = text })
+        v:push("assistant", r)
+      end)
+      if bog.sched and bog.sched.add then bog.sched.add(-800001, co)
+      else v:push("assistant", (bog.tools.run("bash", { command = text }))) end
     end, studio.last_command or "")
   end,
 })
@@ -1616,7 +1613,9 @@ command.add(nil, {
 -- ---------------------------------------------------------------------------
 
 keymap.add {
-  ["ctrl+return"]     = "agent:toggle-panel",
+  -- doc:newline-below first so ctrl+return still inserts a line in the editor
+  -- (it only performs in a focused DocView); elsewhere it toggles the agent panel.
+  ["ctrl+return"]     = { "doc:newline-below", "agent:toggle-panel" },
   ["ctrl+shift+a"]    = "agent:open-panel",
   ["ctrl+shift+e"]    = "agent:explain-selection",
   ["ctrl+shift+r"]    = "agent:review-selection",

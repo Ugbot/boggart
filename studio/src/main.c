@@ -68,12 +68,13 @@ static void get_exe_filename(char *buf, int sz) {
   buf[len] = '\0';
 #elif __linux__
   char path[512];
-  sprintf(path, "/proc/%d/exe", getpid());
-  int len = readlink(path, buf, sz - 1);
-  buf[len] = '\0';
+  snprintf(path, sizeof(path), "/proc/%d/exe", getpid());
+  ssize_t len = readlink(path, buf, sz - 1);
+  if (len <= 0) { strcpy(buf, "./boggart-studio"); }  /* readlink can return -1 */
+  else { buf[len] = '\0'; }
 #elif __APPLE__
   unsigned size = sz;
-  _NSGetExecutablePath(buf, &size);
+  if (_NSGetExecutablePath(buf, &size) != 0) { strcpy(buf, "./boggart-studio"); }
 #else
   strcpy(buf, "./boggart-studio");
 #endif
@@ -94,9 +95,15 @@ static void init_window_icon(void) {
 
 int main(int argc, char **argv) {
 #ifdef _WIN32
+  /* Best-effort: on a stripped system either call can fail, and calling through
+   * a NULL pointer would crash before the window ever opens. SDL sets DPI
+   * awareness itself with SDL_WINDOW_HIGH_PIXEL_DENSITY, so skipping this is
+   * merely belt-and-braces, not fatal. */
   HINSTANCE lib = LoadLibrary("user32.dll");
-  int (*SetProcessDPIAware)() = (void*) GetProcAddress(lib, "SetProcessDPIAware");
-  SetProcessDPIAware();
+  if (lib) {
+    int (*SetProcessDPIAware)() = (void*) GetProcAddress(lib, "SetProcessDPIAware");
+    if (SetProcessDPIAware) { SetProcessDPIAware(); }
+  }
 #endif
 #ifndef _WIN32
   /* MCP servers are stdio children. If one abort()s, a later write to the
@@ -131,6 +138,12 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
   init_window_icon();
+  /* SDL3 gates SDL_EVENT_TEXT_INPUT behind an explicit per-window opt-in; without
+   * this, plain typing delivers only key events (bindings) and no characters, and
+   * IME composition never starts. The rest of the app already consumes
+   * "textinput" events (studio/src/api/system.c handles SDL_EVENT_TEXT_INPUT), so
+   * enable it once for the main window. */
+  SDL_StartTextInput(window);
   ren_init(window);
 
 

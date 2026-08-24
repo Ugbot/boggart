@@ -62,6 +62,11 @@ static int f_load(lua_State *L) {
 
   const char *filename  = luaL_checkstring(L, 1);
   float size = luaL_checknumber(L, 2);
+  /* A non-finite or absurd size flows straight into stb_truetype's scale
+   * (points * scale), where a huge or zero/negative value blows the glyph
+   * bitmap allocation or divides by zero. Clamp to a sane rasterisable range. */
+  if (!(size > 0.0f)) { size = 1.0f; }          /* also catches NaN */
+  if (size > 512.0f)  { size = 512.0f; }
   if (!lua_isnoneornil(L, 3)) { luaL_checktype(L, 3, LUA_TTABLE); }
   RenFontOptions opt = {
     .antialiasing = enum_field(L, 3, "antialiasing", AA, REN_AA_GRAYSCALE),

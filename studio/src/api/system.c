@@ -54,7 +54,12 @@ static double input_scale(void) {
 
 /* Round rather than truncate: at 2x, truncating biases every coordinate half a
  * pixel up and left, which is visible when clicking between two glyphs. */
-static int px(float points) { return (int)((double)points * input_scale() + 0.5); }
+static int px(float points) {
+  /* Round to nearest for BOTH signs: `+ 0.5` then truncate-toward-zero biases
+   * negative coordinates (xrel/yrel on drag) up to a pixel the wrong way. */
+  double v = (double)points * input_scale();
+  return (int)(v + (v < 0 ? -0.5 : 0.5));
+}
 
 static const char* button_name(int button) {
   switch (button) {
@@ -66,19 +71,19 @@ static const char* button_name(int button) {
 }
 
 
-static char* key_name(char *dst, SDL_Keycode sym) {
-  strcpy(dst, SDL_GetKeyName(sym));
-  char *p = dst;
-  while (*p) {
-    *p = tolower(*p);
-    p++;
-  }
+static char* key_name(char *dst, size_t cap, SDL_Keycode sym) {
+  /* SDL3 key names can be long ("Keypad MemMultiply", "MediaTrackPrevious") --
+   * well over the old 16-byte buffer, so strcpy here smashed f_poll_event's
+   * stack on one exotic keypress. Bound it. */
+  const char *name = SDL_GetKeyName(sym);
+  snprintf(dst, cap, "%s", name ? name : "");
+  for (char *p = dst; *p; p++) { *p = tolower((unsigned char)*p); }
   return dst;
 }
 
 
 static int f_poll_event(lua_State *L) {
-  char buf[16];
+  char buf[64];
   float mx, my;
   int wx, wy;
   SDL_Event e;
@@ -134,12 +139,12 @@ top:
 
     case SDL_EVENT_KEY_DOWN:
       lua_pushstring(L, "keypressed");
-      lua_pushstring(L, key_name(buf, e.key.key));
+      lua_pushstring(L, key_name(buf, sizeof(buf), e.key.key));
       return 2;
 
     case SDL_EVENT_KEY_UP:
       lua_pushstring(L, "keyreleased");
-      lua_pushstring(L, key_name(buf, e.key.key));
+      lua_pushstring(L, key_name(buf, sizeof(buf), e.key.key));
       return 2;
 
     case SDL_EVENT_TEXT_INPUT:
@@ -325,8 +330,8 @@ static int f_show_confirm_dialog(lua_State *L) {
     .numbuttons = 2,
     .buttons = buttons,
   };
-  int buttonid;
-  SDL_ShowMessageBox(&data, &buttonid);
+  int buttonid = 0;   /* not written if the dialog fails to show */
+  if (!SDL_ShowMessageBox(&data, &buttonid)) { buttonid = 0; }
   lua_pushboolean(L, buttonid == 1);
 #endif
   return 1;
@@ -444,20 +449,109 @@ static int f_sleep(lua_State *L) {
 }
 
 
+#ifndef _WIN32
+extern uv_loop_t *luv_loop(lua_State *L);
+
+/* A detached child reaped by libuv: uv_spawn already forwards SIGCHLD to the
+ * loop's handler, so this fires without us blocking. Free the heap process
+ * handle the spawn allocated. */
+static void on_exec_exit(uv_process_t *proc, int64_t status, int sig) {
+  (void) status; (void) sig;
+  uv_close((uv_handle_t *)proc, (uv_close_cb)free);
+}
+
+/* Split `cmd` into an argv the way the one caller builds it -- Lua's
+ * string.format("%q %q", ...), i.e. double-quoted tokens with backslash
+ * escapes. Whitespace separates tokens outside quotes; \\ and \" are literals.
+ * Returns a NULL-terminated, heap-allocated argv (each entry heap-allocated),
+ * or NULL if there are no tokens. Deliberately NOT a shell: no globbing, no
+ * pipes, no injection surface -- the child is exec'd directly. */
+static char **tokenize_argv(const char *cmd) {
+  size_t cap = 8, argc = 0;
+  char **argv = malloc(cap * sizeof(char *));
+  if (!argv) { return NULL; }
+  char *tok = malloc(strlen(cmd) + 1);      /* a token is never longer than cmd */
+  if (!tok) { free(argv); return NULL; }
+  const char *p = cmd;
+  while (*p) {
+    while (*p == ' ' || *p == '\t' || *p == '\n') { p++; }
+    if (!*p) { break; }
+    size_t n = 0; int quoted = 0;
+    while (*p && (quoted || (*p != ' ' && *p != '\t' && *p != '\n'))) {
+      if (*p == '"') { quoted = !quoted; p++; continue; }
+      if (*p == '\\' && (p[1] == '"' || p[1] == '\\')) { p++; }
+      tok[n++] = *p++;
+    }
+    tok[n] = '\0';
+    if (argc + 1 >= cap) {
+      cap *= 2;
+      char **grown = realloc(argv, cap * sizeof(char *));
+      if (!grown) { break; }
+      argv = grown;
+    }
+    argv[argc] = malloc(n + 1);
+    if (!argv[argc]) { break; }
+    memcpy(argv[argc], tok, n + 1);
+    argc++;
+  }
+  free(tok);
+  argv[argc] = NULL;
+  if (argc == 0) { free(argv); return NULL; }
+  return argv;
+}
+
+static void free_argv(char **argv) {
+  for (size_t i = 0; argv[i]; i++) { free(argv[i]); }
+  free(argv);
+}
+#endif
+
+/* Fire-and-forget launch of another program (studio uses it to open a file in a
+ * fresh window). Non-blocking: the old implementation shelled out via
+ * system("cmd &"), which forks a shell on the UI thread and leaks it as a
+ * zombie. uv_spawn execs the child directly on the main loop and libuv reaps
+ * it, so the UI never stalls and nothing is left behind. */
 static int f_exec(lua_State *L) {
   size_t len;
   const char *cmd = luaL_checklstring(L, 1, &len);
+#if _WIN32
   char *buf = malloc(len + 32);
   if (!buf) { luaL_error(L, "buffer allocation failed"); }
-#if _WIN32
   sprintf(buf, "cmd /c \"%s\"", cmd);
   WinExec(buf, SW_HIDE);
-#else
-  sprintf(buf, "%s &", cmd);
-  int res = system(buf);
-  (void) res;
-#endif
   free(buf);
+#else
+  char **argv = tokenize_argv(cmd);
+  if (!argv) { return 0; }   /* empty command: nothing to do */
+
+  uv_process_t *proc = calloc(1, sizeof *proc);
+  if (!proc) { free_argv(argv); luaL_error(L, "process allocation failed"); }
+
+  uv_stdio_container_t stdio[3];
+  stdio[0].flags = UV_INHERIT_FD; stdio[0].data.fd = 0;
+  stdio[1].flags = UV_INHERIT_FD; stdio[1].data.fd = 1;
+  stdio[2].flags = UV_INHERIT_FD; stdio[2].data.fd = 2;
+
+  uv_process_options_t opts;
+  memset(&opts, 0, sizeof opts);
+  opts.file = argv[0];
+  opts.args = argv;
+  opts.exit_cb = on_exec_exit;
+  opts.flags = UV_PROCESS_DETACHED;
+  opts.stdio_count = 3;
+  opts.stdio = stdio;
+
+  int r = uv_spawn(luv_loop(L), proc, &opts);
+  if (r != 0) {
+    uv_close((uv_handle_t *)proc, (uv_close_cb)free);
+    free_argv(argv);
+    luaL_error(L, "exec failed: %s", uv_strerror(r));
+  }
+  /* Detached and unref'd: the child outlives us and never keeps the loop
+   * (hence the process) alive on its own account. */
+  uv_unref((uv_handle_t *)proc);
+  free_argv(argv);   /* libuv copies argv during spawn */
+#endif
   return 0;
 }
 

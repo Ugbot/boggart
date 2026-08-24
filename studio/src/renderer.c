@@ -89,6 +89,8 @@ typedef struct {
 typedef struct {
   RenImage *image;
   SDL_Texture *texture;
+  int tw, th;   /* atlas texture size, cached at bake -- constant per set, so the
+                 * draw loop reads it here instead of SDL_GetTextureSize per glyph */
   /* An LCD atlas holds three coverages per pixel in r/g/b rather than one
    * alpha, so it needs a different blend. Recorded per atlas rather than per
    * font because a bitmap-strike glyph inside a subpixel font still comes out
@@ -804,7 +806,13 @@ static GlyphSet* load_glyphset(RenFont *font, int block, int phase) {
   if (renderer) {
     set->texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
                                      SDL_TEXTUREACCESS_STATIC, width, height);
+    if (!set->texture) {
+      /* Text in this atlas will silently render as nothing; say so once. */
+      fprintf(stderr, "Warning: (" __FILE__ "): glyph atlas texture failed: %s\n",
+              SDL_GetError());
+    }
     if (set->texture) {
+      set->tw = width; set->th = height;
       SDL_SetTextureBlendMode(set->texture, SDL_BLENDMODE_BLEND);
       SDL_SetTextureScaleMode(set->texture, SDL_SCALEMODE_NEAREST);
       SDL_SetTextureColorMod(set->texture, 255, 255, 255);
@@ -1217,8 +1225,7 @@ int ren_draw_text(RenFont *font, const char *text, int x, int y, RenColor color)
     int gw = g->x1 - g->x0;
     int gh = g->y1 - g->y0;
     if (gw > 0 && gh > 0 && color.a != 0 && set->texture) {
-      float tw = 0, th = 0;
-      SDL_GetTextureSize(set->texture, &tw, &th);
+      float tw = (float) set->tw, th = (float) set->th;
       if (tw > 0 && th > 0) {
         float gx = (float) origin + g->xoff;
         float gy = (float) y + g->yoff;

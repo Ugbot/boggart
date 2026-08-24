@@ -401,8 +401,17 @@ function M.do_operator(dv, op, l1, c1, l2, c2, kind, v)
   if kind == "line" then return linewise_op(dv, op, minl, maxl) end
 
   -- Forward inclusive motion: extend the far end one char to cover the target.
+  -- But NEVER cross the line boundary: `$` returns maxc = math.huge, and stepping
+  -- one char past end-of-line lands on the next line, so d$/c$/D/C would delete
+  -- the newline and join the lines. Clamp to the end of the line's content.
   if kind == "inc" and a_first then
-    maxl, maxc = translate.next_char(doc, maxl, maxc)
+    local nl, nc = translate.next_char(doc, maxl, maxc)
+    if nl == maxl then
+      maxl, maxc = nl, nc
+    else
+      local line = doc.lines[maxl] or ""
+      maxc = #line - (line:sub(-1) == "\n" and 1 or 0) + 1
+    end
   end
 
   local text = doc:get_text(minl, minc, maxl, maxc)

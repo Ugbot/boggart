@@ -91,6 +91,12 @@ static RenRect merge_rects(RenRect a, RenRect b) {
 
 
 static Command* push_command(int type, int size) {
+  /* Round the slot up to 8 bytes so every command starts aligned. DRAW_TEXT
+   * appends a string of arbitrary length (sizeof(Command)+strlen+1), which would
+   * otherwise leave the NEXT command at an odd offset -- next_command() then reads
+   * its int/float/pointer fields unaligned (works on x86/ARM64 by luck, UB
+   * strictly, and UBSan-tripping). */
+  size = (size + 7) & ~7;
   int n = command_buf_idx + size;
   if (n > command_buf_size) {
     /* Double until it fits. A frame's command list is bounded by what is on
@@ -223,6 +229,15 @@ static void update_overlapping_cells(RenRect r, unsigned h) {
   int x2 = (r.x + r.width) / CELL_SIZE;
   int y2 = (r.y + r.height) / CELL_SIZE;
 
+  /* Clamp to the fixed cell grid. It covers CELLS_X*CELL_SIZE by
+   * CELLS_Y*CELL_SIZE = 7680x4800 px; a framebuffer larger than that -- an 8K
+   * display, or 2x scaling on a 4K-wide window -- would otherwise index past the
+   * static cells[] arrays and corrupt memory. */
+  if (x1 < 0) { x1 = 0; }
+  if (y1 < 0) { y1 = 0; }
+  if (x2 > CELLS_X - 1) { x2 = CELLS_X - 1; }
+  if (y2 > CELLS_Y - 1) { y2 = CELLS_Y - 1; }
+
   for (int y = y1; y <= y2; y++) {
     for (int x = x1; x <= x2; x++) {
       int idx = cell_idx(x, y);
@@ -263,6 +278,9 @@ void rencache_end_frame(void) {
   int rect_count = 0;
   int max_x = screen_rect.width / CELL_SIZE + 1;
   int max_y = screen_rect.height / CELL_SIZE + 1;
+  /* Same clamp: never scan past the fixed cell grid on an oversized framebuffer. */
+  if (max_x > CELLS_X) { max_x = CELLS_X; }
+  if (max_y > CELLS_Y) { max_y = CELLS_Y; }
   for (int y = 0; y < max_y; y++) {
     for (int x = 0; x < max_x; x++) {
       /* compare previous and current cell for change */
@@ -285,7 +303,6 @@ void rencache_end_frame(void) {
   }
 
   /* redraw updated regions */
-  bool has_free_commands = false;
   for (int i = 0; i < rect_count; i++) {
     /* draw */
     RenRect r = rect_buf[i];
@@ -295,8 +312,7 @@ void rencache_end_frame(void) {
     while (next_command(&cmd)) {
       switch (cmd->type) {
         case FREE_FONT:
-          has_free_commands = true;
-          break;
+          break;  /* a marker, not drawn; freed unconditionally below */
         case SET_CLIP:
           ren_set_clip_rect(intersect_rects(cmd->rect, r));
           break;
@@ -325,13 +341,14 @@ void rencache_end_frame(void) {
     ren_update_rects(rect_buf, rect_count);
   }
 
-  /* free fonts */
-  if (has_free_commands) {
-    cmd = NULL;
-    while (next_command(&cmd)) {
-      if (cmd->type == FREE_FONT) {
-        ren_free_font(cmd->font);
-      }
+  /* Free fonts UNCONDITIONALLY: a rencache_free_font pushed on a frame with no
+   * visual change (rect_count == 0, so the draw loop above never ran) would
+   * otherwise never be freed, leaking the RenFont, its FT_Faces and every atlas
+   * texture. Scan the whole command list regardless of what was redrawn. */
+  cmd = NULL;
+  while (next_command(&cmd)) {
+    if (cmd->type == FREE_FONT) {
+      ren_free_font(cmd->font);
     }
   }
 

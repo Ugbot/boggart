@@ -181,7 +181,8 @@ static int is_font_name(const char *name) {
   const char *ext = name + n - 4;
   return !strcmp(ext, ".ttf") || !strcmp(ext, ".ttc")
       || !strcmp(ext, ".otf") || !strcmp(ext, ".otc")
-      || !strcmp(ext, ".TTF") || !strcmp(ext, ".TTC");
+      || !strcmp(ext, ".TTF") || !strcmp(ext, ".TTC")
+      || !strcmp(ext, ".OTF") || !strcmp(ext, ".OTC");
 }
 
 

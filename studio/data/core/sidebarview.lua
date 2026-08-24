@@ -307,7 +307,7 @@ function SidebarView:draw()
           { w = w, hover = hov, align = "left" }),
         { label = "open", action = function() command.perform("core:find-file") end })
     y = y + bh + vpad
-    common.draw_text(font, style.dim, "The tree is on the right.",
+    common.draw_text(font, style.dim, "The tree is on the left.",
       "left", x + pad / 2, y, w, lh)
     self.content_height = (y + lh + self.scroll.y) - self.position.y
     self:draw_scrollbar()

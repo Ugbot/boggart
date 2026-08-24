@@ -586,7 +586,14 @@ function SwarmView:draw_detail(font, charw, x, y, lh, voff, cols, rows)
 
   -- If this agent failed its exit contract, say WHY -- the deliverable it did not
   -- produce, the verify that failed, the budget it hit -- not just "error".
-  local xs = bog.telemetry and bog.telemetry.agent_status and bog.telemetry.agent_status(rec.id)
+  -- agent_status scans the record log, so memoize per wall-second (keyed on
+  -- last_poll) rather than reading SQLite every frame while the store is busiest.
+  if self._astatus_at ~= self.last_poll then self._astatus, self._astatus_at = {}, self.last_poll end
+  local xs = self._astatus[rec.id]
+  if xs == nil then
+    xs = (bog.telemetry and bog.telemetry.agent_status and bog.telemetry.agent_status(rec.id)) or false
+    self._astatus[rec.id] = xs
+  end
   if xs and xs.delivered == false and xs.reason then
     cell(font, charw, x, y + voff, 0, "failed: " .. tostring(xs.reason):sub(1, math.max(1, cols - 8)),
       style.error, cols)
@@ -687,8 +694,14 @@ function SwarmView:draw_totals(font, charw, x, y, cols)
   -- Reliability scoreboard (computed telemetry), so the fleet's QUALITY is in
   -- view, not just a count of states: what fraction actually delivered, whether
   -- any agent falsely reported success, and whether the fleet is over-thinking.
+  -- kpis() reads + JSON-decodes the record log, so memoize per wall-second
+  -- (keyed on last_poll) rather than every frame while a fleet is running.
   local run_id = bog.session and bog.session.id
-  local k = run_id and bog.telemetry and bog.telemetry.kpis and bog.telemetry.kpis(run_id)
+  if self._kpis_at ~= self.last_poll then
+    self._kpis = (run_id and bog.telemetry and bog.telemetry.kpis and bog.telemetry.kpis(run_id)) or false
+    self._kpis_at = self.last_poll
+  end
+  local k = self._kpis or nil
   if k and (k.agents or 0) > 0 then
     parts[#parts + 1] = { string.format("%.0f%% delivered", 100 * (k.deliverable_rate or 0)),
       (k.deliverable_rate or 0) >= 0.999 and style.good or style.error }
