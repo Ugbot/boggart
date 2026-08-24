@@ -25,6 +25,7 @@ int luaopen_boggart_http(lua_State *L);
 void boggart_http_shutdown(lua_State *L); /* src/lhttp.c: close raw uv handles before lua_close */
 int luaopen_boggart_sys(lua_State *L);
 int luaopen_boggart_db(lua_State *L);
+int luaopen_boggart_repo(lua_State *L); /* src/lrepo.c: semantic data API */
 int luaopen_boggart_swarm(lua_State *L);
 int luaopen_boggart_mcp(lua_State *L);
 int luaopen_boggart_auth(lua_State *L);
@@ -134,6 +135,8 @@ static void register_boggart(lua_State *L, int argc, char **argv) {
   lua_setglobal(L, "sys");
   luaL_requiref(L, "db", luaopen_boggart_db, 0);
   lua_setglobal(L, "db");
+  luaL_requiref(L, "repo", luaopen_boggart_repo, 0);
+  lua_setglobal(L, "repo");
   luaL_requiref(L, "swarm", luaopen_boggart_swarm, 0);
   lua_setglobal(L, "swarm");
   luaL_requiref(L, "mcp", luaopen_boggart_mcp, 0);

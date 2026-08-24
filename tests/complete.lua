@@ -29,7 +29,7 @@ check(help:find("@path", 1, true), "help mentions @path references")
 -- ---- the registry is exactly the intended set ------------------------------
 local want = { help = true, tools = true, auth = true, doctor = true,
   memory = true, sessions = true, resume = true, reload = true, reset = true,
-  trust = true, model = true, endpoint = true, effort = true, agents = true,
+  trust = true, model = true, endpoint = true, effort = true, agents = true, kpis = true, fork = true,
   ["until"] = true, react = true, new = true, clear = true, compact = true,
   cost = true, copy = true, mode = true, dispatch = true,
   status = true, diff = true, commit = true, push = true, sync = true, quit = true }

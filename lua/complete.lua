@@ -116,6 +116,8 @@ M.commands = {
   { name = "endpoint", help = "saved endpoint presets: list, save <name>, <name> to switch, rm <name>" },
   { name = "effort",   help = "reasoning effort: minimal | low | medium | high | none (models that support it)" },
   { name = "agents",   help = "live fleet status: how many agents are running and what each is doing" },
+  { name = "kpis",     help = "reliability scoreboard for this run: deliverable rate, tokens, think:output" },
+  { name = "fork",     help = "branch the active session into a new one seeded with its transcript" },
   { name = "until",    help = "run turns until a goal is met, or the budget is spent" },
   { name = "react",    help = "ReAct loop: Thought → Act → Observe until the goal is met" },
   { name = "new",      help = "start a fresh conversation (new saved session)" },

@@ -103,7 +103,7 @@ end
 -- putting it in the reload set means an edited ~/.boggart/lua/events.lua takes
 -- effect like any other module. Registrations themselves survive the reload --
 -- they live on bog.__events, not in the module (see lua/events.lua).
-local CORE = { "events", "json", "util", "lifecycle", "store", "memory", "mcphost", "prompt", "tools", "api", "workers", "complete", "perm", "diff", "goal", "termrender" }
+local CORE = { "events", "json", "util", "lifecycle", "store", "memory", "mcphost", "prompt", "tools", "api", "workers", "complete", "perm", "diff", "goal", "termrender", "telemetry", "sessionlog" }
 
 local function wire()
   for _, m in ipairs(CORE) do package.loaded[m] = nil end
@@ -139,6 +139,15 @@ local function wire()
   bog.goal = require("goal")
   -- Terminal transcript rendering (markdown, code, diffs) for the REPL's output.
   bog.termrender = require("termrender")
+  -- Agent telemetry: the append-only span log + KPI scoreboard over the record
+  -- envelope. A no-op until the store is open; instrumented from api.run_on.
+  bog.telemetry = require("telemetry")
+  -- Liveness watchdog: nudges an agent that burns tokens without acting. Armed
+  -- by bog.activate_agents (the runtime the REPL/cTUI/swarm all go through).
+  bog.watchdog = require("watchdog")
+  -- Event-sourced session log (Phase 2 foundation): append/replay/fork over the
+  -- record envelope, with a corruption-rejecting reducer.
+  bog.sessionlog = require("sessionlog")
 end
 
 -- Session lifecycle (persisted in the SQLite store; bog.db survives reloads).
@@ -482,6 +491,42 @@ local function handle_command(line)
         #actors, nwork, nwait, npause,
         napprove > 0 and string.format(", %d awaiting approval", napprove) or ""))
       for _, line in ipairs(out) do io.write(line, "\n") end
+    end
+  elseif cmd == "kpis" then
+    -- The reliability scoreboard for the active run: computed from the telemetry
+    -- records, so "how good was that" is a number, not a vibe.
+    local sess = (bog.active_session and bog.active_session()) or bog.session
+    local k = bog.telemetry and sess and bog.telemetry.kpis(sess.id)
+    if not k or ((k.turns or 0) == 0 and (k.agents or 0) == 0) then
+      io.write("no telemetry recorded yet for this run.\n")
+    else
+      io.write(string.format("run %s: %d turns, %d tool-calls, %d output tokens%s\n",
+        tostring(sess.id), k.turns or 0, k.tool_calls or 0, k.out_tokens or 0,
+        k.think_output_ratio and string.format("  (think:output %.1f)", k.think_output_ratio) or ""))
+      if (k.agents or 0) > 0 then
+        io.write(string.format("fleet: %d agents  --  %d delivered (%.0f%%), %d false-success, %s tokens/artifact\n",
+          k.agents, k.delivered or 0, 100 * (k.deliverable_rate or 0), k.false_success or 0,
+          k.tokens_per_artifact and string.format("%.0f", k.tokens_per_artifact) or "-"))
+      end
+      local d = k.decisions or {}
+      if (d.allow or 0) + (d.deny or 0) > 0 then
+        io.write(string.format("gated decisions: %d allowed, %d denied\n", d.allow or 0, d.deny or 0))
+      end
+    end
+  elseif cmd == "fork" then
+    -- Branch the active session: a new session seeded with a copy of this one's
+    -- transcript, so you can explore a divergent path without disturbing the
+    -- original. Recorded as an event-sourced lane (bog.sessionlog).
+    local sess = (bog.active_session and bog.active_session()) or bog.session
+    if not (sess and sess.messages) then
+      io.write("nothing to fork.\n")
+    else
+      local title = "fork of " .. tostring(sess.title or sess.id or "session")
+      local new_id = bog.store.sess_create(title, sess.model)
+      pcall(bog.store.sess_save, new_id, title, sess.model, sess.messages)
+      if bog.sessionlog then pcall(bog.sessionlog.append_all, new_id, new_id, sess.messages) end
+      io.write(string.format("forked to session %s (%d message%s) -- resume it with /resume %s\n",
+        tostring(new_id), #sess.messages, #sess.messages == 1 and "" or "s", tostring(new_id)))
     end
   elseif cmd == "until" or cmd == "react" then
     -- /until <task>                    -- run until the model judges it done
@@ -1075,6 +1120,8 @@ function bog.activate_agents()
   if swarm and swarm.attach then pcall(swarm.attach, bog.db) end
   pcall(bog.tools_swarm.register)
   bog.thread.max_agents = tonumber(os.getenv("BOGGART_MAX_AGENTS")) or 16
+  -- Arm the liveness watchdog for the whole runtime (idempotent).
+  if bog.watchdog and bog.watchdog.start then pcall(bog.watchdog.start) end
 end
 
 if bog.mode == "embedded" then

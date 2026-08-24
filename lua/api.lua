@@ -1065,7 +1065,11 @@ end
 function M.compact(sess, opts)
   sess = sess or bog.session
   opts = opts or {}
-  local stream = stream_async
+  -- Honour a scripted transport: compaction is a model call too, so a
+  -- deterministic run (opts.stream set) must summarise through the SAME mock,
+  -- never fall back to the network. Otherwise "no model call" would be a lie the
+  -- moment a session crosses the compaction threshold.
+  local stream = opts.stream or stream_async
   local system = opts.system or function() return bog.prompt.system() end
 
   if #sess.messages == 0 then return false end
@@ -1324,19 +1328,50 @@ function M.incomplete_turn(sess)
   return false
 end
 
+-- Backstop against a turn that never converges: the tool loop below is
+-- `while true`, so without a cap a model can round-trip tools forever (or, on a
+-- local model, burn wall-clock thinking without acting). Generous enough that a
+-- normal turn (< ~20 rounds) never notices; low enough that a furnace stops.
+-- Overridable per turn (opts.max_rounds) or per session (sess.max_rounds).
+M.MAX_ROUNDS = 80
+
 -- run_on(sess, user_text, on_text, opts): run one user turn to completion.
 -- opts: { async, system=fn, tools=fn, run_tool=fn(name,input), on_tool=fn(name,input) }
 function M.run_on(sess, user_text, on_text, opts)
   opts = opts or {}
-  local stream = stream_async
+  -- The transport is overridable so a test/bench can inject a scripted model and
+  -- drive the whole loop deterministically with no network (boggart had no such
+  -- seam -- the "mock wire" was only "point at a local server"). A scripted
+  -- stream(body, sink) returns the same (msg, stop) shape as stream_async.
+  local stream = opts.stream or stream_async
   local system = opts.system or function() return bog.prompt.system() end
   local tools_fn = opts.tools or function() return bog.tools.schemas() end
-  local run_tool = opts.run_tool or bog.tools.run
+  -- Gate by default. If the front end did not pass its own run_tool, wrap the
+  -- raw dispatcher in the permission gate rather than running tools blind -- the
+  -- old default (bare bog.tools.run) let headless/one-shot/swarm turns run
+  -- write/edit/bash with no policy at all. With no interactive approver the wrap
+  -- resolves gated tools via perm.headless_decision (default allow, overridable).
+  local run_tool = opts.run_tool
+    or (bog.perm and bog.perm.wrap_run(bog.tools.run, bog.perm.state()))
+    or bog.tools.run
   local on_tool = opts.on_tool or bog.log_tool
   -- Durable checkpoint: persist the transcript after the assistant message and
   -- after every tool result, so a crash/cancel loses at most the tool that was
   -- in flight. Front ends pass save_session / thread_save; default is a no-op.
   local checkpoint = opts.checkpoint or function() end
+  -- Budgets: bound the tool loop (rounds) and, for a spawned worker, its output
+  -- tokens (≈ cost / wall-clock on a local model). Defaults are generous; a
+  -- spawned agent carries a tighter token_budget from thread.new_agent.
+  local max_rounds = tonumber(opts.max_rounds or sess.max_rounds) or M.MAX_ROUNDS
+  local token_budget = tonumber(opts.token_budget or sess.token_budget)
+  local rounds = 0
+  -- Telemetry: one turn span per model round (never per streamed delta). The
+  -- whole fan-out shares run_id so KPIs group; ttfb is measured off the first
+  -- non-empty delta in the sink below.
+  local tel = bog.telemetry
+  local tctx = { run_id = opts.run_id or sess.id, agent_id = sess.id,
+                 parent_id = opts.parent_id or sess.parent_id }
+  local ttfb_t0, ttfb_ms = nil, nil
 
   -- Scrub to valid UTF-8 at INGEST -- the moment content joins the transcript --
   -- so ill-formed bytes never enter sess.messages or the store, and therefore
@@ -1395,6 +1430,9 @@ function M.run_on(sess, user_text, on_text, opts)
   -- (once per streamed delta), so the payload is built only when something is
   -- subscribed. events.any is a single table lookup once the name has resolved.
   local sink = function(chunk)
+    if ttfb_t0 and not ttfb_ms and chunk and chunk ~= "" then
+      ttfb_ms = tel and (tel.now_ms() - ttfb_t0) or nil
+    end
     if on_text then on_text(chunk) end
     if events.any("turn:text") then
       events.emit("turn:text", { session = sess.id, text = chunk })
@@ -1406,7 +1444,10 @@ function M.run_on(sess, user_text, on_text, opts)
   -- sub-agent and return its answer, instead of answering here. Off by default,
   -- and never for a resumed turn (user_text == nil) or a delegated child
   -- (dispatch.depth > 0), which would recurse.
-  if user_text ~= nil and bog.dispatch and bog.dispatch.enabled()
+  -- `not opts.stream`: a deterministic run must never hand the turn to a
+  -- specialist (assess + delegate are real model calls). The scripted transport
+  -- means "answer here, with this mock" -- so dispatch is off in that mode.
+  if user_text ~= nil and not opts.stream and bog.dispatch and bog.dispatch.enabled()
      and bog.dispatch.depth == 0 then
     local cur_skills = (sess.agent and sess.agent.skills) or sess.skills or {}
     local a = bog.dispatch.assess(user_text, cur_skills, sess)
@@ -1425,6 +1466,26 @@ function M.run_on(sess, user_text, on_text, opts)
   end
 
   while true do
+    -- Budget check at the top of each round: stop a turn that will not converge
+    -- rather than let it loop or burn tokens forever. Reported as a distinct
+    -- stop_reason so the exit contract (Phase 1) can treat it as a failure.
+    rounds = rounds + 1
+    local over_rounds = rounds > max_rounds
+    local used_out = (sess.usage and sess.usage.output) or 0
+    local over_tokens = token_budget and used_out >= token_budget
+    if over_rounds or over_tokens then
+      local why = over_rounds
+        and ("hit the max of " .. max_rounds .. " tool rounds")
+        or  ("used " .. used_out .. " output tokens (budget " .. token_budget .. ")")
+      local note = "[budget] stopped: " .. why .. ". The turn did not converge; "
+        .. "treat this as a failure, not a completion."
+      if on_text then on_text("\n" .. note .. "\n") end
+      local m = { role = "assistant", content = { { type = "text", text = note } } }
+      sess.messages[#sess.messages + 1] = m
+      stop_reason = over_rounds and "max_rounds" or "token_budget"
+      return m, stop_reason
+    end
+
     -- Mid-turn steering: anything the user submitted while the turn was running
     -- is queued on sess.inbox and folded in here, so it rides the next request
     -- alongside the pending tool results. Merge-aware, so roles still alternate.
@@ -1449,8 +1510,28 @@ function M.run_on(sess, user_text, on_text, opts)
     local tools = tools_fn()
     if #tools > 0 then body.tools = tools end
 
+    ttfb_t0 = tel and tel.now_ms() or nil; ttfb_ms = nil
     local msg, stop = stream(body, sink)
     stop_reason = stop -- what turn:end reports on the way out
+    -- One turn span: model / TTFB / tokens / tool-calls / think-vs-output.
+    -- Emitted before usage is scrubbed off msg, counted from the blocks the
+    -- model produced this round.
+    if tel then
+      local tc, think_c, text_c = 0, 0, 0
+      for _, b in ipairs(msg.content or {}) do
+        if b.type == "tool_use" then tc = tc + 1
+        elseif b.type == "thinking" then think_c = think_c + #(b.thinking or "")
+        elseif b.type == "text" then text_c = text_c + #(b.text or "") end
+      end
+      tel.turn(tctx, {
+        model = sess.model, ttfb_ms = ttfb_ms,
+        in_tokens = (msg.usage and msg.usage.input_tokens) or 0,
+        out_tokens = (msg.usage and msg.usage.output_tokens) or 0,
+        tool_calls = tc, think_chars = think_c, text_chars = text_c, stop = stop,
+      })
+    end
+    -- Live progress counters the watchdog reads: turns taken vs tool rounds run.
+    sess._turns = (sess._turns or 0) + 1
     -- Account before the message joins the transcript: `usage` is our own
     -- annotation, and sending it back to the API on the next turn would be a
     -- wire-shape error.
@@ -1497,6 +1578,7 @@ function M.run_on(sess, user_text, on_text, opts)
     -- tool_result is scrubbed to valid UTF-8 and refusals are surfaced there,
     -- so this is still the single ingest point for tool output.
     local had_tools = run_tool_round(sess, msg, #sess.messages, run_tool, on_tool, checkpoint)
+    if had_tools then sess._tools = (sess._tools or 0) + 1 end
 
     if had_tools then
       if stop ~= "tool_use" then return msg, stop end

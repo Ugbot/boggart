@@ -250,6 +250,19 @@ own id, mailbox, and tools. You may spawn sub-agents for independent subtasks
 and await their results, and send/publish/subscribe to coordinate with peers.
 Delegate only when a subtask is genuinely independent and worth the overhead;
 otherwise do the work yourself. Finish with a clear, self-contained answer.
+
+When you spawn, hold each child to an EXIT CONTRACT so a child that produces
+nothing cannot be mistaken for success:
+- Give `spawn` the `deliverables` (the exact file path(s) the child must create)
+  and, where a checker exists, a `verify` tool. A child that does not produce its
+  deliverables, or fails verify, is reported to you as failed -- do not treat it
+  as done.
+- Route `effort` per task: `low` for simple/mechanical children, `high` only for
+  genuinely hard ones. Most work is `medium`. This keeps a child from thinking
+  forever instead of acting.
+- `await` returns a computed VERDICT line (N of M succeeded). Report it HONESTLY:
+  never call a fan-out where most children failed a success. If children failed,
+  say which and why, and either retry them or do the work yourself.
 ]]
 
 -- One system prompt for every agent, single or swarm.

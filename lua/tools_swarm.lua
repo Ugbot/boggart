@@ -13,11 +13,27 @@ local function stash_take(id)
   return s or {}
 end
 
+-- A single child's result can be long; N of them concatenated into the
+-- coordinator's transcript floods its window (and then compaction summarizes the
+-- results away). Bound each child to a head+tail slice so a wide fan-in stays
+-- legible -- the coordinator can ask a child for detail if it needs it.
+local CHILD_CAP = 4000
+local function clamp(s)
+  s = tostring(s or "")
+  if #s <= CHILD_CAP then return s end
+  local head = math.floor(CHILD_CAP * 0.7)
+  local tail = CHILD_CAP - head
+  return s:sub(1, head) .. "\n…[" .. (#s - CHILD_CAP) .. " chars elided; ask the agent for detail]…\n"
+    .. s:sub(#s - tail + 1)
+end
+
 local defs = {}
 
 defs.spawn = {
   description = "Spawn a sub-agent (its own conversation thread) to work on a task in parallel; "
-    .. "returns its id. Optionally name a standard agent (researcher/coder/critic) and/or skills.",
+    .. "returns its id. Optionally name a standard agent (researcher/coder/critic) and/or skills. "
+    .. "Pass `deliverables` (paths the agent MUST produce) and/or `verify` (a checker tool) to hold "
+    .. "the agent to an exit contract: an agent that does not deliver + verify is reported as failed.",
   input_schema = {
     type = "object",
     properties = {
@@ -25,6 +41,9 @@ defs.spawn = {
       agent = { type = "string", description = "standard agent name" },
       model = { type = "string" },
       skills = { type = "array", description = "skill names" },
+      deliverables = { type = "array", description = "absolute paths the agent must create for success" },
+      verify = { type = "string", description = "a checker tool run (trusted) on the deliverable to confirm success" },
+      effort = { type = "string", description = "reasoning effort for this child: minimal|low|medium|high|none (default medium). Use low for simple tasks, high for hard ones." },
     },
     required = { "task" },
   },
@@ -40,6 +59,7 @@ defs.spawn = {
     end
     local id = bog.thread.spawn{
       task = a.task, agent = a.agent, model = a.model, skills = a.skills,
+      deliverables = a.deliverables, verify = a.verify, effort = a.effort,
       parent_id = bog.sched.current(),
     }
     return json.encode{ spawned = id }
@@ -79,10 +99,21 @@ defs.await = {
       end
       if next(pending) then coroutine.yield("recv") end
     end
-    local out = {}
+    -- Computed verdict, prepended so the coordinator's own context carries the
+    -- hard count -- a model reading "2 of 14 succeeded" cannot as easily narrate
+    -- the fan-out as a success. (Today m.ok means the child did not crash; once
+    -- Phase 1's exit contract lands it means delivered + verified.)
+    local n_ok, n_failed = 0, 0
+    for _, m in ipairs(results) do
+      if m.ok then n_ok = n_ok + 1 else n_failed = n_failed + 1 end
+    end
+    local out = { string.format(
+      "VERDICT (computed, not self-reported): %d of %d agents succeeded, %d failed. "
+      .. "Report this honestly; do not call a partial fan-out a success.",
+      n_ok, #results, n_failed) }
     for _, m in ipairs(results) do
       out[#out + 1] = string.format("### agent %d (%s)%s\n%s",
-        m.from, m.agent or "agent", m.ok and "" or " [error]", m.text or "")
+        m.from, m.agent or "agent", m.ok and "" or " [error]", clamp(m.text))
     end
     return table.concat(out, "\n\n")
   end,

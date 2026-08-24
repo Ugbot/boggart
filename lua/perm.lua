@@ -64,6 +64,24 @@ function M.policy_for(name, st)
   return M.GATED[name] and "ask" or "allow"
 end
 
+-- Headless resolution. When NO interactive approver is attached (a one-shot, a
+-- swarm/CLI worker), an "ask" cannot park for a human -- so instead of running a
+-- gated tool blind (the old bypass-by-default hole: swarm/CLI agents ran
+-- write/edit/bash unattended), we resolve it here by policy. "allow"/"deny" from
+-- policy_for are honoured as-is; an "ask" that no one can answer falls back to
+-- the headless default, which is ALLOW so headless automation still works, but
+-- is a SINGLE governed, auditable, overridable point: set st.headless="deny" or
+-- BOGGART_HEADLESS_POLICY=deny (or perm mode chat) to withhold gated tools when
+-- unattended. Returns "allow" or "deny".
+function M.headless_decision(name, st)
+  st = st or M.state()
+  local p = M.policy_for(name, st)
+  if p == "deny" then return "deny" end
+  if p == "allow" then return "allow" end
+  local hd = st.headless or os.getenv("BOGGART_HEADLESS_POLICY") or "allow"
+  return (hd == "deny") and "deny" or "allow"
+end
+
 -- One-line summary of a tool call, for the approval bar.
 function M.summarise(name, input)
   input = input or {}
@@ -158,27 +176,52 @@ function M.wrap_run(run, st, hooks)
   hooks = hooks or {}
   st = st or M.state()
   run = run or function(name, input) return bog.tools.run(name, input) end
+  -- Audit a decision to the record envelope (telemetry) at the moment it is
+  -- made. Only for GATED tools -- auditing every read would be noise. Stamped
+  -- with the running agent + its run so a fan-out's decisions group.
+  local function audit(name, policy, decision)
+    if not (M.GATED[name] and bog and bog.telemetry) then return end
+    local aid = bog.sched and bog.sched.current and bog.sched.current()
+    local rec = aid and bog.thread and bog.thread.live_recs and bog.thread.live_recs[aid]
+    pcall(bog.telemetry.decision,
+      { run_id = (rec and rec.run_id) or aid, agent_id = aid },
+      { tool = name, policy = policy, decision = decision })
+  end
   return function(name, input)
     input = input or {}
     local policy = M.policy_for(name, st)
+    local audited = false
+    local function A(dec) if not audited then audited = true; audit(name, policy, dec) end end
     if policy == "deny" then
+      A("deny")
       if hooks.on_deny then hooks.on_deny(name, input) end
       return "Tool error: [permission_error] the user's settings do not "
         .. "permit the " .. name .. " tool. Do not retry it; say what you "
         .. "would have done and ask."
     end
     if policy == "ask" then
-      local rec = M.request(name, input)
-      if rec then
-        if hooks.on_ask then hooks.on_ask(rec) end
-        while rec.decision == nil do coroutine.yield("approve") end
-        if hooks.on_done then hooks.on_done(rec) end
-        if rec.decision == "reject" then
-          return "Tool error: [permission_error] the user rejected this "
-            .. name .. " call. Do not retry it; ask what to do instead."
+      if hooks.on_ask then
+        -- Interactive: park the coroutine until a front end resolves the record.
+        local rec = M.request(name, input)
+        if rec then
+          hooks.on_ask(rec)
+          while rec.decision == nil do coroutine.yield("approve") end
+          if hooks.on_done then hooks.on_done(rec) end
+          if rec.decision == "reject" then
+            A("deny")
+            return "Tool error: [permission_error] the user rejected this "
+              .. name .. " call. Do not retry it; ask what to do instead."
+          end
         end
+      elseif M.headless_decision(name, st) == "deny" then
+        A("deny")
+        -- No approver attached: resolve by policy rather than run unattended.
+        return "Tool error: [permission_error] the " .. name .. " tool is gated "
+          .. "and no approver is attached (headless). Do not retry it; say what "
+          .. "you would have done."
       end
     end
+    A("allow") -- every gated call is audited exactly once, on its outcome
     return run(name, input)
   end
 end

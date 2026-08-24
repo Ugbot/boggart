@@ -91,6 +91,23 @@ CREATE TABLE IF NOT EXISTS journal (
   processed_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS journal_undelivered ON journal(processed_at, to_id);
+
+-- The record envelope: an append-only log of what agents DID and what was
+-- DECIDED -- one row per event (a telemetry span, a permission decision, an
+-- agent exit). It is the substrate the reliability layer MEASURES over now and
+-- the event source Phase 2's reducer will replay for resume/fork/branch. Kept
+-- distinct from `journal` (which is bus DELIVERY, with redelivery semantics) on
+-- purpose: records are history and are never redelivered.
+CREATE TABLE IF NOT EXISTS records (
+  id INTEGER PRIMARY KEY,       -- monotonic append order
+  ts INTEGER,
+  run_id INTEGER,               -- the root run this belongs to
+  agent_id INTEGER,             -- the agent that produced it
+  parent_id INTEGER,            -- agent lineage
+  kind TEXT NOT NULL,           -- span:turn | span:tool | span:request | decision | agent:exit
+  payload TEXT                  -- JSON detail
+);
+CREATE INDEX IF NOT EXISTS records_run ON records(run_id, id);
 ]]
 
 -- Add a column to an existing table if a prior DB predates it (CREATE TABLE
@@ -287,6 +304,12 @@ function M.open()
       end
     end
     bog.db = c
+    -- The semantic data API. From here on the harness talks to bog.repo (a C
+    -- module, src/lrepo.c) for operations like kv_*, not to bog.db with SQL.
+    -- The backend (SQLite today, Postgres later) lives entirely behind repo, so
+    -- swapping it changes no Lua and no skill. store.lua still owns schema,
+    -- migrations and FTS via bog.db until those ops move behind repo too.
+    bog.repo = repo.sqlite(c)
     M.state = state
     -- WAL: readers never block the writer and the writer never blocks readers,
     -- which is what lets many actors read the journal while one appends to it.
@@ -362,21 +385,17 @@ end
 local function now() return os.time() end
 
 -- ---- key/value -------------------------------------------------------------
-function M.kv_set(k, v)
-  return bog.db:run("INSERT INTO kv(key,value,updated) VALUES(?,?,?) "
-    .. "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated=excluded.updated",
-    { k, v, now() })
-end
-function M.kv_get(k)
-  local r = bog.db:query("SELECT value FROM kv WHERE key=?", { k })
-  return r[1] and r[1].value or nil
-end
-function M.kv_del(k) return bog.db:run("DELETE FROM kv WHERE key=?", { k }) end
+-- These now delegate to the C data API (bog.repo). The SQL that used to live
+-- here moved into src/lrepo.c behind the backend seam; callers (bog.store.kv_*)
+-- are unchanged. This is the template every other op follows as it moves.
+function M.kv_set(k, v) return bog.repo:kv_set(k, v) end
+function M.kv_get(k) return bog.repo:kv_get(k) end
+function M.kv_del(k) return bog.repo:kv_del(k) end
 function M.kv_list(prefix)
   if prefix and prefix ~= "" then
-    return bog.db:query("SELECT key,value FROM kv WHERE key LIKE ? ORDER BY key", { prefix .. "%" })
+    return bog.repo:kv_list(prefix)
   end
-  return bog.db:query("SELECT key,value FROM kv ORDER BY key")
+  return bog.repo:kv_list()
 end
 
 -- ---- memory ----------------------------------------------------------------
@@ -632,6 +651,31 @@ function M.journal_for(id, limit)
   return bog.db:query(
     "SELECT id,ts,from_id,to_id,topic,kind,payload,processed_at FROM journal "
     .. "WHERE from_id=? OR to_id=? ORDER BY id DESC LIMIT ?", { id, id, limit or 50 })
+end
+
+-- ---- records (the append-only envelope: telemetry spans + decisions) --------
+-- Written synchronously via the normal connection (unlike the bus journal, which
+-- the C writer thread owns). Callers aggregate to turn/tool boundaries, so the
+-- write rate is low and a per-event INSERT never hammers the store.
+function M.record_append(kind, f)
+  f = f or {}
+  -- No interior nils in the params array: a nil hole makes Lua's `#` (and so the
+  -- C binder's luaL_len) miscount and bind the row wrong. Absent parent_id -> 0
+  -- ("no parent"), absent payload -> "" -- a dense 6-element array binds cleanly.
+  return bog.db:run(
+    "INSERT INTO records(ts,run_id,agent_id,parent_id,kind,payload) VALUES(?,?,?,?,?,?)",
+    { now(), f.run_id or 0, f.agent_id or 0, f.parent_id or 0, kind,
+      f.payload ~= nil and json.encode(f.payload) or "" })
+end
+
+function M.records_for(run_id, limit)
+  return bog.db:query("SELECT id,ts,run_id,agent_id,parent_id,kind,payload FROM records "
+    .. "WHERE run_id=? ORDER BY id LIMIT ?", { run_id, limit or 100000 })
+end
+
+function M.records_recent(limit)
+  return bog.db:query("SELECT id,ts,run_id,agent_id,parent_id,kind,payload FROM records "
+    .. "ORDER BY id DESC LIMIT ?", { limit or 200 })
 end
 
 return M

@@ -357,6 +357,7 @@ add_executable(boggart
   src/lhttp.c
   src/lsys.c
   src/ldb.c
+  src/lrepo.c
   src/lswarm.c
   src/lmcp.c
   src/lgit.c
@@ -560,6 +561,7 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
     src/lhttp.c
     src/lsys.c
     src/ldb.c
+    src/lrepo.c
     src/lswarm.c
     src/lmcp.c
     src/lgit.c

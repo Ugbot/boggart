@@ -37,6 +37,37 @@ function M.run_turn(coord, text)
     -- explanation once, here, where the user is looking.
     io.write(COL.err, tostring(bog.sched.fatal), COL.reset, "\n")
   end
+  -- Computed fleet verdict: count the coordinator's children by recorded status,
+  -- independent of whatever the coordinator narrated to stdout. A model can call
+  -- a 3-of-14 fan-out "success"; these numbers cannot. (Phase 1's exit contract
+  -- makes "done" mean delivered + verified; today it means the child did not
+  -- crash. In the REPL the count is cumulative across turns.)
+  local total, okc, failed = 0, 0, 0
+  for _, r in ipairs(bog.store.thread_list(true)) do
+    if r.parent_id == coord.id then
+      total = total + 1
+      if r.status == "done" then okc = okc + 1
+      elseif r.status == "error" or r.status == "killed" then failed = failed + 1 end
+    end
+  end
+  if total > 0 then
+    io.write(string.format("%sfleet: %d agent(s) — %d ok, %d failed%s\n",
+      failed > 0 and COL.err or COL.dim, total, okc, failed, COL.reset))
+    -- The scoreboard: the computed KPIs for this fan-out, so "how good was that"
+    -- is a number, not the coordinator's prose.
+    if bog.telemetry then
+      local k = bog.telemetry.kpis(coord.id)
+      if k and (k.agents or 0) > 0 then
+        io.write(string.format(
+          "%sKPIs: deliverable %.0f%%  false-success %d  tokens/artifact %s  think:output %s%s\n",
+          COL.dim, 100 * (k.deliverable_rate or 0), k.false_success or 0,
+          k.tokens_per_artifact and string.format("%.0f", k.tokens_per_artifact) or "-",
+          k.think_output_ratio and string.format("%.1f", k.think_output_ratio) or "-",
+          COL.reset))
+      end
+    end
+  end
+  coord._fleet = { total = total, ok = okc, failed = failed }
   bog.store.thread_save(coord.id, { messages = coord.session.messages, status = "idle" })
 end
 
@@ -121,7 +152,11 @@ function M.run()
   local task = boggart.prompt
   if task and task ~= "" then
     M.run_turn(coord, task)
-    return 0
+    -- One-shot exit code reflects the computed fleet verdict: a fan-out where a
+    -- child failed is a non-zero exit, so a script/CI can trust the result
+    -- without parsing the coordinator's prose.
+    local v = coord._fleet
+    return (v and v.failed and v.failed > 0) and 1 or 0
   end
   return M.repl(coord)
 end

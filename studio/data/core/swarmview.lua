@@ -584,6 +584,16 @@ function SwarmView:draw_detail(font, charw, x, y, lh, voff, cols, rows)
     rec.tools or 0, (rec.tools or 0) == 1 and "" or "s"), style.dim, cols)
   y = y + lh
 
+  -- If this agent failed its exit contract, say WHY -- the deliverable it did not
+  -- produce, the verify that failed, the budget it hit -- not just "error".
+  local xs = bog.telemetry and bog.telemetry.agent_status and bog.telemetry.agent_status(rec.id)
+  if xs and xs.delivered == false and xs.reason then
+    cell(font, charw, x, y + voff, 0, "failed: " .. tostring(xs.reason):sub(1, math.max(1, cols - 8)),
+      style.error, cols)
+    y = y + lh
+    rows = rows - 1
+  end
+
   -- The interactive approval surface. A sub-agent whose gated tool needs a
   -- yes/no parks in shell/agent/approval.lua and registers the request here;
   -- this is where it is read and answered. Approve lets the call through,
@@ -673,6 +683,21 @@ function SwarmView:draw_totals(font, charw, x, y, cols)
       parts[#parts + 1] = { string.format("%d %s", c, e[2]),
                             c > 0 and colour or style.dim }
     end
+  end
+  -- Reliability scoreboard (computed telemetry), so the fleet's QUALITY is in
+  -- view, not just a count of states: what fraction actually delivered, whether
+  -- any agent falsely reported success, and whether the fleet is over-thinking.
+  local run_id = bog.session and bog.session.id
+  local k = run_id and bog.telemetry and bog.telemetry.kpis and bog.telemetry.kpis(run_id)
+  if k and (k.agents or 0) > 0 then
+    parts[#parts + 1] = { string.format("%.0f%% delivered", 100 * (k.deliverable_rate or 0)),
+      (k.deliverable_rate or 0) >= 0.999 and style.good or style.error }
+    if (k.false_success or 0) > 0 then
+      parts[#parts + 1] = { string.format("%d false-ok", k.false_success), style.error }
+    end
+  end
+  if k and k.think_output_ratio and k.think_output_ratio > 12 then
+    parts[#parts + 1] = { string.format("think:out %.0f", k.think_output_ratio), style.error }
   end
   parts[#parts + 1] = { dash.human(t.bytes) .. " out", style.dim }
   parts[#parts + 1] = { dash.mmss(self.t0
