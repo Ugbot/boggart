@@ -23,7 +23,6 @@ local style = require "core.style"
 local AgentView = require "core.agentview"
 local recipes = require "core.recipes"
 local SidebarView = require "core.sidebarview"
-local RailView = require "core.railview"
 local workspaces = require "core.workspaces"
 local SettingsView = require "core.settingsview"
 local PanelView = require "core.panelview"
@@ -109,41 +108,6 @@ function studio.attach_legacy()
   studio.sidebar = SidebarView()
   core.root_view:get_primary_node():split("left", studio.sidebar, true)
   core.set_active_view(view)
-  return attach_common(view)
-end
-
--- Default window: activity rail, a contextual sidebar, a stage that is one
--- workspace at a time. Conversation is never a tab next to a file.
-function studio.attach()
-  if studio.attached then return end
-  if os.getenv("BOGGART_STUDIO_LEGACY") then
-    return studio.attach_legacy()
-  end
-  studio.attached = true
-  studio.legacy = false
-  studio.workspace = "agent"
-  workspaces.current = "agent"
-
-  local view = AgentView()
-  studio.view = view
-  local primary = core.root_view:get_primary_node()
-  primary:add_view(view)
-  core.set_active_view(view)
-
-  -- Rail, then one sidebar slot, then the conversation:
-  -- [rail | sidebar-slot | agent]. Files docks chat on the right and
-  -- puts the editor in the center; the tree occupies this same slot.
-  studio.rail = RailView()
-  primary:split("left", studio.rail, true)
-  studio.sidebar = SidebarView()
-  core.root_view:get_primary_node():split("left", studio.sidebar, true)
-  studio.sidebar_node = core.root_view.root_node:get_node_for_view(studio.sidebar)
-  core.set_active_view(view)
-
-  menu.install()
-  workspaces.install_open_hook()
-  workspaces.set_sidebar("sessions")
-
   return attach_common(view)
 end
 

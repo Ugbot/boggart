@@ -611,25 +611,22 @@ function core.init()
   -- defaults. Failing to load must not stop the editor coming up -- an editor
   -- that cannot reach a model is still an editor.
   if bog then
-    -- Default composition is the activity rail + workspaces (see studio.attach).
-    -- BOGGART_STUDIO_LEGACY=1 keeps the old "everything is a tab" attach.
-    -- BOGGART_STUDIO_SHELL=1 keeps the experimental menu-bar shell.
-    local function attach_studio()
-      core.studio = core.try(require, "core.studio") and require "core.studio" or nil
-      if core.studio then core.try(core.studio.attach) end
+    -- The shell (menu bar + AGENT/EDIT/FLEET workspaces, studio/data/shell) is
+    -- the window. The engine -- commands, AgentView, the swarm -- still lives in
+    -- core.studio; the shell only supplies the chrome. The old "everything is a
+    -- tab" composition is kept one release behind BOGGART_STUDIO_LEGACY=1; the
+    -- interim activity-rail composition has been removed.
+    core.studio = core.try(require, "core.studio") and require "core.studio" or nil
+    local function attach_legacy()
+      if core.studio then core.try(core.studio.attach_legacy) end
     end
-    local function attach_shell()
-      -- The engine (commands, AgentView, swarm) still lives in core.studio;
-      -- the shell replaces only the window chrome.
-      core.studio = core.try(require, "core.studio") and require "core.studio" or nil
+    if os.getenv("BOGGART_STUDIO_LEGACY") then
+      attach_legacy()
+    else
       core.shell = core.try(require, "shell") and require "shell" or nil
       if core.shell then core.try(core.shell.attach) end
-      return core.shell and core.shell.attached
-    end
-    if os.getenv("BOGGART_STUDIO_SHELL") and not os.getenv("BOGGART_STUDIO_LEGACY") then
-      if not attach_shell() then attach_studio() end
-    else
-      attach_studio()
+      -- If the shell cannot come up, fall back to legacy so the editor still does.
+      if not (core.shell and core.shell.attached) then attach_legacy() end
     end
   end
   -- Modal (neovim-style) editing. Loaded unconditionally so its commands and

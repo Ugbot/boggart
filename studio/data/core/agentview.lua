@@ -1903,8 +1903,9 @@ local COLUMN_COLS = 96   -- widest the conversation column gets, in characters
 function AgentView:toolbar_items()
   local busy = self.busy
   local studio = core.studio
-  -- The rail owns navigation. The legacy attach still has no rail, so it
-  -- keeps the long strip that used to be the only way to reach those surfaces.
+  -- Legacy keeps the long strip that used to be the only way to reach those
+  -- surfaces; the shell (studio.legacy nil) falls through to the full toolbar
+  -- below, prefixed with its sidebar toggle.
   if studio and studio.legacy then
     local sidebar = studio.sidebar
     return {
@@ -1918,14 +1919,6 @@ function AgentView:toolbar_items()
       { label = "Tools",    command = "agent:show-tools" },
       { label = "MCP",      command = "agent:list-mcp-servers" },
       { label = "Settings", command = "agent:settings" },
-      { label = busy and "Stop" or "Compact",
-        command = busy and "agent:cancel" or "agent:compact-now",
-        tone = busy and (style.warn or style.accent) or nil },
-    }
-  end
-  if studio and studio.legacy == false then
-    return {
-      { label = "New", command = "agent:new-session" },
       { label = busy and "Stop" or "Compact",
         command = busy and "agent:cancel" or "agent:compact-now",
         tone = busy and (style.warn or style.accent) or nil },

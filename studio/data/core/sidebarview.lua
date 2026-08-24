@@ -194,9 +194,9 @@ function SidebarView:update()
   -- left intact, so the results stay on screen until cleared with escape or ×.
   if self.searching and core.active_view ~= self then self.searching = false end
 
-  -- Follow Chat/Code when this is the legacy segmented rail, not the
-  -- workspaces sidebar (studio.legacy == false) or a shell recents dock.
-  if not self.shell_rail and not (core.studio and core.studio.legacy == false) then
+  -- Follow Chat/Code only for the legacy segmented rail, not a shell recents
+  -- dock (self.shell_rail). The interim workspaces sidebar is gone.
+  if not self.shell_rail then
     local active = core.active_view
     if active then
       if active.doc then self.tab = "code"
