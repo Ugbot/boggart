@@ -1031,21 +1031,23 @@ command.add(nil, {
   ["agent:set-api-key"] = function()
     prompt("Anthropic API key:", function(text)
       if text == "" then return end
-      auth.set("api_key", text)
-      if bog.api and bog.api.forget_auth then bog.api.forget_auth() end
+      -- Same validate/trim/store/invalidate as the settings and welcome screens:
+      -- a key pasted with a trailing newline used to be stored raw and 401.
+      local ok, err = require("core.settings").set("api_key", text)
+      if not ok then core.error("%s", err); return end
       core.log("stored api key %s", select(1, auth.masked()))
     end)
   end,
 
   ["agent:set-endpoint"] = function()
     prompt("Base URL (blank for the Anthropic API):", function(text)
+      local settings = require "core.settings"
       if text == "" then
-        auth.clear("base_url")
-        if bog.api and bog.api.forget_auth then bog.api.forget_auth() end
+        settings.clear("base_url")
         core.log("using the Anthropic API")
       else
-        auth.set("base_url", text)
-        if bog.api and bog.api.forget_auth then bog.api.forget_auth() end
+        local ok, err = settings.set("base_url", text)
+        if not ok then core.error("%s", err); return end
         core.log("endpoint: %s", bog.api.endpoint())
       end
     end, auth.base_url() or "http://127.0.0.1:8000")
@@ -1056,9 +1058,10 @@ command.add(nil, {
     local current = (bog.session and bog.session.model) or ""
     local function apply(text)
       if text == "" then return end
-      auth.set("model", text)
-      bog.session.model = text
-      core.log("model: %s", text)
+      local model, err = require("core.settings").set("model", text)
+      if not model then core.error("%s", err); return end
+      bog.session.model = model
+      core.log("model: %s", model)
     end
     local items = {}
     if current ~= "" then

@@ -94,8 +94,8 @@ function SettingsView:fields()
         or "sk-ant-... , or leave blank and set an endpoint below",
       secret = true,
       set = function(v)
-        auth.set("api_key", v)
-        if bog.api.forget_auth then bog.api.forget_auth() end
+        local ok, err = require("core.settings").set("api_key", v)
+        if not ok then return nil, err end
         local m, src = key_summary()
         if src == "environment" then
           return nil, "stored, but ANTHROPIC_API_KEY is still the key being sent"
@@ -103,8 +103,7 @@ function SettingsView:fields()
         return "key stored (" .. (m or "?") .. ")"
       end,
       clear = function()
-        auth.clear("api_key")
-        if bog.api.forget_auth then bog.api.forget_auth() end
+        require("core.settings").clear("api_key")
         if auth.has_key() then
           return nil, "cleared here -- ANTHROPIC_API_KEY still supplies one"
         end
@@ -117,20 +116,16 @@ function SettingsView:fields()
       value = auth.base_url() or "https://api.anthropic.com",
       hint = "a local server speaking /v1/messages, e.g. http://127.0.0.1:8000",
       set = function(v)
-        -- Refused rather than stored. Without a scheme the transport has no
-        -- idea what to do with it, and the failure surfaced later, in the
-        -- conversation, as a connection error that said nothing about the
-        -- endpoint being the thing that was wrong.
-        if not v:match("^%a[%w+%-.]*://") then
-          return nil, ("%q has no scheme -- try http://%s"):format(v, v)
-        end
-        auth.set("base_url", v)
-        if bog.api.forget_auth then bog.api.forget_auth() end
+        -- Refused rather than stored when it has no scheme: the transport would
+        -- otherwise fail later, in the conversation, as a connection error that
+        -- said nothing about the endpoint being the thing that was wrong. The
+        -- rule lives in core.settings now, shared with welcome and the palette.
+        local ok, err = require("core.settings").set("base_url", v)
+        if not ok then return nil, err end
         return "endpoint: " .. bog.api.endpoint()
       end,
       clear = function()
-        auth.clear("base_url")
-        if bog.api.forget_auth then bog.api.forget_auth() end
+        require("core.settings").clear("base_url")
         return "using the Anthropic API"
       end,
     },
@@ -146,14 +141,10 @@ function SettingsView:fields()
       hint = "anthropic = Claude / ds4; openai = llama.cpp / chat-completions; responses = OpenAI /v1/responses",
       set = function(v)
         -- Refused rather than stored, like the endpoint above: a wire that is
-        -- no known name would be a request translated by nobody, and the failure
-        -- would surface later as a shape the server could not parse.
-        local wire = v:lower()
-        if wire ~= "anthropic" and wire ~= "openai" and wire ~= "responses" then
-          return nil, ("%q is not a wire -- type anthropic, openai or responses"):format(v)
-        end
-        auth.set("wire", wire)
-        if bog.api.forget_auth then bog.api.forget_auth() end
+        -- no known name would be a request translated by nobody. Validation
+        -- lives in core.settings now.
+        local wire, err = require("core.settings").set("wire", v)
+        if not wire then return nil, err end
         return "wire: " .. wire
       end,
     },
@@ -166,9 +157,10 @@ function SettingsView:fields()
       value = (bog.session and bog.session.model) or auth.model() or NOT_SET,
       hint = "claude-opus-5, or whatever your endpoint serves",
       set = function(v)
-        auth.set("model", v)
-        if bog.session then bog.session.model = v end
-        return "model: " .. v
+        local model, err = require("core.settings").set("model", v)
+        if not model then return nil, err end
+        if bog.session then bog.session.model = model end
+        return "model: " .. model
       end,
     },
     {

@@ -792,5 +792,24 @@ if okm and okdoc then
     "...and an explicit hl wins over it")
 end
 
+-- ---- core.settings normalisers (the one config write-path) ----------------
+-- These are pure and shared by welcome / settings / the palette, so the rule a
+-- key or URL is stored under is the same everywhere -- the 401-from-a-stray-
+-- newline bug came from one path trimming and another not.
+do
+  local ok_s, S = pcall(require, "core.settings")
+  ok(ok_s, "core.settings loads" .. (ok_s and "" or ("  -- " .. tostring(S))))
+  if ok_s then
+    local n = S.norm
+    ok(n.api_key("  sk-ant-xyz\n") == "sk-ant-xyz", "api_key is trimmed")
+    ok(select(1, n.api_key("   ")) == nil, "a blank api_key is rejected")
+    ok(n.base_url("http://h:8000/") == "http://h:8000", "base_url strips a trailing slash")
+    ok(select(1, n.base_url("h:8000")) == nil, "base_url without a scheme is rejected")
+    ok(n.wire("Anthropic") == "anthropic", "wire is lowercased")
+    ok(select(1, n.wire("grpc")) == nil, "an unknown wire is rejected")
+    ok(n.model("  claude-opus-5 ") == "claude-opus-5", "model is trimmed")
+  end
+end
+
 io.write(string.format("\n%d passed, %d failed\n", passed, failed))
 return failed == 0 and 0 or 1

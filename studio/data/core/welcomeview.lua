@@ -270,8 +270,8 @@ function WelcomeView:fields()
         or "paste sk-ant-... and press enter -- it is stored, never shown again",
       secret = true,
       set = function(v)
-        auth.set("api_key", v)
-        if bog.api.forget_auth then bog.api.forget_auth() end
+        local ok, err = require("core.settings").set("api_key", v)
+        if not ok then return nil, err end
         self.result = nil
         local m, src = key_summary()
         if src == "environment" then
@@ -291,8 +291,8 @@ function WelcomeView:fields()
       dim = (auth.base_url() == nil),
       hint = "a server speaking /v1/messages -- llama.cpp, vLLM, ds4-server",
       set = function(v)
-        auth.set("base_url", v)
-        if bog.api.forget_auth then bog.api.forget_auth() end
+        local ok, err = require("core.settings").set("base_url", v)
+        if not ok then return nil, err end
         self.result, self.models = nil, nil
         self:fetch_models()
         return "endpoint: " .. bog.api.endpoint()
@@ -386,8 +386,12 @@ end
 -- Testing and starting both count, and both come through here, so the value the
 -- test proves is the value the next request will go to.
 function WelcomeView:apply()
+  -- These are already-valid internal defaults, not raw user input, but they go
+  -- through the same core.settings write-path so the cache invalidation and the
+  -- settings:changed event fire exactly as they do for a typed value.
+  local settings = require "core.settings"
   if self.route == "local" and not auth.base_url() then
-    auth.set("base_url", DEFAULT_LOCAL)
+    settings.set("base_url", DEFAULT_LOCAL)
   end
   -- The wire is written down with everything else, so the value the test proves
   -- is the value the next request goes out under. The local route defaults to
@@ -395,15 +399,14 @@ function WelcomeView:apply()
   -- than leaving a wire left over from a previous local attempt, so switching
   -- back is clean.
   if self.route == "local" then
-    auth.set("wire", self.wire or "openai")
+    settings.set("wire", self.wire or "openai")
   elseif self.route == "api" then
-    auth.set("wire", "anthropic")
+    settings.set("wire", "anthropic")
   end
   if self.model and self.model ~= "" then
-    auth.set("model", self.model)
+    settings.set("model", self.model)
     if bog.session then bog.session.model = self.model end
   end
-  if bog.api.forget_auth then bog.api.forget_auth() end
 end
 
 function WelcomeView:busy() return self.job ~= nil end
@@ -793,8 +796,7 @@ function WelcomeView:draw()
       "left", x, y, w, lh)
     y = y + lh + vpad / 2
     y = row({ { label = "Clear the endpoint", action = function()
-      auth.clear("base_url")
-      if bog.api.forget_auth then bog.api.forget_auth() end
+      require("core.settings").clear("base_url")
       self.result = nil
       self.notice = { text = "endpoint cleared -- using the Anthropic API" }
     end } }, x, y, right) + vpad
