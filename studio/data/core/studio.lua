@@ -494,8 +494,23 @@ function studio.status_items()
   -- while a request goes to the cloud. Remote is the one worth flagging -- it is
   -- the "what am I about to spend money on?" this line exists to answer -- so the
   -- provider name takes the warning colour when remote and stays dim when local.
-  local ok, st = pcall(bog.api.status)
-  st = ok and st or nil
+  -- bog.api.status and bog.api.cost resolve the provider and price the session;
+  -- both are stable second-to-second but the status bar redraws them every
+  -- frame. Cache for ~1s so an idle window isn't re-pricing itself 60×/s. The
+  -- volatile bits below (approve?/busy/mode/token counts) stay live.
+  local now = system.get_time()
+  local cache = studio._status_cache
+  if not cache or now - cache.at > 1 then
+    local sok, sst = pcall(bog.api.status)
+    local dollars
+    if bog.api and bog.api.cost then
+      local cok, d = pcall(bog.api.cost, bog.session)
+      if cok then dollars = d end
+    end
+    cache = { at = now, st = sok and sst or nil, dollars = dollars }
+    studio._status_cache = cache
+  end
+  local st = cache.st
   local out
   if st then
     out = { style.dim, "agent ",
@@ -521,12 +536,10 @@ function studio.status_items()
   -- literal. Remote shows an estimated $ in the warn colour -- the one number
   -- here that is actual dollars. Local shows nothing: api.cost() returns nil for
   -- your own server, so there is no fake price to warn about.
-  if bog.api and bog.api.cost then
-    local okc, dollars = pcall(bog.api.cost, bog.session)
-    if okc and dollars and dollars > 0 then
-      out[#out + 1] = style.warn or style.accent
-      out[#out + 1] = string.format("  ~$%.4f", dollars)
-    end
+  local dollars = cache.dollars
+  if dollars and dollars > 0 then
+    out[#out + 1] = style.warn or style.accent
+    out[#out + 1] = string.format("  ~$%.4f", dollars)
   end
   if bog.api and bog.api.context_fraction then
     local frac, used = bog.api.context_fraction(bog.session)

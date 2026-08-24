@@ -475,11 +475,22 @@ end
 -- marked before it was ever opened can still land under a different spelling.
 -- Called from Doc:load, once, so a store keyed by a path that resolves to this
 -- document's path is adopted rather than orphaned.
+-- `long` ends with `short` at a path-component boundary: either they are equal,
+-- or the character before the matched tail is a separator. Without the boundary
+-- check a bare string suffix adopts the wrong store -- editing "a.c" would grab
+-- the marks laid on "data.c", because "data.c" ends in "a.c".
+local function is_path_suffix(long, short)
+  if #short > #long or long:sub(-#short) ~= short then return false end
+  if #short == #long then return true end
+  local before = long:sub(#long - #short, #long - #short)
+  return before == "/" or before == "\\"
+end
+
 function marks.attach(doc)
   local key = key_of(doc)
   if not key or stores[key] then return end
   for k, st in pairs(stores) do
-    if k ~= key and (k:sub(-#key) == key or key:sub(-#k) == k) then
+    if k ~= key and (is_path_suffix(k, key) or is_path_suffix(key, k)) then
       stores[key], stores[k] = st, nil
       return
     end

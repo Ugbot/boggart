@@ -336,6 +336,38 @@ if loaded then
   local warm = v:layout(e, 40)
   ok(v:layout(e, 40) == warm, "...and still returns the cached rows otherwise")
 
+  -- ---- incremental streaming layout --------------------------------------
+  -- A reply is re-laid on every frame as it streams. The layout keeps the rows
+  -- for the settled prefix and only re-lays the growing tail; the result must
+  -- be identical to laying the finished text out in one shot -- across prose,
+  -- wrapping, lists, and a code fence (which must not be committed mid-block).
+  do
+    local full = table.concat({
+      "# Title", "",
+      "First a line of prose long enough that it wraps once across the column.",
+      "", "- item one", "- item two", "",
+      "```lua", "local x = 1", "print(x)  -- c", "```", "",
+      "Trailing prose after the code block, also long enough that it wraps too.",
+    }, "\n")
+    local function flat(rows)
+      local out = {}
+      for _, r in ipairs(rows) do out[#out + 1] = r.rule and "<rule>" or text_of(r) end
+      return table.concat(out, "\n")
+    end
+    local fresh = flat(v:layout({ role = "assistant", text = full }, 40))
+    local se, last = { role = "assistant", text = "" }, nil
+    for i = 1, #full, 3 do          -- grow a few bytes at a time
+      se.text = full:sub(1, math.min(i + 2, #full))
+      last = v:layout(se, 40)
+    end
+    se.text = full
+    last = v:layout(se, 40)
+    ok(flat(last) == fresh, "streamed layout matches one-shot layout")
+    if flat(last) ~= fresh then
+      io.write("  fresh:\n" .. fresh .. "\n  streamed:\n" .. flat(last) .. "\n")
+    end
+  end
+
   -- ---- the composer ------------------------------------------------------
   v:set_input("hello world again")
   v:on_key_pressed("ctrl+backspace")

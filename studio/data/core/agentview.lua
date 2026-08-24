@@ -64,11 +64,17 @@ function AgentView:new()
   self.approve_all = false     -- "always allow" for this session
   self.mode = perm.state().mode -- shared with /mode and the cTUI
   self.tool_policy = perm.state().tool_policy
+  -- These are process-global hooks that boot.lua's /clear and copy call. Every
+  -- AgentView construction used to overwrite them with closures over *its* self,
+  -- so a second view left the first one's /clear pointing at a dead view (and
+  -- vice versa). Bind late instead: resolve the live agent view (core.studio.view,
+  -- kept current by the workspace switch) at call time.
   if bog then
     bog.copy_text = function(s) pcall(system.set_clipboard, s) end
     bog.clear_ui = function()
-      self.entries = {}
-      self:push("system", "conversation cleared")
+      local v = (core.studio and core.studio.view) or self
+      v.entries = {}
+      v:push("system", "conversation cleared")
     end
   end
   self.pending = nil           -- { name, input, diff, path, decision }
@@ -600,12 +606,11 @@ function AgentView:run_slash(line)
     return
   end
   self.busy, self.status = true, "command"
-  local n = 0
-  for _ in pairs(core.threads or {}) do n = n + 1 end
-  core.add_thread(body)
-  local n2 = 0
-  for _ in pairs(core.threads or {}) do n2 = n2 + 1 end
-  if n2 > n then return end
+  -- core.add_thread returns a truthy handle when it actually schedules; the
+  -- headless test stub is a no-op that returns nil, so fall back to running
+  -- inline. (Was a before/after count of core.threads -- same intent, but it
+  -- broke the moment anything else touched the table between the two counts.)
+  if core.add_thread(body) then return end
   self.busy, self.status = false, "idle"
   body()
 end
@@ -1436,17 +1441,57 @@ function AgentView:layout(e, cols)
 
   local r = ROLE[e.role] or ROLE.assistant
   local base = style[r.color] or style.text
-  local rows = {}
-  local in_code, syn, state = false, nil, nil
-  local fence_len = 0
-  local first = true
-  -- Per code block: accumulate the raw lines and remember the first drawn row,
-  -- so the draw loop can hang a "copy" button on the block (the defining
-  -- affordance of a coding chat -- otherwise the only way to lift a snippet is a
-  -- careful drag-select). Finalised onto the first row when the fence closes.
-  local code_lines, code_first = nil, nil
+  local text = e.text
 
-  for line in (e.text .. "\n"):gmatch("(.-)\n") do
+  -- Incremental layout for the append-only common case: a streaming reply grows
+  -- one chunk at a time, and re-tokenising + re-wrapping the whole entry every
+  -- frame is O(n) per frame, O(n^2) over a long reply. Instead keep the rows for
+  -- the text up to the last "safe" line boundary -- one where no code block is
+  -- open, so no earlier row can still be mutated (the copy-button finalise) --
+  -- and only lay out the growing tail past it. `inc.rows` is the very array we
+  -- return, grown in place; `nrows`/`bytes` mark how far is finalised.
+  local inc = e._inc
+  if not (inc and inc.cols == cols and inc.role == e.role
+          and inc.collapsed == e.collapsed and inc.base == base
+          and #text >= inc.bytes and text:sub(1, inc.bytes) == inc.prefix) then
+    inc = nil
+  end
+
+  local rows, startpos
+  local in_code, syn, state, fence_len, first, code_lines, code_first
+  if inc then
+    rows = inc.rows
+    for i = #rows, inc.nrows + 1, -1 do rows[i] = nil end   -- drop the stale tail
+    in_code, syn, state = inc.in_code, inc.syn, inc.state
+    fence_len, first = inc.fence_len, inc.first
+    code_lines, code_first = inc.code_lines, inc.code_first
+    startpos = inc.bytes + 1
+  else
+    rows = {}
+    in_code, syn, state = false, nil, nil
+    fence_len, first = 0, true
+    -- Per code block: accumulate the raw lines and remember the first drawn row,
+    -- so the draw loop can hang a "copy" button on the block (the defining
+    -- affordance of a coding chat -- otherwise the only way to lift a snippet is
+    -- a careful drag-select). Finalised onto the first row when the fence closes.
+    code_lines, code_first = nil, nil
+    startpos = 1
+  end
+
+  local commit_bytes = inc and inc.bytes or 0
+  local commit_rows  = inc and inc.nrows or 0
+  -- The finalised parser state at commit_bytes. Seeded from inc when resuming,
+  -- else the initial state (bytes 0 -> first line still pending, first == true).
+  local commit_state = inc or {
+    in_code = false, syn = nil, state = nil, fence_len = 0,
+    first = true, code_lines = nil, code_first = nil,
+  }
+
+  local pos = startpos
+  while true do
+    local nl = text:find("\n", pos, true)
+    local terminated = nl ~= nil
+    local line = text:sub(pos, terminated and nl - 1 or #text)
     local fence, lang = line:match("^%s*(```+)%s*([%w_+#%-]*)")
     -- A fence only closes one at least as long as the one that opened it,
     -- which is how a ````-fenced markdown block can contain a ``` block. Any
@@ -1536,7 +1581,30 @@ function AgentView:layout(e, cols)
       if hashes and #hashes <= 2 then rows[#rows + 1] = { rule = true, thin = true } end
     end
     first = false
+
+    -- A completed line (real newline) with no open code block is a safe cut:
+    -- every row so far is final. Snapshot the parser state and how far we got so
+    -- the next frame resumes from here instead of re-parsing the whole entry.
+    if terminated and not in_code then
+      commit_bytes, commit_rows = nl, #rows
+      commit_state = {
+        in_code = in_code, syn = syn, state = state, fence_len = fence_len,
+        first = first, code_lines = code_lines, code_first = code_first,
+      }
+    end
+    if not terminated then break end
+    pos = nl + 1
   end
+
+  e._inc = {
+    cols = cols, role = e.role, collapsed = e.collapsed, base = base,
+    rows = rows, bytes = commit_bytes, nrows = commit_rows,
+    prefix = text:sub(1, commit_bytes),
+    in_code = commit_state.in_code, syn = commit_state.syn,
+    state = commit_state.state, fence_len = commit_state.fence_len,
+    first = commit_state.first,
+    code_lines = commit_state.code_lines, code_first = commit_state.code_first,
+  }
 
   -- Tool entries carry their result inline: the whole point of watching a turn
   -- is seeing what a call RETURNED, not just that it ran (and not only after a

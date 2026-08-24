@@ -64,8 +64,13 @@ function TreeView:check_cache()
   -- edits instead and identity would never change again.
   local version = core.project_files_version
   if version ~= self.last_version or core.project_files ~= self.last_project_files then
-    for _, v in pairs(self.cache) do
-      v.skip = nil
+    -- Drop cache entries for files no longer in the project: get_cached only
+    -- ever adds, so without this the table grows for the life of the window as
+    -- files come and go.
+    local live = {}
+    for _, item in ipairs(core.project_files or {}) do live[item.filename] = true end
+    for fname, v in pairs(self.cache) do
+      if live[fname] then v.skip = nil else self.cache[fname] = nil end
     end
     self.last_version = version
     self.last_project_files = core.project_files
@@ -180,8 +185,16 @@ function TreeView:draw()
   local bh = widgets.height(style.font)
   local footer_top = self.position.y + self.size.y - bh - style.padding.y * 2
 
+  -- Which row to highlight. system.absolute_path is a syscall, and this runs
+  -- every frame, so only resolve it when the active doc's filename actually
+  -- changes rather than on each repaint.
   local doc = core.active_view.doc
-  local active_filename = doc and system.absolute_path(doc.filename or "")
+  local dfn = (doc and doc.filename) or ""
+  if dfn ~= self._active_src then
+    self._active_src = dfn
+    self._active_abs = dfn ~= "" and system.absolute_path(dfn) or nil
+  end
+  local active_filename = self._active_abs
 
   for item, x,y,w,h in self:each_item() do
     if y + h > footer_top then break end

@@ -331,8 +331,13 @@ end
 
 function PickerView:on_mouse_moved(x, y, dx, dy)
   PickerView.super.on_mouse_moved(self, x, y, dx, dy)
-  self.mouse = { x = x, y = y }
-  core.redraw = true
+  -- Only a genuine move needs a repaint: SDL delivers a motion event per frame
+  -- while the cursor merely rests over the picker, and redrawing on each one
+  -- pins the whole app at the frame cap for nothing.
+  if not self.mouse or self.mouse.x ~= x or self.mouse.y ~= y then
+    self.mouse = { x = x, y = y }
+    core.redraw = true
+  end
 end
 
 function PickerView:on_mouse_pressed(button, x, y, clicks)

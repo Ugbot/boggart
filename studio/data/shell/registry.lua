@@ -114,7 +114,6 @@ M.tree = {
   Help = {
     { "Keyboard shortcuts\u{2026}", "help:shortcuts" },
     M.SEP,
-    { "Command palette\u{2026}", "core:find-command" },
     { "Show config",        "agent:show-config" },
   },
 }

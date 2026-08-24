@@ -195,9 +195,12 @@ function workspaces.present(name)
   if name == "agent" then
     if studio.view then set_stage(studio.view) end
   elseif name == "fleet" then
-    local SwarmView = require "core.swarmview"
-    if not studio.swarm then studio.swarm = SwarmView() end
-    set_stage(studio.swarm)
+    -- SwarmView.ensure() is the single owner of the roster instance; keeping a
+    -- separate studio.swarm here let the two drift into rival views over one
+    -- scheduler. Mirror it onto studio.swarm only so old readers still resolve.
+    local swarm = require("core.swarmview").ensure()
+    studio.swarm = swarm
+    set_stage(swarm)
   elseif name == "library" then
     if not studio.library then studio.library = require("core.libraryview")() end
     set_stage(studio.library)

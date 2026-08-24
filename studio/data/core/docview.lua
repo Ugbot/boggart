@@ -305,14 +305,22 @@ function DocView:update()
     self.last_line, self.last_col = line, col
   end
 
-  -- update blink timer
+  -- update blink timer. Advance by real elapsed time, not a fixed 1/config.fps:
+  -- the idle main loop no longer runs update() at the frame rate (it blocks and
+  -- wakes ~once per blink half-period), so assuming a full-fps step would make
+  -- the caret blink many times too slowly.
   if self == core.active_view and not self.mouse_selecting then
     local n = blink_period / 2
     local prev = self.blink_timer
-    self.blink_timer = (self.blink_timer + 1 / config.fps) % blink_period
+    local now = system.get_time()
+    local dt = self.blink_last and (now - self.blink_last) or (1 / config.fps)
+    self.blink_last = now
+    self.blink_timer = (self.blink_timer + dt) % blink_period
     if (self.blink_timer > n) ~= (prev > n) then
       core.redraw = true
     end
+  else
+    self.blink_last = nil
   end
 
   DocView.super.update(self)

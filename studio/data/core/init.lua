@@ -774,6 +774,7 @@ function core.add_thread(f, weak_ref)
   end
   local fn = function() return core.try(f) end
   core.threads[key] = { cr = coroutine.create(fn), wake = 0 }
+  return key   -- a truthy handle: callers use it to tell "scheduled" from a no-op stub
 end
 
 
@@ -1025,17 +1026,23 @@ local run_threads = coroutine.wrap(function()
 end)
 
 
+local blink_period = 0.8   -- caret on/off cycle; kept in sync with docview.lua
+
 function core.run()
   while true do
     core.frame_start = system.get_time()
     local did_redraw = core.step()
     local time_to_wake = run_threads()
-    if not did_redraw and not system.window_has_focus() then
-      -- Nothing changed and nobody is looking. Block until an event arrives or
-      -- until the earliest thread is due, whichever is sooner, rather than
-      -- waking on a fixed timer -- this is what lets the file watcher be
-      -- drained promptly without adding wakeups of its own.
-      system.wait_event(math.max(0, math.min(0.25, time_to_wake)))
+    if not did_redraw then
+      -- Nothing changed this frame: block until an event arrives or the earliest
+      -- thread is due, instead of busy-spinning at config.fps (the old loop only
+      -- blocked when *unfocused*, so a focused-but-idle window pinned a core at
+      -- 60fps forever). When focused we still cap the wait at the caret's blink
+      -- half-period so the cursor keeps blinking; unfocused there is no caret to
+      -- service, so we can afford to wait longer. Either way a real event wakes
+      -- immediately, and time_to_wake keeps the file watcher / threads prompt.
+      local cap = system.window_has_focus() and (blink_period / 2) or 0.25
+      system.wait_event(math.max(0, math.min(cap, time_to_wake)))
     end
     local elapsed = system.get_time() - core.frame_start
     system.sleep(math.max(0, 1 / config.fps - elapsed))

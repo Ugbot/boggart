@@ -484,8 +484,12 @@ function WelcomeView:fetch_models()
   self.job_kind = "models"
   self.job = coroutine.create(function()
     local found = {}
+    -- `req` lives in the outer scope so it is closed even when the body throws
+    -- (a decode error, say). A raw HTTP handle left open leaks a uv handle and
+    -- a socket for the life of the window.
+    local req
     local ok = pcall(function()
-      local req = http.begin { url = base .. "/v1/models", method = "GET", timeout = 10 }
+      req = http.begin { url = base .. "/v1/models", method = "GET", timeout = 10 }
       local raw = {}
       while true do
         coroutine.yield("io")
@@ -494,12 +498,12 @@ function WelcomeView:fetch_models()
         local st = req:status()
         if st ~= "running" then break end
       end
-      req:close()
       local body = bog.json.decode(table.concat(raw))
       for _, m in ipairs((type(body) == "table" and body.data) or {}) do
         if type(m) == "table" and type(m.id) == "string" then found[#found + 1] = m.id end
       end
     end)
+    if req then pcall(function() req:close() end) end
     if ok and #found > 0 then
       self.models = found
       -- The list from the server outranks anything nobody chose. On a fresh

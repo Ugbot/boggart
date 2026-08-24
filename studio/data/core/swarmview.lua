@@ -824,7 +824,7 @@ function SwarmView.open()
   local studio = core.studio
   if studio and not studio.legacy and studio.switch_workspace then
     studio.switch_workspace("fleet")
-    return instance or studio.swarm
+    return SwarmView.ensure()
   end
   -- Singleton, reused wherever it lives -- see studio.open_settings for why the
   -- search is over the whole root and not just the primary node. A workspace can
