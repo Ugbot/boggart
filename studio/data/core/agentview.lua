@@ -900,6 +900,14 @@ end
 -- Switch the composer's modal context. Kept separate from set_mode (approval)
 -- on purpose: they share the word "mode" but nothing else, and folding them
 -- would let a normal-mode toggle rewrite the approval policy.
+-- The modal spine (shell/modal.lua) asks every focused view whether it is a
+-- text input right now. The composer's insert mode is a text field that owns
+-- every key; its normal mode is a viewport over the transcript, so the spine's
+-- j/k/gg/G fire there just as on any read-only surface.
+function AgentView:is_text_input()
+  return self.edit_mode ~= "normal"
+end
+
 function AgentView:set_edit_mode(m)
   if m ~= "insert" and m ~= "normal" then return end
   if self.edit_mode == m then return end

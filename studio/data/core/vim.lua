@@ -60,6 +60,18 @@ local function vstate(dv)
 end
 M.state = vstate
 
+-- The modal spine (shell/modal.lua) asks every focused view whether it is a
+-- text input right now. A DocView answers through vim: in normal mode it is a
+-- viewport the spine's j/k should drive; in insert mode -- or with vim disabled,
+-- a modeless editor -- it is a text field that owns every key.
+function DocView:is_text_input()
+  if M.enabled and M.state then
+    local st = M.state(self)
+    return not st or st.mode == "insert"
+  end
+  return true
+end
+
 local function reset(v)
   v.count, v.op, v.opcount, v.await, v.gpend = "", nil, "", nil, false
   v.reg, v.textobj = nil, nil

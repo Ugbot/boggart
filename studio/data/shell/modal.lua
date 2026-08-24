@@ -15,29 +15,18 @@ local modal = {}
 modal.pending = nil -- nil | "window" | "g" | "leader"
 
 -- Is the focused surface actively accepting typed text?
+--
+-- The spine owns this question but no longer answers it by reaching into vim's
+-- state or the composer's edit_mode -- each mode-bearing view answers for itself
+-- through a uniform :is_text_input() (DocView via vim, AgentView via edit_mode,
+-- the command view always). So the three "mode machines" are now clients of one
+-- query instead of interrogating each other, and a new modal surface only has to
+-- implement is_text_input() to take part.
 local function typing()
   local v = core.active_view
   if not v then return false end
   if v == core.command_view then return true end
-  local DocView = require "core.docview"
-  -- v:is(DocView), not getmetatable(v) == DocView: LogView and other DocView
-  -- subclasses are editors too, and an exact-class test called them read-only
-  -- surfaces, so the spine's j/k stole keystrokes from them.
-  if v.is and v:is(DocView) then
-    local vim = package.loaded["core.vim"]
-    if vim and vim.enabled and vim.state then
-      local st = vim.state(v)
-      return not st or st.mode == "insert"
-    end
-    return true -- modeless editor: always typing
-  end
-  local AgentView = package.loaded["core.agentview"]
-  if AgentView and v.is and v:is(AgentView) then
-    -- The composer has two contexts. Insert mode is a text field and owns every
-    -- key (current behaviour); normal mode is a viewport over the transcript, so
-    -- the spine's j/k/gg/G must fire there just as they do in a read-only view.
-    return v.edit_mode ~= "normal"
-  end
+  if v.is_text_input then return v:is_text_input() end
   return false
 end
 modal.typing = typing
