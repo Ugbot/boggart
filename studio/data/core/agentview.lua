@@ -77,6 +77,22 @@ function AgentView:new()
       v:push("system", "conversation cleared")
     end
   end
+
+  -- Mark and reload files ANY agent writes, not just the coordinator. The
+  -- run_tool hook below only wraps this turn's own calls, so a spawned worker's
+  -- write produced no mark and no reload -- the fleet's edits were the least
+  -- reviewed. file:write/file:edit fire for every agent; relay them to the live
+  -- view (subscribed once for the class). queue_dirty dedupes by path, so the
+  -- coordinator's own writes -- which the hook also queues -- are not doubled.
+  if bog and bog.events and not AgentView._file_hook then
+    AgentView._file_hook = true
+    local function relay(_, data)
+      local v = core.studio and core.studio.view
+      if v and data and data.path then v:note_file_write(data.path) end
+    end
+    pcall(bog.events.on, "file:write", relay)
+    pcall(bog.events.on, "file:edit", relay)
+  end
   self.pending = nil           -- { name, input, diff, path, decision }
   self.history, self.hpos = {}, 0
   self.docked = false
@@ -420,8 +436,8 @@ function AgentView:submit(text)
             self.live_tool = nil
             core.redraw = true
           end
-          if name == "write" or name == "edit" then
-            self.dirty_path, self.dirty_was = input.path, was
+          if (name == "write" or name == "edit") and input.path then
+            self:queue_dirty(input.path, was)
           end
           return out
         end,
@@ -647,21 +663,56 @@ end
 -- Reload a buffer the agent just wrote, so you are never reading a stale file
 -- while the agent works in it. Runs every frame from tick(), whichever world
 -- the turn is in, because run_tool records the write and this retires it.
-function AgentView:reload_dirty()
-  if not self.dirty_path then return end
-  local path, was = self.dirty_path, self.dirty_was
-  self.dirty_path, self.dirty_was = nil, nil
+-- Record a file the agent just wrote so tick() can reload it. A queue, not a
+-- single slot: the coordinator can land two writes in one scheduler slice, and
+-- a lone slot dropped all but the last. A repeat write to the same path keeps
+-- the earliest `was` (the pre-first-write text) so the marks describe the net
+-- change, and reloads it once.
+function AgentView:queue_dirty(path, was)
+  self.dirty_queue = self.dirty_queue or {}
+  for _, it in ipairs(self.dirty_queue) do
+    if it.path == path then return end
+  end
+  self.dirty_queue[#self.dirty_queue + 1] = { path = path, was = was }
+end
+
+-- A file:write/file:edit event landed (possibly from a sub-agent). The buffer,
+-- if open, still holds the pre-write text -- capture it now as the mark's
+-- pre-image, since tick()'s reload_dirty will replace it shortly.
+function AgentView:note_file_write(path)
+  if not path then return end
+  local abs = system.absolute_path(path) or path
+  local was
   for _, d in ipairs(core.docs) do
-    if d.filename and d.filename:find(path, 1, true) and not d:is_dirty() then
-      pcall(function() d:reload() end)
+    if d.filename and (system.absolute_path(d.filename) or d.filename) == abs then
+      was = table.concat(d.lines)
+      break
     end
   end
-  -- Mark after the reload, never before: reloading replaces the buffer's lines
-  -- outright, and marks laid down first would be describing text that had just
-  -- been thrown away.
-  if was then
-    pcall(marks.from_edit, path, was, bog.util.read_file(path) or "",
-      { path = path, tool = "agent" })
+  self:queue_dirty(path, was)
+end
+
+function AgentView:reload_dirty()
+  local q = self.dirty_queue
+  if not q or #q == 0 then return end
+  self.dirty_queue = {}
+  for _, it in ipairs(q) do
+    local path, was = it.path, it.was
+    -- Match on the absolute path, not a substring: d.filename:find(path) reloaded
+    -- "data.c" when the agent wrote "a.c" (one name contains the other).
+    local abs = system.absolute_path(path) or path
+    for _, d in ipairs(core.docs) do
+      if d.filename and (system.absolute_path(d.filename) or d.filename) == abs
+         and not d:is_dirty() then
+        pcall(function() d:reload() end)
+      end
+    end
+    -- Mark after the reload, never before: reloading replaces the buffer's lines
+    -- outright, and marks laid down first would describe text just thrown away.
+    if was then
+      pcall(marks.from_edit, path, was, bog.util.read_file(path) or "",
+        { path = path, tool = "agent" })
+    end
   end
 end
 
