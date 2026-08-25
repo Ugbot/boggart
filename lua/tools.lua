@@ -1164,6 +1164,63 @@ M.register("on_event", {
   run = tool_on_event,
 })
 
+M.register("loop", {
+  description = "Repeat a task up to `times` iterations, with escape hatches -- so you can make an "
+    .. "agent do something N times without hand-rolling a loop or asking the user to repeat a step. "
+    .. "Each iteration runs on its OWN sub-agent (it does not touch this conversation): by default one "
+    .. "sub-agent carries its memory across iterations (good for iterate-until-done / retry-until-passing); "
+    .. "`fresh=true` gives a clean sub-agent each iteration (good for the same task over N items / N "
+    .. "independent attempts). Stops early when `until` passes, when the sub-agent reports done (no "
+    .. "`until` given), at the first failing iteration (`stop_on_error`, default true), or after "
+    .. "`max_failures`. Returns how many ran, why it stopped, and each iteration's result.",
+  input_schema = {
+    type = "object",
+    properties = {
+      task  = { type = "string", description = "what to do each iteration" },
+      times = { type = "integer", description = "max iterations -- the hard cap (1..50)" },
+      ["until"] = { type = "object",
+        description = "stop early when this passes: {shell:\"cmd\"} (exit 0), {exists:\"path\"}, or {fact:\"name\", is:value}" },
+      fresh = { type = "boolean",
+        description = "true = a clean sub-agent each iteration (no shared memory); default false (one continuing sub-agent)" },
+      stop_on_error = { type = "boolean", description = "stop at the first failing iteration (default true)" },
+      max_failures  = { type = "integer", description = "tolerate up to K failed iterations before bailing (overrides stop_on_error)" },
+      effort = { type = "string", description = "reasoning effort per iteration: low|medium|high" },
+      token_budget = { type = "integer", description = "output-token ceiling per iteration" },
+    },
+    required = { "task", "times" },
+  },
+  run = function(a)
+    if type(a.task) ~= "string" or a.task == "" then return "Tool error: loop requires 'task'" end
+    if not (coroutine.isyieldable and coroutine.isyieldable()) then
+      return "Tool error: loop can only run inside a turn (it drives sub-agent turns on the scheduler)"
+    end
+    local ok, r = pcall(require("loop").run, {
+      task = a.task, times = a.times, fresh = a.fresh and true or false,
+      until_ = a["until"], stop_on_error = a.stop_on_error, max_failures = a.max_failures,
+      effort = a.effort, token_budget = a.token_budget,
+    })
+    if not ok then return "Tool error: " .. tostring(r) end
+
+    local L = {}
+    L[#L + 1] = string.format("Ran %d/%d iteration(s). %s%s",
+      r.iterations, r.times,
+      r.met and ("Stopped early: " .. tostring(r.detail or "condition met") .. ".")
+        or (r.detail and (r.detail .. ".") or "Completed the run."),
+      r.failures > 0 and (" " .. r.failures .. " failed.") or "")
+    -- Each iteration's result, head-clamped so a long run stays legible.
+    local budget = 2400
+    for i = 1, r.iterations do
+      local s = r.summaries[i]; if not s then break end
+      local head = tostring(s.text or ""):gsub("%s+$", "")
+      local cap = math.max(120, math.floor(budget / math.max(1, r.iterations - i + 1)))
+      if #head > cap then head = head:sub(1, cap) .. " …[elided]" end
+      budget = math.max(0, budget - #head)
+      L[#L + 1] = string.format("\n[%d] %s %s", i, s.ok and "ok" or "ERROR", head)
+    end
+    return table.concat(L, "\n")
+  end,
+})
+
 M.register("reload", {
   description = "Hot-reload the harness Lua after you have edited files under ~/.boggart/lua/. "
     .. "On a syntax error the previous code is kept and the error is returned.",

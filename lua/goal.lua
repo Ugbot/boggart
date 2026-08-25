@@ -85,6 +85,8 @@ local function compile(done)
 
   return function() return false, "unrecognised done-check" end
 end
+-- Exposed so other supervisors (loop.lua) reuse the same escape-hatch checks.
+M.compile = compile
 
 -- ---- the prompts fed to each turn ------------------------------------------
 -- Model-judged goals get the sentinel instruction; checked goals do not (the

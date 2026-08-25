@@ -675,7 +675,7 @@ endif()
 # rule itself under test -- it still resolves %LOCALAPPDATA%, that just now
 # points somewhere disposable.
 enable_testing()
-foreach(suite test integration swarm mcp ltui sysfs bus jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front)
+foreach(suite test integration swarm mcp ltui sysfs bus jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home}
