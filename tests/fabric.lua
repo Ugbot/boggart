@@ -124,6 +124,37 @@ do
   eq(bus.pull("binq"), blob, "queues preserve bytes including embedded NUL")
 end
 
+-- ---- cross-thread publish: a worker thread -> the main state ---------------
+-- The MPMC/IPC heart of the fabric: a publish off the main thread cannot touch
+-- the main state, so it enqueues bytes and the main loop's drain dispatches them
+-- here. Proves topic+payload cross the thread boundary intact.
+do
+  local uv = require("uv")
+  bus.attach_main()
+  local got = {}
+  local id = bus.subscribe("wk:*", function(topic, payload) got[#got + 1] = { topic, payload } end)
+  local w = worker.spawn([[
+    bus.publish("wk:hello", "from-worker")
+    bus.publish("wk:arg", worker.arg)
+    return 1
+  ]], { arg = "seven" })
+  local okc = worker.join(w)
+  ok(okc, "cross-thread: the worker ran and joined")
+  -- The drain async is unref'd (it must not hold the loop open), so uv_run only
+  -- services it while the loop is otherwise alive -- which in production is the
+  -- running scheduler. Here, a ref'd keepalive timer stands in for that.
+  local ka = uv.new_timer(); ka:start(1000, 1000, function() end)
+  local t = os.time()
+  while #got < 2 and os.time() - t < 5 do uv.run("nowait") end
+  ka:close()
+  eq(#got, 2, "cross-thread: both worker publishes reached the main subscriber")
+  ok(got[1] and got[1][1] == "wk:hello" and got[1][2] == "from-worker",
+     "cross-thread: topic + payload carried across the thread boundary")
+  ok(got[2] and got[2][1] == "wk:arg" and got[2][2] == "seven",
+     "cross-thread: second publish delivered in order (FIFO)")
+  bus.unsubscribe(id)
+end
+
 -- ---- stats -----------------------------------------------------------------
 do
   local s = bus.stats()

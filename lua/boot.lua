@@ -1129,6 +1129,9 @@ bog.thread.max_agents = tonumber(os.getenv("BOGGART_MAX_AGENTS"))
 -- fleet of more coroutines. There is one way to stand the runtime up, not three.
 function bog.activate_agents()
   bog.sched = bog.sched or require("sched")
+  -- The fabric's cross-thread drain: once the main loop exists, a worker thread
+  -- can bus.publish and it dispatches here on the main state. Idempotent.
+  if rawget(_G, "bus") and bus.attach_main then pcall(bus.attach_main) end
   bog.tools_swarm = bog.tools_swarm or require("tools_swarm")
   if swarm and swarm.attach then pcall(swarm.attach, bog.db) end
   pcall(bog.tools_swarm.register)

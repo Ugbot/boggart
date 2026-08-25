@@ -561,6 +561,13 @@ static void wk_open_self(lua_State *L, worker *h) {
   deny_global(L, "mcp");
   deny_field(L, "auth", "set");     /* cache + file writes; reads are fine */
   deny_field(L, "auth", "clear");
+  /* bus.publish is safe from a worker (bytes are queued and dispatched on the
+   * main state); subscribe/unsubscribe/attach_main are NOT -- they would store
+   * callbacks in this state's registry or repoint dispatch at it. Push/pull are
+   * thread-safe byte queues and stay available. */
+  deny_field(L, "bus", "subscribe");
+  deny_field(L, "bus", "unsubscribe");
+  deny_field(L, "bus", "attach_main");
 
   /* hard part 4: this state's bytes, not the global counter. */
   lua_getglobal(L, "sys");

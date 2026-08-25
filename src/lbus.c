@@ -28,6 +28,12 @@
 #include <stdint.h>
 #include <uv.h>
 
+/* luv.c: the uv loop a state's luv context is bound to, and the luv opener --
+ * so attach_main can guarantee the main loop exists before it installs the
+ * drain async. Same extern-it-here idiom the other .c files use. */
+extern uv_loop_t *luv_loop(lua_State *L);
+int luaopen_luv(lua_State *L);
+
 /* ---- subscribers ---------------------------------------------------------- */
 typedef struct {
   int   id;       /* handle returned to Lua for unsubscribe */
@@ -40,14 +46,26 @@ typedef struct {
 typedef struct QItem { struct QItem *next; size_t len; char data[]; } QItem;
 typedef struct { char *name; QItem *head, *tail; size_t depth; } Queue;
 
+/* ---- cross-thread pending publications ------------------------------------ */
+/* A publish from a non-main thread cannot dispatch (subscriber callbacks live in
+ * the main state's registry); it enqueues bytes here and the main state drains
+ * and dispatches them via `drain`. */
+typedef struct PItem { struct PItem *next; char *topic; char *data; size_t len; } PItem;
+#define PEND_MAX 4096
+
 static struct {
   uv_mutex_t mu;
   int        inited;
-  lua_State *L;          /* the state whose registry holds the callback refs
-                           * (the main state -- Phase 1 is single-state) */
+  lua_State *L;          /* the MAIN state; its registry holds the callback refs
+                           * and all dispatch happens on its thread */
   Sub   *subs;  int nsub, capsub, next_id, disp_depth;
   Queue *qs;    int nq,   capq;
   uint64_t published, delivered, dropped;
+
+  /* cross-thread delivery */
+  uv_thread_t main_thread; int main_thread_set;  /* captured at init = main */
+  uv_async_t  drain;       int attached;          /* installed by attach_main */
+  PItem *pend_head, *pend_tail; int pend_n;
 } B;
 
 /* Classic iterative wildcard match: `*` matches any run (including empty). */
@@ -67,6 +85,10 @@ static void ensure_init(void) {
   if (B.inited) return;
   uv_mutex_init(&B.mu);
   B.next_id = 1;
+  /* First open is the main state on the main thread (it boots before any worker
+   * exists); this is idempotent, so a worker's later open never overwrites it. */
+  B.main_thread = uv_thread_self();
+  B.main_thread_set = 1;
   B.inited = 1;
 }
 
@@ -141,16 +163,13 @@ static int l_has(lua_State *L) {
   return 1;
 }
 
-/* bus.publish(topic, data?) -> delivered_count */
-static int l_publish(lua_State *L) {
-  const char *topic = luaL_checkstring(L, 1);
-  size_t dlen = 0;
-  const char *data = luaL_optlstring(L, 2, "", &dlen);
-  ensure_init();
-
+/* Dispatch one (topic,data) to matching subscribers on the MAIN state (B.L).
+ * MUST run on the main thread. Snapshots the matching refs under the lock, then
+ * pcalls WITHOUT it (so a subscriber may publish/unsubscribe re-entrantly).
+ * Returns the number delivered. */
+static int deliver(const char *topic, const char *data, size_t dlen) {
+  lua_State *L = B.L;
   uv_mutex_lock(&B.mu);
-  B.published++;
-  /* Snapshot the matching callback refs, then dispatch WITHOUT the lock. */
   int *refs = NULL, k = 0, cap = 0;
   for (int i = 0; i < B.nsub; i++) {
     if (B.subs[i].dead || !glob_match(B.subs[i].pat, topic)) continue;
@@ -160,25 +179,80 @@ static int l_publish(lua_State *L) {
   B.disp_depth++;
   uv_mutex_unlock(&B.mu);
 
-  for (int j = 0; j < k; j++) {
+  for (int j = 0; j < k && L; j++) {
     lua_rawgeti(L, LUA_REGISTRYINDEX, refs[j]);
     if (lua_type(L, -1) != LUA_TFUNCTION) { lua_pop(L, 1); continue; }
     lua_pushstring(L, topic);
     lua_pushlstring(L, data, dlen);
-    if (lua_pcall(L, 2, 0, 0) != LUA_OK) {
-      /* A throwing subscriber must not take the publisher down. */
-      lua_pop(L, 1);
-    }
+    if (lua_pcall(L, 2, 0, 0) != LUA_OK) lua_pop(L, 1); /* a thrower can't kill us */
   }
   free(refs);
 
   uv_mutex_lock(&B.mu);
   B.delivered += (uint64_t)k;
   B.disp_depth--;
-  compact_locked(L);
+  compact_locked(B.L);
+  uv_mutex_unlock(&B.mu);
+  return k;
+}
+
+/* The main-loop drain: fires when a worker publish is queued. Splices the whole
+ * pending list out under the lock, then dispatches it lock-free on the main
+ * state. */
+static void bus_drain_cb(uv_async_t *a) {
+  (void)a;
+  uv_mutex_lock(&B.mu);
+  PItem *list = B.pend_head;
+  B.pend_head = B.pend_tail = NULL; B.pend_n = 0;
+  uv_mutex_unlock(&B.mu);
+  while (list) {
+    PItem *p = list; list = p->next;
+    deliver(p->topic, p->data, p->len);
+    free(p->topic); free(p->data); free(p);
+  }
+}
+
+/* bus.publish(topic, data?) -> delivered_count (0 for a cross-thread publish,
+ * which is dispatched later on the main thread). */
+static int l_publish(lua_State *L) {
+  const char *topic = luaL_checkstring(L, 1);
+  size_t dlen = 0;
+  const char *data = luaL_optlstring(L, 2, "", &dlen);
+  ensure_init();
+
+  uv_thread_t self = uv_thread_self();
+  int cross = B.main_thread_set && !uv_thread_equal(&B.main_thread, &self);
+
+  uv_mutex_lock(&B.mu);
+  B.published++;
   uv_mutex_unlock(&B.mu);
 
-  lua_pushinteger(L, k);
+  if (cross) {
+    /* Off the main thread: never touch B.L. Copy the bytes, enqueue, wake main.
+     * Drop-on-full (tallied) rather than block a worker on the main thread. */
+    PItem *p = (PItem *)malloc(sizeof *p);
+    if (p) {
+      p->next = NULL; p->len = dlen;
+      p->topic = strdup(topic);
+      p->data = (char *)malloc(dlen ? dlen : 1);
+      if (p->topic && p->data) {
+        memcpy(p->data, data, dlen);
+        uv_mutex_lock(&B.mu);
+        int attached = B.attached;
+        if (B.pend_n >= PEND_MAX) { B.dropped++; uv_mutex_unlock(&B.mu); free(p->topic); free(p->data); free(p); }
+        else {
+          if (B.pend_tail) B.pend_tail->next = p; else B.pend_head = p;
+          B.pend_tail = p; B.pend_n++;
+          uv_mutex_unlock(&B.mu);
+        }
+        if (attached) uv_async_send(&B.drain);
+      } else { free(p->topic); free(p->data); free(p); }
+    }
+    lua_pushinteger(L, 0);
+    return 1;
+  }
+
+  lua_pushinteger(L, deliver(topic, data, dlen));
   return 1;
 }
 
@@ -251,7 +325,29 @@ static int l_stats(lua_State *L) {
   return 1;
 }
 
+/* bus.attach_main() -- called once on the main thread (from activate_agents),
+ * after its uv loop exists: records the main state for dispatch, installs the
+ * drain async, and flushes anything a worker queued before attach. Idempotent. */
+static int l_attach_main(lua_State *L) {
+  ensure_init();
+  luaL_requiref(L, "uv", luaopen_luv, 0); lua_pop(L, 1); /* guarantee the loop */
+  uv_loop_t *loop = luv_loop(L);
+  uv_mutex_lock(&B.mu);
+  B.L = L;
+  int first = !B.attached;
+  if (first) {
+    uv_async_init(loop, &B.drain, bus_drain_cb);
+    uv_unref((uv_handle_t *)&B.drain); /* the drain must not hold the loop open */
+    B.attached = 1;
+  }
+  uv_mutex_unlock(&B.mu);
+  bus_drain_cb(&B.drain); /* flush any pre-attach backlog */
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
 static const luaL_Reg bus_lib[] = {
+  { "attach_main", l_attach_main },
   { "publish",     l_publish },
   { "subscribe",   l_subscribe },
   { "unsubscribe", l_unsubscribe },
