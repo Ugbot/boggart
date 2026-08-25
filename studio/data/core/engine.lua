@@ -34,6 +34,12 @@ function M.install(studio)
       bog.agents      = bog.agents      or require("agents")
       bog.thread      = bog.thread      or require("thread")
       bog.tools_swarm = bog.tools_swarm or require("tools_swarm")
+      -- Same fabric bring-up as lua/boot.lua's activate_agents: attach the
+      -- cross-thread bus drain (so a worker can publish here) and install the
+      -- supervisor control plane (so control is observable on the bus).
+      bog.supervisor  = bog.supervisor  or require("supervisor")
+      if rawget(_G, "bus") and bus.attach_main then pcall(bus.attach_main) end
+      pcall(bog.supervisor.install)
       -- Offer the tools always. Safe now in a way it was not before: the chat
       -- turn is itself a scheduled actor, so an agent it spawns is one the studio
       -- is actively resuming -- not an actor nobody is scheduling, which was the
