@@ -69,10 +69,11 @@ end
 -- Items and results cross the thread boundary as JSON, so both must be
 -- serializable (strings/numbers/plain tables; no functions or userdata).
 --
--- NOTE: this BLOCKS the calling thread until every item is done (or opts.timeout
--- seconds elapse). Call it off the scheduler, or somewhere a brief block is
--- fine; a scheduler-aware (yielding) form is the next step for driving it from
--- inside a turn.
+-- Driven from inside a turn (a scheduler coroutine) it PARKS on a latch and lets
+-- a uv timer collect the results, so it never stalls the scheduler. Called off
+-- the scheduler (a plain script, a REPL one-shot) it blocks the calling thread
+-- until every item is done, polling with a 1ms sleep. Either way it returns only
+-- when the whole batch is in (or opts.timeout seconds elapse).
 function M.map(fn_source, items, opts)
   opts = opts or {}
   assert(type(fn_source) == "string", "workers.map: fn_source must be a Lua source string")
@@ -108,14 +109,35 @@ end
 
   local results, errors, got = {}, {}, 0
   local deadline = os.time() + (opts.timeout or 30)
-  while got < n do
+  local function collect_one()
     local m = bus.pull(outq)
-    if m then
-      local r = json.decode(m)
-      if r.ok then results[r.i] = r.r else errors[r.i] = r.r end
-      got = got + 1
-    elseif os.time() > deadline then break
-    else uv.sleep(1) end
+    if not m then return false end
+    local r = json.decode(m)
+    if r.ok then results[r.i] = r.r else errors[r.i] = r.r end
+    got = got + 1
+    return true
+  end
+
+  if coroutine.isyieldable() and bog.sched then
+    -- Scheduler-aware: a uv timer drains the outbound queue while this actor
+    -- parks on a latch, so a map from inside a turn yields the scheduler instead
+    -- of blocking it. The timer wakes us (sets .decision) once the batch is in.
+    local latch = { decision = nil }
+    local timer = uv.new_timer()
+    timer:start(1, 2, function()
+      while collect_one() do end
+      if got >= n or os.time() > deadline then
+        timer:stop(); timer:close(); latch.decision = true
+      end
+    end)
+    while not latch.decision do coroutine.yield("block", latch) end
+  else
+    while got < n do
+      if not collect_one() then
+        if os.time() > deadline then break end
+        uv.sleep(1)
+      end
+    end
   end
 
   for _, h in ipairs(pool) do raw.join(h) end

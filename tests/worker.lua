@@ -314,6 +314,28 @@ do
   ok(r2[2] == nil, "map: the failed item has no result")
 end
 
+-- map driven from inside a scheduler coroutine parks (does not block the loop).
+do
+  local uv = require("uv")
+  bog.sched = bog.sched or require("sched")
+  bog.sched.actors, bog.sched.by_id = {}, {}
+  local W = require("workers")
+  local out
+  local co = coroutine.create(function()
+    out = W.map("return function(x) return x + 100 end", { 1, 2, 3, 4 }, { slots = 2 })
+  end)
+  bog.sched.add(-9931, co)
+  local t = os.time()
+  while bog.sched.count and bog.sched.count() > 0 do
+    bog.sched.resume_ready()
+    if bog.sched.count() == 0 then break end
+    if os.time() - t > 15 then break end
+    uv.run("once")
+  end
+  ok(out and out[1] == 101 and out[2] == 102 and out[3] == 103 and out[4] == 104,
+     "map (scheduler-aware): results collected via yield+timer, loop not blocked")
+end
+
 -- Worker states use their own allocator counters, so a leak of worker states
 -- or rings would show in RSS, not here; membytes guards the main state and
 -- the handle bookkeeping. The churn itself is the assertion that 100 full
