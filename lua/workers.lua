@@ -182,7 +182,10 @@ return function(prompt)
       bog.api.run_on(%s, prompt, function(t) out[#out + 1] = t end, %s)
     end)
   end)
-  return ok and table.concat(out) or ("ERROR: " .. tostring(err))
+  -- Re-raise a failed turn so map() routes it to errors[i]; a success returns
+  -- the text into results[i]. (map wraps the call in its own pcall.)
+  if not ok then error(tostring(err), 0) end
+  return table.concat(out)
 end
 ]], sess_lit, run_opts)
   return M.map(src, prompts, opts)
