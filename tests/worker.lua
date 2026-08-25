@@ -290,6 +290,30 @@ do
   bus.unsubscribe(id)
 end
 
+-- ---- workers.map: a real parallel-for over the OS-thread pool (Phase 3) -----
+-- Genuine parallelism (N threads), built on the fabric's work queues: items in,
+-- results out, no loop to pump. Deterministic, pure compute, no model.
+do
+  local W = require("workers")
+  local results, errors, done = W.map(
+    "return function(x) return x * x end",
+    { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 }, { slots = 3 })   -- pool smaller than items -> reuse
+  ok(done == 10, "map: every item was processed (got " .. tostring(done) .. ")")
+  local allok = true
+  for i = 1, 10 do if results[i] ~= i * i then allok = false end end
+  ok(allok, "map: each item's result lands at its own index (squares)")
+  ok(next(errors) == nil, "map: a clean run reports no errors")
+
+  -- string transform + per-item error isolation
+  local r2, e2, d2 = W.map(
+    [[return function(s) if s == "bad" then error("nope") end return s:upper() end]],
+    { "a", "bad", "c" }, { slots = 2 })
+  ok(d2 == 3, "map: all three string items accounted for")
+  ok(r2[1] == "A" and r2[3] == "C", "map: string results round-trip as JSON")
+  ok(e2[2] ~= nil and tostring(e2[2]):find("nope", 1, true), "map: a failing item's error is captured, the others still succeed")
+  ok(r2[2] == nil, "map: the failed item has no result")
+end
+
 -- Worker states use their own allocator counters, so a leak of worker states
 -- or rings would show in RSS, not here; membytes guards the main state and
 -- the handle bookkeeping. The churn itself is the assertion that 100 full
