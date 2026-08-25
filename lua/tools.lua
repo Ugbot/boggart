@@ -1165,52 +1165,70 @@ M.register("on_event", {
 })
 
 M.register("loop", {
-  description = "Repeat a task up to `times` iterations, with escape hatches -- so you can make an "
-    .. "agent do something N times without hand-rolling a loop or asking the user to repeat a step. "
-    .. "Each iteration runs on its OWN sub-agent (it does not touch this conversation): by default one "
-    .. "sub-agent carries its memory across iterations (good for iterate-until-done / retry-until-passing); "
-    .. "`fresh=true` gives a clean sub-agent each iteration (good for the same task over N items / N "
-    .. "independent attempts). Stops early when `until` passes, when the sub-agent reports done (no "
-    .. "`until` given), at the first failing iteration (`stop_on_error`, default true), or after "
-    .. "`max_failures`. Returns how many ran, why it stopped, and each iteration's result.",
+  description = "Kick off the next X things in a row -- so you can repeat work over a COUNT (times:N), a "
+    .. "LIST (over:[...]), or a drained SOURCE (a tool that yields the next item until empty) without "
+    .. "hand-rolling a loop. Each item's effect is either an agent sub-turn (`task`, can invoke any tool "
+    .. "-- {item}/{i}/{prev} interpolate) or a direct `tool` call (`tool`+`args`, no model round). "
+    .. "Sequential by default (each finishes before the next -- a `task` loop carries memory across items "
+    .. "unless `fresh`); `parallel:true` fans items out across the local server's slots (independent items "
+    .. "only). Escape hatches: `until` (stop the whole loop early), `stop_on_error`/`max_failures`, and a "
+    .. "per-item `verify`+`max_retries` (redo a bad item). Returns the accumulated results.",
   input_schema = {
     type = "object",
     properties = {
-      task  = { type = "string", description = "what to do each iteration" },
-      times = { type = "integer", description = "max iterations -- the hard cap (1..50)" },
-      ["until"] = { type = "object",
-        description = "stop early when this passes: {shell:\"cmd\"} (exit 0), {exists:\"path\"}, or {fact:\"name\", is:value}" },
-      fresh = { type = "boolean",
-        description = "true = a clean sub-agent each iteration (no shared memory); default false (one continuing sub-agent)" },
-      stop_on_error = { type = "boolean", description = "stop at the first failing iteration (default true)" },
-      max_failures  = { type = "integer", description = "tolerate up to K failed iterations before bailing (overrides stop_on_error)" },
-      effort = { type = "string", description = "reasoning effort per iteration: low|medium|high" },
-      token_budget = { type = "integer", description = "output-token ceiling per iteration" },
+      -- generator (one of)
+      times  = { type = "integer", description = "run this many times; each item is the index i (1..50)" },
+      over   = { type = "array", description = "iterate these items; each iteration gets one as {item}" },
+      source = { type = "string", description = "a tool name that yields the NEXT item each call; empty result = exhausted" },
+      max    = { type = "integer", description = "hard cap on iterations (default 20 for source, ceiling 50)" },
+      -- effect (one of task/tool)
+      task = { type = "string", description = "an agent sub-turn per item; {item}/{i}/{prev} interpolate" },
+      tool = { type = "string", description = "call this tool directly per item (deterministic, no model round)" },
+      args = { type = "object", description = "args for `tool`; string values interpolate {item}/{i}" },
+      -- mode
+      parallel = { type = "boolean", description = "fan items out concurrently across slots (independent items only)" },
+      fresh = { type = "boolean", description = "task loop: clean sub-agent each item (no shared memory); default false" },
+      -- escape hatches
+      ["until"] = { type = "object", description = "stop the whole loop early when this passes: {shell:\"cmd\"}/{exists:\"path\"}/{fact:\"name\",is:value}" },
+      stop_on_error = { type = "boolean", description = "stop at the first failing item (default true)" },
+      max_failures  = { type = "integer", description = "tolerate up to K failures before bailing (overrides stop_on_error)" },
+      verify = { type = "object", description = "per-item check ({shell}/{exists}/{fact}, {item}/{i} interpolate); a bad item is redone up to max_retries" },
+      max_retries = { type = "integer", description = "how many times to redo a bad item (default 1 when verify is set)" },
+      effort = { type = "string", description = "reasoning effort per item: low|medium|high" },
+      token_budget = { type = "integer", description = "output-token ceiling per item" },
     },
-    required = { "task", "times" },
   },
   run = function(a)
-    if type(a.task) ~= "string" or a.task == "" then return "Tool error: loop requires 'task'" end
+    if not (a.task or a.tool) then return "Tool error: loop needs a `task` (agent turn) or a `tool` (direct call)" end
     if not (coroutine.isyieldable and coroutine.isyieldable()) then
-      return "Tool error: loop can only run inside a turn (it drives sub-agent turns on the scheduler)"
+      return "Tool error: loop can only run inside a turn (it drives work on the scheduler)"
     end
+    local source_fn = a.source and function()
+      local ok, r = pcall(bog.tools.run, a.source, {})
+      if not ok or type(r) ~= "string" then return nil end
+      r = r:gsub("%s+$", "")
+      if r == "" or r:find("^Tool error:") then return nil end
+      return r
+    end or nil
     local ok, r = pcall(require("loop").run, {
-      task = a.task, times = a.times, fresh = a.fresh and true or false,
+      times = a.times, over = a.over, source = source_fn, max = a.max,
+      task = a.task, tool = a.tool, args = a.args,
+      parallel = a.parallel and true or false, fresh = a.fresh and true or false,
       until_ = a["until"], stop_on_error = a.stop_on_error, max_failures = a.max_failures,
+      verify = a.verify, max_retries = a.max_retries,
       effort = a.effort, token_budget = a.token_budget,
     })
     if not ok then return "Tool error: " .. tostring(r) end
 
     local L = {}
-    L[#L + 1] = string.format("Ran %d/%d iteration(s). %s%s",
-      r.iterations, r.times,
+    L[#L + 1] = string.format("Ran %d item(s)%s. %s%s",
+      r.iterations, a.parallel and " (parallel)" or "",
       r.met and ("Stopped early: " .. tostring(r.detail or "condition met") .. ".")
-        or (r.detail and (r.detail .. ".") or "Completed the run."),
+        or (r.detail and (r.detail .. ".") or "Completed."),
       r.failures > 0 and (" " .. r.failures .. " failed.") or "")
-    -- Each iteration's result, head-clamped so a long run stays legible.
     local budget = 2400
     for i = 1, r.iterations do
-      local s = r.summaries[i]; if not s then break end
+      local s = r.results[i]; if not s then break end
       local head = tostring(s.text or ""):gsub("%s+$", "")
       local cap = math.max(120, math.floor(budget / math.max(1, r.iterations - i + 1)))
       if #head > cap then head = head:sub(1, cap) .. " …[elided]" end

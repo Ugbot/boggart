@@ -1,79 +1,104 @@
--- tests/loop.lua -- the loop supervisor (the `loop` tool's engine), exercised
--- with an injectable iterate() so every escape hatch is testable with no model
--- and no tty. Run with `boggart --eval tests/loop.lua`.
+-- tests/loop.lua -- the loop core: a functional fold over a generator, exercised
+-- with an injectable iterate() so every generator, effect, escape hatch, the
+-- verify+retry, a custom reduce, and the parallel worker pool are testable with
+-- no model. Run with `boggart --eval tests/loop.lua`.
 local L = require("loop")
 local G = require("goal")
 
 local fails = 0
 local function check(ok, msg) if not ok then fails = fails + 1; io.write("  FAIL: ", msg, "\n") end end
 
--- iterate() stubs. Signature: (prompt, sess) -> ok:bool, text:string
-local function ok_iter(sessions)
-  return function(_, sess) if sessions then sessions[#sessions + 1] = sess end; return true, "did it" end
+-- iterate stub: (item, idx, sess) -> ok, result
+local function ok_iter(seen)
+  return function(item, idx, sess)
+    if seen then seen[#seen + 1] = { item = item, idx = idx, sess = sess } end
+    return true, "r" .. tostring(item)
+  end
 end
 local function fail_iter() return function() return false, "boom" end end
-local function done_on(n) local c = 0
-  return function() c = c + 1; return true, c >= n and ("done " .. G.SENTINEL) or "working" end
-end
 
--- ---- times cap: no `until`, never done -> runs exactly N -------------------
-do
-  local r = L.run{ task = "x", times = 4, iterate = ok_iter() }
-  check(r.iterations == 4 and r.met == false, "times cap: runs exactly N (got " .. r.iterations .. ")")
-  check(r.times == 4, "reports the cap")
-end
+-- ---- generators -----------------------------------------------------------
+do local r = L.run{ times = 4, task = "t", iterate = ok_iter() }
+   check(r.iterations == 4 and r.met == false, "count: runs N (got " .. r.iterations .. ")") end
 
--- ---- until already satisfied -> zero iterations ---------------------------
-do
-  local r = L.run{ task = "x", times = 5, until_ = function() return true, "pre" end, iterate = ok_iter() }
-  check(r.iterations == 0 and r.met == true, "until pre-satisfied: 0 iterations, met")
-end
+do local seen = {}; local r = L.run{ over = { "a", "b", "c" }, task = "t", iterate = ok_iter(seen) }
+   check(r.iterations == 3, "list: iterates the items")
+   check(seen[1].item == "a" and seen[3].item == "c", "list: each item is passed to the effect")
+   check(#r.acc == 3 and r.acc[1] == "ra", "acc: default reduce collects results") end
 
--- ---- until triggers after two iterations ----------------------------------
-do
-  local n = 0
-  local r = L.run{ task = "x", times = 9, iterate = ok_iter(),
-                   until_ = function() n = n + 1; return n > 2, "cond" end }
-  -- checked once before, then after each iteration: false, run, false, run, true
-  check(r.iterations == 2 and r.met == true, "until mid-loop: stops when it passes (got " .. r.iterations .. ")")
-end
+do local q = { "x", "y" }; local i = 0
+   local r = L.run{ source = function() i = i + 1; return q[i] end, task = "t", iterate = ok_iter() }
+   check(r.iterations == 2 and r.detail == "source exhausted", "source: drains until exhausted (got " .. r.iterations .. ")") end
 
--- ---- stop_on_error (default): stops at the first failure ------------------
-do
-  local r = L.run{ task = "x", times = 5, iterate = fail_iter() }
-  check(r.iterations == 1 and r.failures == 1 and r.met == false, "stop_on_error default: first failure ends it")
-end
+do local i = 0
+   local r = L.run{ source = function() i = i + 1; return "n" .. i end, max = 3, task = "t", iterate = ok_iter() }
+   check(r.iterations == 3, "source: bounded by max (got " .. r.iterations .. ")") end
 
--- ---- max_failures = K: tolerate K, bail on the (K+1)th --------------------
-do
-  local r = L.run{ task = "x", times = 9, iterate = fail_iter(), max_failures = 2 }
-  check(r.iterations == 3 and r.failures == 3, "max_failures=2: bails after the 3rd failure (got " .. r.iterations .. ")")
-end
+-- ---- until ----------------------------------------------------------------
+do local r = L.run{ times = 5, task = "t", iterate = ok_iter(), until_ = function() return true, "pre" end }
+   check(r.iterations == 0 and r.met == true, "until pre-satisfied: 0 iterations") end
 
--- ---- stop_on_error = false: run all N despite failures --------------------
-do
-  local r = L.run{ task = "x", times = 3, iterate = fail_iter(), stop_on_error = false }
-  check(r.iterations == 3 and r.failures == 3, "stop_on_error=false: runs all N despite failures")
-end
+do local n = 0
+   local r = L.run{ times = 9, task = "t", iterate = ok_iter(), until_ = function() n = n + 1; return n > 2, "c" end }
+   check(r.iterations == 2 and r.met == true, "until mid-loop: stops when it passes (got " .. r.iterations .. ")") end
 
--- ---- model-judged: the agent ends the loop with a done sentinel -----------
-do
-  local r = L.run{ task = "x", times = 6, iterate = done_on(3) }
-  check(r.iterations == 3 and r.met == true, "sentinel: stops when the agent reports done (got " .. r.iterations .. ")")
-end
+-- ---- error hatches --------------------------------------------------------
+do local r = L.run{ times = 5, task = "t", iterate = fail_iter() }
+   check(r.iterations == 1 and r.failures == 1, "stop_on_error default: first failure ends it") end
+do local r = L.run{ times = 9, task = "t", iterate = fail_iter(), max_failures = 2 }
+   check(r.iterations == 3 and r.failures == 3, "max_failures=2: bails on the 3rd failure (got " .. r.iterations .. ")") end
+do local r = L.run{ times = 3, task = "t", iterate = fail_iter(), stop_on_error = false }
+   check(r.iterations == 3 and r.failures == 3, "stop_on_error=false: runs all despite failures") end
+
+-- ---- model-judged sentinel (task + no until) ------------------------------
+do local c = 0
+   local it = function() c = c + 1; return true, c >= 3 and ("done " .. G.SENTINEL) or "work" end
+   local r = L.run{ times = 6, task = "t", iterate = it }
+   check(r.iterations == 3 and r.met == true, "sentinel: stops when the agent reports done (got " .. r.iterations .. ")") end
 
 -- ---- fresh vs continuing session ------------------------------------------
-do
-  local s1 = {}; L.run{ task = "x", times = 3, fresh = true,  iterate = ok_iter(s1) }
-  check(#s1 == 3 and s1[1] ~= s1[2] and s1[2] ~= s1[3], "fresh=true: a distinct sub-session each iteration")
-  local s2 = {}; L.run{ task = "x", times = 3, fresh = false, iterate = ok_iter(s2) }
-  check(#s2 == 3 and s2[1] == s2[2] and s2[2] == s2[3], "fresh=false: one shared sub-session across iterations")
-end
+do local s1 = {}; L.run{ times = 3, fresh = true,  task = "t", iterate = ok_iter(s1) }
+   check(s1[1].sess ~= s1[2].sess and s1[2].sess ~= s1[3].sess, "fresh=true: a distinct sub-session each item")
+   local s2 = {}; L.run{ times = 3, fresh = false, task = "t", iterate = ok_iter(s2) }
+   check(s2[1].sess == s2[2].sess and s2[2].sess == s2[3].sess, "fresh=false: one shared sub-session") end
 
--- ---- the hard ceiling no `times` can exceed -------------------------------
+-- ---- verify + retry -------------------------------------------------------
+do local tries = 0; local it = function() tries = tries + 1; return true, "r" end
+   local vc = 0
+   local r = L.run{ times = 1, task = "t", iterate = it, verify = function() vc = vc + 1; return vc >= 3 end, max_retries = 3 }
+   check(r.iterations == 1 and r.results[1].ok == true and tries == 3,
+     "verify+retry: redoes a bad item until it passes (tries=" .. tries .. ")") end
+do local it = function() return true, "r" end
+   local r = L.run{ times = 2, task = "t", iterate = it, verify = function() return false end, max_retries = 1, stop_on_error = false }
+   check(r.iterations == 2 and r.failures == 2, "verify never passes: the item counts as a failure") end
+
+-- ---- custom reduce + init -------------------------------------------------
+do local it = function(item) return true, item end   -- item is the index for a count loop
+   local r = L.run{ times = 4, task = "t", iterate = it, init = 0,
+                    reduce = function(acc, result) return acc + result end }
+   check(r.acc == 10, "custom reduce: folds 1+2+3+4 = 10 (got " .. tostring(r.acc) .. ")") end
+
+-- ---- the hard ceiling -----------------------------------------------------
+do local r = L.run{ source = function() return "x" end, max = 99999, task = "t", iterate = ok_iter() }
+   check(r.iterations == L.HARD_MAX, "HARD_MAX ceiling caps an open source (got " .. r.iterations .. ")") end
+
+-- ---- parallel worker pool (driven on the scheduler) -----------------------
 do
-  local r = L.run{ task = "x", times = 99999, iterate = fail_iter(), stop_on_error = false }
-  check(r.iterations == L.HARD_MAX, "times is capped at HARD_MAX (got " .. r.iterations .. ")")
+  local uv = require "uv"; bog.sched = bog.sched or require "sched"
+  bog.sched.actors, bog.sched.by_id = {}, {}
+  local r
+  local co = coroutine.create(function()
+    r = L.run{ over = { 1, 2, 3, 4, 5 }, task = "t", parallel = true, slots = 2,
+               iterate = function(item) return true, item end }
+  end)
+  bog.sched.add(-4242, co)
+  local t = os.time()
+  while bog.sched.count and bog.sched.count() > 0 do
+    bog.sched.resume_ready(); if bog.sched.count() == 0 then break end
+    if os.time() - t > 10 then break end
+    uv.run("once")
+  end
+  check(r and r.iterations == 5 and #r.acc == 5, "parallel: all items processed across the pool (got " .. tostring(r and r.iterations) .. ")")
 end
 
 io.write(fails == 0 and "loop: all passed\n" or ("loop: " .. fails .. " FAILED\n"))
