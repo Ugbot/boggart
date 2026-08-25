@@ -162,11 +162,19 @@ These are load-bearing; the pool must respect them:
        workers.
      - **Pool observability** — `lworker` emits `worker:spawned/killed/exited`
        via C `bus_emit`; `BOGGART_TRACE='worker:*'` shows the pool live.
-   - **Remaining:** `steer`/`inspect` already exist as `worker.post`/`recv` +
-     `list`/`status`; **pause/resume** (same hook + a resume sem) is the one
-     control verb still to add. Then port `venus_actor`'s lifecycle/tick + `jobs`
-     to dress `lworker` as a first-class actor, and route control over the bus
-     (a `supervisor.*` that drives `worker.*`).
+     - **Supervisor control plane** (`lua/supervisor.lua`) — control is now ON
+       the bus, using both primitives: the work queue `supervisor.cmd` is the
+       ordered MPMC command channel (any thread enqueues; only main executes),
+       and pub/sub is the cross-thread wake (`supervisor.wake`) plus the
+       observable `ctl:*` stream. `pause/resume/kill/pause_fleet/kill_all/
+       kill_worker`; installed from `activate_agents` (and the studio's
+       `setup_swarm`). The cTUI and swarm dashboard drive `bog.supervisor.*`
+       (direct-sched fallback) instead of poking `sched` — one observable path.
+   - **Remaining:** the studio's single-agent kill *sites* still call `sched.kill`
+     directly (infra wired; reroute needs UI verification). **worker pause/resume**
+     (same hook + a resume sem; adds a blocked-in-hook state every teardown path
+     must unblock). Then port `venus_actor`'s lifecycle/tick + `jobs` to dress
+     `lworker` as a first-class actor.
 3. **Move one unit onto the pool.** The `loop`'s `parallel:true` workers *or*
    spawned sub-agents — the proof they run off-thread, observable + controllable.
 4. **Agent-free main.** Move the coordinator onto an actor; main becomes pure
