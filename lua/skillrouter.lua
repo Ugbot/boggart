@@ -29,11 +29,14 @@ function M.corpus(opts)
     if s then
       local inv = s.invocation or "model"
       if include_user or inv ~= "user" then
+        -- A function `instructions` is COMPUTED AT ACTIVATION and may have side
+        -- effects (local_gptoss starts a llama.cpp server and switches this
+        -- session onto it). Building a search index must never trigger that, so
+        -- only a plain-string `instructions` is indexed; a function is left out
+        -- and the skill is matched on its name + description + tool names (the
+        -- fields that exist to be searched anyway).
         local instr = s.instructions
-        if type(instr) == "function" then
-          local ok, res = pcall(instr)
-          instr = ok and res or ""
-        end
+        if type(instr) ~= "string" then instr = "" end
         rows[#rows + 1] = {
           name = row.name,
           description = s.description or "",
