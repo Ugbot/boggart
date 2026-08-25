@@ -132,6 +132,18 @@ These are load-bearing; the pool must respect them:
    `src/`; expose `bus.publish/subscribe`; fold `events.lua` / swarm-bus /
    `jwriter` onto it. **Delivers: observe-everywhere. No threads moved.** Prove
    with a `boggart trace` that tails the bus.
+   - **Shipped (2026-08-25):** `src/lbus.c` = the pub/sub bus (string topics + `*`
+     patterns, `has`/`stats`) **and** named work queues (`push`/`pull`/`qlen`),
+     one `uv_mutex`, MPMC-ready; global `bus`; `tests/fabric.lua`. `events.lua`
+     folded on (`events.emit` mirrors onto the bus when `bus.has(name)`;
+     `events.any` counts a bus subscriber). `lua/trace.lua` + `/trace` +
+     `BOGGART_TRACE` tail it live. 40 suites green, core-parity green.
+   - **Deferred to Phase 2** (each needs the worker threads to earn its place, so
+     it belongs with the pool, not before it): folding the **swarm-bus**
+     (`lswarm.c`'s per-actor mailboxes — a working, separately-tested C subsystem
+     whose O(1)-middle-removal mailbox semantics differ from pub/sub) and
+     **`jwriter`/`thread_local_rings`** (per-worker obs rings have no per-worker to
+     live on until the pool exists). `thread_local_rings` is a Phase-2 port.
 2. **Actor pool + safepoint control.** Port `venus_actor` + `jobs`; give each
    actor a `lua_State` (from `lworker`); add the `lua_sethook` control flag and
    the supervisor's pause/kill/steer/inspect over the bus.
