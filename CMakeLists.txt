@@ -369,6 +369,7 @@ add_executable(boggart
   src/ltermctl.c
   src/bogembed.c
   src/lmem.c
+  src/lbus.c
   ${EMBEDDED_C})
 
 target_include_directories(boggart PRIVATE src)
@@ -570,6 +571,7 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
     src/lworker.c
     src/bogembed.c
   src/lmem.c
+  src/lbus.c
     ${EMBEDDED_C})
 
   target_include_directories(boggart-studio PRIVATE
@@ -675,7 +677,7 @@ endif()
 # rule itself under test -- it still resolves %LOCALAPPDATA%, that just now
 # points somewhere disposable.
 enable_testing()
-foreach(suite test integration swarm mcp ltui sysfs bus jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front)
+foreach(suite test integration swarm mcp ltui sysfs bus fabric jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home}

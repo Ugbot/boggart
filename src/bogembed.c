@@ -26,6 +26,7 @@ int luaopen_boggart_mcp(lua_State *L);
 int luaopen_boggart_auth(lua_State *L);
 int luaopen_boggart_worker(lua_State *L);
 int luaopen_boggart_git(lua_State *L);
+int luaopen_boggart_bus(lua_State *L);  /* src/lbus.c: pub/sub + work-queue fabric */
 int luaopen_luv(lua_State *L);
 void boggart_open_mem(lua_State *L);
 
@@ -85,6 +86,7 @@ void boggart_open_libs(lua_State *L) {
    * table its thread then overwrites with the worker-side half. */
   luaL_requiref(L, "worker", luaopen_boggart_worker, 0); lua_setglobal(L, "worker");
   luaL_requiref(L, "git", luaopen_boggart_git, 0);     lua_setglobal(L, "git");
+  luaL_requiref(L, "bus", luaopen_boggart_bus, 0);     lua_setglobal(L, "bus");
 
   /* luv lazily: opening it creates a uv_loop_t, and the app only needs one
    * once an agent actually runs. */

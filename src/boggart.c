@@ -31,6 +31,7 @@ int luaopen_boggart_mcp(lua_State *L);
 int luaopen_boggart_auth(lua_State *L);
 int luaopen_boggart_worker(lua_State *L); /* src/lworker.c: OS worker threads */
 int luaopen_boggart_git(lua_State *L);
+int luaopen_boggart_bus(lua_State *L); /* src/lbus.c: pub/sub + work-queue fabric */
 int luaopen_boggart_term(lua_State *L); /* src/lterm.c: REPL completion (CLI only) */
 int luaopen_boggart_termctl(lua_State *L); /* src/ltermctl.c: full-screen cTUI (CLI only) */
 lua_State *boggart_newstate(void);       /* src/lmem.c: counts real bytes */
@@ -147,6 +148,8 @@ static void register_boggart(lua_State *L, int argc, char **argv) {
   lua_setglobal(L, "worker");
   luaL_requiref(L, "git", luaopen_boggart_git, 0);
   lua_setglobal(L, "git");
+  luaL_requiref(L, "bus", luaopen_boggart_bus, 0);
+  lua_setglobal(L, "bus");
   luaL_requiref(L, "term", luaopen_boggart_term, 0);
   lua_setglobal(L, "term");
   luaL_requiref(L, "tc", luaopen_boggart_termctl, 0);
