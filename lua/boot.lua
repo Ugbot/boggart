@@ -513,6 +513,19 @@ local function handle_command(line)
         io.write(string.format("gated decisions: %d allowed, %d denied\n", d.allow or 0, d.deny or 0))
       end
     end
+  elseif cmd == "trace" then
+    -- Watch the fabric bus live: /trace [pattern]  (default "*"),  /trace off.
+    local tr = require("trace")
+    if rest == "off" or rest == "stop" then
+      io.write(string.format("trace off -- %d event%s seen\n", tr.count(),
+        tr.count() == 1 and "" or "s"))
+      tr.stop()
+    else
+      local pat = (rest ~= "" and rest) or "*"
+      local h, err = tr.start(pat)
+      if h then io.write("tracing " .. pat .. " -- /trace off to stop\n")
+      else io.write("trace: " .. tostring(err) .. "\n") end
+    end
   elseif cmd == "fork" then
     -- Branch the active session: a new session seeded with a copy of this one's
     -- transcript, so you can explore a divergent path without disturbing the
@@ -1122,6 +1135,12 @@ function bog.activate_agents()
   bog.thread.max_agents = tonumber(os.getenv("BOGGART_MAX_AGENTS")) or 16
   -- Arm the liveness watchdog for the whole runtime (idempotent).
   if bog.watchdog and bog.watchdog.start then pcall(bog.watchdog.start) end
+  -- BOGGART_TRACE=<pattern> (or =1 for everything) tails the fabric bus to
+  -- stderr for the whole run -- the always-on form of the /trace command.
+  local tr = os.getenv("BOGGART_TRACE")
+  if tr and tr ~= "" and tr ~= "0" then
+    pcall(function() require("trace").start(tr == "1" and "*" or tr) end)
+  end
 end
 
 if bog.mode == "embedded" then
