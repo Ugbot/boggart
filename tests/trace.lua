@@ -45,6 +45,17 @@ events.emit("anything:here", { v = 1 })
 eq(#a, 0, "the replaced subscription is silent")
 eq(#b, 1, "the live subscription receives the event")
 trace.stop()
+
+-- ---- a comma/space separated pattern LIST subscribes to each --------------
+do
+  local got = {}
+  trace.start{ pattern = "turn:*, file:write", sink = function(l) got[#got + 1] = l end }
+  events.emit("turn:end", {})       -- matches turn:*
+  events.emit("file:write", {})     -- matches the second pattern
+  events.emit("tool:before", {})    -- matches neither
+  eq(#got, 2, "pattern list: both listed patterns match, the unlisted one does not")
+  trace.stop()
+end
 events.clear()
 
 io.write(failed == 0 and ("trace: all " .. passed .. " passed\n")

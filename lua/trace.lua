@@ -8,7 +8,7 @@
 -- is a later phase), so a trace watches the turns/tools/swarm running in THIS
 -- boggart -- the REPL, a one-shot, or a swarm run -- live.
 local M = {}
-M._sub = nil
+M._subs = nil
 M._n = 0
 
 -- Default sink: stderr, so a piped one-shot (`boggart -p ... 2>trace.log`) keeps
@@ -26,35 +26,44 @@ local function preview(payload, max)
 end
 
 -- start(opts) -> handle | nil, err
---   opts : a pattern string ("tool:*"), or { pattern = "*", sink = fn }
--- Idempotent: a second start replaces the first subscription.
+--   opts : a pattern string, or { pattern = ..., sink = fn }
+-- The pattern may be a comma/space separated LIST ("turn:*, tool:*"); each is
+-- subscribed, so the natural thing a user types works. Idempotent: a second
+-- start replaces the first.
 function M.start(opts)
   if type(opts) == "string" then opts = { pattern = opts } end
   opts = opts or {}
   local bus = rawget(_G, "bus")
   if not (bus and bus.subscribe) then return nil, "no fabric bus in this build" end
-  if M._sub then M.stop() end
+  if M._subs then M.stop() end
   local sink = opts.sink or default_sink
   M._n = 0
   M._pattern = opts.pattern or "*"
-  M._sub = bus.subscribe(M._pattern, function(topic, payload)
+  local pats = {}
+  for p in M._pattern:gmatch("[^,%s]+") do pats[#pats + 1] = p end
+  if #pats == 0 then pats = { "*" } end
+  local function on_evt(topic, payload)
     M._n = M._n + 1
     -- pcall: a broken sink (a torn-down studio view) must not kill the publisher.
     pcall(sink, string.format("%6d  %-24s %s", M._n, topic, preview(payload)))
-  end)
-  return M._sub
+  end
+  M._subs = {}
+  for _, p in ipairs(pats) do M._subs[#M._subs + 1] = bus.subscribe(p, on_evt) end
+  return M._subs[1]
 end
 
 -- stop() -> events_seen
 function M.stop()
   local bus = rawget(_G, "bus")
-  if M._sub and bus and bus.unsubscribe then bus.unsubscribe(M._sub) end
+  if M._subs and bus and bus.unsubscribe then
+    for _, id in ipairs(M._subs) do bus.unsubscribe(id) end
+  end
   local n = M._n
-  M._sub, M._n, M._pattern = nil, 0, nil
+  M._subs, M._n, M._pattern = nil, 0, nil
   return n
 end
 
-function M.active() return M._sub ~= nil end
+function M.active() return M._subs ~= nil end
 function M.pattern() return M._pattern end
 function M.count() return M._n end
 
