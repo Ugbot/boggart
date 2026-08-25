@@ -133,6 +133,10 @@ int boggart_boot(lua_State *L, const char *mode, const char *version);
 int luaopen_luv(lua_State *L);
 /* luv.c, LUALIB_API: the loop the given state's luv context is bound to. */
 uv_loop_t *luv_loop(lua_State *L);
+/* lbus.c: publish a worker lifecycle event onto the fabric. All our call sites
+ * are on the main thread (spawn/kill/exit-delivery), so this dispatches inline;
+ * a UI or `boggart trace` subscribed to "worker:*" then sees the pool. */
+extern void bus_emit(const char *topic, const char *data, size_t len);
 
 /* ---- slots and rings ------------------------------------------------------ */
 
@@ -730,6 +734,15 @@ static int wk_exited(worker *h) {
   return h->exit_flag;
 }
 
+/* Emit a worker lifecycle event. Payload is just the id (safe to format -- no
+ * user text, no escaping); the topic carries the verb and worker.list() has the
+ * rest. Main-thread call sites only. */
+static void wk_emit(worker *h, const char *topic) {
+  char buf[48];
+  int n = snprintf(buf, sizeof buf, "{\"id\":%llu}", (unsigned long long)h->id);
+  if (n > 0) bus_emit(topic, buf, (size_t)n);
+}
+
 static void pend_append(worker *h, wk_slot *s) {
   struct pmsg *p = (struct pmsg *)malloc(sizeof *p);
   if (!p) { free(s->str); return; } /* drop on OOM, freeing the payload */
@@ -744,7 +757,13 @@ static void pend_append(worker *h, wk_slot *s) {
  * for worker.recv(). `allow_lua` is 0 during __gc, where re-entering Lua from
  * a finalizer's C path is a place bugs live. */
 static void deliver_out(worker *h, wk_slot *s, int allow_lua) {
-  if (s->kind == WKS_EXIT) { h->saw_exit = 1; return; }
+  if (s->kind == WKS_EXIT) {
+    h->saw_exit = 1;
+    /* Not during __gc (allow_lua=0): emitting dispatches to Lua subscribers, and
+     * re-entering Lua from a finalizer is the hazard this flag guards. */
+    if (allow_lua) wk_emit(h, "worker:exited");
+    return;
+  }
   /* Remember the last string a worker posted, for worker.list(). Main-thread
    * only (this function is), so the swap is unguarded by design. A number
    * message leaves the previous line standing -- the display wants words. */
@@ -993,6 +1012,7 @@ static int l_spawn(lua_State *L) {
   worker **ud = (worker **)lua_newuserdata(L, sizeof(worker *));
   *ud = h;
   luaL_setmetatable(L, "boggart.worker");
+  wk_emit(h, "worker:spawned");
   return 1;
 }
 
@@ -1059,7 +1079,7 @@ static int l_stop(lua_State *L) {
  * next Lua safepoint, so join() reports ok=false. */
 static int l_kill(lua_State *L) {
   worker *h = *check_handle(L);
-  if (!h->joined) wk_kill_signal(h);
+  if (!h->joined) { wk_kill_signal(h); wk_emit(h, "worker:killed"); }
   return 0;
 }
 

@@ -231,6 +231,27 @@ do
   ok(res == "denied", "worker.kill is denied inside a worker")
 end
 
+-- ---- lifecycle events on the fabric bus (observe the pool) -----------------
+-- spawn/exit/kill are emitted from the main-side worker code, so they dispatch
+-- synchronously to a bus subscriber on this state -- no loop pump needed.
+do
+  local seen = {}
+  local id = bus.subscribe("worker:*", function(t, _) seen[#seen + 1] = t end)
+  local function saw(x) for _, t in ipairs(seen) do if t == x then return true end end return false end
+
+  local w = worker.spawn([[ return 1 ]])
+  ok(saw("worker:spawned"), "lifecycle: worker:spawned reaches the bus at spawn")
+  worker.join(w)
+  ok(saw("worker:exited"), "lifecycle: worker:exited reaches the bus at join")
+
+  seen = {}
+  local k = worker.spawn([[ while true do end ]])
+  worker.kill(k)
+  ok(saw("worker:killed"), "lifecycle: worker:killed reaches the bus at kill")
+  worker.join(k)
+  bus.unsubscribe(id)
+end
+
 -- Worker states use their own allocator counters, so a leak of worker states
 -- or rings would show in RSS, not here; membytes guards the main state and
 -- the handle bookkeeping. The churn itself is the assertion that 100 full

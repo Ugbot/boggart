@@ -196,6 +196,30 @@ static int deliver(const char *topic, const char *data, size_t dlen) {
   return k;
 }
 
+/* Copy bytes into a pending node for the main thread to dispatch, wake it if
+ * attached. Drop-on-full (tallied) so a producer never blocks on the consumer. */
+static void enqueue_cross(const char *topic, const char *data, size_t dlen) {
+  PItem *p = (PItem *)malloc(sizeof *p);
+  if (!p) return;
+  p->next = NULL; p->len = dlen;
+  p->topic = strdup(topic);
+  p->data = (char *)malloc(dlen ? dlen : 1);
+  if (!p->topic || !p->data) { free(p->topic); free(p->data); free(p); return; }
+  memcpy(p->data, data, dlen);
+  uv_mutex_lock(&B.mu);
+  int attached = B.attached;
+  if (B.pend_n >= PEND_MAX) {
+    B.dropped++;
+    uv_mutex_unlock(&B.mu);
+    free(p->topic); free(p->data); free(p);
+    return;
+  }
+  if (B.pend_tail) B.pend_tail->next = p; else B.pend_head = p;
+  B.pend_tail = p; B.pend_n++;
+  uv_mutex_unlock(&B.mu);
+  if (attached) uv_async_send(&B.drain);
+}
+
 /* The main-loop drain: fires when a worker publish is queued. Splices the whole
  * pending list out under the lock, then dispatches it lock-free on the main
  * state. */
@@ -228,32 +252,30 @@ static int l_publish(lua_State *L) {
   uv_mutex_unlock(&B.mu);
 
   if (cross) {
-    /* Off the main thread: never touch B.L. Copy the bytes, enqueue, wake main.
-     * Drop-on-full (tallied) rather than block a worker on the main thread. */
-    PItem *p = (PItem *)malloc(sizeof *p);
-    if (p) {
-      p->next = NULL; p->len = dlen;
-      p->topic = strdup(topic);
-      p->data = (char *)malloc(dlen ? dlen : 1);
-      if (p->topic && p->data) {
-        memcpy(p->data, data, dlen);
-        uv_mutex_lock(&B.mu);
-        int attached = B.attached;
-        if (B.pend_n >= PEND_MAX) { B.dropped++; uv_mutex_unlock(&B.mu); free(p->topic); free(p->data); free(p); }
-        else {
-          if (B.pend_tail) B.pend_tail->next = p; else B.pend_head = p;
-          B.pend_tail = p; B.pend_n++;
-          uv_mutex_unlock(&B.mu);
-        }
-        if (attached) uv_async_send(&B.drain);
-      } else { free(p->topic); free(p->data); free(p); }
-    }
+    enqueue_cross(topic, data, dlen); /* off the main thread: never touch B.L */
     lua_pushinteger(L, 0);
     return 1;
   }
 
   lua_pushinteger(L, deliver(topic, data, dlen));
   return 1;
+}
+
+/* bus_emit -- the C-callable publish, for the runtime itself (lworker.c emits
+ * worker lifecycle here). Same thread rule as l_publish: dispatch inline on the
+ * main thread, enqueue from any other. No Lua state needed by the caller. */
+void bus_emit(const char *topic, const char *data, size_t len);
+void bus_emit(const char *topic, const char *data, size_t len) {
+  uv_thread_t self;
+  int cross;
+  ensure_init();
+  self = uv_thread_self();
+  cross = B.main_thread_set && !uv_thread_equal(&B.main_thread, &self);
+  uv_mutex_lock(&B.mu);
+  B.published++;
+  uv_mutex_unlock(&B.mu);
+  if (cross) enqueue_cross(topic, data ? data : "", len);
+  else deliver(topic, data ? data : "", len);
 }
 
 /* ---- work queues (push/pull) --------------------------------------------- */
