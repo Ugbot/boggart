@@ -331,17 +331,22 @@ static int l_qlen(lua_State *L) {
   return 1;
 }
 
-/* bus.stats() -> { published, delivered, subscribers, queues } */
+/* bus.stats() -> { published, delivered, dropped, pending, subscribers, queues }
+ * `dropped` = cross-thread publishes shed when the pending queue was full;
+ * `pending` = cross-thread publishes awaiting the main-loop drain. */
 static int l_stats(lua_State *L) {
   ensure_init();
   uv_mutex_lock(&B.mu);
-  uint64_t pub = B.published, del = B.delivered;
+  uint64_t pub = B.published, del = B.delivered, drp = B.dropped;
+  int pend = B.pend_n;
   int nsub = 0; for (int i = 0; i < B.nsub; i++) if (!B.subs[i].dead) nsub++;
   int nq = B.nq;
   uv_mutex_unlock(&B.mu);
   lua_newtable(L);
   lua_pushinteger(L, (lua_Integer)pub);  lua_setfield(L, -2, "published");
   lua_pushinteger(L, (lua_Integer)del);  lua_setfield(L, -2, "delivered");
+  lua_pushinteger(L, (lua_Integer)drp);  lua_setfield(L, -2, "dropped");
+  lua_pushinteger(L, pend);              lua_setfield(L, -2, "pending");
   lua_pushinteger(L, nsub);              lua_setfield(L, -2, "subscribers");
   lua_pushinteger(L, nq);                lua_setfield(L, -2, "queues");
   return 1;

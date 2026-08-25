@@ -160,6 +160,7 @@ do
   local s = bus.stats()
   ok(type(s) == "table", "stats() returns a table")
   ok(s.published > 0 and s.delivered > 0, "stats counts publishes and deliveries")
+  ok(type(s.dropped) == "number" and type(s.pending) == "number", "stats surfaces dropped + pending")
   eq(s.subscribers, 0, "no subscribers leaked (all test subs cleaned up)")
 end
 
