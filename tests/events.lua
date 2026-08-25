@@ -678,6 +678,37 @@ do
   eq(#names, 18, "the documented event list is the one this suite drove")
 end
 
+-- ---- the fabric bridge (events -> src/lbus.c `bus`) ------------------------
+-- Every emit is mirrored onto the C bus as JSON bytes, but only when something
+-- is subscribed there; events.any() counts a bus subscriber as a listener.
+do
+  local json = require("json")
+  events.clear()
+  ok(events.any("turn:end") == false, "bridge: any() false with neither handler nor bus sub")
+
+  local got
+  local id = bus.subscribe("turn:end", function(topic, payload) got = { topic, payload } end)
+  ok(events.any("turn:end") == true, "bridge: any() true once a bus subscriber matches (no Lua handler)")
+
+  events.emit("turn:end", { session = 7, stop = "end_turn" })
+  ok(got ~= nil, "bridge: emit with only a bus subscriber still mirrors onto the fabric")
+  eq(got[1], "turn:end", "bridge: the topic is carried through")
+  local dec = json.decode(got[2])
+  ok(dec.session == 7 and dec.stop == "end_turn", "bridge: the payload round-trips as JSON")
+
+  -- A Lua handler and a bus subscriber both fire on one emit.
+  local lua_fired = 0
+  events.on("turn:end", function() lua_fired = lua_fired + 1 end)
+  got = nil
+  events.emit("turn:end", { session = 8 })
+  eq(lua_fired, 1, "bridge: the in-process handler still fires")
+  ok(got ~= nil, "bridge: the bus mirror fires alongside the handler")
+
+  bus.unsubscribe(id)
+  events.clear()
+  ok(events.any("turn:end") == false, "bridge: any() false again after both are gone")
+end
+
 -- ---- cleanup ---------------------------------------------------------------
 os.getenv = real_getenv -- luacheck: ignore
 events.clear()

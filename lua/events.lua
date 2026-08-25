@@ -17,6 +17,23 @@
 --     the only lifecycle anything here has wanted.
 local M = {}
 
+-- The messaging-fabric bridge (src/lbus.c, the global `bus`). Every emit is
+-- mirrored onto the C bus as bytes so a trace, the journal, or (later) a
+-- cross-thread subscriber sees ONE unified stream -- "the bus is observability"
+-- from docs/actors-and-bus.md. The mirror is guarded by bus.has(name): when
+-- nobody is subscribed on the fabric it costs a single C call and serializes
+-- nothing. Captured with rawget so a state without the module (a stubbed worker)
+-- simply skips the mirror.
+local json = require("json")
+local _bus = rawget(_G, "bus")
+local function bus_wants(name)
+  return _bus ~= nil and _bus.has(name)
+end
+local function bus_mirror(name, data)
+  local ok, enc = pcall(json.encode, data == nil and {} or data)
+  if ok then pcall(_bus.publish, name, enc) end
+end
+
 -- ---------------------------------------------------------------------------
 -- Registrations outlive a harness reload
 --
@@ -209,9 +226,9 @@ end
 -- Is anyone listening? One table lookup once a name has been resolved. Call
 -- sites use this to skip building a payload they would only throw away.
 function M.any(name)
-  if state.count == 0 then return false end
+  if state.count == 0 then return bus_wants(name) end
   local hs = cache[name] or resolve(name)
-  return #hs > 0
+  return #hs > 0 or bus_wants(name)
 end
 
 -- emit(name, data) -> number of handlers run.
@@ -222,9 +239,17 @@ end
 -- streamed token) guard with events.any() first; `data` may also be a function,
 -- which is only called if someone is listening.
 function M.emit(name, data)
-  if state.count == 0 then return 0 end
-  local hs = cache[name] or resolve(name)
-  local n = #hs
+  local to_bus = bus_wants(name)
+  local hs = state.count > 0 and (cache[name] or resolve(name)) or nil
+  local n = hs and #hs or 0
+  if n == 0 and not to_bus then return 0 end
+  if type(data) == "function" then data = data() end
+
+  -- Mirror onto the fabric independent of the Lua-handler path: an observer must
+  -- see the event even when no handler is registered, and even if handler
+  -- recursion (below) would drop the in-process dispatch.
+  if to_bus then bus_mirror(name, data) end
+
   if n == 0 then return 0 end
   if state.depth >= MAX_DEPTH then
     -- Do not notify here: notify emits, and this is the one place that is
@@ -232,7 +257,6 @@ function M.emit(name, data)
     bog.log("events: dropping '" .. name .. "' at depth " .. state.depth .. " (handler recursion)")
     return 0
   end
-  if type(data) == "function" then data = data() end
 
   state.depth = state.depth + 1
   local fired = 0
