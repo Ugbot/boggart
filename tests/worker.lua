@@ -336,6 +336,18 @@ do
      "map (scheduler-aware): results collected via yield+timer, loop not blocked")
 end
 
+-- ---- http.shutdown: a worker that did http can drain and exit --------------
+-- The keep-alive-socket-pins-the-loop fix (src/lhttp.c + lworker teardown). The
+-- hang it fixes only reproduces against a live server (a completed model turn's
+-- kept-alive connection) -- verified live -- so here we guard the API surface:
+-- http.shutdown is exposed, a no-op without http, and a worker calling it joins.
+do
+  ok(type(http) == "table" and type(http.shutdown) == "function", "http.shutdown is exposed")
+  local w = worker.spawn([[ http.shutdown(); return "ok" ]])
+  local okc, res = worker.join(w)
+  ok(okc and res == "ok", "http.shutdown() is a safe no-op in a worker; the worker joins cleanly")
+end
+
 -- Worker states use their own allocator counters, so a leak of worker states
 -- or rings would show in RSS, not here; membytes guards the main state and
 -- the handle bookkeeping. The churn itself is the assertion that 100 full

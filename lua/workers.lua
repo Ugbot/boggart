@@ -144,16 +144,48 @@ end
   return results, errors, got
 end
 
--- (Sub-agents on the pool -- running a full model turn per worker -- was
--- prototyped and proven to WORK: a worker stands up its own scheduler
--- (sched.drive) and run_on completes over the worker's per-loop curl_multi,
--- returning real assistant text. It is not exposed yet because a worker that
--- does http cannot cleanly exit: the loop-owned curl_multi keeps a keep-alive
--- socket poll REFERENCED (which is exactly what lets the main scheduler sleep on
--- the socket at zero CPU), so the worker's teardown uv_run() blocks on it. The
--- fix is a per-loop http.shutdown() in C, wired into worker teardown -- a real
--- change to the path every model turn uses, not a quick one. And the payoff is
--- small: the cooperative scheduler already multiplexes N model turns' HTTP on
--- one loop, so threads only help CPU-bound agent work, which map() covers.)
+-- agents(prompts, opts) -> texts, errors, done
+--
+-- Sub-agents on the OS-thread pool: each prompt runs a full, fresh model turn on
+-- its own worker thread, and the assistant text comes back. Each worker stands
+-- up its own scheduler (sched.drive) and drives run_on over its OWN per-loop
+-- curl_multi (lworker builds one per worker precisely so a worker can run a
+-- model turn), so N turns run on N threads. The worker tears its http down on
+-- exit (src/lhttp.c boggart_http_shutdown, wired into lworker teardown), so it
+-- drains and joins cleanly rather than hanging on a keep-alive socket.
+--
+-- Note the trade-off: the one-loop scheduler already multiplexes many turns'
+-- HTTP concurrently, so this mainly helps when the sub-agents also do CPU-bound
+-- work; for pure model calls the swarm's cooperative fan-out is just as parallel.
+--
+-- opts.model (default: resolved per-worker via auth), opts.effort,
+-- opts.max_tokens, opts.slots, opts.timeout. Prompts and texts cross as strings;
+-- a per-turn error comes back in errors[i].
+function M.agents(prompts, opts)
+  opts = opts or {}
+  assert(type(prompts) == "table", "workers.agents: prompts must be a list of strings")
+  local maxt = math.floor(tonumber(opts.max_tokens) or 16000)
+  local sess_lit = opts.model
+    and string.format("{ model = %q, messages = {}, max_tokens = %d }", opts.model, maxt)
+    or  string.format("{ messages = {}, max_tokens = %d }", maxt)
+  local run_opts = (opts.effort and opts.effort ~= "")
+    and string.format("{ effort = %q }", opts.effort) or "{}"
+  local src = string.format([[
+return function(prompt)
+  -- a worker opens its OWN store connection (one per thread); run_on reads
+  -- model/context config through bog.repo.
+  if bog.store and bog.store.open and not bog.db then pcall(bog.store.open) end
+  local sched = require("sched")
+  local out = {}
+  local ok, err = pcall(function()
+    sched.drive(function()
+      bog.api.run_on(%s, prompt, function(t) out[#out + 1] = t end, %s)
+    end)
+  end)
+  return ok and table.concat(out) or ("ERROR: " .. tostring(err))
+end
+]], sess_lit, run_opts)
+  return M.map(src, prompts, opts)
+end
 
 return M

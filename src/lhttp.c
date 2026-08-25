@@ -212,19 +212,23 @@ typedef struct {
   hctx *ctx;          /* the loop-owned multi this handle belongs to */
 } httpreq;
 
+typedef struct sockctx sockctx;
+
 struct hctx {
   CURLM *multi;
   uv_loop_t *loop;
   uv_timer_t timer;       /* curl's requested timeout */
   uv_timer_t pump_timer;  /* bounds a pump()'s uv_run */
   int running;            /* running_handles, for pump()'s return */
+  sockctx *socks;         /* live socket polls, so shutdown can close them all */
 };
 
-typedef struct {
+struct sockctx {
   uv_poll_t poll;
   curl_socket_t sockfd;
   hctx *ctx;
-} sockctx;
+  sockctx *next, *prev;   /* intrusive list off hctx.socks */
+};
 
 /* Drain finished transfers into their httpreq, so status()/take() observe the
  * completion the frame it happens. Called after every socket/timer action. */
@@ -264,6 +268,9 @@ static int socket_cb(CURL *easy, curl_socket_t s, int what, void *userp, void *s
   sockctx *sc = (sockctx *)socketp;
   if (what == CURL_POLL_REMOVE) {
     if (sc) {
+      /* unlink from hctx.socks so shutdown does not touch a freed handle */
+      if (sc->prev) sc->prev->next = sc->next; else ctx->socks = sc->next;
+      if (sc->next) sc->next->prev = sc->prev;
       uv_poll_stop(&sc->poll);
       curl_multi_assign(ctx->multi, s, NULL);
       uv_close((uv_handle_t *)&sc->poll, on_poll_close); /* frees sc */
@@ -278,6 +285,10 @@ static int socket_cb(CURL *easy, curl_socket_t s, int what, void *userp, void *s
     uv_poll_init_socket(ctx->loop, &sc->poll, s);
     sc->poll.data = sc;
     curl_multi_assign(ctx->multi, s, sc);
+    sc->prev = NULL;                       /* link into the live-poll list */
+    sc->next = ctx->socks;
+    if (ctx->socks) ctx->socks->prev = sc;
+    ctx->socks = sc;
   }
   int events = 0;
   if (what == CURL_POLL_IN) events = UV_READABLE;
@@ -356,6 +367,27 @@ void boggart_http_shutdown(lua_State *L) {
   uv_timer_stop(&ctx->pump_timer);
   ctx->timer.data = NULL;
   ctx->pump_timer.data = NULL;
+  /* Close every live socket poll. A completed transfer whose connection curl
+   * kept alive leaves its poll OPEN and referenced -- which is what lets the
+   * main scheduler sleep on the socket, but also what pins a worker's loop open
+   * so its teardown uv_run() never returns. Closing them here lets the loop
+   * drain. Tracked in an explicit list (not uv_walk) so we only ever touch polls
+   * this module created. */
+  sockctx *sc = ctx->socks;
+  ctx->socks = NULL;
+  while (sc) {
+    sockctx *next = sc->next;
+    curl_multi_assign(ctx->multi, sc->sockfd, NULL);
+    uv_poll_stop(&sc->poll);
+    if (!uv_is_closing((uv_handle_t *)&sc->poll))
+      uv_close((uv_handle_t *)&sc->poll, on_poll_close); /* frees sc later */
+    sc = next;
+  }
+  /* Flush the deferred close callbacks so the handles are gone before the
+   * caller's next step (a worker's run-out uv_run, or lua_close's loop_gc).
+   * Bounded: a handful of iterations clears any pending close. */
+  for (int i = 0; i < 16 && uv_loop_alive(ctx->loop); i++)
+    uv_run(ctx->loop, UV_RUN_NOWAIT);
   lua_pushnil(L);
   lua_rawsetp(L, LUA_REGISTRYINDEX, &g_hctx_key);
 }
@@ -502,10 +534,19 @@ static const luaL_Reg req_methods[] = {
   {NULL, NULL},
 };
 
+/* http.shutdown() -- tear down this loop's curl_multi and its socket polls, so a
+ * loop with idle keep-alive connections can drain (a worker before it exits).
+ * A no-op if no HTTP was done; the pool is recreated lazily on the next call. */
+static int l_http_shutdown(lua_State *L) {
+  boggart_http_shutdown(L);
+  return 0;
+}
+
 static const luaL_Reg http_lib[] = {
   {"request", l_http_request},
   {"begin", l_http_begin},
   {"pump", l_http_pump},
+  {"shutdown", l_http_shutdown},
   {NULL, NULL},
 };
 
