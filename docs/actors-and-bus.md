@@ -173,12 +173,28 @@ These are load-bearing; the pool must respect them:
        The studio's SwarmView (stop-all + targeted kill) and AgentView
        (cancel-turn) now route through `bog.supervisor.kill` too (existence guard
        via `sched.alive`; operator kill so a coordinator's `await()` unblocks).
-   - **Remaining:** **worker pause/resume** (same hook + a resume sem; adds a
-     blocked-in-hook state every teardown path must unblock). Then port
-     `venus_actor`'s lifecycle/tick + `jobs` to dress `lworker` as a first-class
-     actor, and move a live workload onto the pool (Phase 3).
-3. **Move one unit onto the pool.** The `loop`'s `parallel:true` workers *or*
-   spawned sub-agents — the proof they run off-thread, observable + controllable.
+     - **Worker pause/resume** — the same hook parks the worker on `resume_sem`;
+       both stop() and kill() also post it, so no teardown path deadlocks on a
+       pause. `worker.pause/resume`, status `paused`, `worker:paused/resumed` on
+       the bus, `supervisor.pause_worker/resume_worker`. The control set is now
+       complete: **stop / kill / pause / resume**.
+   - **Remaining:** dressing `lworker` with `venus_actor`'s lifecycle/tick + a
+     `jobs` primitive is infra ahead of a consumer (the existing spawn/post/recv/
+     onmessage + `workers.map` cover today's needs); revisit when something wants
+     periodic ticks or a persistent actor.
+3. **Move a workload onto the pool.**
+   - **Shipped (2026-08-25):** `bog.worker.map(fn_source, items, opts)` — a real
+     parallel-for (N threads, N cores) built entirely on the fabric's work queues
+     (items in, workers pull-compute-push, this side drains). Scheduler-aware: it
+     parks on a latch + uv timer inside a turn, blocks-with-poll off it. This is
+     the pool running real, controllable, observable work — the payoff that makes
+     the safepoint kill / lifecycle / cross-thread bus real, not test-only.
+   - **Not pursued:** rewiring the `loop`'s `parallel:true` mode from cooperative
+     coroutines onto threads. Low value: the loop's parallel items are IO-bound
+     (a tool that shells out, an agent turn) which the one-loop scheduler already
+     runs concurrently; real threads only help CPU-bound Lua, which `workers.map`
+     now covers directly. Spawned sub-agents on the pool is the higher-value
+     target and waits on the run_on-across-a-worker serialization contract.
 4. **Agent-free main.** Move the coordinator onto an actor; main becomes pure
    supervisor/UI/comms.
 5. **Prove it.** A deterministic bench (mock wire) that reproduces a Lua spin, a
