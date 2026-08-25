@@ -38,13 +38,6 @@ local function exec(c)
     end
   elseif c.verb == "kill_all" then
     for _, a in ipairs((bog.sched and bog.sched.actors) or {}) do bog.sched.kill(a.id) end
-  elseif c.verb == "kill_worker" then
-    -- a pool worker (lworker) by its handle, stashed by the caller
-    if c._handle and worker and worker.kill then pcall(worker.kill, c._handle) end
-  elseif c.verb == "pause_worker" then
-    if c._handle and worker and worker.pause then pcall(worker.pause, c._handle) end
-  elseif c.verb == "resume_worker" then
-    if c._handle and worker and worker.resume then pcall(worker.resume, c._handle) end
   end
   -- Observability: every executed control action, on the bus.
   pcall(bus.publish, "ctl:" .. tostring(c.verb), json.encode(c))
@@ -95,8 +88,24 @@ function M.pause(id, on)          return command("pause", { id = id, on = on ~= 
 function M.resume(id)             return command("resume", { id = id }) end
 function M.pause_fleet(except, on) return command("pause_fleet", { except = except, on = on ~= false }) end
 function M.kill_all()             return command("kill_all") end
-function M.kill_worker(handle)    return command("kill_worker", { _handle = handle }) end
-function M.pause_worker(handle)   return command("pause_worker", { _handle = handle }) end
-function M.resume_worker(handle)  return command("resume_worker", { _handle = handle }) end
+-- Pool-worker control is same-thread only: a worker handle is userdata (it does
+-- not serialize and is meaningless on another thread), so unlike the id-based
+-- verbs above these run inline against bog.worker rather than riding the command
+-- queue -- still emitting an observable ctl:* event.
+local function worker_ctl(verb, fn, handle)
+  local w = rawget(_G, "worker")
+  if w and fn then pcall(fn, handle) end
+  pcall(bus.publish, "ctl:" .. verb, "{}")
+  return true
+end
+function M.kill_worker(handle)
+  local w = rawget(_G, "worker"); return worker_ctl("kill_worker", w and w.kill, handle)
+end
+function M.pause_worker(handle)
+  local w = rawget(_G, "worker"); return worker_ctl("pause_worker", w and w.pause, handle)
+end
+function M.resume_worker(handle)
+  local w = rawget(_G, "worker"); return worker_ctl("resume_worker", w and w.resume, handle)
+end
 
 return M

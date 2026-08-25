@@ -76,6 +76,17 @@ sup.pump()
 eq(#calls, 1, "a malformed command is skipped; the good one still runs")
 eq(calls[1][2], 99, "the well-formed command executed")
 
+-- ---- pool-worker control runs inline (handles don't serialize) -----------
+do
+  seen = {}
+  local w = worker.spawn("while true do end")   -- a runaway to kill
+  local oks = pcall(sup.kill_worker, w)          -- must NOT error on the userdata
+  ok(oks, "kill_worker does not choke on the (non-serializable) handle")
+  ok(last_ctl() and last_ctl()[1] == "ctl:kill_worker", "kill_worker emits an observable ctl:kill_worker")
+  local okc = worker.join(w)                      -- must terminate (the kill landed)
+  ok(okc == false, "kill_worker actually killed the spinning worker")
+end
+
 bus.unsubscribe(obs)
 bog.sched, bog.thread = sched_save, thread_save
 
