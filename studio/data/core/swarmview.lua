@@ -153,7 +153,8 @@ function SwarmView:stop()
   if v and v.busy then v:cancel() end
   for i = #(bog.sched and bog.sched.actors or {}), 1, -1 do
     local id = bog.sched.actors[i].id
-    bog.sched.kill(id)
+    -- Through the supervisor: one observable control path (ctl:kill on the bus).
+    if bog.supervisor then bog.supervisor.kill(id) else bog.sched.kill(id) end
     self.killed[id] = true
     pcall(bog.store.thread_set_status, id, "error")
   end
@@ -162,7 +163,11 @@ function SwarmView:stop()
 end
 
 function SwarmView:kill(id)
-  if not (bog.sched and bog.sched.kill(id)) then return end
+  -- Existence check first (supervisor.kill always returns true), then the
+  -- observable operator kill -- which also tells the parent, so a coordinator
+  -- awaiting this child unblocks at once instead of waiting for the tick net.
+  if not (bog.sched and bog.sched.alive and bog.sched.alive(id)) then return end
+  if bog.supervisor then bog.supervisor.kill(id) else bog.sched.kill(id) end
   self.killed[id] = true
   pcall(bog.store.thread_set_status, id, "error")
   self:note("killed agent " .. tostring(id))

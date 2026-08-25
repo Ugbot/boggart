@@ -652,7 +652,7 @@ function AgentView:cancel()
   if self.turn_id and bog.sched then
     for i = #bog.sched.actors, 1, -1 do
       local aid = bog.sched.actors[i].id
-      bog.sched.kill(aid)
+      if bog.supervisor then bog.supervisor.kill(aid) else bog.sched.kill(aid) end
       if aid ~= self.turn_id then pcall(bog.store.thread_set_status, aid, "error") end
     end
     pcall(bog.store.thread_set_status, self.turn_id, "idle")
