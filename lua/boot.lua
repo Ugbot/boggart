@@ -860,9 +860,10 @@ local function run_one_turn(text)
           abort = true
         elseif b == 32 or b == 112 then -- space / p: pause or resume the fleet
           paused = not paused
-          for _, a in ipairs(bog.sched.actors) do
+          if bog.supervisor then pcall(bog.supervisor.pause_fleet, myid, paused)
+          else for _, a in ipairs(bog.sched.actors) do
             if a.id ~= myid then pcall(bog.sched.pause, a.id, paused) end
-          end
+          end end
         elseif b == 107 then -- k: kill the newest sub-agent (await unblocks)
           local newest
           for _, a in ipairs(bog.sched.actors) do
@@ -908,7 +909,8 @@ local function run_one_turn(text)
   if tty then clear_status() end
   flush_render() -- emit the final round's prose (or a partial turn on abort)
   if abort then
-    for _, a in ipairs(bog.sched.actors) do pcall(bog.sched.kill, a.id) end
+    if bog.supervisor then pcall(bog.supervisor.kill_all)
+    else for _, a in ipairs(bog.sched.actors) do pcall(bog.sched.kill, a.id) end end
     -- Heal a dangling tool_use / bare user turn the kill may have left, so the
     -- next turn and any --resume start from a sendable transcript rather than a
     -- permanent HTTP 400.
@@ -1117,6 +1119,7 @@ end
 bog.skills = require("skills")
 bog.agents = require("agents")
 bog.thread = require("thread")
+bog.supervisor = require("supervisor") -- the bus control plane (installed in activate_agents)
 bog.skillrouter = require("skillrouter") -- FTS5 skill search (also feeds dispatch)
 bog.dispatch = require("dispatch")       -- optional auto-routing heuristic
 bog.thread.max_agents = tonumber(os.getenv("BOGGART_MAX_AGENTS"))
@@ -1132,6 +1135,10 @@ function bog.activate_agents()
   -- The fabric's cross-thread drain: once the main loop exists, a worker thread
   -- can bus.publish and it dispatches here on the main state. Idempotent.
   if rawget(_G, "bus") and bus.attach_main then pcall(bus.attach_main) end
+  -- The control plane over the bus: pause/kill/steer route through here so every
+  -- surface drives one observable path instead of poking sched directly.
+  bog.supervisor = bog.supervisor or require("supervisor")
+  pcall(bog.supervisor.install)
   bog.tools_swarm = bog.tools_swarm or require("tools_swarm")
   if swarm and swarm.attach then pcall(swarm.attach, bog.db) end
   pcall(bog.tools_swarm.register)

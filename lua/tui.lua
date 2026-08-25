@@ -633,9 +633,12 @@ local function run_turn(st, text)
 
       elseif ev.key == "ctrl" and ev.char == "p" then
         st.paused = not st.paused
-        for _, a in ipairs(bog.sched.actors) do
+        -- Route through the supervisor: one observable control path (ctl:* on
+        -- the bus) instead of poking the scheduler per actor.
+        if bog.supervisor then pcall(bog.supervisor.pause_fleet, st.coord.id, st.paused)
+        else for _, a in ipairs(bog.sched.actors) do
           if a.id ~= st.coord.id then pcall(bog.sched.pause, a.id, st.paused) end
-        end
+        end end
         st.dirty = true
       elseif ev.key == "ctrl" and ev.char == "o" then
         st.activity_max = (st.activity_max == 16) and ACTIVITY_LINES or 16
@@ -672,7 +675,8 @@ local function run_turn(st, text)
   st.wake:stop()
 
   if st.abort then
-    for _, a in ipairs(bog.sched.actors) do pcall(bog.sched.kill, a.id) end
+    if bog.supervisor then pcall(bog.supervisor.kill_all)
+    else for _, a in ipairs(bog.sched.actors) do pcall(bog.sched.kill, a.id) end end
     local resumable = bog.api.incomplete_turn and bog.api.incomplete_turn(st.coord.session)
     st.entries[#st.entries + 1] = { role = "system",
       text = resumable and "(interrupted — Enter to resume, or type to abandon)"
