@@ -231,6 +231,44 @@ do
   ok(res == "denied", "worker.kill is denied inside a worker")
 end
 
+-- ---- pause / resume: the safepoint parks the worker (Phase 2 control) -------
+-- Proven, not timed: the worker beats while running; a pause must stop the beats
+-- (no progress = no posts), and a resume must restart them. kill after a pause
+-- must still terminate -- the teardown-can't-deadlock-on-pause guarantee.
+do
+  local w = worker.spawn([[
+    local i = 0
+    while true do i = i + 1; if i % 500000 == 0 then worker.post("beat") end end
+  ]])
+  ok(worker.recv(w, 3000) == "beat", "pause: the worker is beating before the pause")
+  worker.pause(w)
+  -- drain beats already in flight (posted before the pause landed)
+  local t = os.time()
+  while worker.recv(w, 50) == "beat" and os.time() - t < 3 do end
+  -- parked now: no NEW beat should arrive in the window
+  local v = worker.recv(w, 400)
+  ok(v == nil, "pause: no beats arrive while parked (got " .. tostring(v) .. ")")
+  worker.resume(w)
+  ok(worker.recv(w, 3000) == "beat", "resume: beats flow again after resume")
+  worker.kill(w)
+  local okc = worker.join(w)
+  ok(okc == false, "kill after a pause still terminates (no teardown deadlock)")
+end
+
+-- pause/resume around a worker that finishes on its own is harmless.
+do
+  local w = worker.spawn([[ local n = 0; for i = 1, 1000 do n = n + i end; return n ]])
+  worker.pause(w); worker.resume(w)
+  local okc, res = worker.join(w)
+  ok(okc and res == 500500, "pause+resume around a fast worker leaves its result intact")
+end
+
+do
+  local w = worker.spawn([[ return (pcall(worker.pause) and "ran") or "denied" ]])
+  local _, res = worker.join(w)
+  ok(res == "denied", "worker.pause is denied inside a worker")
+end
+
 -- ---- lifecycle events on the fabric bus (observe the pool) -----------------
 -- spawn/exit/kill are emitted from the main-side worker code, so they dispatch
 -- synchronously to a bus subscriber on this state -- no loop pump needed.

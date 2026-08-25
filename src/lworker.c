@@ -114,6 +114,14 @@
  * worker blocked in C (recv, sys.exec) is still woken. The honest residual: a
  * worker wedged in a C call that runs no VM instructions (a stuck syscall) is
  * not preemptible in-process -- that is the nuclear-teardown case, not this one.
+ *
+ * Pause/resume ride the same hook. pause() posts pause_sem; at the next
+ * safepoint the worker parks on resume_sem (its thread blocks, holding its
+ * stack). resume() posts resume_sem. Crucially BOTH stop() and kill() also post
+ * resume_sem, so a parked worker unblocks on every wind-down path -- join, gc
+ * and atexit can never deadlock on a pause. pause/resume must be balanced by the
+ * caller: a resume with no matching pause leaves resume_sem raised, so the next
+ * pause parks-then-immediately-wakes (the supervisor tracks state and does not).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -261,6 +269,8 @@ struct worker {
   uv_sem_t stop_sem;
   uv_sem_t exit_sem;
   uv_sem_t kill_sem;         /* safepoint kill; the worker's count hook trywaits it */
+  uv_sem_t pause_sem;        /* main requests a pause; the hook trywaits it */
+  uv_sem_t resume_sem;       /* release a pause; the paused hook blocks on it */
   uv_sem_t gate;             /* THE lock; see the header comment */
   int accepting;             /* guarded by gate once the worker is live */
 
@@ -273,6 +283,7 @@ struct worker {
   int wcbref;                /* worker-side onmessage ref, in the worker state */
   int stopped;               /* worker-local latch of stop_sem */
   int killed;                /* worker-local latch: the safepoint hook fired */
+  int paused;                /* worker-local: set while blocked in the pause gate */
   int ok;                    /* 1 = source completed, 0 = error */
   int result_kind;           /* WKS_STR / WKS_NUM / -1 = nil */
   char *result_str; size_t result_len;
@@ -553,6 +564,10 @@ static void wk_open_self(lua_State *L, worker *h) {
   lua_setfield(L, -2, "stop");
   lua_pushliteral(L, "worker.kill");  lua_pushcclosure(L, l_denied, 1);
   lua_setfield(L, -2, "kill");
+  lua_pushliteral(L, "worker.pause"); lua_pushcclosure(L, l_denied, 1);
+  lua_setfield(L, -2, "pause");
+  lua_pushliteral(L, "worker.resume"); lua_pushcclosure(L, l_denied, 1);
+  lua_setfield(L, -2, "resume");
   if (h->has_arg) { slot_push_value(L, &h->arg); lua_setfield(L, -2, "arg"); }
   lua_setglobal(L, "worker");
 
@@ -609,14 +624,28 @@ static void wk_capture_result(lua_State *L, worker *h, int ok) {
 
 /* The safepoint. Installed on the worker's own state before it runs the source,
  * so it only ever fires on that thread -- the main thread signals by posting
- * kill_sem, never by touching this state. The worker pointer rides the state's
- * extraspace (set in worker_main), an O(1) read with no Lua-stack traffic. */
-static void wk_kill_hook(lua_State *L, lua_Debug *ar) {
+ * kill_sem/pause_sem, never by touching this state. The worker pointer rides the
+ * state's extraspace (set in worker_main), an O(1) read with no Lua-stack
+ * traffic. Kill unwinds; pause blocks the worker thread here until resumed.
+ * Both stop() and kill() post resume_sem, so a paused worker always unblocks on
+ * any wind-down path -- there is no teardown that can deadlock on a pause. */
+static void wk_safepoint_hook(lua_State *L, lua_Debug *ar) {
   (void)ar;
   worker *h = *(worker **)lua_getextraspace(L);
-  if (h && uv_sem_trywait(&h->kill_sem) == 0) {
+  if (!h) return;
+  if (uv_sem_trywait(&h->kill_sem) == 0) {
     h->killed = 1;
     luaL_error(L, "worker killed at safepoint"); /* unwinds the source pcall */
+  }
+  if (uv_sem_trywait(&h->pause_sem) == 0) {
+    h->paused = 1;
+    uv_sem_wait(&h->resume_sem); /* parks the thread until resume/stop/kill */
+    h->paused = 0;
+    /* a kill delivered while parked takes effect the moment we wake */
+    if (uv_sem_trywait(&h->kill_sem) == 0) {
+      h->killed = 1;
+      luaL_error(L, "worker killed at safepoint");
+    }
   }
 }
 
@@ -673,7 +702,7 @@ static void worker_main(void *arg) {
      * by kill(). extraspace carries `h` to the hook; the hook is on THIS state
      * only, so nothing crosses a thread but the kill_sem post. */
     *(worker **)lua_getextraspace(L) = h;
-    lua_sethook(L, wk_kill_hook, LUA_MASKCOUNT, WK_HOOK_COUNT);
+    lua_sethook(L, wk_safepoint_hook, LUA_MASKCOUNT, WK_HOOK_COUNT);
     lua_pushcfunction(L, traceback);
     int base = lua_gettop(L);
     if (luaL_loadbuffer(L, h->source, h->srclen, "@worker") != LUA_OK) {
@@ -801,6 +830,10 @@ static void out_async_free_cb(uv_handle_t *hd) {
 
 static void wk_stop_signal(worker *h) {
   uv_sem_post(&h->stop_sem);
+  /* Unblock a parked worker so it can wind down; harmless if it is not parked
+   * (the stray token makes the next pause a no-op, but a stopping worker gets no
+   * next pause). This is what makes join/gc/atexit deadlock-free against pause. */
+  uv_sem_post(&h->resume_sem);
   wk_slot s; memset(&s, 0, sizeof s); s.kind = WKS_STOP;
   /* Best effort: a full ring cannot take the sentinel, but full also means
    * the worker is not blocked in recv, and every recv checks stop_sem. */
@@ -853,6 +886,8 @@ static void wk_free(worker *h) {
   uv_sem_destroy(&h->stop_sem);
   uv_sem_destroy(&h->exit_sem);
   uv_sem_destroy(&h->kill_sem);
+  uv_sem_destroy(&h->pause_sem);
+  uv_sem_destroy(&h->resume_sem);
   uv_sem_destroy(&h->gate);
   while (h->pend_head) {
     struct pmsg *p = h->pend_head;
@@ -953,6 +988,8 @@ static int l_spawn(lua_State *L) {
   if (rc == 0) rc = uv_sem_init(&h->stop_sem, 0);
   if (rc == 0) rc = uv_sem_init(&h->exit_sem, 0);
   if (rc == 0) rc = uv_sem_init(&h->kill_sem, 0);
+  if (rc == 0) rc = uv_sem_init(&h->pause_sem, 0);
+  if (rc == 0) rc = uv_sem_init(&h->resume_sem, 0);
   if (rc == 0) rc = uv_sem_init(&h->gate, 1);
   if (rc != 0) {
     /* Partial init: destroying an uninitialized sem is UB, so be exact. */
@@ -1083,6 +1120,22 @@ static int l_kill(lua_State *L) {
   return 0;
 }
 
+/* worker.pause(handle) -- park the worker at its next Lua safepoint. Takes
+ * effect only while it is running Lua (a worker blocked in a C call pauses when
+ * it next returns to the VM). Balance with resume(). */
+static int l_pause(lua_State *L) {
+  worker *h = *check_handle(L);
+  if (!h->joined && !wk_exited(h)) { uv_sem_post(&h->pause_sem); wk_emit(h, "worker:paused"); }
+  return 0;
+}
+
+/* worker.resume(handle) -- release a paused worker. */
+static int l_resume(lua_State *L) {
+  worker *h = *check_handle(L);
+  if (!h->joined) { uv_sem_post(&h->resume_sem); wk_emit(h, "worker:resumed"); }
+  return 0;
+}
+
 /* worker.join(handle) -> ok, result
  * ok is whether the source completed; result is its return value (string or
  * number, per the boundary rules) or the error string with traceback. */
@@ -1101,6 +1154,7 @@ static int l_status(lua_State *L) {
   worker *h = *check_handle(L);
   if (h->joined) lua_pushliteral(L, "joined");
   else if (wk_exited(h)) lua_pushstring(L, h->killed ? "killed" : (h->ok ? "done" : "error"));
+  else if (h->paused) lua_pushliteral(L, "paused"); /* best-effort display read */
   else lua_pushliteral(L, "running");
   return 1;
 }
@@ -1150,6 +1204,7 @@ static int l_list(lua_State *L) {
     lua_pushstring(L, h->kind ? h->kind : "task"); lua_setfield(L, -2, "kind");
     const char *st = h->joined ? "joined"
                    : wk_exited(h) ? (h->killed ? "killed" : (h->ok ? "done" : "error"))
+                   : h->paused ? "paused"
                    : "running";
     lua_pushstring(L, st);                         lua_setfield(L, -2, "status");
     lua_pushnumber(L, now - h->started);           lua_setfield(L, -2, "elapsed");
@@ -1179,6 +1234,8 @@ static const luaL_Reg worker_lib[] = {
   {"recv",   l_recv},
   {"stop",   l_stop},
   {"kill",   l_kill},
+  {"pause",  l_pause},
+  {"resume", l_resume},
   {"join",   l_join},
   {"status", l_status},
   {NULL, NULL}

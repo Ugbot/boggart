@@ -41,6 +41,10 @@ local function exec(c)
   elseif c.verb == "kill_worker" then
     -- a pool worker (lworker) by its handle, stashed by the caller
     if c._handle and worker and worker.kill then pcall(worker.kill, c._handle) end
+  elseif c.verb == "pause_worker" then
+    if c._handle and worker and worker.pause then pcall(worker.pause, c._handle) end
+  elseif c.verb == "resume_worker" then
+    if c._handle and worker and worker.resume then pcall(worker.resume, c._handle) end
   end
   -- Observability: every executed control action, on the bus.
   pcall(bus.publish, "ctl:" .. tostring(c.verb), json.encode(c))
@@ -92,5 +96,7 @@ function M.resume(id)             return command("resume", { id = id }) end
 function M.pause_fleet(except, on) return command("pause_fleet", { except = except, on = on ~= false }) end
 function M.kill_all()             return command("kill_all") end
 function M.kill_worker(handle)    return command("kill_worker", { _handle = handle }) end
+function M.pause_worker(handle)   return command("pause_worker", { _handle = handle }) end
+function M.resume_worker(handle)  return command("resume_worker", { _handle = handle }) end
 
 return M
