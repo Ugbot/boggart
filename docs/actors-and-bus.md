@@ -147,6 +147,26 @@ These are load-bearing; the pool must respect them:
 2. **Actor pool + safepoint control.** Port `venus_actor` + `jobs`; give each
    actor a `lua_State` (from `lworker`); add the `lua_sethook` control flag and
    the supervisor's pause/kill/steer/inspect over the bus.
+   - **Shipped (2026-08-25):** the pool already exists as `src/lworker.c` (OS
+     thread + own uv loop + own `lua_State` + SPSC rings). Added:
+     - **Safepoint kill** — a `LUA_MASKCOUNT` hook on the worker's own thread
+       trywaits `kill_sem` every 100k VM instructions and unwinds a runaway
+       pure-Lua source (`ok=0`). The main thread only `uv_sem_post`s, never
+       touches the worker's state — sidestepping the `lua_close` race the v1
+       comment named. `worker.kill()`; status/list report `killed`. Closes the
+       "cannot be preempted" gap. Test: a `while true do end` worker is killed
+       and joins.
+     - **Cross-thread bus** — a worker `bus.publish` enqueues bytes and the main
+       loop's drain async dispatches them on the main state (the MPMC/IPC path).
+       `bus.attach_main()` from `activate_agents`. subscribe/attach denied in
+       workers.
+     - **Pool observability** — `lworker` emits `worker:spawned/killed/exited`
+       via C `bus_emit`; `BOGGART_TRACE='worker:*'` shows the pool live.
+   - **Remaining:** `steer`/`inspect` already exist as `worker.post`/`recv` +
+     `list`/`status`; **pause/resume** (same hook + a resume sem) is the one
+     control verb still to add. Then port `venus_actor`'s lifecycle/tick + `jobs`
+     to dress `lworker` as a first-class actor, and route control over the bus
+     (a `supervisor.*` that drives `worker.*`).
 3. **Move one unit onto the pool.** The `loop`'s `parallel:true` workers *or*
    spawned sub-agents — the proof they run off-thread, observable + controllable.
 4. **Agent-free main.** Move the coordinator onto an actor; main becomes pure
