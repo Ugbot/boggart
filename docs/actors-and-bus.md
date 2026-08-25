@@ -170,11 +170,13 @@ These are load-bearing; the pool must respect them:
        kill_worker`; installed from `activate_agents` (and the studio's
        `setup_swarm`). The cTUI and swarm dashboard drive `bog.supervisor.*`
        (direct-sched fallback) instead of poking `sched` — one observable path.
-   - **Remaining:** the studio's single-agent kill *sites* still call `sched.kill`
-     directly (infra wired; reroute needs UI verification). **worker pause/resume**
-     (same hook + a resume sem; adds a blocked-in-hook state every teardown path
-     must unblock). Then port `venus_actor`'s lifecycle/tick + `jobs` to dress
-     `lworker` as a first-class actor.
+       The studio's SwarmView (stop-all + targeted kill) and AgentView
+       (cancel-turn) now route through `bog.supervisor.kill` too (existence guard
+       via `sched.alive`; operator kill so a coordinator's `await()` unblocks).
+   - **Remaining:** **worker pause/resume** (same hook + a resume sem; adds a
+     blocked-in-hook state every teardown path must unblock). Then port
+     `venus_actor`'s lifecycle/tick + `jobs` to dress `lworker` as a first-class
+     actor, and move a live workload onto the pool (Phase 3).
 3. **Move one unit onto the pool.** The `loop`'s `parallel:true` workers *or*
    spawned sub-agents — the proof they run off-thread, observable + controllable.
 4. **Agent-free main.** Move the coordinator onto an actor; main becomes pure
