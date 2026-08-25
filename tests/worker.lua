@@ -200,6 +200,37 @@ eq(n_distinct, 50, "50 distinct results")
 io.write(string.format("  (50 workers spawned, computed and joined in %.0f ms)\n", ms))
 
 -- ---- churn: spawn-and-join 100 workers; main-state memory must not climb ----
+-- ---- safepoint kill: a pure-Lua spin IS preemptible (Phase 2 keystone) -----
+-- The exact case lworker.c's v1 comment called out: a worker that never calls
+-- recv()/stopped(). Before this, join() on it would hang forever; now kill()
+-- unwinds it at the next Lua safepoint. If the hook regressed, this test hangs
+-- (and ctest times it out) rather than passing wrongly -- that is the assertion.
+do
+  local w = worker.spawn([[ local x = 0; while true do x = x + 1 end; return x ]])
+  worker.kill(w)                       -- out-of-band, from the main thread
+  local okc, res = worker.join(w)      -- returns because the safepoint fired
+  ok(okc == false, "killed spin: join reports the source did not complete")
+  ok(type(res) == "string" and res:find("killed", 1, true) ~= nil,
+     "killed spin: the result is the safepoint-kill error (got: " .. tostring(res):sub(1, 40) .. ")")
+  ok(worker.status(w) == "joined", "killed spin: the worker is joined, not wedged")
+end
+
+-- A worker that finishes on its own is unaffected by a late kill().
+do
+  local w = worker.spawn([[ return 21 * 2 ]])
+  local okc, res = worker.join(w)
+  ok(okc == true and res == 42, "kill is opt-in: a normal worker still returns its result")
+  worker.kill(w)                       -- kill after join is a harmless no-op
+  ok(worker.status(w) == "joined", "kill after join does not disturb a joined worker")
+end
+
+-- kill() is denied inside a worker (like stop/spawn/join): one level only.
+do
+  local w = worker.spawn([[ return type(worker.kill) == "function" and pcall(worker.kill) and "ran" or "denied" ]])
+  local _, res = worker.join(w)
+  ok(res == "denied", "worker.kill is denied inside a worker")
+end
+
 -- Worker states use their own allocator counters, so a leak of worker states
 -- or rings would show in RSS, not here; membytes guards the main state and
 -- the handle bookkeeping. The churn itself is the assertion that 100 full

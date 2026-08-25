@@ -98,11 +98,22 @@
  * Stop is COOPERATIVE. stop() posts stop_sem, drops a WKS_STOP sentinel in
  * the in ring (waking a recv() blocked on an empty ring -- and if the ring is
  * full the sentinel doesn't fit, but full means recv is not blocked and the
- * per-call stop_sem check catches it), and wakes the loop. A worker spinning
- * in pure Lua compute that never calls recv()/stopped() cannot be preempted
- * -- lua_sethook from another thread is the known upgrade path, but it needs
- * the same liveness gate against lua_close and is left out of v1 rather than
- * done vaguely. The tests therefore never create a non-terminating worker.
+ * per-call stop_sem check catches it), and wakes the loop. A worker that calls
+ * recv()/stopped() shuts down cleanly this way and its source may return a
+ * normal result (ok=1).
+ *
+ * Kill is PREEMPTIVE (the safepoint hook). A worker spinning in pure Lua that
+ * never calls recv()/stopped() is caught by a count hook installed on the
+ * worker's OWN thread before it runs the source: every WK_HOOK_COUNT VM
+ * instructions it trywaits kill_sem, and on success raises a Lua error that
+ * unwinds the source's pcall (ok=0). This sidesteps the liveness gate the v1
+ * comment worried about: lua_sethook is only ever called on the worker's own
+ * state -- the main thread merely uv_sem_post(kill_sem), the same happens-before
+ * edge everything else here rides, so no thread touches another's lua_State and
+ * the lua_close race cannot arise. kill() also does the cooperative stop, so a
+ * worker blocked in C (recv, sys.exec) is still woken. The honest residual: a
+ * worker wedged in a C call that runs no VM instructions (a stuck syscall) is
+ * not preemptible in-process -- that is the nuclear-teardown case, not this one.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -245,6 +256,7 @@ struct worker {
   uv_sem_t ready;
   uv_sem_t stop_sem;
   uv_sem_t exit_sem;
+  uv_sem_t kill_sem;         /* safepoint kill; the worker's count hook trywaits it */
   uv_sem_t gate;             /* THE lock; see the header comment */
   int accepting;             /* guarded by gate once the worker is live */
 
@@ -256,6 +268,7 @@ struct worker {
   int want_loop;             /* worker registered onmessage */
   int wcbref;                /* worker-side onmessage ref, in the worker state */
   int stopped;               /* worker-local latch of stop_sem */
+  int killed;                /* worker-local latch: the safepoint hook fired */
   int ok;                    /* 1 = source completed, 0 = error */
   int result_kind;           /* WKS_STR / WKS_NUM / -1 = nil */
   char *result_str; size_t result_len;
@@ -534,6 +547,8 @@ static void wk_open_self(lua_State *L, worker *h) {
   lua_setfield(L, -2, "join");
   lua_pushliteral(L, "worker.stop");  lua_pushcclosure(L, l_denied, 1);
   lua_setfield(L, -2, "stop");
+  lua_pushliteral(L, "worker.kill");  lua_pushcclosure(L, l_denied, 1);
+  lua_setfield(L, -2, "kill");
   if (h->has_arg) { slot_push_value(L, &h->arg); lua_setfield(L, -2, "arg"); }
   lua_setglobal(L, "worker");
 
@@ -573,6 +588,24 @@ static void wk_capture_result(lua_State *L, worker *h, int ok) {
     h->result_str = (char *)malloc(len + 1);
     if (h->result_str) { memcpy(h->result_str, p, len); h->result_str[len] = '\0'; h->result_len = len; }
     lua_pop(L, 1);
+  }
+}
+
+/* VM instructions between safepoints. Large enough that the per-check
+ * uv_sem_trywait is lost in the noise of real compute (~one trywait per
+ * sub-millisecond of Lua), small enough that a kill lands promptly. */
+#define WK_HOOK_COUNT 100000
+
+/* The safepoint. Installed on the worker's own state before it runs the source,
+ * so it only ever fires on that thread -- the main thread signals by posting
+ * kill_sem, never by touching this state. The worker pointer rides the state's
+ * extraspace (set in worker_main), an O(1) read with no Lua-stack traffic. */
+static void wk_kill_hook(lua_State *L, lua_Debug *ar) {
+  (void)ar;
+  worker *h = *(worker **)lua_getextraspace(L);
+  if (h && uv_sem_trywait(&h->kill_sem) == 0) {
+    h->killed = 1;
+    luaL_error(L, "worker killed at safepoint"); /* unwinds the source pcall */
   }
 }
 
@@ -625,6 +658,11 @@ static void worker_main(void *arg) {
     h->result_str = strdup(e);
     h->result_len = h->result_str ? strlen(h->result_str) : 0;
   } else {
+    /* Arm the safepoint: from here on a runaway pure-Lua source is preemptible
+     * by kill(). extraspace carries `h` to the hook; the hook is on THIS state
+     * only, so nothing crosses a thread but the kill_sem post. */
+    *(worker **)lua_getextraspace(L) = h;
+    lua_sethook(L, wk_kill_hook, LUA_MASKCOUNT, WK_HOOK_COUNT);
     lua_pushcfunction(L, traceback);
     int base = lua_gettop(L);
     if (luaL_loadbuffer(L, h->source, h->srclen, "@worker") != LUA_OK) {
@@ -746,6 +784,14 @@ static void wk_stop_signal(worker *h) {
   uv_sem_post(&h->gate);
 }
 
+/* Preemptive kill: post kill_sem (the worker's count hook trywaits it and raises)
+ * AND do the cooperative stop, so a worker blocked in C (recv, sys.exec) is woken
+ * while a worker spinning in Lua is unwound at the next safepoint. */
+static void wk_kill_signal(worker *h) {
+  uv_sem_post(&h->kill_sem);
+  wk_stop_signal(h);
+}
+
 /* Drain until EXIT, then join the thread. The drain is not a nicety: a worker
  * blocked pushing into a full out ring is unblocked precisely by this loop,
  * which is what makes stop-then-join deadlock-free. */
@@ -780,6 +826,7 @@ static void wk_free(worker *h) {
   uv_sem_destroy(&h->ready);
   uv_sem_destroy(&h->stop_sem);
   uv_sem_destroy(&h->exit_sem);
+  uv_sem_destroy(&h->kill_sem);
   uv_sem_destroy(&h->gate);
   while (h->pend_head) {
     struct pmsg *p = h->pend_head;
@@ -879,6 +926,7 @@ static int l_spawn(lua_State *L) {
   if (rc == 0) rc = uv_sem_init(&h->ready, 0);
   if (rc == 0) rc = uv_sem_init(&h->stop_sem, 0);
   if (rc == 0) rc = uv_sem_init(&h->exit_sem, 0);
+  if (rc == 0) rc = uv_sem_init(&h->kill_sem, 0);
   if (rc == 0) rc = uv_sem_init(&h->gate, 1);
   if (rc != 0) {
     /* Partial init: destroying an uninitialized sem is UB, so be exact. */
@@ -999,6 +1047,15 @@ static int l_stop(lua_State *L) {
   return 0;
 }
 
+/* worker.kill(handle) -- preempt a runaway worker. Unlike stop() (cooperative,
+ * the source may still return ok), kill unwinds the source with an error at the
+ * next Lua safepoint, so join() reports ok=false. */
+static int l_kill(lua_State *L) {
+  worker *h = *check_handle(L);
+  if (!h->joined) wk_kill_signal(h);
+  return 0;
+}
+
 /* worker.join(handle) -> ok, result
  * ok is whether the source completed; result is its return value (string or
  * number, per the boundary rules) or the error string with traceback. */
@@ -1016,7 +1073,7 @@ static int l_join(lua_State *L) {
 static int l_status(lua_State *L) {
   worker *h = *check_handle(L);
   if (h->joined) lua_pushliteral(L, "joined");
-  else if (wk_exited(h)) lua_pushstring(L, h->ok ? "done" : "error");
+  else if (wk_exited(h)) lua_pushstring(L, h->killed ? "killed" : (h->ok ? "done" : "error"));
   else lua_pushliteral(L, "running");
   return 1;
 }
@@ -1065,7 +1122,7 @@ static int l_list(lua_State *L) {
     lua_pushstring(L, h->label ? h->label : "?");  lua_setfield(L, -2, "label");
     lua_pushstring(L, h->kind ? h->kind : "task"); lua_setfield(L, -2, "kind");
     const char *st = h->joined ? "joined"
-                   : wk_exited(h) ? (h->ok ? "done" : "error")
+                   : wk_exited(h) ? (h->killed ? "killed" : (h->ok ? "done" : "error"))
                    : "running";
     lua_pushstring(L, st);                         lua_setfield(L, -2, "status");
     lua_pushnumber(L, now - h->started);           lua_setfield(L, -2, "elapsed");
@@ -1094,6 +1151,7 @@ static const luaL_Reg worker_lib[] = {
   {"post",   l_post},
   {"recv",   l_recv},
   {"stop",   l_stop},
+  {"kill",   l_kill},
   {"join",   l_join},
   {"status", l_status},
   {NULL, NULL}
