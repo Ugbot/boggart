@@ -144,4 +144,16 @@ end
   return results, errors, got
 end
 
+-- (Sub-agents on the pool -- running a full model turn per worker -- was
+-- prototyped and proven to WORK: a worker stands up its own scheduler
+-- (sched.drive) and run_on completes over the worker's per-loop curl_multi,
+-- returning real assistant text. It is not exposed yet because a worker that
+-- does http cannot cleanly exit: the loop-owned curl_multi keeps a keep-alive
+-- socket poll REFERENCED (which is exactly what lets the main scheduler sleep on
+-- the socket at zero CPU), so the worker's teardown uv_run() blocks on it. The
+-- fix is a per-loop http.shutdown() in C, wired into worker teardown -- a real
+-- change to the path every model turn uses, not a quick one. And the payoff is
+-- small: the cooperative scheduler already multiplexes N model turns' HTTP on
+-- one loop, so threads only help CPU-bound agent work, which map() covers.)
+
 return M

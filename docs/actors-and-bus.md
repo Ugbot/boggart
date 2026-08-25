@@ -189,12 +189,21 @@ These are load-bearing; the pool must respect them:
      parks on a latch + uv timer inside a turn, blocks-with-poll off it. This is
      the pool running real, controllable, observable work — the payoff that makes
      the safepoint kill / lifecycle / cross-thread bus real, not test-only.
-   - **Not pursued:** rewiring the `loop`'s `parallel:true` mode from cooperative
-     coroutines onto threads. Low value: the loop's parallel items are IO-bound
-     (a tool that shells out, an agent turn) which the one-loop scheduler already
-     runs concurrently; real threads only help CPU-bound Lua, which `workers.map`
-     now covers directly. Spawned sub-agents on the pool is the higher-value
-     target and waits on the run_on-across-a-worker serialization contract.
+   - **Sub-agents on the pool — prototyped, proven to RUN, blocked on one C fix.**
+     A worker stands up its own scheduler (`sched.drive`) and `run_on` completes
+     over the worker's per-loop `curl_multi` — a real model turn returns real
+     assistant text from a worker thread. The blocker: a worker that does http
+     cannot cleanly exit. The loop-owned `curl_multi` keeps a keep-alive socket
+     poll *referenced* — which is exactly what lets the main scheduler sleep on
+     the socket at zero CPU (`sched.step`'s `uv.run("once")`) — so the worker's
+     teardown `uv_run()` blocks on it. A naive `uv_unref` would break that main-
+     loop efficiency; the right fix is a per-loop `http.shutdown()` in C wired
+     into worker teardown, a real change to the path every turn uses. Deferred:
+     the payoff is small (the one-loop scheduler already multiplexes N turns'
+     HTTP concurrently; threads only help CPU-bound agent work, which `map`
+     covers) and the fix touches the hottest path in the system.
+   - **Not pursued:** rewiring the `loop`'s `parallel:true` mode onto threads —
+     same low value (its items are IO-bound; `map` covers CPU-bound).
 4. **Agent-free main.** Move the coordinator onto an actor; main becomes pure
    supervisor/UI/comms.
 5. **Prove it.** A deterministic bench (mock wire) that reproduces a Lua spin, a
