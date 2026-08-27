@@ -114,7 +114,7 @@ M.commands = {
                        args = overlay_names },
   { name = "model",    help = "list models (numbered), or switch by number / name / preset", args = model_names },
   { name = "endpoint", help = "saved endpoint presets: list, save <name>, <name> to switch, rm <name>" },
-  { name = "effort",   help = "reasoning effort: minimal | low | medium | high | none (models that support it)" },
+  { name = "effort",   help = "reasoning effort: minimal|low|medium|high|xhigh|max|none (xhigh/max are Anthropic-only)" },
   { name = "agents",   help = "live fleet status: how many agents are running and what each is doing" },
   { name = "kpis",     help = "reliability scoreboard for this run: deliverable rate, tokens, think:output" },
   { name = "trace",    help = "tail the fabric bus live: /trace [pattern] to start, /trace off to stop" },

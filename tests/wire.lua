@@ -1,148 +1,99 @@
--- tests/wire.lua -- the OpenAI Responses-API wire adapter, in isolation.
---
--- The Responses API differs from chat-completions enough that the encode/decode
--- pair is worth checking without a live endpoint: system -> instructions, the
--- transcript -> an `input` array that splices function_call / function_call_output
--- items in transcript order, FLAT tools, reasoning.effort, and a TYPED SSE stream
--- decoded back into Anthropic content-blocks. Run: boggart --eval tests/wire.lua
-local api = require("api")
-local json = require("json")
+-- wire.lua -- the per-wire request-body transforms (lua/api.lua). The exact
+-- shape each wire sends is verified against the documented provider contracts,
+-- offline, via the api._body_for_wire test hook. This is where the "400 on
+-- Sonnet" class of bug is caught before it reaches a live endpoint.
+local api = bog.api or require("api")
 
-local fails = 0
-local function check(ok, msg)
-  if not ok then fails = fails + 1; io.write("  FAIL: ", msg, "\n") end
+local passed, failed = 0, 0
+local function ok(c, n) if c then passed = passed + 1 else failed = failed + 1; io.write("FAIL: ", n, "\n") end end
+local function eq(a, b, n)
+  if a == b then passed = passed + 1
+  else failed = failed + 1; io.write("FAIL: ", n, " (", tostring(a), " ~= ", tostring(b), ")\n") end
 end
 
--- ---- encode: Anthropic body -> Responses request ---------------------------
-local body = {
-  model = "gpt-5-sol", max_tokens = 256, stream = true,
-  system = "You are terse.", reasoning_effort = "high", temperature = 0.3,
-  messages = {
-    { role = "user", content = "search for cats" },
+local function base(extra)
+  local b = { model = "claude-sonnet-5", max_tokens = 16000,
+              messages = { { role = "user", content = "hi" } }, stream = true }
+  for k, v in pairs(extra or {}) do b[k] = v end
+  return b
+end
+
+-- ---- Anthropic: effort -> output_config.effort, NEVER reasoning_effort or
+-- ---- thinking.budget_tokens (both 400 on the 4.7+/5 family) -----------------
+do
+  local out = api._body_for_wire("anthropic", base{ reasoning_effort = "medium" })
+  ok(out.reasoning_effort == nil, "anthropic: reasoning_effort (OpenAI field) is dropped")
+  ok(out.thinking == nil, "anthropic: never sends thinking{} (400 on Sonnet 5)")
+  ok(type(out.output_config) == "table", "anthropic: effort becomes output_config")
+  eq(out.output_config.effort, "medium", "anthropic: output_config.effort carries the level")
+end
+do
+  local out = api._body_for_wire("anthropic", base{ reasoning_effort = "minimal" })
+  eq(out.output_config.effort, "low", "anthropic: 'minimal' maps to Anthropic 'low' (no minimal there)")
+end
+do
+  local out = api._body_for_wire("anthropic", base{ reasoning_effort = "xhigh" })
+  eq(out.output_config.effort, "xhigh", "anthropic: xhigh passes through")
+end
+do
+  local out = api._body_for_wire("anthropic", base{})   -- no effort
+  ok(out.output_config == nil, "anthropic: no effort -> no output_config (defaults to server high)")
+end
+do
+  -- effort only for a Claude model, not a local anthropic-wire server (ds4)
+  local out = api._body_for_wire("anthropic",
+    { model = "deepseek-v4-flash", max_tokens = 8000, reasoning_effort = "high",
+      messages = { { role = "user", content = "hi" } } })
+  ok(out.output_config == nil, "anthropic: output_config not sent to a non-Claude model")
+  ok(out.reasoning_effort == nil, "anthropic: reasoning_effort still stripped for non-Claude too")
+end
+
+-- ---- Anthropic: signature-less thinking blocks are dropped, signed kept -----
+do
+  local msgs = {
+    { role = "user", content = "write" },
     { role = "assistant", content = {
-        { type = "text", text = "on it" },
-        { type = "tool_use", id = "call_1", name = "web", input = { q = "cats" } },
+        { type = "thinking", thinking = "from gpt-oss, no sig" },   -- cross-model: drop
+        { type = "text", text = "ok" },
     } },
-    { role = "user", content = {
-        { type = "tool_result", tool_use_id = "call_1", content = "found 3" },
+    { role = "user", content = "more" },
+    { role = "assistant", content = {
+        { type = "thinking", thinking = "real anthropic", signature = "abc123" }, -- keep
+        { type = "text", text = "done" },
     } },
-    { role = "user", content = "thanks" },
-  },
-  tools = {
-    { name = "web", description = "search", input_schema = {
-        type = "object",
-        properties = { q = { type = "string" }, ids = { type = "array" } },
-        required = { "q" } } },
-  },
-}
-
-local r = api._to_responses_body(body)
-check(r.instructions == "You are terse.", "system -> instructions")
-check(r.model == "gpt-5-sol", "model carried through")
-check(r.max_output_tokens == 256, "max_tokens -> max_output_tokens")
-check(r.store == false, "store forced false")
-check(r.stream == true, "stream carried through")
-check(type(r.reasoning) == "table" and r.reasoning.effort == "high", "reasoning.effort set")
-check(r.temperature == 0.3, "temperature carried through")
-
--- input items, in transcript order: user, assistant text, function_call,
--- function_call_output, user.
-local it = r.input
-check(#it == 5, "input has 5 items (got " .. #it .. ")")
-check(it[1].role == "user" and it[1].content == "search for cats", "item1 user text")
-check(it[2].role == "assistant" and it[2].content == "on it", "item2 assistant text")
-check(it[3].type == "function_call" and it[3].call_id == "call_1"
-  and it[3].name == "web", "item3 function_call")
-check(it[3].arguments and json.decode(it[3].arguments).q == "cats", "item3 args JSON-encoded")
-check(it[4].type == "function_call_output" and it[4].call_id == "call_1"
-  and it[4].output == "found 3", "item4 function_call_output")
-check(it[5].role == "user" and it[5].content == "thanks", "item5 user text")
-
--- tools: FLAT ({type,name,description,parameters}); array field gets `items`.
-check(type(r.tools) == "table" and #r.tools == 1, "one tool")
-local t = r.tools[1]
-check(t.type == "function" and t.name == "web", "tool is flat function")
-check(t.parameters and t.parameters.properties.ids.items ~= nil,
-  "array param gains items (norm_schema)")
-
--- a bodyless-system / no-tools request must omit those keys, not send nil/empty.
-local bare = api._to_responses_body({ model = "m", max_tokens = 8, messages = {
-  { role = "user", content = "hi" } } })
-check(bare.instructions == nil, "no system -> no instructions key")
-check(bare.tools == nil, "no tools -> no tools key")
-check(bare.reasoning == nil, "no effort -> no reasoning key")
-
--- ---- decode: typed SSE -> assistant message --------------------------------
--- A text-only stream.
-local function feed_all(dec, frames)
-  for _, f in ipairs(frames) do dec.feed("data: " .. json.encode(f) .. "\n") end
+  }
+  local out = api._body_for_wire("anthropic", base{ messages = msgs })
+  eq(#out.messages[2].content, 1, "anthropic: signature-less thinking block dropped")
+  eq(out.messages[2].content[1].type, "text", "anthropic: the text block survives the drop")
+  eq(#out.messages[4].content, 2, "anthropic: a SIGNED thinking block is kept")
+  eq(out.messages[4].content[1].signature, "abc123", "anthropic: the kept thinking keeps its signature")
+end
+do
+  -- an assistant turn whose ONLY block was a bad thinking block must not go empty
+  local msgs = { { role = "user", content = "x" },
+    { role = "assistant", content = { { type = "thinking", thinking = "orphan" } } } }
+  local out = api._body_for_wire("anthropic", base{ messages = msgs })
+  ok(#out.messages[2].content >= 1, "anthropic: a stripped-to-empty assistant turn gets a placeholder (no empty-content 400)")
 end
 
-local d1 = api._new_responses_decoder(nil)
-feed_all(d1, {
-  { type = "response.output_text.delta", delta = "Hel" },
-  { type = "response.output_text.delta", delta = "lo" },
-  { type = "response.completed", response = { usage = { input_tokens = 5, output_tokens = 2 } } },
-})
-local m1, stop1, err1 = d1.finish()
-check(err1 == nil, "text stream: no error")
-check(stop1 == "end_turn", "text stream: end_turn")
-check(#m1.content == 1 and m1.content[1].type == "text" and m1.content[1].text == "Hello",
-  "text stream: assembled text")
-check(m1.usage.input_tokens == 5 and m1.usage.output_tokens == 2, "usage captured")
-
--- A reasoning + tool-call stream (arguments streamed in fragments by item_id).
-local d2 = api._new_responses_decoder(nil)
-feed_all(d2, {
-  { type = "response.reasoning_text.delta", delta = "think..." },
-  { type = "response.output_item.added",
-    item = { type = "function_call", id = "fc_1", call_id = "call_9", name = "web" } },
-  { type = "response.function_call_arguments.delta", item_id = "fc_1", delta = '{"q":"c' },
-  { type = "response.function_call_arguments.delta", item_id = "fc_1", delta = 'ats"}' },
-  { type = "response.output_item.done",
-    item = { type = "function_call", id = "fc_1", call_id = "call_9", name = "web" } },
-  { type = "response.completed", response = { usage = { input_tokens = 9, output_tokens = 4 } } },
-})
-local m2, stop2, err2 = d2.finish()
-check(err2 == nil, "tool stream: no error")
-check(stop2 == "tool_use", "tool stream: stop_reason tool_use")
-local thinking = m2.content[1]
-check(thinking and thinking.type == "thinking" and thinking.thinking == "think...",
-  "tool stream: thinking block first")
-local tu = m2.content[#m2.content]
-check(tu.type == "tool_use" and tu.id == "call_9" and tu.name == "web",
-  "tool stream: tool_use block")
-check(type(tu.input) == "table" and tu.input.q == "cats", "tool stream: args parsed")
-
--- A failed stream surfaces an error, not a silent empty turn.
-local d3 = api._new_responses_decoder(nil)
-feed_all(d3, {
-  { type = "response.output_text.delta", delta = "partial" },
-  { type = "response.failed", response = { error = { message = "boom" } } },
-})
-local _, _, err3 = d3.finish()
-check(err3 ~= nil and err3:find("boom", 1, true), "failed stream surfaces error")
-
--- on_text callback fires per delta (the live-typing path).
-local seen = {}
-local d4 = api._new_responses_decoder(function(s) seen[#seen + 1] = s end)
-feed_all(d4, {
-  { type = "response.output_text.delta", delta = "a" },
-  { type = "response.output_text.delta", delta = "b" },
-})
-d4.finish()
-check(#seen == 2 and seen[1] == "a" and seen[2] == "b", "on_text fires per delta")
-
--- SSE frames split across feed() calls must still parse (partial-line buffering).
-local d5 = api._new_responses_decoder(nil)
-local line = "data: " .. json.encode({ type = "response.output_text.delta", delta = "XY" }) .. "\n"
-d5.feed(line:sub(1, 10))
-d5.feed(line:sub(11))
-local m5 = d5.finish()
-check(m5.content[1].text == "XY", "split-frame buffering")
-
-if fails == 0 then
-  io.write("ok  wire: all assertions passed\n")
-else
-  io.write(string.format("FAILED: %d assertion(s)\n", fails)); os.exit(1)
+-- ---- OpenAI / Responses: reasoning_effort passes; xhigh/max clamp to high ----
+do
+  local out = api._body_for_wire("openai", { model = "gpt-oss-120b", max_tokens = 100,
+    messages = { { role = "user", content = "hi" } }, reasoning_effort = "medium" })
+  eq(out.reasoning_effort, "medium", "openai: reasoning_effort passes through")
 end
+do
+  local out = api._body_for_wire("openai", { model = "gpt-oss-120b", max_tokens = 100,
+    messages = { { role = "user", content = "hi" } }, reasoning_effort = "xhigh" })
+  eq(out.reasoning_effort, "high", "openai: xhigh clamps to high (OpenAI has no xhigh)")
+  ok(out.output_config == nil, "openai: no Anthropic output_config leaks onto the OpenAI wire")
+end
+do
+  local out = api._body_for_wire("responses", { model = "gpt-5.6-sol", max_tokens = 100,
+    messages = { { role = "user", content = "hi" } }, reasoning_effort = "max" })
+  ok(type(out.reasoning) == "table" and out.reasoning.effort == "high", "responses: max clamps to high under reasoning.effort")
+end
+
+io.write(failed == 0 and ("wire: all " .. passed .. " passed\n")
+                      or ("wire: " .. failed .. " FAILED, " .. passed .. " passed\n"))
+os.exit(failed == 0 and 0 or 1)

@@ -518,7 +518,11 @@ local function to_openai_body(body)
   }
   if body.stream then out.stream_options = { include_usage = true } end
   if body.temperature then out.temperature = body.temperature end
-  if body.reasoning_effort then out.reasoning_effort = body.reasoning_effort end
+  -- OpenAI reasoning_effort tops out at "high"; clamp the Anthropic-only xhigh/max.
+  if body.reasoning_effort then
+    local e = body.reasoning_effort
+    out.reasoning_effort = (e == "xhigh" or e == "max") and "high" or e
+  end
   if body.tools and #body.tools > 0 then
     local tools = {}
     for _, t in ipairs(body.tools) do
@@ -673,7 +677,10 @@ local function to_responses_body(body)
   }
   local instructions = text_of(body.system)
   if instructions ~= "" then out.instructions = instructions end
-  if body.reasoning_effort then out.reasoning = { effort = body.reasoning_effort } end
+  if body.reasoning_effort then
+    local e = body.reasoning_effort
+    out.reasoning = { effort = (e == "xhigh" or e == "max") and "high" or e }
+  end
   if body.temperature then out.temperature = body.temperature end
   if body.tools and #body.tools > 0 then
     local tools = {}
@@ -774,6 +781,69 @@ local function new_responses_decoder(on_text, on_think)
   return { feed = feed, finish = finish }
 end
 
+-- boggart's effort levels -> Anthropic's output_config.effort. Anthropic accepts
+-- low|medium|high|xhigh|max (there is no "minimal"); "high" is the default.
+local ANTHROPIC_EFFORT = {
+  minimal = "low", low = "low", medium = "medium", high = "high",
+  xhigh = "xhigh", max = "max",
+}
+
+-- The Anthropic body is mostly the internal body sent as-is (the transcript is
+-- already Anthropic-shaped), with three corrections, each of which Anthropic
+-- 400s on otherwise (verified against docs.claude.com):
+--   * reasoning_effort is an OpenAI-only field. On a Claude model, reasoning
+--     depth is controlled by `output_config: {effort: ...}` (adaptive thinking).
+--     We translate it and never send `reasoning_effort`. We do NOT send
+--     `thinking: {type:"enabled", budget_tokens}` -- that extended-thinking form
+--     returns a 400 on the 4.7+/5 family (claude-sonnet-5 et al.).
+--   * a `thinking` block WITHOUT a signature is rejected ("thinking.signature:
+--     Field required"). Those come from a DIFFERENT model/wire -- gpt-oss / qwen
+--     store their reasoning as a thinking block with no Anthropic signature -- so
+--     a transcript built on the local model and continued on Sonnet carries them.
+--     A real Anthropic thinking block carries a signature and is KEPT.
+local function to_anthropic_body(body)
+  local out = {}
+  for k, v in pairs(body) do out[k] = v end
+
+  local eff = out.reasoning_effort
+  out.reasoning_effort = nil
+  -- output_config.effort is a Claude feature; only send it to a Claude model, and
+  -- not to haiku (not in the effort-supported set) or an arbitrary anthropic-wire
+  -- endpoint (a local ds4/deepseek server would reject the unknown field).
+  if eff and type(out.model) == "string"
+     and out.model:match("^claude%-") and not out.model:find("haiku", 1, true) then
+    out.output_config = { effort = ANTHROPIC_EFFORT[eff] or eff }
+  end
+
+  local msgs = {}
+  for i, m in ipairs(body.messages or {}) do
+    if type(m.content) ~= "table" then
+      msgs[i] = m
+    else
+      local kept, dropped = {}, false
+      for _, blk in ipairs(m.content) do
+        if type(blk) == "table" and blk.type == "thinking"
+           and (blk.signature == nil or blk.signature == "") then
+          dropped = true
+        else
+          kept[#kept + 1] = blk
+        end
+      end
+      if not dropped then
+        msgs[i] = m
+      else
+        -- Never leave an assistant turn with empty content (Anthropic 400s on it).
+        if #kept == 0 then kept[1] = { type = "text", text = "..." } end
+        local mm = {}; for k, v in pairs(m) do mm[k] = v end
+        mm.content = kept
+        msgs[i] = mm
+      end
+    end
+  end
+  out.messages = msgs
+  return out
+end
+
 -- ---- the transport (always runs inside a scheduler coroutine) --------------
 local function stream_async_once(body, on_text, w, on_think)
   local dec = (w == "responses" and new_responses_decoder(on_text, on_think))
@@ -811,7 +881,7 @@ local function stream_async(body_tbl, on_text, on_think)
   local w = wire()
   local tbl = (w == "responses" and to_responses_body(body_tbl))
     or (w == "openai" and to_openai_body(body_tbl))
-    or body_tbl
+    or to_anthropic_body(body_tbl)
   local body = util.to_valid_utf8(json.encode(tbl))
   for attempt = 1, M.RETRY.attempts do
     local msg, stop, serr, status, terr, raw = stream_async_once(body, on_text, w, on_think)
@@ -833,6 +903,15 @@ local function stream_async(body_tbl, on_text, on_think)
   end
 end
 M.stream_async = stream_async
+
+-- Test hook: the exact wire-specific body a request would send, so the
+-- per-wire transforms (effort mapping, thinking-block cleanup, field renames)
+-- are checkable offline without a live endpoint. See tests/wire.lua.
+function M._body_for_wire(w, body)
+  return (w == "responses" and to_responses_body(body))
+    or (w == "openai" and to_openai_body(body))
+    or to_anthropic_body(body)
+end
 
 -- ---- compaction ------------------------------------------------------------
 local COMPACT_PROMPT = [[

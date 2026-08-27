@@ -445,17 +445,19 @@ local function handle_command(line)
   elseif cmd == "effort" then
     -- Reasoning effort for models that support it (deepseek, gpt-oss, o-series).
     -- Session-scoped; a preset can carry one so it restores on switch.
-    local LEVELS = { minimal = true, low = true, medium = true, high = true }
+    -- minimal|low|medium|high everywhere; xhigh|max are Anthropic-only (Sonnet 5
+    -- et al.) and clamp to high on the OpenAI/Responses wires.
+    local LEVELS = { minimal = true, low = true, medium = true, high = true, xhigh = true, max = true }
     local v = rest:lower()
     if rest == "" then
       io.write("reasoning effort: ", tostring(bog.session.effort or "(server default)"),
-        "\n  /effort <minimal|low|medium|high>   (or 'none' to clear)\n")
+        "\n  /effort <minimal|low|medium|high|xhigh|max>   (or 'none' to clear)\n")
     elseif v == "none" or v == "off" or v == "default" or v == "clear" then
       bog.session.effort = nil; io.write("effort cleared (server default)\n")
     elseif LEVELS[v] then
       bog.session.effort = v; io.write("effort -> ", v, "\n")
     else
-      io.write("usage: /effort <minimal|low|medium|high|none>\n")
+      io.write("usage: /effort <minimal|low|medium|high|xhigh|max|none>\n")
     end
   elseif cmd == "agents" or cmd == "fleet" or cmd == "swarm" then
     -- Live fleet status. The scheduler's actors ARE the agents (the coordinator
