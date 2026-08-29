@@ -284,9 +284,14 @@ function M.agent_system(rec)
   if rec.sys_override and rec.sys_override ~= "" then
     blocks[#blocks + 1] = { type = "text", text = rec.sys_override }
   end
-  -- The stable prefix carries the cache breakpoint wherever it lands.
+  -- The stable prefix carries the cache breakpoint wherever it lands. 1h TTL: the
+  -- tools+system head is written once per session/agent but read on every turn
+  -- (and across a swarm's agents that share it), so the longer-lived entry pays
+  -- off; the growing conversation gets its own 5m breakpoint (api.to_anthropic_body).
+  -- Ordering holds (1h head before the 5m conversation). Non-Anthropic endpoints
+  -- (ds4, OpenAI) ignore the marker entirely.
   blocks[#blocks + 1] = { type = "text", text = DISCIPLINE,
-                          cache_control = { type = "ephemeral" } }
+                          cache_control = { type = "ephemeral", ttl = "1h" } }
   if rec.instructions and rec.instructions ~= "" then
     blocks[#blocks + 1] = { type = "text", text = "# Skills\n" .. rec.instructions }
   end

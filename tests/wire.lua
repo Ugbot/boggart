@@ -94,6 +94,41 @@ do
   ok(type(out.reasoning) == "table" and out.reasoning.effort == "high", "responses: max clamps to high under reasoning.effort")
 end
 
+-- ---- prompt caching: cache_control only on a real Claude body ---------------
+do
+  local out = api._body_for_wire("anthropic", base{})
+  ok(type(out.cache_control) == "table" and out.cache_control.type == "ephemeral",
+     "anthropic: a Claude body carries top-level ephemeral cache_control")
+end
+do
+  local out = api._body_for_wire("anthropic",
+    { model = "deepseek-v4-flash", max_tokens = 8000,
+      messages = { { role = "user", content = "hi" } } })
+  ok(out.cache_control == nil, "anthropic: a non-Claude (ds4) body has NO cache_control (ds4 ignores it)")
+end
+do
+  local o = api._body_for_wire("openai", { model = "gpt-oss-120b", max_tokens = 100,
+    messages = { { role = "user", content = "hi" } } })
+  local r = api._body_for_wire("responses", { model = "gpt-5.6-sol", max_tokens = 100,
+    messages = { { role = "user", content = "hi" } } })
+  ok(o.cache_control == nil and r.cache_control == nil, "openai/responses bodies never carry cache_control")
+end
+
+-- ---- cost math: cache read @0.1x, write @1.25x, fresh input @1x --------------
+-- M.cost returns nil for a local endpoint, so stub status() to a cloud Claude.
+do
+  local real = api.status
+  api.status = function() return { is_local = false, model = "claude-sonnet-5" } end
+  local function cost_of(u) return api.cost({ model = "claude-sonnet-5", usage = u }) end
+  local base_c = cost_of({ input = 1000000, output = 0, cached = 0, cache_write = 0 })
+  ok(base_c and base_c > 0, "cost: fresh input is priced")
+  ok(math.abs(cost_of({ cached = 1000000 }) / base_c - api.CACHE_READ_RATIO) < 1e-9,
+     "cost: cache-read tokens priced at 0.1x fresh input")
+  ok(math.abs(cost_of({ cache_write = 1000000 }) / base_c - api.CACHE_WRITE_RATIO) < 1e-9,
+     "cost: cache-write tokens priced at 1.25x fresh input")
+  api.status = real
+end
+
 io.write(failed == 0 and ("wire: all " .. passed .. " passed\n")
                       or ("wire: " .. failed .. " FAILED, " .. passed .. " passed\n"))
 os.exit(failed == 0 and 0 or 1)

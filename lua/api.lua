@@ -552,7 +552,18 @@ local function new_openai_decoder(on_text, on_think)
   local function handle(evt)
     if type(evt) ~= "table" then return end
     if type(evt.usage) == "table" then
-      if type(evt.usage.prompt_tokens) == "number" then usage.input_tokens = evt.usage.prompt_tokens end
+      -- OpenAI reports cached (and, on ds4's OpenAI shape, written) tokens as a
+      -- SUBSET of prompt_tokens. Split into the disjoint fresh/read/write buckets
+      -- Anthropic already uses, so pricing (input @1x + read @0.1x + write @1.25x)
+      -- never double-counts. Standard OpenAI omits cache_write_tokens -> 0.
+      local d = evt.usage.prompt_tokens_details
+      local cached = (type(d) == "table" and type(d.cached_tokens) == "number" and d.cached_tokens) or 0
+      local written = (type(d) == "table" and type(d.cache_write_tokens) == "number" and d.cache_write_tokens) or 0
+      usage.cache_read_input_tokens = cached
+      usage.cache_creation_input_tokens = written
+      if type(evt.usage.prompt_tokens) == "number" then
+        usage.input_tokens = math.max(0, evt.usage.prompt_tokens - cached - written)
+      end
       if type(evt.usage.completion_tokens) == "number" then usage.output_tokens = evt.usage.completion_tokens end
     end
     if evt.error then
@@ -732,7 +743,16 @@ local function new_responses_decoder(on_text, on_think)
     elseif t == "response.completed" or t == "response.incomplete" then
       local u = evt.response and evt.response.usage
       if type(u) == "table" then
-        if type(u.input_tokens) == "number" then usage.input_tokens = u.input_tokens end
+        -- Responses reports cached tokens as a SUBSET of input_tokens; split into
+        -- disjoint fresh/read/write buckets (see the chat decoder note).
+        local d = u.input_tokens_details
+        local cached = (type(d) == "table" and type(d.cached_tokens) == "number" and d.cached_tokens) or 0
+        local written = (type(d) == "table" and type(d.cache_write_tokens) == "number" and d.cache_write_tokens) or 0
+        usage.cache_read_input_tokens = cached
+        usage.cache_creation_input_tokens = written
+        if type(u.input_tokens) == "number" then
+          usage.input_tokens = math.max(0, u.input_tokens - cached - written)
+        end
         if type(u.output_tokens) == "number" then usage.output_tokens = u.output_tokens end
       end
     elseif t == "response.failed" or t == "response.error" or t == "error" then
@@ -813,6 +833,17 @@ local function to_anthropic_body(body)
   if eff and type(out.model) == "string"
      and out.model:match("^claude%-") and not out.model:find("haiku", 1, true) then
     out.output_config = { effort = ANTHROPIC_EFFORT[eff] or eff }
+  end
+
+  -- Automatic prompt caching. Top-level ephemeral caching makes Anthropic
+  -- advance a breakpoint to the last cacheable message each turn, so the growing
+  -- prefix (tools + system + history) is cached and each turn reads the prior
+  -- turn's cache (~0.1x input) instead of re-paying for the whole transcript. It
+  -- coexists with the head breakpoint on the DISCIPLINE block (prompt.lua). Real
+  -- Claude models only: ds4/deepseek ignores cache_control, and the OpenAI wire
+  -- never sees it (its builder flattens system blocks to a string).
+  if type(out.model) == "string" and out.model:match("^claude%-") then
+    out.cache_control = { type = "ephemeral" }
   end
 
   local msgs = {}
@@ -962,6 +993,10 @@ M.PRICING = {
 -- Cache-read (prompt-cache hit) input tokens bill at about a tenth of fresh
 -- input on the vendors boggart talks to.
 M.CACHE_READ_RATIO = 0.1
+-- Cache writes cost 1.25x base input (the 5-minute TTL; the 1-hour TTL is 2x, but
+-- boggart only ever 1h-caches the small, rarely-written head, so the 5m rate is
+-- the right single estimate). OpenAI does not report writes -> priced as 0.
+M.CACHE_WRITE_RATIO = 1.25
 
 -- Providers that speak the Messages API.
 --
@@ -1172,9 +1207,10 @@ function M.cost(sess)
   local u = sess and sess.usage
   if not u then return 0 end
   local pin, pout = price_for((sess and sess.model) or (st and st.model))
-  return ((u.input  or 0) * pin
-        + (u.output or 0) * pout
-        + (u.cached or 0) * pin * M.CACHE_READ_RATIO) / 1e6
+  return ((u.input      or 0) * pin
+        + (u.output     or 0) * pout
+        + (u.cached     or 0) * pin * M.CACHE_READ_RATIO
+        + (u.cache_write or 0) * pin * M.CACHE_WRITE_RATIO) / 1e6
 end
 
 -- maybe_compact(sess?, opts?) -- defaults to the single-agent session + sync.
@@ -1673,6 +1709,8 @@ function M.run_on(sess, user_text, on_text, opts)
         model = sess.model, ttfb_ms = ttfb_ms,
         in_tokens = (msg.usage and msg.usage.input_tokens) or 0,
         out_tokens = (msg.usage and msg.usage.output_tokens) or 0,
+        cache_read = (msg.usage and msg.usage.cache_read_input_tokens) or 0,
+        cache_write = (msg.usage and msg.usage.cache_creation_input_tokens) or 0,
         tool_calls = tc, think_chars = think_c, text_chars = text_c, stop = stop,
       })
     end
@@ -1682,10 +1720,11 @@ function M.run_on(sess, user_text, on_text, opts)
     -- annotation, and sending it back to the API on the next turn would be a
     -- wire-shape error.
     if msg.usage then
-      sess.usage = sess.usage or { input = 0, output = 0, cached = 0, turns = 0 }
+      sess.usage = sess.usage or { input = 0, output = 0, cached = 0, cache_write = 0, turns = 0 }
       sess.usage.input  = sess.usage.input  + (msg.usage.input_tokens or 0)
       sess.usage.output = sess.usage.output + (msg.usage.output_tokens or 0)
       sess.usage.cached = sess.usage.cached + (msg.usage.cache_read_input_tokens or 0)
+      sess.usage.cache_write = (sess.usage.cache_write or 0) + (msg.usage.cache_creation_input_tokens or 0)
       sess.usage.turns  = sess.usage.turns + 1
       -- The whole prompt, not just the uncached part. This is the number that
       -- says how close the conversation is to the context window, and with

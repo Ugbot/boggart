@@ -505,6 +505,10 @@ local function handle_command(line)
       io.write(string.format("run %s: %d turns, %d tool-calls, %d output tokens%s\n",
         tostring(sess.id), k.turns or 0, k.tool_calls or 0, k.out_tokens or 0,
         k.think_output_ratio and string.format("  (think:output %.1f)", k.think_output_ratio) or ""))
+      if k.cache_hit_rate then
+        io.write(string.format("prompt cache: %.0f%% of prompt tokens from cache  (%d read, %d written, %d fresh)\n",
+          100 * k.cache_hit_rate, k.cache_read or 0, k.cache_write or 0, k.in_tokens or 0))
+      end
       if (k.agents or 0) > 0 then
         io.write(string.format("fleet: %d agents  --  %d delivered (%.0f%%), %d false-success, %s tokens/artifact\n",
           k.agents, k.delivered or 0, 100 * (k.deliverable_rate or 0), k.false_success or 0,

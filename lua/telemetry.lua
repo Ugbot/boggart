@@ -72,6 +72,7 @@ function M.kpis(run_id)
     return agents[id]
   end
   local turns, tool_calls, out_tok, think_c, text_c = 0, 0, 0, 0, 0
+  local in_tok, cache_read, cache_write = 0, 0, 0
   local decisions = { allow = 0, deny = 0, ask = 0 }
   for _, r in ipairs(rows) do
     local p = decode(r.payload)
@@ -79,6 +80,9 @@ function M.kpis(run_id)
     if r.kind == "span:turn" then
       turns = turns + 1; a.turns = a.turns + 1
       out_tok = out_tok + (p.out_tokens or 0); a.out = a.out + (p.out_tokens or 0)
+      in_tok = in_tok + (p.in_tokens or 0)
+      cache_read = cache_read + (p.cache_read or 0)
+      cache_write = cache_write + (p.cache_write or 0)
       think_c = think_c + (p.think_chars or 0); a.think = a.think + (p.think_chars or 0)
       text_c = text_c + (p.text_chars or 0); a.text = a.text + (p.text_chars or 0)
       tool_calls = tool_calls + (p.tool_calls or 0); a.tool_calls = a.tool_calls + (p.tool_calls or 0)
@@ -101,8 +105,13 @@ function M.kpis(run_id)
       if a.delivered == true and a.verified == false then n_false = n_false + 1 end
     end
   end
+  -- Prompt caching: what fraction of the prompt tokens were served from cache
+  -- (read @0.1x) rather than freshly processed (@1x) or written (@1.25x).
+  local prompt_tok = in_tok + cache_read + cache_write
   return {
     turns = turns, tool_calls = tool_calls, out_tokens = out_tok,
+    in_tokens = in_tok, cache_read = cache_read, cache_write = cache_write,
+    cache_hit_rate = prompt_tok > 0 and (cache_read / prompt_tok) or nil,
     think_chars = think_c, text_chars = text_c,
     think_output_ratio = text_c > 0 and (think_c / text_c) or nil,
     agents = n_agents, delivered = n_delivered,
