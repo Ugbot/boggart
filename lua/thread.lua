@@ -137,11 +137,26 @@ function M.new_agent(p)
       .. " (see the `skills` tool for what exists)", 0)
   end
   local model = p.model or spec.model or bog.session.model
-  local id = bog.store.thread_create{
-    parent_id = p.parent_id, title = p.title or p.agent or "agent",
-    model = model, status = "running",
-    spec = { agent = p.agent, skills = skills },
-  }
+  -- Resume: adopt an existing saved session row (its id + transcript) rather than
+  -- forking a fresh one, so the conversation continues in place -- what
+  -- `boggart --tui --resume [id]` wants. Falls through to a fresh row if the id
+  -- is missing/unknown.
+  local id, resumed_messages
+  if p.resume_id then
+    local s = bog.store.sess_load(p.resume_id)
+    if s then
+      id, resumed_messages = s.id, s.messages or {}
+      model = s.model or model
+      pcall(bog.store.thread_save, id, { status = "running" })
+    end
+  end
+  if not id then
+    id = bog.store.thread_create{
+      parent_id = p.parent_id, title = p.title or p.agent or "agent",
+      model = model, status = "running",
+      spec = { agent = p.agent, skills = skills },
+    }
+  end
 
   local rec = {
     id = id, parent_id = p.parent_id, spec_name = p.agent, skills = skills,
@@ -151,7 +166,7 @@ function M.new_agent(p)
     -- must produce (deliverables) and how it is checked (verify).
     run_id = p.run_id or p.parent_id or id,
     deliverables = p.deliverables, verify = p.verify,
-    session = { id = id, model = model, messages = {}, max_tokens = 16000,
+    session = { id = id, model = model, messages = resumed_messages or {}, max_tokens = 16000,
                 compact_at = 400000, token_budget = M.default_token_budget,
                 effort = p.effort or M.default_effort },
   }

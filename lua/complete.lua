@@ -137,6 +137,7 @@ M.commands = {
   { name = "push",     help = "git push; hands a rejection to the agent to resolve" },
   { name = "sync",     help = "git pull --rebase; hands conflicts to the agent" },
   { name = "quit",     help = "exit" },
+  { name = "wq",       help = "save and exit; in the TUI, prints `boggart --tui --resume <id>` to reopen here" },
 }
 
 -- name -> entry, built once. Alias exit->quit so both dispatch and completion

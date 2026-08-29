@@ -33,7 +33,7 @@ local want = { help = true, tools = true, auth = true, doctor = true,
   trace = true,
   ["until"] = true, react = true, new = true, clear = true, compact = true,
   cost = true, copy = true, mode = true, dispatch = true,
-  status = true, diff = true, commit = true, push = true, sync = true, quit = true }
+  status = true, diff = true, commit = true, push = true, sync = true, quit = true, wq = true }
 for _, c in ipairs(C.commands) do
   check(want[c.name], "unexpected command in registry: /" .. c.name)
   want[c.name] = nil

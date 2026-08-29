@@ -504,7 +504,10 @@ end
 -- "quit" for /exit and /quit.
 local function slash(st, line)
   local cmd = line:match("^/(%S+)")
-  if cmd == "exit" or cmd == "quit" then return "quit" end
+  -- /wq (write-quit) and /sq are the explicit "save and exit". Every exit saves
+  -- and prints the resume one-liner (see M.run's teardown), so these are just the
+  -- named door for it.
+  if cmd == "exit" or cmd == "quit" or cmd == "wq" or cmd == "sq" then return "quit" end
   if not bog.handle_command then
     st.entries[#st.entries + 1] = { role = "system", text = "commands are unavailable" }
     return
@@ -712,9 +715,22 @@ function M.run()
   -- we can drive that way, so fall back to the scrolling REPL.
   if not tc.attach() then tc.shutdown(); return false end
 
+  -- `boggart --tui --resume [id]`: open where we left off. With an id, that
+  -- session; bare, the most recent (sess_list is updated-DESC). The coordinator
+  -- adopts that row (see thread.new_agent's resume_id), so the transcript
+  -- continues in place instead of forking a new session.
+  local resume_id
+  if boggart.resume then
+    resume_id = boggart.resume_id and tonumber(boggart.resume_id)
+    if not resume_id then
+      local recent = bog.store.sess_list and bog.store.sess_list(1)
+      resume_id = recent and recent[1] and recent[1].id
+    end
+  end
   local ok0, coord = pcall(function()
     setup_swarm()
-    return bog.thread.new_agent{ agent = "coordinator", title = "coordinator", model = bog.session.model }
+    return bog.thread.new_agent{ agent = "coordinator", title = "coordinator",
+      model = bog.session.model, resume_id = resume_id }
   end)
   if not ok0 or not coord then tc.shutdown(); return false end
   bog.swarm_root = coord
@@ -727,6 +743,26 @@ function M.run()
   gate.sync(st)
   gate.install_approve(st)
   st.entries[1] = { role = "art", text = require("logo").art } -- the mascot, on launch
+  -- Show a resumed transcript so the window opens on the prior conversation.
+  if resume_id and coord.session and #(coord.session.messages or {}) > 0 then
+    local function msg_text(c)
+      if type(c) == "string" then return c end
+      local parts = {}
+      for _, b in ipairs(c or {}) do
+        if b.type == "text" then parts[#parts + 1] = b.text
+        elseif b.type == "tool_use" then parts[#parts + 1] = "[tool: " .. tostring(b.name or "?") .. "]" end
+      end
+      return table.concat(parts, "\n")
+    end
+    for _, m in ipairs(coord.session.messages) do
+      local text = msg_text(m.content)
+      if text and text:match("%S") then
+        st.entries[#st.entries + 1] = { role = (m.role == "assistant") and "assistant" or "user", text = text }
+      end
+    end
+    st.entries[#st.entries + 1] = { role = "system",
+      text = "\u{2014} resumed session " .. tostring(coord.session.id) .. " \u{2014}" }
+  end
   bog.clear_ui = function()
     st.entries = { { role = "art", text = require("logo").art } }
     st.activity = {}
@@ -882,6 +918,15 @@ function M.run()
   if crash_sub and bog.events and bog.events.off then pcall(bog.events.off, crash_sub) end
   if st.wake then pcall(function() st.wake:stop(); st.wake:close() end) end
   tc.shutdown()
+  -- Save the conversation and print the one-liner to reopen it right where we
+  -- left off. Runs on any clean exit (/exit, /wq, Ctrl-D), now that the alt
+  -- screen is gone so the line survives on the scrollback.
+  if st.coord and st.coord.session and st.coord.session.id then
+    pcall(bog.store.thread_save, st.coord.id,
+      { messages = st.coord.session.messages, status = "idle" })
+    io.write("\nsaved. resume this session:\n  boggart --tui --resume ",
+      tostring(st.coord.session.id), "\n")
+  end
   if not ok then io.stderr:write("tui: ", tostring(err), "\n") end
   return true
 end

@@ -299,7 +299,7 @@ end
 local function handle_command(line)
   local cmd, rest = line:match("^/(%S+)%s*(.*)$")
   if cmd == "help" then print_help()
-  elseif cmd == "quit" or cmd == "exit" then return true
+  elseif cmd == "quit" or cmd == "exit" or cmd == "wq" or cmd == "sq" then return true
   elseif cmd == "tools" then
     io.write(bog.tools.report(rest ~= "" and { name = rest } or {}), "\n")
   elseif cmd == "doctor" then
