@@ -508,6 +508,17 @@ local function slash(st, line)
   -- and prints the resume one-liner (see M.run's teardown), so these are just the
   -- named door for it.
   if cmd == "exit" or cmd == "quit" or cmd == "wq" or cmd == "sq" then return "quit" end
+  -- /mouse toggles mouse tracking. Off (default) leaves click-drag to the
+  -- terminal so you can select/copy text; on gives wheel scrolling instead.
+  if cmd == "mouse" then
+    st.mouse = not st.mouse
+    pcall(function() tc.mouse(st.mouse) end)
+    st.entries[#st.entries + 1] = { role = "system", text = st.mouse
+      and "mouse ON: the wheel scrolls, but text selection is off (Shift-drag may still work)"
+      or  "mouse OFF: select and copy text normally; scroll with PageUp/PageDown or the arrows" }
+    st.dirty = true
+    return
+  end
   if not bog.handle_command then
     st.entries[#st.entries + 1] = { role = "system", text = "commands are unavailable" }
     return
@@ -739,7 +750,11 @@ function M.run()
   local hist_file = (bog.userdir or "") .. "/history"
   local st = { coord = coord, entries = {}, activity = {},
                box = Input.new{ history_file = hist_file },
-               scroll = 0, total = 0, running = false, wake = uv.new_timer() }
+               scroll = 0, total = 0, running = false, wake = uv.new_timer(),
+               mouse = false }
+  -- Mouse tracking is off by default so terminal text selection works; opt into
+  -- wheel scrolling with BOGGART_TUI_MOUSE=1 or the /mouse command.
+  if os.getenv("BOGGART_TUI_MOUSE") then st.mouse = true; pcall(function() tc.mouse(true) end) end
   gate.sync(st)
   gate.install_approve(st)
   st.entries[1] = { role = "art", text = require("logo").art } -- the mascot, on launch

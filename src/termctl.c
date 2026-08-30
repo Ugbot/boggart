@@ -1046,13 +1046,23 @@ int tc_init(void) {
     if (T.tty_out) {
         raw_str(SEQ_ALT_ON);
         raw_str(SEQ_CUR_HIDE);
-        raw_str(SEQ_MOUSE_ON);
+        /* Mouse tracking is NOT enabled here: with it on, the terminal routes
+         * click-drag to us and native text selection stops working. The front
+         * end opts in via tc_mouse(1) (see tc.mouse / the TUI's /mouse toggle)
+         * when it wants wheel scrolling instead. */
         raw_str(SEQ_PASTE_ON);
         raw_str(SEQ_CLEAR);
     }
 
     T.inited = 1;
     return 0;
+}
+
+/* Toggle mouse tracking. Off (the default) leaves click-drag to the terminal so
+ * native text selection works; on gives us wheel-scroll events at the cost of
+ * selection. restore_tty always sends MOUSE_OFF, so a crash can't leave it on. */
+void tc_mouse(int on) {
+    if (T.tty_out) raw_str(on ? SEQ_MOUSE_ON : SEQ_MOUSE_OFF);
 }
 
 void tc_shutdown(void) {

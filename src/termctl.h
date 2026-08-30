@@ -131,6 +131,10 @@ int  tc_init(void);
  * free the grid. Idempotent, and also run automatically at process exit. */
 void tc_shutdown(void);
 
+/* Enable/disable mouse tracking. Off by default (so terminal text selection
+ * works); enable for wheel-scroll events. Always reset off at shutdown. */
+void tc_mouse(int on);
+
 /* ---- geometry ----------------------------------------------------------- */
 
 /* Current grid size in cells. Either pointer may be NULL. Updated whenever a

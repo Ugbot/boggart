@@ -190,6 +190,13 @@ static int l_shutdown(lua_State *L) {
   return 0;
 }
 
+/* tc.mouse(on) -- enable/disable mouse tracking. Off (default) keeps native text
+ * selection; on gives wheel-scroll events. */
+static int l_mouse(lua_State *L) {
+  tc_mouse(lua_toboolean(L, 1));
+  return 0;
+}
+
 /* tc.size() -> w, h */
 static int l_size(lua_State *L) {
   int w = 0, h = 0;
@@ -352,6 +359,7 @@ static int l_detach(lua_State *L) {
 static const luaL_Reg tc_lib[] = {
   {"init",     l_init},
   {"shutdown", l_shutdown},
+  {"mouse",    l_mouse},
   {"snapshot", l_snapshot},
   {"size",     l_size},
   {"clear",    l_clear},
