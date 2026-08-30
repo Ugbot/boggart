@@ -324,6 +324,38 @@ do
   check(box.cursor == 3, "cursor steps back one codepoint")
 end
 
+-- ---- voice dictation: replace_span composes with typing --------------------
+-- The "speak and/or type" contract: a dictated span is rewritten in place at its
+-- anchor while text typed before and after it is preserved, and the box stays a
+-- normal editable line throughout (unlike :_set, which clobbers everything).
+do
+  local box = Input.new()
+  feed(box, chars("summarize "))                 -- type a lead-in
+  check(box.cursor == 10, "typed lead-in leaves cursor at 10")
+  local start = box.cursor                        -- anchor the dictation here
+  local len = 0
+  len = box:replace_span(start, len, "the auth")  -- first partial
+  check(box.line == "summarize the auth", "first partial inserts at the anchor")
+  check(box.cursor == start + 8, "cursor sits at the end of the dictated span")
+  len = box:replace_span(start, len, "the auth module changes") -- grown partial
+  check(box.line == "summarize the auth module changes", "later partial rewrites the span in place")
+  check(len == 23, "replace_span returns the new span length")
+  -- Finalize, then keep typing after the span: it must be preserved.
+  box:replace_span(start, len, "the auth module changes")
+  feed(box, chars(" in 3 bullets"))
+  check(box.line == "summarize the auth module changes in 3 bullets",
+    "text typed after dictation is preserved")
+  -- A partial that shrinks (whisper revising) still only touches the span.
+  local box2 = Input.new()
+  feed(box2, chars("pre "))
+  local s2 = box2.cursor
+  local l2 = box2:replace_span(s2, 0, "hello world")
+  feed(box2, chars("!"))                          -- typed after the span
+  check(box2.line == "pre hello world!", "typed tail sits after the span")
+  box2:replace_span(s2, l2, "hi")                 -- span shrinks; tail stays
+  check(box2.line == "pre hi!", "shrinking the span keeps the typed tail intact")
+end
+
 -- ---- report ----------------------------------------------------------------
 if fails == 0 then
   io.write("ok  tui_input: all assertions passed\n")

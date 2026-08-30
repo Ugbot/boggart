@@ -21,6 +21,8 @@ M.KEYS = {
   { "?",            "this overlay" },
   { "{  }",         "previous / next user prompt" },
   { "Ctrl-O",       "expand / collapse tool strip" },
+  { "Ctrl-V",       "voice dictation on / off" },
+  { "/voice",       "dictation (start/stop/status/download)" },
   { "/clear",       "new conversation" },
   { "/compact",     "summarise context" },
   { "/cost",        "token spend" },

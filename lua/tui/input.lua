@@ -95,6 +95,23 @@ function Input:_set(text)
 end
 function Input:paste(text) self:_insert(text or "") end
 
+-- Replace the codepoint span [start, start+len) with `str`, leaving the cursor
+-- at the end of the inserted text; returns the codepoint length of `str`. This
+-- is how voice dictation composes with typing ("speak and/or type"): the growing
+-- transcript is rewritten in place at its anchor while everything typed before
+-- and after the span stays put -- unlike :_set, which would clobber the line.
+function Input:replace_span(start, len, str)
+  str = str or ""
+  local n = ulen(self.line)
+  start = math.max(0, math.min(start or 0, n))
+  local stop = math.max(start, math.min(start + (len or 0), n))
+  local a, b = byteat(self.line, start), byteat(self.line, stop)
+  self.line = self.line:sub(1, a - 1) .. str .. self.line:sub(b)
+  self.cursor = start + ulen(str)
+  self._menu = nil
+  return ulen(str)
+end
+
 function Input:_bol()
   local i = self.cursor
   while i > 0 and cp_at(self.line, i - 1) ~= 10 do i = i - 1 end

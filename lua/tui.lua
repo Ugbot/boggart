@@ -241,6 +241,9 @@ local function status_runs(st)
   runs[#runs + 1] = { text = "\u{00B7} " .. mode .. " ", fg = C.text, bg = bg }
   if st.help then runs[#runs + 1] = { text = "\u{00B7} ? ", fg = C.amber, bg = bg } end
   if st.eof_arm then runs[#runs + 1] = { text = "\u{00B7} Ctrl-D again to quit ", fg = C.amber, bg = bg } end
+  if st.voice and st.voice.active then
+    runs[#runs + 1] = { text = "\u{00B7} \u{1F3A4} listening\u{2026} (Ctrl-V) ", fg = C.tool, bg = bg }
+  end
   if st.running then runs[#runs + 1] = { text = "\u{00B7} working\u{2026} (Esc) ", fg = C.amber, bg = bg } end
   -- You can keep typing while a turn runs; Enter is held until it finishes. Say so
   -- when there is composed text waiting, so a blocked Enter never feels broken.
@@ -496,6 +499,81 @@ local function maybe_capture_choice(st)
   return reply
 end
 
+-- ---- voice dictation -------------------------------------------------------
+-- "Speak and/or type." Ctrl-V (or /voice) toggles the mic. Recognised text is
+-- inserted at the cursor as a tracked span (offset + length on st.voice) that
+-- each streamed partial rewrites in place -- so anything typed before or after
+-- stays put and the box remains fully editable while listening. Nothing is ever
+-- auto-submitted: the dictated text rides the same Enter as anything typed.
+local function voice_note(st, role, text)
+  st.entries[#st.entries + 1] = { role = role, text = text }
+  st.dirty = true
+end
+
+-- Stop capture, apply the authoritative final transcript over the dictated span,
+-- and forget the span (leaving plain, editable text). Safe to call when idle.
+local function voice_stop_apply(st)
+  local final = voice.stop()
+  if st.voice and st.voice.active then
+    st.box:replace_span(st.voice.start, st.voice.len, (final or ""):gsub("^%s+", ""))
+  end
+  st.voice = nil
+end
+
+local function toggle_voice(st)
+  if not (voice and voice.built and voice.built()) then
+    voice_note(st, "system", "voice input is not built (configure with -DBOGGART_VOICE=ON)")
+    return
+  end
+  if voice.listening() then voice_stop_apply(st); return end
+  if not voice.available() then
+    voice_note(st, "system", "no whisper model at " .. (voice.model_path() or "?")
+      .. " -- run `/voice download` or set BOGGART_WHISPER_MODEL")
+    return
+  end
+  -- Anchor the dictated span at the cursor; the box keeps taking keystrokes.
+  st.voice = { active = true, start = st.box.cursor, len = 0 }
+  local ok, err = voice.start{ on_event = function(kind, text)
+    if not (st.voice and st.voice.active) then return end
+    -- whisper prepends a space to each segment; drop it so dictation composes
+    -- with the user's own spacing instead of doubling it.
+    local clean = (text or ""):gsub("^%s+", "")
+    st.voice.len = st.box:replace_span(st.voice.start, st.voice.len, clean)
+    if kind == "final" then st.voice = nil end -- future: VAD auto-stop (phase 5)
+    draw(st)
+  end }
+  if not ok then
+    st.voice = nil
+    voice_note(st, "error", "voice: " .. tostring(err))
+  end
+end
+
+-- /voice [toggle|start|stop|status|download]
+local function voice_command(st, rest)
+  rest = (rest or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  if rest == "" or rest == "toggle" then toggle_voice(st)
+  elseif rest == "start" then if not voice.listening() then toggle_voice(st) end
+  elseif rest == "stop" then if voice.listening() then voice_stop_apply(st) end
+  elseif rest == "status" then
+    local msg
+    if not (voice and voice.built and voice.built()) then
+      msg = "voice: not built (configure with -DBOGGART_VOICE=ON)"
+    elseif voice.available() then
+      msg = "voice: ready \u{2014} model " .. (voice.model_path() or "?")
+    else
+      msg = "voice: built, but no model at " .. (voice.model_path() or "?")
+    end
+    voice_note(st, "system", msg)
+  elseif rest == "download" then
+    local p = voice.model_path() or "~/.boggart/models/ggml-base.en.bin"
+    voice_note(st, "system", "voice needs a whisper model at\n  " .. p ..
+      "\ndownload one with, e.g.:\n  mkdir -p \"$(dirname '" .. p .. "')\" && curl -L -o '" .. p ..
+      "' \\\n    https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin")
+  else
+    voice_note(st, "system", "usage: /voice [toggle|start|stop|status|download]")
+  end
+end
+
 -- Slash commands (/exit, /auth, /model, /help, ...). These run through the very
 -- same handler the scrolling REPL uses, so the cTUI is not a second-class front
 -- end that silently sends "/exit" to the model. handle_command writes its output
@@ -517,6 +595,11 @@ local function slash(st, line)
       and "mouse ON: the wheel scrolls, but text selection is off (Shift-drag may still work)"
       or  "mouse OFF: select and copy text normally; scroll with PageUp/PageDown or the arrows" }
     st.dirty = true
+    return
+  end
+  -- /voice [toggle|start|stop|status|download] -- dictation, same as Ctrl-V.
+  if cmd == "voice" then
+    voice_command(st, line:match("^/%S+%s*(.*)$"))
     return
   end
   if not bog.handle_command then
@@ -865,6 +948,8 @@ function M.run()
           elseif ev.key == "ctrl" and ev.char == "o" then
             st.activity_max = (st.activity_max == 16) and ACTIVITY_LINES or 16
             draw(st)
+          elseif ev.key == "ctrl" and ev.char == "v" then
+            toggle_voice(st); draw(st)
           else
             local empty = (st.box.line or "") == ""
             if bog.choice and handle_choice_input(st, ev) then draw(st)
@@ -886,6 +971,10 @@ function M.run()
             elseif action == "editor" then
               edit_in_editor(st); draw(st)
             elseif action == "submit" then
+              -- Submitting ends dictation: the text is already in `value`, so
+              -- just close the mic and forget the span before the turn runs.
+              if voice and voice.listening() then voice.stop() end
+              st.voice = nil
               if bog.choice and handle_choice_input(st, { type = "key", key = "enter" }) then
                 -- pending after-turn menu: Enter submits a typed answer
               else
@@ -927,6 +1016,7 @@ function M.run()
     end
   end)
 
+  if voice and voice.listening and voice.listening() then pcall(voice.stop) end -- close the mic on any exit
   bog.choice_ui, bog.choice = nil, nil            -- no async chooser once we leave
   bog.log_tool, bog.log = saved_log_tool, saved_log -- restore before leaving the alt screen
   bog.clear_ui, bog.copy_text, bog.approve = nil, nil, nil
