@@ -13,6 +13,7 @@ void boggart_open_libs(lua_State *L);
 int  boggart_boot(lua_State *L, const char *mode, const char *version);
 lua_State *boggart_newstate(void);
 void boggart_http_shutdown(lua_State *L); /* src/lhttp.c: close raw uv handles before lua_close */
+void boggart_voice_shutdown(void); /* src/lvoice.c: free the warm whisper ctx before exit */
 
 #ifdef _WIN32
   #include <windows.h>
@@ -230,6 +231,9 @@ int main(int argc, char **argv) {
    * or it type-confuses on their non-luv handle->data and faults at exit -- the
    * same exit crash the CLI had. See boggart_http_shutdown in src/lhttp.c. */
   boggart_http_shutdown(L);
+  /* Free the warm whisper context before GGML's Metal device destructors run at
+   * exit, which assert every residency set was released. See src/lvoice.c. */
+  boggart_voice_shutdown();
   lua_close(L);
   SDL_DestroyWindow(window);
 

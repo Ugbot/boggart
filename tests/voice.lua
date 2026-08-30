@@ -22,6 +22,16 @@ check(type(voice.built) == "function", "voice.built is a function")
 check(type(voice.available) == "function", "voice.available is a function")
 check(type(voice.model_path) == "function", "voice.model_path is a function")
 check(type(voice.transcribe_wav) == "function", "voice.transcribe_wav is a function")
+check(type(voice.start) == "function", "voice.start is a function")
+check(type(voice.stop) == "function", "voice.stop is a function")
+check(type(voice.listening) == "function", "voice.listening is a function")
+
+-- ---- streaming contract, mic-free -------------------------------------------
+-- These never open a device, so they are safe in CI: nothing is listening yet,
+-- so listening() is false and stop() is a no-op returning nil. (The full
+-- capture->partials->final path is exercised manually; it needs a microphone.)
+check(voice.listening() == false, "voice.listening() is false before any start")
+check(voice.stop() == nil, "voice.stop() returns nil when not listening")
 
 -- ---- well-formed results, in any build -------------------------------------
 local built = voice.built()

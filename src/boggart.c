@@ -35,6 +35,7 @@ int luaopen_boggart_bus(lua_State *L); /* src/lbus.c: pub/sub + work-queue fabri
 int luaopen_boggart_term(lua_State *L); /* src/lterm.c: REPL completion (CLI only) */
 int luaopen_boggart_termctl(lua_State *L); /* src/ltermctl.c: full-screen cTUI (CLI only) */
 int luaopen_boggart_voice(lua_State *L); /* src/lvoice.c: native voice input (opt-in) */
+void boggart_voice_shutdown(void); /* src/lvoice.c: free the warm whisper ctx before exit */
 lua_State *boggart_newstate(void);       /* src/lmem.c: counts real bytes */
 void boggart_open_mem(lua_State *L);
 int luaopen_ltui_lcurses(lua_State *L); /* vendored ltui curses binding */
@@ -277,6 +278,9 @@ int main(int argc, char **argv) {
    * which would otherwise type-confuse on their non-luv handle->data and fault
    * at exit (the exit-139 crash). See boggart_http_shutdown in src/lhttp.c. */
   boggart_http_shutdown(L);
+  /* Free the warm whisper context before GGML's Metal device destructors run at
+   * exit, which assert every residency set was released. See src/lvoice.c. */
+  boggart_voice_shutdown();
   lua_close(L);
   return status;
 }
