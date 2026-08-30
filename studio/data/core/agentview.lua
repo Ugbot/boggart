@@ -523,6 +523,10 @@ function AgentView:maybe_capture_question()
 end
 
 function AgentView:send()
+  -- Sending ends dictation: the recognised text is already in the composer, so
+  -- just close the mic and forget the span before the input is read/cleared.
+  if voice and voice.listening and voice.listening() then voice.stop() end
+  self.voice = nil
   -- A pending choose menu claims the composer: submitting text while it is up is
   -- the user's typed answer, handed to the parked turn via choose.decide, not a
   -- new turn (unless after_turn -- then it starts the next turn). Checked before
@@ -583,6 +587,10 @@ function AgentView:run_slash(line)
   local cmd = line:match("^/(%S+)")
   if cmd == "exit" or cmd == "quit" then
     self:push("system", "this is the studio -- close the window to quit")
+    return
+  end
+  if cmd == "voice" then
+    self:voice_command(line:match("^/%S+%s*(.*)$"))
     return
   end
   if not (bog and bog.handle_command) then
@@ -820,6 +828,110 @@ function AgentView:set_input(s)
   self.cy = #self.lines
   self.cx = #self.lines[self.cy] + 1
   complete.dismiss(self)
+end
+
+-- ---- voice dictation -------------------------------------------------------
+-- "Speak and/or type." The mic button (or agent:voice-toggle) starts dictation;
+-- recognised text is inserted at the caret as a tracked span on the current line
+-- (offset self.voice.cx + length self.voice.len on line self.voice.cy) that each
+-- streamed partial rewrites in place -- so text typed before and after it stays
+-- put and the composer remains editable. Dictated text carries no newlines, so
+-- the span never leaves its anchor line. Nothing is ever auto-sent.
+function AgentView:voice_listening()
+  return self.voice ~= nil and voice and voice.listening and voice.listening()
+end
+
+function AgentView:voice_replace_span(text)
+  local v = self.voice
+  if not v then return end
+  local line = self.lines[v.cy]
+  if not line then self.voice = nil; return end
+  local a = v.cx
+  local b = math.min(a + v.len, #line + 1)
+  self.lines[v.cy] = line:sub(1, a - 1) .. text .. line:sub(b)
+  v.len = #text
+  self.cy, self.cx = v.cy, a + #text
+  complete.dismiss(self)
+  core.redraw = true
+end
+
+-- Stop capture and apply the authoritative final transcript over the span,
+-- leaving plain editable text. Safe to call when idle.
+function AgentView:voice_stop_apply()
+  if voice and voice.listening and voice.listening() then
+    local final = voice.stop()
+    if self.voice then self:voice_replace_span((final or ""):gsub("^%s+", "")) end
+  end
+  self.voice = nil
+end
+
+function AgentView:voice_toggle()
+  if not (voice and voice.built and voice.built()) then
+    self:push("system", "voice input is not built (configure with -DBOGGART_VOICE=ON)")
+    core.redraw = true; return
+  end
+  if voice.listening() then self:voice_stop_apply(); return end
+  if not voice.available() then
+    self:push("system", "no whisper model at " .. (voice.model_path() or "?")
+      .. " -- download one, or set BOGGART_WHISPER_MODEL")
+    core.redraw = true; return
+  end
+  self:set_edit_mode("insert")               -- dictating is composing
+  self.voice = { active = true, cy = self.cy, cx = self.cx, len = 0 }
+  local view = self
+  local ok, err = voice.start{ on_event = function(kind, text)
+    if not (view.voice and view.voice.active) then return end
+    -- whisper prepends a space per segment; drop it so dictation composes with
+    -- the user's own spacing instead of doubling it.
+    view:voice_replace_span((text or ""):gsub("^%s+", ""))
+    if kind == "final" then view.voice = nil end -- future: VAD auto-stop (phase 5)
+  end }
+  if not ok then
+    self.voice = nil
+    self:push("error", "voice: " .. tostring(err))
+    core.redraw = true
+    return
+  end
+  -- Pump luv while listening so partials arrive every frame even when the
+  -- scheduler is idle (no active turn -- the always-on pump only steps uv when
+  -- there are actors). The thread exits the moment listening stops.
+  local ok_uv, uv = pcall(require, "uv")
+  if ok_uv and uv then
+    core.add_thread(function()
+      while voice.listening() do
+        pcall(uv.run, "nowait")
+        coroutine.yield(0)
+      end
+    end)
+  end
+  core.redraw = true
+end
+
+-- /voice [toggle|start|stop|status|download] -- same surface as the cTUI.
+function AgentView:voice_command(rest)
+  rest = (rest or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  local function listening() return voice and voice.listening and voice.listening() end
+  if rest == "" or rest == "toggle" then self:voice_toggle()
+  elseif rest == "start" then if not listening() then self:voice_toggle() end
+  elseif rest == "stop" then self:voice_stop_apply()
+  elseif rest == "status" then
+    local msg
+    if not (voice and voice.built and voice.built()) then
+      msg = "voice: not built (configure with -DBOGGART_VOICE=ON)"
+    elseif voice.available() then
+      msg = "voice: ready \u{2014} model " .. (voice.model_path() or "?")
+    else
+      msg = "voice: built, but no model at " .. (voice.model_path() or "?")
+    end
+    self:push("system", msg)
+  elseif rest == "download" then
+    local p = (voice and voice.model_path and voice.model_path()) or "~/.boggart/models/ggml-base.en.bin"
+    self:push("system", "voice needs a whisper model at " .. p ..
+      " -- download ggml-base.en.bin there (Hugging Face: ggerganov/whisper.cpp)")
+  else
+    self:push("system", "usage: /voice [toggle|start|stop|status|download]")
+  end
+  core.redraw = true
 end
 
 function AgentView:_hist_path()
@@ -1956,12 +2068,23 @@ function AgentView:toolbar_items()
 end
 
 function AgentView:composer_items()
-  return {
+  local items = {
     { label = "@ file",   command = "agent:attach-file" },
     { label = self:mode_label(), command = "agent:set-mode",
       tone = (self.mode == "auto") and (style.warn or style.accent) or nil },
     { label = self:model(), command = "agent:set-model", dim = true },
   }
+  -- The mic appears only when this binary was built with voice; otherwise the
+  -- affordance would toggle nothing. Recording state reads red.
+  if voice and voice.built and voice.built() then
+    local on = self:voice_listening()
+    items[#items + 1] = {
+      label = on and "\u{25CF} rec" or "\u{1F3A4} speak",
+      command = "agent:voice-toggle",
+      tone = on and (style.warn or style.accent) or nil,
+    }
+  end
+  return items
 end
 
 -- What the agent is doing, while it is doing it.

@@ -697,6 +697,14 @@ command.add(nil, {
     if v then v:cancel() end
   end,
 
+  -- Voice dictation ("speak and/or type"): the composer mic button and any
+  -- keybinding both route here. Opens the agent panel so the dictated text has
+  -- a composer to land in.
+  ["agent:voice-toggle"] = function()
+    local v = studio.open_agent()
+    if v and v.voice_toggle then v:voice_toggle() end
+  end,
+
   -- ---- approval -----------------------------------------------------------
   ["agent:toggle-approval"] = function()
     local v = studio.open_agent()

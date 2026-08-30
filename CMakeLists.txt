@@ -353,6 +353,13 @@ if(BOGGART_VOICE)
   # whisper must be linked with the C++ driver (LINKER_LANGUAGE CXX below) to pull
   # in libc++/libstdc++.
   enable_language(CXX)
+  # GGML's Metal backend is Objective-C (.m). GGML enables OBJC itself, but the
+  # top-level project must own the compile rules before the studio (SDL) build is
+  # generated alongside it, or the generate step fails on a missing
+  # CMAKE_OBJC_COMPILE_OBJECT. Enabling it here is harmless off Apple's Metal path.
+  if(APPLE)
+    enable_language(OBJC)
+  endif()
   set(BOGGART_WHISPER_VERSION 1.9.3)
   set(BOGGART_WHISPER_SHA256 1650f884effba487025143bd8facd2f9fb40a83b3737a732803c67a8d659d9c0)
 
