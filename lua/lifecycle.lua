@@ -440,6 +440,27 @@ function M.doctor()
       .. "authority. `/trust sandboxed` (or unset BOGGART_SKILL_TRUST) to sandbox it.")
   end
 
+  -- voice --------------------------------------------------------------------
+  -- Only worth a section when the binary was built with voice; otherwise it is
+  -- an off-by-default feature nobody asked doctor about.
+  if voice and voice.built and voice.built() then
+    head("voice")
+    local model = voice.model_path and voice.model_path() or nil
+    if voice.available and voice.available() then
+      kv("status", "ready")
+      kv("model", model or "(resolved)")
+    else
+      kv("status", "no model")
+      kv("model", (model or "?") .. "  (missing)")
+      warn("voice is built but has no whisper model. Download ggml-base.en.bin to "
+        .. tostring(model) .. " (Hugging Face: ggerganov/whisper.cpp), or set "
+        .. "BOGGART_WHISPER_MODEL. Then dictate with Ctrl-V (cTUI) or the mic button (studio).")
+    end
+    local sil = os.getenv("BOGGART_VOICE_SILENCE_MS")
+    kv("auto-stop", (sil and tonumber(sil) and tonumber(sil) > 0)
+      and (sil .. " ms of silence") or "off (toggle to stop; set BOGGART_VOICE_SILENCE_MS to enable)")
+  end
+
   -- verdict ------------------------------------------------------------------
   local function numbered(i, s)
     -- Continuation lines line up under the text, not under the number.

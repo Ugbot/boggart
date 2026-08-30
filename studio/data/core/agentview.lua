@@ -884,7 +884,10 @@ function AgentView:voice_toggle()
     -- whisper prepends a space per segment; drop it so dictation composes with
     -- the user's own spacing instead of doubling it.
     view:voice_replace_span((text or ""):gsub("^%s+", ""))
-    if kind == "final" then view.voice = nil end -- future: VAD auto-stop (phase 5)
+    if kind == "final" then                 -- VAD auto-stop: apply, then tear the mic down
+      view.voice = nil
+      if voice.listening() then voice.stop() end
+    end
   end }
   if not ok then
     self.voice = nil

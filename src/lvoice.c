@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -325,6 +326,12 @@ typedef struct {
   volatile int running;
   char       *final_text;   /* set by the thread on stop; l_stop reads + frees */
 
+  /* energy VAD: auto-stop after silence_samples of quiet once speech was heard.
+   * 0 disables (manual toggle only). Off by default -- opt in per start or via
+   * $BOGGART_VOICE_SILENCE_MS -- so it can never cut off the toggle UX untuned. */
+  long        silence_samples;
+  double      vad_threshold;
+
   /* delivery to the main thread */
   uv_async_t  async;
   int         async_up;
@@ -407,12 +414,40 @@ static void transcribe_thread(void *arg) {
   float *snap = (float *)malloc(VOICE_MAX_SAMPLES * sizeof(float));
   if (!snap) return;
   size_t last_n = 0;
+  /* energy-VAD bookkeeping (thread-local): scan newly-arrived samples for level,
+   * remember when speech was last heard, and end after a quiet gap. */
+  size_t vad_pos = 0, last_speech_n = 0;
+  int seen_speech = 0, vad_done = 0;
 
   while (g->running) {
     uv_mutex_lock(&g->cap_mtx);
     size_t n = g->cap_len;
     if (n) memcpy(snap, g->cap, n * sizeof(float));
     uv_mutex_unlock(&g->cap_mtx);
+
+    /* VAD: RMS of the newest chunk. Above threshold is speech; a long enough
+     * gap after speech auto-stops (only when enabled). */
+    if (g->silence_samples > 0 && n > vad_pos) {
+      double sum = 0.0;
+      for (size_t i = vad_pos; i < n; i++) sum += (double)snap[i] * snap[i];
+      double rms = (n > vad_pos) ? sqrt(sum / (double)(n - vad_pos)) : 0.0;
+      if (rms > g->vad_threshold) { seen_speech = 1; last_speech_n = n; }
+      vad_pos = n;
+      if (seen_speech && (long)(n - last_speech_n) >= g->silence_samples) {
+        char *text = NULL;
+        if (n > 0 && whisper_run(g->ctx, snap, n, g->lang, &text) == NULL && text) {
+          uv_mutex_lock(&g->ev_mtx);
+          free(g->pending_final); g->pending_final = text;
+          uv_mutex_unlock(&g->ev_mtx);
+          uv_async_send(&g->async);   /* deliver "final"; the UI tears down */
+        } else {
+          free(text);
+        }
+        g->running = 0;
+        vad_done = 1;
+        break;
+      }
+    }
 
     if (n >= minn && n >= last_n + step) {
       char *text = NULL;
@@ -424,17 +459,19 @@ static void transcribe_thread(void *arg) {
     uv_sleep(80);
   }
 
-  /* Final pass over everything captured. */
-  uv_mutex_lock(&g->cap_mtx);
-  size_t n = g->cap_len;
-  if (n) memcpy(snap, g->cap, n * sizeof(float));
-  uv_mutex_unlock(&g->cap_mtx);
-  if (n > 0) {
-    char *text = NULL;
-    if (whisper_run(g->ctx, snap, n, g->lang, &text) == NULL)
-      g->final_text = text;   /* handed to l_stop */
-    else
-      free(text);
+  /* Final pass for the explicit-stop path (VAD already delivered its own). */
+  if (!vad_done) {
+    uv_mutex_lock(&g->cap_mtx);
+    size_t n = g->cap_len;
+    if (n) memcpy(snap, g->cap, n * sizeof(float));
+    uv_mutex_unlock(&g->cap_mtx);
+    if (n > 0) {
+      char *text = NULL;
+      if (whisper_run(g->ctx, snap, n, g->lang, &text) == NULL)
+        g->final_text = text;   /* handed to l_stop */
+      else
+        free(text);
+    }
   }
   free(snap);
 }
@@ -522,19 +559,41 @@ static int l_start(lua_State *L) {
     return 2;
   }
 
-  /* language */
+  /* language: opts.language, else $BOGGART_WHISPER_LANG, else "en"; "auto" (or
+   * empty) lets whisper detect it. */
   G.lang[0] = '\0';
+  const char *lang = NULL;
   if (has_opts) {
     lua_getfield(L, 1, "language");
-    if (lua_isstring(L, -1)) {
-      const char *lg = lua_tostring(L, -1);
-      if (strcmp(lg, "auto") != 0) snprintf(G.lang, sizeof G.lang, "%s", lg);
-    } else {
-      snprintf(G.lang, sizeof G.lang, "en");
-    }
+    if (lua_isstring(L, -1)) lang = lua_tostring(L, -1);
+    /* leave the value on the stack until copied below */
+  }
+  if (!lang) {
+    const char *env = getenv("BOGGART_WHISPER_LANG");
+    lang = (env && *env) ? env : "en";
+  }
+  if (strcmp(lang, "auto") != 0) snprintf(G.lang, sizeof G.lang, "%s", lang);
+  if (has_opts) lua_pop(L, 1);
+
+  /* energy VAD (opt-in): opts.silence_ms or $BOGGART_VOICE_SILENCE_MS, in ms of
+   * silence after speech; opts.silence_threshold overrides the RMS gate. 0 = off
+   * (the default) so the toggle UX is never cut off by an untuned detector. */
+  long silence_ms = 0;
+  if (has_opts) {
+    lua_getfield(L, 1, "silence_ms");
+    if (lua_isnumber(L, -1)) silence_ms = (long)lua_tointeger(L, -1);
     lua_pop(L, 1);
-  } else {
-    snprintf(G.lang, sizeof G.lang, "en");
+  }
+  if (silence_ms == 0) {
+    const char *env = getenv("BOGGART_VOICE_SILENCE_MS");
+    if (env && *env) silence_ms = strtol(env, NULL, 10);
+  }
+  G.silence_samples = silence_ms > 0 ? silence_ms * (VOICE_SAMPLE_RATE / 1000) : 0;
+  G.vad_threshold = 0.012;
+  if (has_opts) {
+    lua_getfield(L, 1, "silence_threshold");
+    if (lua_isnumber(L, -1)) G.vad_threshold = lua_tonumber(L, -1);
+    lua_pop(L, 1);
   }
 
   /* One-time resource init (the mutexes; the async is bound to this loop). */

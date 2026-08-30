@@ -539,7 +539,10 @@ local function toggle_voice(st)
     -- with the user's own spacing instead of doubling it.
     local clean = (text or ""):gsub("^%s+", "")
     st.voice.len = st.box:replace_span(st.voice.start, st.voice.len, clean)
-    if kind == "final" then st.voice = nil end -- future: VAD auto-stop (phase 5)
+    if kind == "final" then                 -- VAD auto-stop: apply, then tear the mic down
+      st.voice = nil
+      if voice.listening() then voice.stop() end
+    end
     draw(st)
   end }
   if not ok then
