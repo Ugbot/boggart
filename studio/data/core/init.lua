@@ -604,6 +604,9 @@ function core.init()
   open_monitor()
   core.add_thread(project_scan_thread)
   command.add_defaults()
+  -- Markdown preview view: load it so its commands/keymap register even before a
+  -- .md file is opened. Best-effort -- a failure must not stop the editor.
+  pcall(require, "core.markdownview")
 
   -- boggart-studio: the agent panel, its commands and its configuration
   -- surfaces. Loaded before plugins and the user module so both can override

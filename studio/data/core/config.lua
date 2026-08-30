@@ -16,6 +16,9 @@ config.line_height = 1.2
 config.indent_size = 2
 config.tab_type = "soft"
 config.line_limit = 80
+-- Open .md/.markdown files as a rendered preview (MarkdownView) rather than raw
+-- source. `markdown:toggle-source` switches to editing per-file at runtime.
+config.markdown_preview = true
 -- neovim-style modal editing (studio/data/core/vim.lua). Off by default; the
 -- module always loads so `vim:toggle` / `:set vim` can turn it on at runtime.
 config.vim_mode = false

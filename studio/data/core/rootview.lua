@@ -1,10 +1,26 @@
 local core = require "core"
 local common = require "core.common"
+local config = require "core.config"
 local style = require "core.style"
 local keymap = require "core.keymap"
 local Object = require "core.object"
 local View = require "core.view"
 local DocView = require "core.docview"
+
+
+-- Which view class renders a given Doc: Markdown files open as a rendered
+-- preview (MarkdownView), everything else as an editable DocView. Guarded so a
+-- broken or absent MarkdownView never stops a file opening, and lazy-required so
+-- there is no load-time cycle (markdownview -> docview -> ...).
+local function view_class_for(doc)
+  local name = doc and doc.filename or ""
+  local ext = name:lower():match("%.([%w]+)$")
+  if (ext == "md" or ext == "markdown") and config.markdown_preview ~= false then
+    local ok, MarkdownView = pcall(require, "core.markdownview")
+    if ok and MarkdownView then return MarkdownView end
+  end
+  return DocView
+end
 
 
 local EmptyView = View:extend()
@@ -541,10 +557,13 @@ function RootView:open_doc(doc)
       return view
     end
   end
-  local view = DocView(doc)
+  local view = view_class_for(doc)(doc)
   node:add_view(view)
   self.root_node:update_layout()
-  view:scroll_to_line(view.doc:get_selection(), true, true)
+  -- Only a DocView has a caret to scroll to; a rendered view (Markdown) does not.
+  if view.scroll_to_line and view.doc and view.doc.get_selection then
+    view:scroll_to_line(view.doc:get_selection(), true, true)
+  end
   return view
 end
 

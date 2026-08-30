@@ -678,6 +678,47 @@ core.add_thread(function()
       check_hits("composer-wrap")
       v:set_input("")
     end
+
+    -- ---- Markdown preview: a .md opens rendered, not as raw source ----------
+    -- Proportional headings, syntax-highlighted code, wrapped prose, and a
+    -- clickable link. Assert the view type, that layout happened, that nothing
+    -- overflows the content width, and that a link kept its URL.
+    do
+      local MarkdownView = require "core.markdownview"
+      local FIX = (os.getenv("TMPDIR") or "/tmp") .. "/boggart-uicheck-md.md"
+      local f = io.open(FIX, "wb")
+      if f then
+        f:write("# Heading One\n\nA **bold** word, *emphasis*, `code`, and a "
+          .. "[link](https://example.com/x) that stays clickable. A long line so "
+          .. "that wrapping has real work to do across the width of the panel here.\n\n"
+          .. "## Heading Two\n\n- a bullet\n- another\n\n1. first\n2. second\n\n"
+          .. "> a quote\n\n```lua\nlocal function f(a, b) return a + b end\n```\n\n---\n\nDone.\n")
+        f:close()
+        local mv = core.root_view:open_doc(core.open_doc(FIX))
+        core.set_active_view(mv)
+        frame(6)
+        check(mv:is(MarkdownView), "a .md opens as a MarkdownView, not a DocView")
+        check(mv._layout ~= nil and mv._layout.height > 0, "markdown: layout produced height")
+        check(#mv._layout.rows > 6, "markdown: layout produced rows")
+        local pad = require("core.style").padding.x
+        for _, row in ipairs(mv._layout.rows) do
+          for _, run in ipairs(row.runs or {}) do
+            check(run.x + run.w <= mv.size.x - pad + 3,
+              "markdown: a run overflows the content width")
+          end
+        end
+        frame(2)
+        local hasurl = false
+        for _, h in ipairs(mv.hits or {}) do
+          if h.url and h.url:find("example.com", 1, true) then hasurl = true end
+        end
+        check(hasurl, "markdown: a link registered a clickable hit carrying its URL")
+        shot("markdown")
+        local node = core.root_view.root_node:get_node_for_view(mv)
+        if node then node:set_active_view(mv); node:close_active_view(core.root_view.root_node) end
+        v = studio.open_agent(); core.set_active_view(v); frame(2)
+      end
+    end
   end)
 
   -- -------------------------------------------------------------------------
