@@ -641,6 +641,43 @@ core.add_thread(function()
       check(v.position.x + v.size.x <= core.root_view.size.x + 1,
         s[3] .. ": the panel runs off the right of the window")
     end
+
+    -- ---- a long single line in the composer wraps, it does not overflow -----
+    -- A logical line longer than the column used to run off the right edge;
+    -- now it fills several visual rows. Assert every drawn slice fits the
+    -- column, the visible rows are a contiguous run of the logical line, and a
+    -- click on a wrapped row round-trips to a caret inside that line.
+    do
+      system.set_window_size(1400, 900)
+      v.entries = {}
+      v.pending = nil
+      local long = "This is where I'm going to test the full size of this box to "
+        .. "see how we do overflow of text, typing well past the visible width so "
+        .. "the composer has to wrap it onto several rows instead of clipping it."
+      v:set_input(long)
+      frame(4)
+      local rows = v.composer_rows or {}
+      check(#rows >= 2, "composer: a long line drew " .. #rows .. " row(s), not several")
+      local reassembled = {}
+      for _, r in ipairs(rows) do
+        check(sys.width(r.line) <= 96, string.format(
+          "composer: a wrapped row is %d cells wide, past the 96-column cap",
+          sys.width(r.line)))
+        if r.i == 1 then reassembled[#reassembled + 1] = r.line end
+      end
+      check(long:find(table.concat(reassembled), 1, true) == 1,
+        "composer: the wrapped rows are not a contiguous prefix of the line")
+      local r2 = rows[2]
+      if r2 then
+        local cy, cx = v:composer_pos_at(r2.x + r2.h, r2.y + r2.h / 2)
+        check(cy == 1 and cx > 1 and cx <= #long + 1, string.format(
+          "composer: a click on the 2nd wrapped row mapped to (%s,%s), outside the line",
+          tostring(cy), tostring(cx)))
+      end
+      shot("composer-wrap")
+      check_hits("composer-wrap")
+      v:set_input("")
+    end
   end)
 
   -- -------------------------------------------------------------------------

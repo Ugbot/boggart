@@ -1860,10 +1860,34 @@ function AgentView:pos_at(x, y)
   return { e = best.e, r = best.r, c = col }
 end
 
+-- Soft-wrap the composer's logical lines into visual rows for drawing. Each row
+-- is { i = logical line index, byte0 = 1-based byte offset of the slice within
+-- that line, text = the slice }, wrapped to `cols` display columns (the composer
+-- is monospace). A long line therefore fills several rows instead of running off
+-- the right edge, and byte0 lets the caret, selection and mouse hit-test map a
+-- visual row back to a logical (line, byte) position.
+function AgentView:composer_visual_rows(cols)
+  local rows = {}
+  for i, line in ipairs(self.lines) do
+    local rest, byte0 = line, 1
+    while true do
+      local head, tail = split(rest, cols)
+      if head == "" and tail ~= "" then head, tail = rest, "" end -- never loop forever
+      rows[#rows + 1] = { i = i, byte0 = byte0, text = head }
+      if tail == "" then break end
+      byte0 = byte0 + #head
+      rest = tail
+    end
+  end
+  if #rows == 0 then rows[1] = { i = 1, byte0 = 1, text = "" } end
+  return rows
+end
+
 -- The composer position under a point: which line, and the byte offset that
 -- the display column corresponds to. Columns are cells and self.cx is a byte
 -- index, so the conversion goes through the same cell-splitting the layout
--- uses rather than assuming one byte per column.
+-- uses rather than assuming one byte per column. Rows carry byte0 (the slice's
+-- start within its logical line) so a click on a wrapped row lands correctly.
 function AgentView:composer_pos_at(x, y)
   local rows = self.composer_rows
   if not rows or #rows == 0 then return nil end
@@ -1876,7 +1900,7 @@ function AgentView:composer_pos_at(x, y)
   local cells = math.floor((x - best.x) / self.char_w + 0.5)
   if cells < 0 then cells = 0 end
   local head = (split(best.line, cells))
-  return best.i, #head + 1
+  return best.i, (best.byte0 or 1) + #head
 end
 
 -- Is this point inside the composer box at all?
@@ -2260,6 +2284,13 @@ function AgentView:draw()
   local vpad = style.padding.y
   local charw = font:get_width("0")
 
+  -- The composer wraps to this many monospace columns. Computed up front so the
+  -- box height (input_lines, below) and the draw loop share ONE wrapped layout:
+  -- a long line fills several visual rows instead of overflowing the right edge.
+  local cols = math.max(20, math.min(COLUMN_COLS,
+    math.floor((self.size.x - pad * 4) / charw)))
+  local vis_rows = self:composer_visual_rows(cols)
+
   -- ---- toolbar ------------------------------------------------------------
   local bh = widgets.height(font)
   local top = self.position.y
@@ -2272,7 +2303,7 @@ function AgentView:draw()
   end
 
   -- ---- composer -----------------------------------------------------------
-  local input_lines = math.min(math.max(#self.lines, 1), 8)
+  local input_lines = math.min(math.max(#vis_rows, 1), 8)
   -- Controls wrap onto a second row when the pickers and Send cannot share
   -- one. Height has to be reserved up front: body_bottom is derived from it,
   -- and a wrap that grew after the transcript was clipped would draw the
@@ -2305,8 +2336,8 @@ function AgentView:draw()
   local body_bottom = self.position.y + self.size.y - composer_h - pending_h
 
   -- ---- the conversation column -------------------------------------------
-  local cols = math.max(20, math.min(COLUMN_COLS,
-    math.floor((self.size.x - pad * 4) / charw)))
+  -- (`cols` was computed up front, above, so the composer wrap and the column
+  -- share one width.)
   local colw = cols * charw
   local x = self.position.x + math.max(pad, (self.size.x - colw) / 2)
   local w = colw
@@ -2570,16 +2601,10 @@ function AgentView:draw()
   renderer.draw_rect(bx, iy + vpad, 1, composer_h - vpad * 2, border)
   renderer.draw_rect(bx + bw - 1, iy + vpad, 1, composer_h - vpad * 2, border)
 
-  -- The box shows at most eight lines, so a longer draft has to scroll to the
-  -- caret. It did not: it always drew lines 1..8, and from the ninth line on
-  -- you were typing into a line that was not on screen, with no caret to say
-  -- where you were.
-  local top_line = math.max(1, math.min(self.cy - input_lines + 1,
-    #self.lines - input_lines + 1))
-  -- The composer's rows, in the coordinates a pointer arrives in, so it can be
-  -- dragged through like any other text. Recorded here for the same reason the
-  -- transcript's are: hit-testing that recomputes the layout eventually
-  -- disagrees with the layout.
+  -- The box shows at most `input_lines` VISUAL rows (the wrapped layout), and a
+  -- longer draft scrolls to keep the caret's row on screen. Drawing the wrapped
+  -- rows -- rather than one logical line per row -- is what stops a long line
+  -- running off the right edge.
   self.composer_rows = {}
   local csel_lo, csel_hi
   if self.sel_anchor then
@@ -2591,33 +2616,55 @@ function AgentView:draw()
     end
   end
 
-  local ty = iy + vpad * 2
-  for i = top_line, top_line + input_lines - 1 do
-    local line = self.lines[i] or ""
-    self.composer_rows[#self.composer_rows + 1] =
-      { i = i, x = x, y = ty, h = lh, line = line }
+  -- The visual row the caret sits on: the slice of logical line self.cy whose
+  -- byte span [byte0, byte0+#text] contains self.cx (a boundary picks the
+  -- earlier row). Scroll so that row is on screen.
+  local caret_vr = 1
+  for vr, r in ipairs(vis_rows) do
+    if r.i == self.cy and self.cx >= r.byte0 and self.cx <= r.byte0 + #r.text then
+      caret_vr = vr; break
+    end
+    if r.i > self.cy then break end
+  end
+  local top_row = math.max(1, math.min(caret_vr - input_lines + 1,
+    #vis_rows - input_lines + 1))
 
-    -- Highlight before the text, so the glyphs sit on top of it.
+  local ty = iy + vpad * 2
+  local empty_composer = (#self.lines == 1 and self.lines[1] == "")
+  for vr = top_row, math.min(#vis_rows, top_row + input_lines - 1) do
+    local r = vis_rows[vr]
+    local i, byte0, slice = r.i, r.byte0, r.text
+    self.composer_rows[#self.composer_rows + 1] =
+      { i = i, byte0 = byte0, x = x, y = ty, h = lh, line = slice }
+
+    -- Highlight before the text. Selection is logical (line, byte); clip it to
+    -- this slice's byte span so a wrapped selection paints across its rows.
     if csel_lo and i >= csel_lo.cy and i <= csel_hi.cy then
-      local from = (i == csel_lo.cy) and cols_of(line:sub(1, csel_lo.cx - 1)) or 0
-      local to = (i == csel_hi.cy) and cols_of(line:sub(1, csel_hi.cx - 1))
-                 or cols_of(line)
-      -- A selection that runs to the end of a line includes the newline, and
-      -- showing a sliver past the last glyph is how that reads.
-      if i < csel_hi.cy then to = to + 1 end
+      local logical = self.lines[i] or ""
+      local lo_b = (i == csel_lo.cy) and csel_lo.cx or 1
+      local hi_b = (i == csel_hi.cy) and csel_hi.cx or (#logical + 1)
+      local a = math.max(lo_b, byte0)
+      local b = math.min(hi_b, byte0 + #slice)
+      local from = cols_of(slice:sub(1, math.max(0, a - byte0)))
+      local to = cols_of(slice:sub(1, math.max(0, b - byte0)))
+      -- A selection that runs through a line's newline shows a sliver past the
+      -- last glyph -- but only on the row that actually ends the logical line.
+      if i < csel_hi.cy and (byte0 + #slice > #logical) then to = to + 1 end
       if to > from then
         renderer.draw_rect(x + from * charw, ty, (to - from) * charw, lh,
           style.selection)
       end
     end
 
-    local shown = line
+    local shown = slice
     -- No text caret in normal mode: nothing you type lands here, so a caret
     -- would promise an insertion point that is not listening.
-    if i == self.cy and composing and focused and self.edit_mode ~= "normal" then
-      shown = line:sub(1, self.cx - 1) .. "|" .. line:sub(self.cx)
+    if vr == caret_vr and i == self.cy and composing and focused
+       and self.edit_mode ~= "normal" then
+      local off = self.cx - byte0
+      shown = slice:sub(1, off) .. "|" .. slice:sub(off + 1)
     end
-    if i == 1 and line == "" and #self.lines == 1 and composing then
+    if vr == top_row and empty_composer and composing then
       common.draw_text(font, style.dim,
         (bog and bog.choice and bog.choice.allow_input)
           and "Type your own answer..." or "Reply to boggart...",
