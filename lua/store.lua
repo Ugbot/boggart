@@ -475,6 +475,119 @@ function M.skills_search(query, n)
     { fq, n or 5 })
 end
 
+-- ---- code search (FTS5) ----------------------------------------------------
+-- A native bm25 index over the working tree's source files, so `code_search`
+-- has a ranked, tokenised backend even when no code-intelligence MCP server is
+-- up. Like skills_fts it is a derived cache: rebuilt from disk, incremental by
+-- mtime, and safe for an older boggart to ignore. code_meta tracks each file's
+-- mtime and its FTS rowid, so a changed file is re-indexed and an unchanged one
+-- is skipped. path is UNINDEXED (stored, not tokenised); body carries the bm25.
+local CODE_FTS  = "CREATE VIRTUAL TABLE IF NOT EXISTS code_fts USING fts5(path UNINDEXED, body)"
+local CODE_META = "CREATE TABLE IF NOT EXISTS code_meta(path TEXT PRIMARY KEY, mtime INTEGER, rowid INTEGER)"
+
+local CODE_MAX_FILES = 20000
+local CODE_MAX_BYTES = 512 * 1024
+local CODE_SKIP_DIR = { [".git"] = 1, node_modules = 1, build = 1, dist = 1,
+  target = 1, [".venv"] = 1, venv = 1, __pycache__ = 1, [".cache"] = 1 }
+local CODE_SKIP_EXT = { png=1,jpg=1,jpeg=1,gif=1,webp=1,ico=1,svg=1,pdf=1,zip=1,
+  gz=1,tgz=1,tar=1,bz2=1,xz=1,["7z"]=1,mp3=1,mp4=1,mov=1,wav=1,flac=1,bin=1,
+  exe=1,dll=1,so=1,dylib=1,o=1,a=1,class=1,jar=1,wasm=1,ttf=1,otf=1,woff=1,
+  woff2=1,db=1,sqlite=1,lock=1 }
+
+local function code_skip_ext(path)
+  local ext = path:match("%.([%w]+)$")
+  return ext ~= nil and CODE_SKIP_EXT[ext:lower()] ~= nil
+end
+
+-- The files to index: git's own list (tracked + untracked-not-ignored) when this
+-- is a repo -- it respects .gitignore and skips build junk for free -- else a
+-- bounded recursive walk that skips the usual noise dirs. The git call is
+-- pcall'd because proc.run yields, which is only valid under the scheduler; a
+-- --eval/headless context falls through to the walk.
+local function code_file_list()
+  local ok, r = pcall(function()
+    return require("proc").run("git ls-files --cached --others --exclude-standard 2>/dev/null", 30)
+  end)
+  if ok and r and r.code == 0 and type(r.out) == "string" and r.out:match("%S") then
+    local files = {}
+    for line in r.out:gmatch("[^\n]+") do files[#files + 1] = line end
+    return files
+  end
+  local files, stack = {}, { "." }
+  while #stack > 0 and #files < CODE_MAX_FILES do
+    local dir = table.remove(stack)
+    for _, name in ipairs(sys.listdir(dir) or {}) do
+      local p = (dir == ".") and name or (dir .. "/" .. name)
+      local kind = sys.stat(p)
+      if kind == "dir" then
+        if not CODE_SKIP_DIR[name] then stack[#stack + 1] = p end
+      elseif kind == "file" then
+        files[#files + 1] = p
+      end
+    end
+  end
+  return files
+end
+
+-- Rebuild/refresh the code index. opts.rebuild wipes it first; otherwise it is
+-- incremental by mtime. Returns { indexed, skipped, total }.
+function M.code_reindex(opts)
+  opts = opts or {}
+  bog.db:exec(CODE_FTS)
+  bog.db:exec(CODE_META)
+  if opts.rebuild then
+    bog.db:run("DELETE FROM code_fts")
+    bog.db:run("DELETE FROM code_meta")
+  end
+  local indexed, skipped, total = 0, 0, 0
+  for _, path in ipairs(code_file_list()) do
+    total = total + 1
+    if total > CODE_MAX_FILES then break end
+    local kind, mtime, size = sys.stat(path)
+    if kind ~= "file" or code_skip_ext(path) or (size and size > CODE_MAX_BYTES) then
+      skipped = skipped + 1
+    else
+      local prev = bog.db:query("SELECT mtime, rowid FROM code_meta WHERE path=?", { path })[1]
+      if prev and not opts.rebuild and tonumber(prev.mtime) == math.floor(mtime or 0) then
+        skipped = skipped + 1
+      else
+        local data = bog.util.read_file(path)
+        if not data or data:find("\0", 1, true) then
+          skipped = skipped + 1
+        else
+          if prev then bog.db:run("DELETE FROM code_fts WHERE rowid=?", { prev.rowid }) end
+          local ins = bog.db:run("INSERT INTO code_fts(path, body) VALUES(?, ?)", { path, data })
+          bog.db:run("INSERT OR REPLACE INTO code_meta(path, mtime, rowid) VALUES(?, ?, ?)",
+            { path, math.floor(mtime or 0), ins.rowid })
+          indexed = indexed + 1
+        end
+      end
+    end
+  end
+  return { indexed = indexed, skipped = skipped, total = total }
+end
+
+-- How many files the native index currently holds (0 = never built).
+function M.code_index_count()
+  local ok = pcall(function() bog.db:exec(CODE_META) end)
+  if not ok then return 0 end
+  local r = bog.db:query("SELECT COUNT(*) AS n FROM code_meta")
+  return (r and r[1] and tonumber(r[1].n)) or 0
+end
+
+-- Ranked bm25 search over the index. Returns { { path, score, snippet }, ... },
+-- best match first (bm25 is smaller-is-better, so it is negated).
+function M.code_search(query, n)
+  bog.db:exec(CODE_FTS)
+  local fq = fts_query(query or "")
+  if not fq then return {} end
+  return bog.db:query(
+    "SELECT path, -bm25(code_fts) AS score, "
+    .. "snippet(code_fts, 1, '>>>', '<<<', ' … ', 12) AS snippet "
+    .. "FROM code_fts WHERE code_fts MATCH ? ORDER BY score DESC LIMIT ?",
+    { fq, n or 12 })
+end
+
 -- ---- sessions --------------------------------------------------------------
 function M.sess_create(title, model)
   local r = bog.db:run("INSERT INTO sessions(title,model,created,updated,messages) VALUES(?,?,?,?, '[]')",

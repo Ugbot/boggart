@@ -1296,6 +1296,79 @@ M.register("reload_tools", {
   end,
 })
 
+-- ---- code search: better than grep -----------------------------------------
+-- One logical tool, three tiers: a code-intelligence server (llm-station's
+-- ranked, AST-aware code_search) if it is connected, else boggart's own bm25
+-- index over the working tree, else grep. The model calls one name and gets the
+-- best backend available, degrading gracefully when the MCP server is down.
+M.register("code_index", {
+  description = "Build or refresh boggart's native bm25 index of the working tree's source "
+    .. "files (the fallback backend for code_search). Incremental by default; pass "
+    .. "rebuild=true to wipe and reindex from scratch. Usually unnecessary -- code_search "
+    .. "builds it on first use -- but handy after a large checkout.",
+  input_schema = { type = "object", properties = {
+    rebuild = { type = "boolean", description = "wipe the index and reindex everything" } } },
+  run = function(a)
+    if not (bog.store and bog.store.code_reindex) then
+      return M.err(M.ERR.capability, "the store is unavailable, so the code index cannot be built")
+    end
+    local ok, res = pcall(bog.store.code_reindex, { rebuild = a and a.rebuild })
+    if not ok then return M.err(M.ERR.runtime, "code_index failed: " .. tostring(res)) end
+    return string.format("Indexed %d file(s): %d (re)indexed, %d unchanged. code_search is ready.",
+      res.total, res.indexed, res.skipped)
+  end,
+})
+
+local function code_search_native(q, limit)
+  if not (bog.store and bog.store.code_search) then return nil end
+  if bog.store.code_index_count() == 0 then pcall(bog.store.code_reindex, {}) end
+  local ok, rows = pcall(bog.store.code_search, q, limit)
+  if not ok or type(rows) ~= "table" or #rows == 0 then return nil end
+  local out = { string.format("code_search (native bm25): %d hit(s) for %q", #rows, q) }
+  for _, r in ipairs(rows) do
+    local snip = tostring(r.snippet or ""):gsub("%s+", " ")
+    out[#out + 1] = "  " .. tostring(r.path) .. (snip ~= "" and ("\n      " .. snip) or "")
+  end
+  return table.concat(out, "\n")
+end
+
+M.register("code_search", {
+  description = "Find where something is defined or used in the codebase -- RANKED, not just "
+    .. "line-matched, so prefer this over `grep`/`bash grep`. Give plain words or an "
+    .. "identifier. Uses a code-intelligence server (llm-station: AST-aware, definitions "
+    .. "ranked above references) when connected, else boggart's native bm25 index, else grep.",
+  input_schema = { type = "object", properties = {
+    query = { type = "string", description = "words or an identifier to find" },
+    limit = { type = "integer", description = "max results (default 12)" } },
+    required = { "query" } },
+  -- Introspectable by `tools`/doctor; the run below is the live chain.
+  fallback_chain = { "mcp__llm-station__code_search", "code_search (native bm25)", "bash grep" },
+  run = function(a)
+    local q = a and a.query
+    if type(q) ~= "string" or q:match("^%s*$") then
+      return M.err(M.ERR.validation, "code_search needs a non-empty 'query'")
+    end
+    local limit = (a and tonumber(a.limit)) or 12
+
+    -- 1. code-intelligence server, if it is connected (registered).
+    if M.registry["mcp__llm-station__code_search"] then
+      local res = M.run("mcp__llm-station__code_search", { query = q, limit = limit })
+      local unavailable = type(res) == "string"
+        and (res:find("^Tool error: %[tool_not_found%]") or res:find("is not connected", 1, true))
+      if not unavailable then return res end
+    end
+
+    -- 2. boggart's native bm25 index (built lazily on first use).
+    local native = code_search_native(q, limit)
+    if native then return native end
+
+    -- 3. grep -- the floor. Fixed-string, binary files skipped.
+    local pat = q:gsub("'", "'\\''")
+    return M.run("bash", { command =
+      "grep -rnI -F -e '" .. pat .. "' . 2>/dev/null | head -n " .. tostring(limit) })
+  end,
+})
+
 M.register("sql", {
   description = "Run SQL against boggart's local SQLite database (~/.boggart/boggart.db). "
     .. "By default runs a query and returns rows as JSON; set write=true for "

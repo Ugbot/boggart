@@ -440,6 +440,18 @@ function M.doctor()
       .. "authority. `/trust sandboxed` (or unset BOGGART_SKILL_TRUST) to sandbox it.")
   end
 
+  -- code search --------------------------------------------------------------
+  -- Which backend `code_search` will use right now: a code-intelligence server
+  -- if connected, else boggart's own bm25 index, else grep.
+  head("code search")
+  local station = bog.tools and bog.tools.registry
+    and bog.tools.registry["mcp__llm-station__code_search"] ~= nil
+  local nidx = (bog.store and bog.store.code_index_count and bog.store.code_index_count()) or 0
+  kv("backend", station and "llm-station (ranked, AST-aware)"
+    or (nidx > 0 and "native bm25 index" or "grep (native index not built yet)"))
+  kv("llm-station", station and "connected" or "not connected")
+  kv("native index", nidx > 0 and (nidx .. " files indexed") or "empty (builds on first code_search)")
+
   -- voice --------------------------------------------------------------------
   -- Only worth a section when the binary was built with voice; otherwise it is
   -- an off-by-default feature nobody asked doctor about.
