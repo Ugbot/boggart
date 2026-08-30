@@ -471,6 +471,80 @@ local function norm_schema(s)
   return out
 end
 
+-- ---- Anthropic tool-schema sanitiser ---------------------------------------
+-- Anthropic validates every tool's input_schema against JSON Schema draft
+-- 2020-12 and 400s the WHOLE request if any ONE is invalid -- and an MCP server
+-- (or a model-authored tool) readily emits schemas that are not: a draft-07
+-- `$schema` URI, draft-04 boolean `exclusiveMinimum/Maximum`, a property whose
+-- value is a bare type string instead of a schema object, a top level that is
+-- not an object. The OpenAI/responses wires already dodge this via norm_schema
+-- on `parameters`; the Anthropic wire sent `input_schema` verbatim. So one bad
+-- tool out of a hundred sank every turn. Normalise to a valid object schema.
+--
+-- Recursion is limited to keywords whose value is actually a schema (or a list/
+-- map of schemas), so ordinary data -- enum values, `required`, examples -- is
+-- copied through untouched rather than mistaken for a nested schema.
+local ANTHROPIC_SCHEMA_KW  = { items = true, additionalProperties = true,
+  ["not"] = true, propertyNames = true, contains = true,
+  ["if"] = true, ["then"] = true, ["else"] = true }
+local ANTHROPIC_SCHEMA_LIST = { anyOf = true, oneOf = true, allOf = true, prefixItems = true }
+local ANTHROPIC_SCHEMA_MAP  = { properties = true, patternProperties = true,
+  ["$defs"] = true, definitions = true, dependentSchemas = true }
+
+local function sanitize_schema(s, depth)
+  depth = (depth or 0) + 1
+  if type(s) ~= "table" then return nil end   -- caller decides how to replace a non-schema
+  if depth > 24 then return { type = "object" } end
+  local out = {}
+  for k, v in pairs(s) do
+    if k == "$schema" then
+      -- drop: a $schema URI naming another draft is itself a rejection.
+    elseif k == "exclusiveMinimum" or k == "exclusiveMaximum" then
+      if type(v) == "number" then out[k] = v end -- draft-04 boolean form is dropped
+    elseif k == "type" then
+      if type(v) == "string" then out[k] = SCHEMA_TYPE[v:lower()] or v
+      elseif type(v) == "table" then
+        local t = {}
+        for i, x in ipairs(v) do t[i] = (type(x) == "string" and (SCHEMA_TYPE[x:lower()] or x)) or x end
+        out[k] = t
+      else out[k] = v end
+    elseif ANTHROPIC_SCHEMA_KW[k] then
+      if type(v) == "table" then out[k] = sanitize_schema(v, depth) or { type = "object" }
+      else out[k] = v end -- additionalProperties = true/false stays as-is
+    elseif ANTHROPIC_SCHEMA_LIST[k] and type(v) == "table" then
+      local list = {}
+      for i, sub in ipairs(v) do list[i] = sanitize_schema(sub, depth) or { type = "object" } end
+      out[k] = list
+    elseif (k == "definitions" or ANTHROPIC_SCHEMA_MAP[k]) and type(v) == "table" then
+      local m = {}
+      for pk, pv in pairs(v) do
+        local ps = sanitize_schema(pv, depth)
+        if ps == nil then -- a bare "string" shorthand where a schema object is required
+          ps = { type = (type(pv) == "string" and (SCHEMA_TYPE[pv:lower()] or "string")) or "string" }
+        end
+        m[pk] = ps
+      end
+      out[k == "definitions" and "$defs" or k] = m -- migrate draft-07 definitions
+    else
+      out[k] = v
+    end
+  end
+  if out.type == "array" and type(out.items) ~= "table" then out.items = { type = "string" } end
+  return out
+end
+
+-- The tool input_schema Anthropic requires: a valid 2020-12 OBJECT schema.
+-- Returns the schema and whether anything material had to be repaired (so the
+-- caller can name the offending tool in a log line).
+local function sanitize_tool_schema(s)
+  local suspect = (type(s) ~= "table") or (s.type ~= nil and s.type ~= "object")
+    or s["$schema"] ~= nil
+  local out = sanitize_schema(s) or {}
+  if out.type ~= "object" then out.type = "object" end
+  if type(out.properties) ~= "table" then out.properties = {} end
+  return out, suspect
+end
+
 local function to_openai_body(body)
   local msgs = {}
   local systext = text_of(body.system)
@@ -821,9 +895,36 @@ local ANTHROPIC_EFFORT = {
 --     store their reasoning as a thinking block with no Anthropic signature -- so
 --     a transcript built on the local model and continued on Sonnet carries them.
 --     A real Anthropic thinking block carries a signature and is KEPT.
+local _warned_schema = {} -- tool names already reported as repaired, to log each once
+
 local function to_anthropic_body(body)
   local out = {}
   for k, v in pairs(body) do out[k] = v end
+
+  -- Every tool's input_schema must be valid draft-2020-12 or Anthropic 400s the
+  -- WHOLE request; MCP servers and model-authored tools readily emit ones that
+  -- are not. Normalise each (see sanitize_tool_schema), preserving any other
+  -- per-tool fields (e.g. a cache_control breakpoint), and name any offender in
+  -- the log once so a bad tool is findable rather than just fatal.
+  if type(out.tools) == "table" then
+    local st, repaired = {}, {}
+    for i, t in ipairs(out.tools) do
+      local schema, suspect = sanitize_tool_schema(t.input_schema)
+      local nt = {}
+      for k, v in pairs(t) do nt[k] = v end
+      nt.input_schema = schema
+      st[i] = nt
+      if suspect and t.name and not _warned_schema[t.name] then
+        _warned_schema[t.name] = true
+        repaired[#repaired + 1] = t.name
+      end
+    end
+    out.tools = st
+    if #repaired > 0 and bog and bog.log then
+      bog.log("anthropic: normalised invalid tool schema(s) to draft-2020-12: "
+        .. table.concat(repaired, ", "))
+    end
+  end
 
   local eff = out.reasoning_effort
   out.reasoning_effort = nil

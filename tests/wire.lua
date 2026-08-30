@@ -129,6 +129,49 @@ do
   api.status = real
 end
 
+-- ---- Anthropic: tool input_schema is sanitised to valid draft-2020-12 -------
+-- One invalid tool schema (an MCP server or a model-authored tool) 400s the
+-- WHOLE request. The wire must normalise every schema so it cannot.
+do
+  local tools = {
+    { name = "good", description = "d",
+      input_schema = { type = "object", properties = { x = { type = "string" } } } },
+    -- a draft-07 $schema URI, a draft-04 boolean exclusiveMinimum, an array with
+    -- no items, a property given as a bare type string, and a non-object top.
+    { name = "bad", description = "d", input_schema = {
+        ["$schema"] = "http://json-schema.org/draft-07/schema#",
+        type = "string",  -- not an object at the top
+        properties = {
+          n = { type = "integer", exclusiveMinimum = true },
+          tags = { type = "array" },        -- no items
+          note = "string",                   -- bare type, not a schema object
+        },
+        definitions = { Foo = { type = "object" } },
+      } },
+  }
+  local out = api._body_for_wire("anthropic", base{ tools = tools })
+  local by = {}
+  for _, t in ipairs(out.tools) do by[t.name] = t end
+
+  eq(by.good.input_schema.type, "object", "anthropic: a valid schema is preserved")
+  eq(by.good.input_schema.properties.x.type, "string", "anthropic: valid nested property kept")
+
+  local s = by.bad.input_schema
+  eq(s.type, "object", "anthropic: a non-object top-level schema is forced to object")
+  eq(s["$schema"], nil, "anthropic: a foreign $schema URI is stripped")
+  eq(s.properties.n.exclusiveMinimum, nil, "anthropic: draft-04 boolean exclusiveMinimum is dropped")
+  eq(s.properties.tags.items and s.properties.tags.items.type, "string",
+     "anthropic: an array without items gets a permissive items")
+  eq(type(s.properties.note), "table", "anthropic: a bare-string property becomes a schema object")
+  eq(s.properties.note.type, "string", "anthropic: the bare-string property keeps its type")
+  eq(s.definitions, nil, "anthropic: draft-07 'definitions' is migrated")
+  ok(type(s["$defs"]) == "table", "anthropic: ...to '$defs'")
+
+  -- The OpenAI/responses wires normalise via `parameters`, not `input_schema`.
+  local oai = api._body_for_wire("openai", base{ tools = tools, reasoning_effort = "low" })
+  ok(type(oai.tools[1]["function"].parameters) == "table", "openai: tools still carry parameters")
+end
+
 io.write(failed == 0 and ("wire: all " .. passed .. " passed\n")
                       or ("wire: " .. failed .. " FAILED, " .. passed .. " passed\n"))
 os.exit(failed == 0 and 0 or 1)
