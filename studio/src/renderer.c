@@ -73,10 +73,7 @@
  * the twentieth is not adding coverage. */
 #define MAX_FACES 32
 
-struct RenImage {
-  RenColor *pixels;
-  int width, height;
-};
+/* struct RenImage is now public in renderer.h. */
 
 /* Where one glyph sits in its atlas, and what it does to the pen. Was
  * stbtt_bakedchar; the fields are the same because the drawing code was
@@ -1153,9 +1150,15 @@ void ren_draw_rect(RenRect rect, RenColor color) {
 }
 
 
-void ren_draw_image(RenImage *image, RenRect *sub, int x, int y, RenColor color) {
-  if (color.a == 0 || !renderer || !image || !sub) { return; }
-  if (sub->width <= 0 || sub->height <= 0) { return; }
+/* Blit the sub-rect of an RGBA image, scaled into the destination rect. src and
+ * dst are independent so the caller can fit an image to a column width. The
+ * texture is created and destroyed per call: images are occasional (Markdown,
+ * later PDF pages), so this stays simple rather than caching a texture on the
+ * RenImage and having to invalidate it. Linear scaling reads better than nearest
+ * for a down-scaled photo/diagram. */
+void ren_draw_image(RenImage *image, RenRect *sub, RenRect *dst, RenColor color) {
+  if (color.a == 0 || !renderer || !image || !sub || !dst) { return; }
+  if (sub->width <= 0 || sub->height <= 0 || dst->width <= 0 || dst->height <= 0) { return; }
   glyph_batch_flush();
   bind_target();
   SDL_Texture *tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
@@ -1163,7 +1166,7 @@ void ren_draw_image(RenImage *image, RenRect *sub, int x, int y, RenColor color)
                                        image->width, image->height);
   if (!tex) { return; }
   SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
-  SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
+  SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_LINEAR);
   SDL_SetTextureColorMod(tex, color.r, color.g, color.b);
   SDL_SetTextureAlphaMod(tex, color.a);
   SDL_UpdateTexture(tex, NULL, image->pixels, image->width * (int)sizeof(RenColor));
@@ -1171,11 +1174,11 @@ void ren_draw_image(RenImage *image, RenRect *sub, int x, int y, RenColor color)
     (float) sub->x, (float) sub->y,
     (float) sub->width, (float) sub->height
   };
-  SDL_FRect dst = {
-    (float) x, (float) y,
-    (float) sub->width, (float) sub->height
+  SDL_FRect fdst = {
+    (float) dst->x, (float) dst->y,
+    (float) dst->width, (float) dst->height
   };
-  SDL_RenderTexture(renderer, tex, &src, &dst);
+  SDL_RenderTexture(renderer, tex, &src, &fdst);
   SDL_DestroyTexture(tex);
 }
 

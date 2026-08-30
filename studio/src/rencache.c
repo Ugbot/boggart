@@ -22,7 +22,7 @@
  * invariant is the whole argument, so it is stated rather than assumed. */
 #define COMMAND_BUF_INITIAL (1024 * 512)
 
-enum { FREE_FONT, SET_CLIP, DRAW_TEXT, DRAW_RECT, DRAW_LINE };
+enum { FREE_FONT, SET_CLIP, DRAW_TEXT, DRAW_RECT, DRAW_LINE, DRAW_IMAGE };
 
 typedef struct {
   int type, size;
@@ -31,6 +31,10 @@ typedef struct {
   RenFont *font;
   int tab_width;
   float x0, y0, x1, y1, thickness;   /* DRAW_LINE */
+  RenImage *image;                   /* DRAW_IMAGE: the pixels (kept alive by the
+                                        drawing view for the frame; commands are
+                                        pushed and consumed within one frame) */
+  RenRect sub;                       /* DRAW_IMAGE: source sub-rect (rect = dest) */
   char text[0];
 } Command;
 
@@ -155,6 +159,17 @@ void rencache_draw_rect(RenRect rect, RenColor color) {
   Command *cmd = push_command(DRAW_RECT, sizeof(Command));
   if (cmd) {
     cmd->rect = rect;
+    cmd->color = color;
+  }
+}
+
+void rencache_draw_image(RenImage *image, RenRect sub, RenRect dst, RenColor color) {
+  if (!image || !rects_overlap(screen_rect, dst)) { return; }
+  Command *cmd = push_command(DRAW_IMAGE, sizeof(Command));
+  if (cmd) {
+    cmd->rect = dst;     /* dest, used by the damage/clip machinery like every cmd */
+    cmd->sub = sub;
+    cmd->image = image;
     cmd->color = color;
   }
 }
@@ -326,6 +341,9 @@ void rencache_end_frame(void) {
         case DRAW_TEXT:
           ren_set_font_tab_width(cmd->font, cmd->tab_width);
           ren_draw_text(cmd->font, cmd->text, cmd->rect.x, cmd->rect.y, cmd->color);
+          break;
+        case DRAW_IMAGE:
+          ren_draw_image(cmd->image, &cmd->sub, &cmd->rect, cmd->color);
           break;
       }
     }

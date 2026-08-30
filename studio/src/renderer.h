@@ -5,11 +5,19 @@
 #include <stdint.h>
 #include <stddef.h>
 
-typedef struct RenImage RenImage;
 typedef struct RenFont RenFont;
 
 typedef struct { uint8_t b, g, r, a; } RenColor;
 typedef struct { int x, y, width, height; } RenRect;
+
+/* An RGBA image (BGRA in memory, matching RenColor). Public so the Lua image
+ * binding (src/api/renderer.c) and the glyph atlases can reach width/height/
+ * pixels directly. Allocated as one block by ren_new_image, with pixels laid
+ * out immediately after the struct. */
+typedef struct RenImage {
+  RenColor *pixels;
+  int width, height;
+} RenImage;
 
 /* How a glyph is rasterised, and how hard the outline is pulled onto the pixel
  * grid before it is. Both are per font, because the answers differ: the code
@@ -80,7 +88,7 @@ int ren_get_font_height(RenFont *font);
 
 void ren_draw_rect(RenRect rect, RenColor color);
 void ren_draw_line(float x0, float y0, float x1, float y1, float thickness, RenColor color);
-void ren_draw_image(RenImage *image, RenRect *sub, int x, int y, RenColor color);
+void ren_draw_image(RenImage *image, RenRect *sub, RenRect *dst, RenColor color);
 int ren_draw_text(RenFont *font, const char *text, int x, int y, RenColor color);
 
 #endif
