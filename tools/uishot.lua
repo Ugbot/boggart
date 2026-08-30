@@ -732,6 +732,47 @@ core.add_thread(function()
         v = studio.open_agent(); core.set_active_view(v); frame(2)
       end
     end
+
+    -- ---- editor soft-wrap: a long line breaks to the width, does not overflow -
+    do
+      local FIX = (os.getenv("TMPDIR") or "/tmp") .. "/boggart-uicheck-wrap.txt"
+      local f = io.open(FIX, "wb")
+      if f then
+        f:write("short\n")
+        f:write("This is a very long line that must wrap to several visual rows when soft "
+          .. "wrapping is on, because it is far wider than the editor view and would "
+          .. "otherwise run off the right edge and need horizontal scrolling to read.\n")
+        f:write("tail\n")
+        f:close()
+        local dv = core.root_view:open_doc(core.open_doc(FIX))
+        core.set_active_view(dv)
+        dv.wrapping = true; dv.wrap = nil
+        frame(6)
+        dv:ensure_wrap()
+        check(#dv.wrap.rows > #dv.doc.lines, "soft-wrap: more visual rows than doc lines")
+        local n2 = 0
+        for _, r in ipairs(dv.wrap.rows) do if r.line == 2 then n2 = n2 + 1 end end
+        check(n2 >= 2, "soft-wrap: the long line broke into several rows")
+        local font = dv:get_font()
+        local over = 0
+        for _, r in ipairs(dv.wrap.rows) do
+          local t = dv.doc.lines[r.line]:sub(r.s, r.e - 1):gsub("\n$", "")
+          if font:get_width(t) > dv:get_wrap_width() + 2 then over = over + 1 end
+        end
+        check(over == 0, "soft-wrap: no visual row exceeds the wrap width")
+        -- click the 2nd visual row of line 2 -> resolves back onto line 2
+        local lh = dv:get_line_height()
+        local _, oy = dv:get_content_offset()
+        local gw = dv:get_gutter_width()
+        local cy = oy + dv.wrap.first[2] * lh + require("core.style").padding.y + lh / 2
+        local ln = select(1, dv:resolve_screen_position(dv.position.x + gw + 30, cy))
+        check(ln == 2, "soft-wrap: a click on a wrapped row resolves to its doc line")
+        shot("softwrap")
+        local node = core.root_view.root_node:get_node_for_view(dv)
+        if node then node:set_active_view(dv); node:close_active_view(core.root_view.root_node) end
+        v = studio.open_agent(); core.set_active_view(v); frame(2)
+      end
+    end
   end)
 
   -- -------------------------------------------------------------------------

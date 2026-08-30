@@ -24,6 +24,24 @@ local function move_to_line_offset(dv, line, col, offset)
 end
 
 
+-- Caret up/down by ONE VISUAL row (wrapping), preserving the target x offset
+-- across repeated moves via last_x_offset -- so up/down through a wrapped line
+-- tracks a column the way it does through unwrapped lines.
+local function move_to_vrow_offset(dv, line, col, dir)
+  dv:ensure_wrap()
+  local v = dv:vrow_of(line, col)
+  local xo = dv.last_x_offset
+  if xo.line ~= line or xo.col ~= col then
+    xo.offset = dv:vrow_col_x(v, col)
+  end
+  local tv = common.clamp(v + dir, 1, #dv.wrap.rows)
+  local newline = dv.wrap.rows[tv].line
+  local newcol = dv:col_at_vrow(tv, xo.offset)
+  xo.line, xo.col = newline, newcol
+  return newline, newcol
+end
+
+
 DocView.translate = {
   ["previous_page"] = function(doc, line, col, dv)
     local min, max = dv:get_visible_line_range()
@@ -36,6 +54,11 @@ DocView.translate = {
   end,
 
   ["previous_line"] = function(doc, line, col, dv)
+    if dv.wrapping then
+      dv:ensure_wrap()
+      if dv:vrow_of(line, col) <= 1 then return 1, 1 end
+      return move_to_vrow_offset(dv, line, col, -1)
+    end
     if line == 1 then
       return 1, 1
     end
@@ -43,6 +66,11 @@ DocView.translate = {
   end,
 
   ["next_line"] = function(doc, line, col, dv)
+    if dv.wrapping then
+      dv:ensure_wrap()
+      if dv:vrow_of(line, col) >= #dv.wrap.rows then return #doc.lines, math.huge end
+      return move_to_vrow_offset(dv, line, col, 1)
+    end
     if line == #doc.lines then
       return #doc.lines, math.huge
     end
@@ -64,6 +92,118 @@ function DocView:new(doc)
   -- Rebuilt every frame from the visible lines only, so it is bounded by the
   -- height of the window rather than the length of the file.
   self.mark_hits = {}
+  -- Soft-wrap. When on, long lines break to the view width at word boundaries
+  -- and self.wrap maps document (line, col) <-> visual rows; when off, every
+  -- function below takes its original one-row-per-line path (zero cost/risk).
+  self.wrapping = config.line_wrap or false
+  self.wrap = nil
+end
+
+
+-- ---- soft wrap -------------------------------------------------------------
+-- The wrap cache: self.wrap = { rows, first, w, rev }. rows is the flat, ordered
+-- list of visual rows { line = docline, s = start byte-col, e = end byte-col
+-- (exclusive) }; first[line] is the index of a line's first visual row; w/rev
+-- are the width and doc change-id it was built for, so it rebuilds on resize or
+-- edit. Columns are byte offsets, matching the rest of DocView.
+function DocView:get_wrap_width()
+  return math.max(1, self.size.x - self:get_gutter_width() - style.padding.x)
+end
+
+
+function DocView:wrap_line_starts(line)
+  local text = self.doc.lines[line]
+  local font = self:get_font()
+  local avail = self:get_wrap_width()
+  local starts = { 1 }
+  local x, start, last_space = 0, 1, nil
+  local i, n = 1, #text
+  while i <= n do
+    local c = text:byte(i)
+    if c == 10 then break end                       -- the trailing newline
+    local clen = 1
+    if c >= 0xF0 then clen = 4 elseif c >= 0xE0 then clen = 3 elseif c >= 0xC0 then clen = 2 end
+    local ch = text:sub(i, i + clen - 1)
+    local w = font:get_width(ch)
+    if x + w > avail and i > start then
+      local brk = (last_space and last_space > start) and last_space or i
+      starts[#starts + 1] = brk
+      start = brk
+      x = font:get_width(text:sub(start, i - 1))
+      last_space = nil
+    end
+    x = x + w
+    if ch == " " or ch == "\t" then last_space = i + clen end
+    i = i + clen
+  end
+  return starts
+end
+
+
+function DocView:build_wrap()
+  local rows, first = {}, {}
+  local lines = self.doc.lines
+  for line = 1, #lines do
+    first[line] = #rows + 1
+    local starts = self:wrap_line_starts(line)
+    for k = 1, #starts do
+      rows[#rows + 1] = { line = line, s = starts[k], e = starts[k + 1] or (#lines[line] + 1) }
+    end
+  end
+  self.wrap = { rows = rows, first = first, w = self:get_wrap_width(), rev = self.doc:get_change_id() }
+end
+
+
+function DocView:ensure_wrap()
+  if not self.wrapping then self.wrap = nil; return end
+  if not self.wrap or self.wrap.w ~= self:get_wrap_width()
+     or self.wrap.rev ~= self.doc:get_change_id() then
+    self:build_wrap()
+  end
+end
+
+
+-- The visual-row index holding (line, col). A caret at a soft break belongs to
+-- the start of the next row.
+function DocView:vrow_of(line, col)
+  self:ensure_wrap()
+  local rows, v = self.wrap.rows, self.wrap.first[line]
+  while v < #rows and rows[v + 1].line == line and rows[v + 1].s <= col do v = v + 1 end
+  return v
+end
+
+
+-- The byte-column at horizontal pixel `tx` (measured from the text-area origin)
+-- within visual row `v`. Mirrors get_x_offset_col but over the row's slice.
+function DocView:col_at_vrow(v, tx)
+  local row = self.wrap.rows[v]
+  local text = self.doc.lines[row.line]
+  local font = self:get_font()
+  local xoff, last_i, i = 0, row.s, row.s
+  while i < row.e do
+    local c = text:byte(i)
+    if c == 10 then break end
+    local clen = 1
+    if c >= 0xF0 then clen = 4 elseif c >= 0xE0 then clen = 3 elseif c >= 0xC0 then clen = 2 end
+    local ch = text:sub(i, i + clen - 1)
+    local w = font:get_width(ch)
+    if xoff >= tx then return (xoff - tx > w / 2) and last_i or i end
+    xoff = xoff + w; last_i = i; i = i + clen
+  end
+  -- past the last glyph: the row's end, but never past a trailing newline.
+  local endc = row.e
+  if endc > row.s and text:byte(endc - 1) == 10 then endc = endc - 1 end
+  return endc
+end
+
+
+-- The x pixel offset of `col` within its visual row (measured from the row's
+-- start, i.e. the text-area origin), for the caret and selection.
+function DocView:vrow_col_x(v, col)
+  local row = self.wrap.rows[v]
+  local text = self.doc.lines[row.line]
+  local a = math.max(row.s, math.min(col, row.e))
+  return self:get_font():get_width(text:sub(row.s, a - 1))
 end
 
 
@@ -97,6 +237,10 @@ end
 
 
 function DocView:get_scrollable_size()
+  if self.wrapping then
+    self:ensure_wrap()
+    return self:get_line_height() * (#self.wrap.rows - 1) + self.size.y
+  end
   return self:get_line_height() * (#self.doc.lines - 1) + self.size.y
 end
 
@@ -116,10 +260,14 @@ function DocView:get_gutter_width()
 end
 
 
-function DocView:get_line_screen_position(idx)
+function DocView:get_line_screen_position(idx, col)
   local x, y = self:get_content_offset()
   local lh = self:get_line_height()
   local gw = self:get_gutter_width()
+  if self.wrapping then
+    local v = self:vrow_of(idx, col or 1)
+    return x + gw, y + (v - 1) * lh + style.padding.y
+  end
   return x + gw, y + (idx-1) * lh + style.padding.y
 end
 
@@ -134,9 +282,26 @@ end
 function DocView:get_visible_line_range()
   local x, y, x2, y2 = self:get_content_bounds()
   local lh = self:get_line_height()
+  if self.wrapping then
+    self:ensure_wrap()
+    local rows = self.wrap.rows
+    local vmin = common.clamp(math.floor(y / lh), 1, #rows)
+    local vmax = common.clamp(math.floor(y2 / lh) + 1, 1, #rows)
+    return rows[vmin].line, rows[vmax].line
+  end
   local minline = math.max(1, math.floor(y / lh))
   local maxline = math.min(#self.doc.lines, math.floor(y2 / lh) + 1)
   return minline, maxline
+end
+
+
+-- The visible visual-row range (wrapping only), for the draw loop.
+function DocView:get_visible_vrow_range()
+  self:ensure_wrap()
+  local _, y, _, y2 = self:get_content_bounds()
+  local lh = self:get_line_height()
+  local n = #self.wrap.rows
+  return common.clamp(math.floor(y / lh), 1, n), common.clamp(math.floor(y2 / lh) + 1, 1, n)
 end
 
 
@@ -166,6 +331,16 @@ end
 
 
 function DocView:resolve_screen_position(x, y)
+  if self.wrapping then
+    self:ensure_wrap()
+    local ox, oy = self:get_content_offset()
+    local lh = self:get_line_height()
+    local v = math.floor((y - (oy + style.padding.y)) / lh) + 1
+    v = common.clamp(v, 1, #self.wrap.rows)
+    local gw = self:get_gutter_width()
+    local col = self:col_at_vrow(v, x - (ox + gw))
+    return self.wrap.rows[v].line, col
+  end
   local ox, oy = self:get_line_screen_position(1)
   local line = math.floor((y - oy) / self:get_line_height()) + 1
   line = common.clamp(line, 1, #self.doc.lines)
@@ -187,14 +362,25 @@ end
 
 
 function DocView:scroll_to_make_visible(line, col)
-  local min = self:get_line_height() * (line - 1)
-  local max = self:get_line_height() * (line + 2) - self.size.y
+  local lh = self:get_line_height()
+  if self.wrapping then
+    -- Vertical only -- wrapped text never scrolls sideways -- and by visual row.
+    local v = self:vrow_of(line, col or 1)
+    local min = lh * (v - 1)
+    local max = lh * (v + 2) - self.size.y
+    self.scroll.to.y = math.min(self.scroll.to.y, min)
+    self.scroll.to.y = math.max(self.scroll.to.y, max)
+    self.scroll.to.x = 0
+    return
+  end
+  local min = lh * (line - 1)
+  local max = lh * (line + 2) - self.size.y
   self.scroll.to.y = math.min(self.scroll.to.y, min)
   self.scroll.to.y = math.max(self.scroll.to.y, max)
   local gw = self:get_gutter_width()
   local xoffset = self:get_col_x_offset(line, col)
-  local max = xoffset - self.size.x + gw + self.size.x / 5
-  self.scroll.to.x = math.max(0, max)
+  local mx = xoffset - self.size.x + gw + self.size.x / 5
+  self.scroll.to.x = math.max(0, mx)
 end
 
 
@@ -490,22 +676,91 @@ function DocView:draw_line_gutter(idx, x, y)
 end
 
 
-function DocView:draw()
-  self:draw_background(style.background)
-
+-- Draw the highlighter tokens of a wrapped row's byte slice [row.s, row.e) at
+-- (x, y), clipping each token to the slice and advancing by drawn width (so the
+-- whole row costs one measure, not one per token).
+function DocView:draw_wrapped_text(row, x, y)
   local font = self:get_font()
-  font:set_tab_width(font:get_width(" ") * config.indent_size)
+  local text = self.doc.lines[row.line]
+  local bpos, drawn_x = 1, nil
+  for _, type, ttext in self.doc.highlighter:each_token(row.line) do
+    local tstart, tend = bpos, bpos + #ttext
+    bpos = tend
+    if tstart >= row.e then break end
+    local a, b = math.max(tstart, row.s), math.min(tend, row.e)
+    if b > a then
+      local sub = ttext:sub(a - tstart + 1, b - tstart)
+      if not drawn_x then drawn_x = x + font:get_width(text:sub(row.s, a - 1)) end
+      drawn_x = renderer.draw_text(font, sub, drawn_x, y, style.syntax[type])
+    end
+  end
+end
 
-  local minline, maxline = self:get_visible_line_range()
-  local lh = self:get_line_height()
 
-  -- Once a frame, not once a line: resolving the store is a couple of table
-  -- lookups, and from here on a mark costs one hash probe per visible line.
-  -- A ten-thousand-line file with ten thousand marks draws the same forty the
-  -- window can show and never touches the rest.
+function DocView:draw()
   self.mark_store = marks.store(self.doc)
   self.mark_hits = {}
+  local font = self:get_font()
+  font:set_tab_width(font:get_width(" ") * config.indent_size)
+  local lh = self:get_line_height()
+  local pos = self.position
 
+  if self.wrapping then
+    self:draw_background(style.background)
+    self:ensure_wrap()
+    local rows = self.wrap.rows
+    local ox, oy = self:get_content_offset()
+    local gw = self:get_gutter_width()
+    local yoff = self:get_line_text_y_offset()
+    local vmin, vmax = self:get_visible_vrow_range()
+    local sl1, sc1, sl2, sc2 = self.doc:get_selection(true)
+    local cline, ccol = self.doc:get_selection()
+
+    for v = vmin, vmax do
+      local row = rows[v]
+      local y = oy + (v - 1) * lh + style.padding.y
+      if row.s == 1 then self:draw_line_gutter(row.line, pos.x, y) end
+    end
+
+    core.push_clip_rect(pos.x + gw, pos.y, self.size.x, self.size.y)
+    for v = vmin, vmax do
+      local row = rows[v]
+      local text = self.doc.lines[row.line]
+      local y = oy + (v - 1) * lh + style.padding.y
+      local x0 = ox + gw
+      -- selection intersected with this row's byte slice
+      if row.line >= sl1 and row.line <= sl2 then
+        local c1 = (row.line == sl1) and sc1 or 1
+        local c2 = (row.line == sl2) and sc2 or (#text + 1)
+        local a, b = math.max(c1, row.s), math.min(c2, row.e)
+        if b > a then
+          local xa = x0 + font:get_width(text:sub(row.s, a - 1))
+          local xb = x0 + font:get_width(text:sub(row.s, b - 1))
+          renderer.draw_rect(xa, y, xb - xa, lh, style.selection)
+        end
+      end
+      if config.highlight_current_line and not self.doc:has_selection()
+         and cline == row.line and core.active_view == self then
+        renderer.draw_rect(x0, y, self.size.x, lh, style.line_highlight)
+      end
+      self:draw_wrapped_text(row, x0, y + yoff)
+      -- caret, only on the visual row that holds it
+      if cline == row.line and core.active_view == self
+         and (self.blink_timer < blink_period / 2 or (core.vim_caret and core.vim_caret(self) == "block"))
+         and system.window_has_focus() and self:vrow_of(cline, ccol) == v then
+        local cx = x0 + font:get_width(text:sub(row.s, ccol - 1))
+        local w = (core.vim_caret and core.vim_caret(self) == "block")
+          and font:get_width(" ") or style.caret_width
+        renderer.draw_rect(cx, y, w, lh, style.caret)
+      end
+    end
+    core.pop_clip_rect()
+    self:draw_scrollbar()
+    return
+  end
+
+  self:draw_background(style.background)
+  local minline, maxline = self:get_visible_line_range()
   local _, y = self:get_line_screen_position(minline)
   local x = self.position.x
   for i = minline, maxline do
@@ -515,7 +770,6 @@ function DocView:draw()
 
   local x, y = self:get_line_screen_position(minline)
   local gw = self:get_gutter_width()
-  local pos = self.position
   core.push_clip_rect(pos.x + gw, pos.y, self.size.x, self.size.y)
   for i = minline, maxline do
     self:draw_line_body(i, x, y)
@@ -692,9 +946,24 @@ command.add(DocView, {
 -- ctrl and shift but never under alt -- and "down to the next change, up to the
 -- previous" is the direction the eye already reads a diff in. alt+n / alt+p in
 -- keymap.lua reach the same jump under the older marks:*-change names.
+command.add(DocView, {
+  -- Soft-wrap toggle, per view. Wrapping never scrolls sideways, so reset the
+  -- horizontal scroll when turning it on.
+  ["doc:toggle-line-wrapping"] = function()
+    local dv = core.active_view
+    dv.wrapping = not dv.wrapping
+    dv.wrap = nil
+    if dv.wrapping then dv.scroll.to.x, dv.scroll.x = 0, 0 end
+    core.log("line wrapping %s", dv.wrapping and "on" or "off")
+    core.redraw = true
+  end,
+})
+
+
 keymap.add {
   ["alt+down"] = "marks:next",
   ["alt+up"] = "marks:prev",
+  ["alt+z"] = "doc:toggle-line-wrapping",
 }
 
 

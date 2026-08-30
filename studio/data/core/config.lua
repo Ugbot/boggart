@@ -19,6 +19,10 @@ config.line_limit = 80
 -- Open .md/.markdown files as a rendered preview (MarkdownView) rather than raw
 -- source. `markdown:toggle-source` switches to editing per-file at runtime.
 config.markdown_preview = true
+-- Soft-wrap long lines in the editor to the view width instead of scrolling
+-- horizontally. Off by default; `doc:toggle-line-wrapping` (or :set on a view)
+-- turns it on per DocView.
+config.line_wrap = false
 -- neovim-style modal editing (studio/data/core/vim.lua). Off by default; the
 -- module always loads so `vim:toggle` / `:set vim` can turn it on at runtime.
 config.vim_mode = false
