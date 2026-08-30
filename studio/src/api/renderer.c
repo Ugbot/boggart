@@ -129,6 +129,40 @@ static int f_image_from_rgba(lua_State *L) {
   return 1;
 }
 
+/* stb_image, from studio/src/stbimage.c. Declared here so this TU need not pull
+ * in the 7k-line header. */
+unsigned char *stbi_load(const char *filename, int *x, int *y, int *comp, int req_comp);
+void stbi_image_free(void *retval_from_stbi_load);
+const char *stbi_failure_reason(void);
+
+/* renderer.image_from_file(path) -> Image | nil, err. Decodes PNG/JPEG/... to
+ * RGBA (used for inline Markdown images). */
+static int f_image_from_file(lua_State *L) {
+  const char *path = luaL_checkstring(L, 1);
+  int w, h, comp;
+  unsigned char *data = stbi_load(path, &w, &h, &comp, 4); /* force 4-channel RGBA */
+  if (!data) {
+    const char *why = stbi_failure_reason();
+    lua_pushnil(L);
+    lua_pushstring(L, why ? why : "could not decode image");
+    return 2;
+  }
+  RenImage **ud = lua_newuserdata(L, sizeof(RenImage *));
+  *ud = NULL;
+  luaL_setmetatable(L, API_TYPE_IMAGE);
+  RenImage *img = ren_new_image(w, h);
+  int n = w * h;
+  for (int i = 0; i < n; i++) {
+    img->pixels[i].r = data[i * 4 + 0];
+    img->pixels[i].g = data[i * 4 + 1];
+    img->pixels[i].b = data[i * 4 + 2];
+    img->pixels[i].a = data[i * 4 + 3];
+  }
+  stbi_image_free(data);
+  *ud = img;
+  return 1;
+}
+
 static int f_image_gc(lua_State *L) {
   RenImage **ud = luaL_checkudata(L, 1, API_TYPE_IMAGE);
   if (*ud) { ren_free_image(*ud); *ud = NULL; }
@@ -170,6 +204,7 @@ static const luaL_Reg lib[] = {
   { "draw_line",       f_draw_line       },
   { "draw_text",       f_draw_text       },
   { "image_from_rgba", f_image_from_rgba },
+  { "image_from_file", f_image_from_file },
   { "draw_image",      f_draw_image      },
   { NULL,              NULL              }
 };

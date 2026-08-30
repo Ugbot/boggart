@@ -46,11 +46,34 @@ function MarkdownView:get_text()
   return table.concat(self.doc.lines):gsub("\n$", "")
 end
 
+-- Load (and cache) a local image referenced from the document. Remote URLs are
+-- skipped (shown as alt text); paths resolve against the .md file's directory.
+-- The cache keeps each Image referenced so it is never GC'd while on screen, and
+-- so a relayout does not re-decode it.
+function MarkdownView:load_image(url)
+  if type(url) ~= "string" or url:match("^%a[%w+.%-]*://") then return nil end
+  self._imgcache = self._imgcache or {}
+  local hit = self._imgcache[url]
+  if hit ~= nil then
+    if hit == false then return nil end
+    return hit.img, hit.w, hit.h
+  end
+  local dir = (self.doc and self.doc.filename or ""):match("^(.*)[/\\][^/\\]*$") or "."
+  local path = url:match("^[/\\~]") and url or (dir .. "/" .. url)
+  local img = renderer.image_from_file(path)
+  if not img then self._imgcache[url] = false; return nil end
+  local w, h = img:size()
+  self._imgcache[url] = { img = img, w = w, h = h }
+  return img, w, h
+end
+
 function MarkdownView:ctx()
   local f = self.fonts
+  local view = self
   return {
     body = f.body, em = f.em, code = f.code, h = f.h, syntax = true,
     measure = function(font, s) return font:get_width(s) end,
+    load_image = function(url) return view:load_image(url) end,
     colors = {
       text = style.text, heading = style.accent,
       code = style.inline_code or style.text, quote = style.dim,
@@ -95,6 +118,9 @@ function MarkdownView:draw()
       if row.rule then
         renderer.draw_rect(ox + (row.x or 0), ry + math.floor(row.h / 2),
           row.w or self.size.x, math.max(1, SCALE), style.divider)
+      end
+      if row.kind == "image" and row.img then
+        renderer.draw_image(row.img, ox + (row.x or 0), ry, row.w, row.h)
       end
       for _, run in ipairs(row.runs or {}) do
         local tx = ox + run.x

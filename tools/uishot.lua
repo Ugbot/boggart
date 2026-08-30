@@ -718,6 +718,14 @@ core.add_thread(function()
         local has_table = false
         for _, row in ipairs(mv._layout.rows) do if row.kind == "table" then has_table = true end end
         check(has_table, "markdown: the GFM table produced table rows")
+        -- the image binding: build a 2x2 RGBA image and confirm it constructs.
+        local okimg, img = pcall(renderer.image_from_rgba,
+          string.rep(string.char(255, 0, 0, 255), 4), 2, 2)
+        check(okimg and img, "renderer.image_from_rgba builds an image")
+        if okimg and img then
+          local iw, ih = img:size()
+          check(iw == 2 and ih == 2, "the image reports its size")
+        end
         shot("markdown")
         local node = core.root_view.root_node:get_node_for_view(mv)
         if node then node:set_active_view(mv); node:close_active_view(core.root_view.root_node) end

@@ -142,8 +142,11 @@ local function parse(src)
         local q = line:match("^%s*>%s?(.*)$")
         local li_ind, li_marker, li_text = line:match("^(%s*)([-*+])%s+(.*)$")
         local ol_ind, ol_num, ol_text = line:match("^(%s*)(%d+[.)])%s+(.*)$")
+        local img_alt, img_src = line:match("^%s*!%[([^%]]*)%]%(([^)]+)%)%s*$")
         if line:match("^%s*[-*_]%s*[-*_]%s*[-*_][-*_ ]*$") then
           blocks[#blocks + 1] = { kind = "rule" }
+        elseif img_src then
+          blocks[#blocks + 1] = { kind = "image", url = img_src, alt = img_alt or "" }
         elseif hashes then
           blocks[#blocks + 1] = { kind = "heading", level = math.min(#hashes, 6), text = htext }
         elseif q then
@@ -384,6 +387,20 @@ function M.layout(text, width, ctx)
       y = y + 2
       for _, row in ipairs(b.rows) do emit_table_row(row, false) end
       y = y + 6
+    elseif b.kind == "image" then
+      local img, iw, ih = nil, nil, nil
+      if ctx.load_image then img, iw, ih = ctx.load_image(b.url) end
+      if img and iw and ih and iw > 0 and ih > 0 then
+        local dw = math.min(iw, avail)
+        local dh = math.max(1, math.floor(ih * (dw / iw)))
+        y = y + 4
+        rows[#rows + 1] = { y = y, h = dh, kind = "image", img = img, x = pad, w = dw }
+        y = y + dh + 6
+      else
+        -- can't load (remote, missing, or bad): show the alt text as a hint.
+        local label = "\u{1F5BC} " .. (b.alt ~= "" and b.alt or b.url)
+        emit_wrapped(style_spans(label, ctx, ctx.body, colors.link), pad, "para", nil)
+      end
     else -- para
       local spans = style_spans(b.text, ctx, ctx.body, colors.text)
       emit_wrapped(spans, pad, "para", nil)

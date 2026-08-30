@@ -650,6 +650,7 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
   target_include_directories(boggart-studio PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/studio/src
+    ${VENDOR}/stb
     ${SDL3_INCLUDE_DIRS})
   target_compile_definitions(boggart-studio PRIVATE BOGGART_STUDIO=1 ${VOICE_DEFS})
   target_link_libraries(boggart-studio PRIVATE
