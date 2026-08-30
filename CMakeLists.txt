@@ -331,6 +331,65 @@ target_include_directories(luv_lua PRIVATE
 # link -- luv.c is nothing but undefined uv_* references.
 target_link_libraries(luv_lua PRIVATE boggart_quiet PUBLIC uv_a)
 
+# ---- voice input: whisper.cpp + miniaudio (opt-in) -------------------------
+# Native speech-to-text ("speak and/or type"). The whole stack -- whisper.cpp,
+# GGML, and the miniaudio capture header -- is heavy (a multi-minute cold build
+# and a GGML backend per platform), so it is opt-in behind BOGGART_VOICE and OFF
+# by default: a normal build and CI never fetch it. src/lvoice.c is compiled into
+# both binaries regardless; without the option it degrades to voice.built()==false
+# and the front ends hide the affordance. See src/lvoice.c.
+#
+# When ON: whisper.cpp is FetchContent'd and linked statically (same mechanism as
+# SDL3/curl), and miniaudio is vendored as one implementation TU (like sqlite).
+# The model weights are NOT bundled -- voice.model_path() resolves them at run
+# time from $BOGGART_WHISPER_MODEL or ~/.boggart/models/ggml-base.en.bin.
+option(BOGGART_VOICE "Build native voice input (whisper.cpp + miniaudio)" OFF)
+
+set(VOICE_LIBS "")
+set(VOICE_DEFS "")
+if(BOGGART_VOICE)
+  # whisper.cpp / GGML are C++. The project is declared C-only (project(boggart C)),
+  # so turn CXX on for this configuration; it also means the executables that link
+  # whisper must be linked with the C++ driver (LINKER_LANGUAGE CXX below) to pull
+  # in libc++/libstdc++.
+  enable_language(CXX)
+  set(BOGGART_WHISPER_VERSION 1.9.3)
+  set(BOGGART_WHISPER_SHA256 1650f884effba487025143bd8facd2f9fb40a83b3737a732803c67a8d659d9c0)
+
+  # Library only: no CLI examples, no server, no tests. GGML picks its backend
+  # per platform (Metal on Apple, CUDA where present, CPU otherwise). Embedding
+  # the Metal library keeps boggart-studio genuinely one file -- no .metallib to
+  # ship beside it.
+  set(WHISPER_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+  set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(WHISPER_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
+  if(APPLE)
+    set(GGML_METAL_EMBED_LIBRARY ON CACHE BOOL "" FORCE)
+  endif()
+
+  include(FetchContent)
+  FetchContent_Declare(whisper
+    URL https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v${BOGGART_WHISPER_VERSION}.tar.gz
+    URL_HASH SHA256=${BOGGART_WHISPER_SHA256}
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  FetchContent_MakeAvailable(whisper)
+
+  # miniaudio: single-header capture library, compiled once as its own static
+  # lib (pattern of sqlite_vendor). Capture-only build flags live in the .c.
+  add_library(miniaudio_vendor STATIC ${VENDOR}/miniaudio/miniaudio.c)
+  target_include_directories(miniaudio_vendor PUBLIC ${VENDOR}/miniaudio)
+  target_link_libraries(miniaudio_vendor PRIVATE boggart_quiet)
+  if(APPLE)
+    target_link_libraries(miniaudio_vendor PUBLIC
+      "-framework CoreAudio" "-framework CoreFoundation" "-framework AudioToolbox")
+  elseif(UNIX)
+    target_link_libraries(miniaudio_vendor PUBLIC ${CMAKE_DL_LIBS} m pthread)
+  endif()
+
+  set(VOICE_LIBS whisper miniaudio_vendor)
+  set(VOICE_DEFS BOGGART_VOICE=1)
+endif()
+
 # ---- generated embedded Lua ------------------------------------------------
 # Bakes lua/**/*.lua into a C lookup table. Regenerated whenever any Lua
 # source changes; written to the build dir to keep the source tree clean.
@@ -370,13 +429,19 @@ add_executable(boggart
   src/bogembed.c
   src/lmem.c
   src/lbus.c
+  src/lvoice.c
   ${EMBEDDED_C})
 
 target_include_directories(boggart PRIVATE src)
 target_link_libraries(boggart PRIVATE
   boggart_warnings
   lua_vendor sqlite_vendor cjson_vendor ltui_curses luv_lua uv_a
-  isocline_vendor CURL::libcurl)
+  isocline_vendor CURL::libcurl ${VOICE_LIBS})
+target_compile_definitions(boggart PRIVATE ${VOICE_DEFS})
+if(BOGGART_VOICE)
+  # C executable, C++ static deps (whisper/ggml): link with the C++ driver.
+  set_target_properties(boggart PROPERTIES LINKER_LANGUAGE CXX)
+endif()
 if(NOT WIN32)
   target_link_libraries(boggart PRIVATE mbedtls mbedx509 mbedcrypto)
 endif()
@@ -572,17 +637,21 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
     src/bogembed.c
   src/lmem.c
   src/lbus.c
+  src/lvoice.c
     ${EMBEDDED_C})
 
   target_include_directories(boggart-studio PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/studio/src
     ${SDL3_INCLUDE_DIRS})
-  target_compile_definitions(boggart-studio PRIVATE BOGGART_STUDIO=1)
+  target_compile_definitions(boggart-studio PRIVATE BOGGART_STUDIO=1 ${VOICE_DEFS})
   target_link_libraries(boggart-studio PRIVATE
     boggart_warnings
     lua_vendor sqlite_vendor cjson_vendor luv_lua uv_a isocline_vendor
-    CURL::libcurl freetype)
+    CURL::libcurl freetype ${VOICE_LIBS})
+  if(BOGGART_VOICE)
+    set_target_properties(boggart-studio PROPERTIES LINKER_LANGUAGE CXX)
+  endif()
   if(NOT WIN32)
     target_link_libraries(boggart-studio PRIVATE mbedtls mbedx509 mbedcrypto)
   endif()
@@ -677,7 +746,7 @@ endif()
 # rule itself under test -- it still resolves %LOCALAPPDATA%, that just now
 # points somewhere disposable.
 enable_testing()
-foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front)
+foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front voice)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home}
