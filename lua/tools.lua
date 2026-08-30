@@ -121,7 +121,21 @@ local function tool_write(a)
   -- and pretending otherwise would be worse than the gap: this is "the agent
   -- used its write tool", not "the disk changed".
   events.emit("file:write", { path = a.path, bytes = #a.content, lines = n })
-  return string.format("Wrote %s (%d bytes, %d lines)%s", a.path, #a.content, n, note)
+  local msg = string.format("Wrote %s (%d bytes, %d lines)%s", a.path, #a.content, n, note)
+  -- Footgun guard: writing a .lua file into a tools/ dir looks like it defines a
+  -- tool, but `write` only touches disk -- nothing is registered until the dir is
+  -- rescanned. Say so, and point at the tools that actually close the loop, so an
+  -- agent that authored a tool file this way isn't left wondering why it can't
+  -- call it. (define_tool both writes AND registers; reload_tools/reload rescan.)
+  local d = a.path:match("^(.*)/[^/]+$") or ""
+  if a.path:match("%.lua$") and (d == M.tools_dir("global") or d == M.tools_dir("project")
+      or d:match("/lua/tools$") or d:match("/projects/[^/]+/tools$")) then
+    msg = msg .. "\n\nNote: a file in a tools/ dir is NOT callable until the registry is"
+      .. " rescanned. To use it THIS session, call `reload_tools` (rescans tool dirs)"
+      .. " or `reload`; or author tools with `define_tool`, which writes AND registers"
+      .. " in one step. If none of those are available to you, ask for the `selfmod` skill."
+  end
+  return msg
 end
 
 local function tool_edit(a)
@@ -562,6 +576,26 @@ function M.materialize_skills()
   for _, r in ipairs(require("skills").list()) do
     M.materialize_skill(r.name, r.source == "builtin")
   end
+end
+
+-- Rescan the on-disk tool dirs (global + project) and re-materialize skill tools
+-- WITHOUT the full harness reload that bog.reload() does. This is the cheap way
+-- to pick up a tool file that `write` (or `sys`) just dropped on disk: it re-runs
+-- exactly the load path the process ran at startup, so a freshly-authored file
+-- becomes live in this session. Returns added/updated names for a useful report.
+-- (A tool an agent wants to persist AND register in one step should use
+-- define_tool, which does both; this is the "I already wrote the file" path.)
+function M.reload_tools()
+  local before = {}
+  for name in pairs(M.registry) do before[name] = true end
+  load_user_tools()
+  M.materialize_skills()
+  local added = {}
+  for name in pairs(M.registry) do
+    if not before[name] then added[#added + 1] = name end
+  end
+  table.sort(added)
+  return added
 end
 
 local function tool_define(a)
@@ -1244,6 +1278,22 @@ M.register("reload", {
     .. "On a syntax error the previous code is kept and the error is returned.",
   input_schema = { type = "object", properties = {} },
   run = tool_reload,
+})
+
+M.register("reload_tools", {
+  description = "Rescan the on-disk tool dirs (~/.boggart/lua/tools and this project's "
+    .. "tools/) and re-materialize skill tools, so a tool file you just wrote becomes "
+    .. "callable THIS session -- without the full harness reload. Use this after `write`ing "
+    .. "a tool file; to author AND register in one step, prefer `define_tool` instead.",
+  input_schema = { type = "object", properties = {} },
+  run = function()
+    local added = M.reload_tools()
+    if #added == 0 then
+      return "Rescanned tool dirs; no new tools (files must return a table with a "
+        .. "`body` string -- see define_tool's format). Active tools: " .. table.concat(M.names(), ", ")
+    end
+    return "Rescanned tool dirs. Newly available: " .. table.concat(added, ", ")
+  end,
 })
 
 M.register("sql", {

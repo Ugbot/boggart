@@ -160,6 +160,32 @@ eq(kind_of(flooded), "result_too_large", "an oversized result is classified")
 ok(#flooded < 20000, "the oversized result was spilled, not returned inline (" .. #flooded .. " bytes)")
 ok(flooded:find("read the saved file", 1, true) ~= nil, "it points at the saved file")
 
+-- ---- write-into-tools-dir footgun + reload_tools rescan -------------------
+-- `write` only touches disk: a tool file dropped there is not callable until the
+-- registry is rescanned. write() must SAY so (so an agent that authored a tool
+-- this way isn't left wondering), and reload_tools() must make it live without a
+-- full harness reload.
+local tools_dir = bog.tools.tools_dir("global")
+local hint = bog.tools.run("write", {
+  path = tools_dir .. "/hand_authored.lua",
+  content = 'return { description = "hand authored", input_schema = { type = "object", properties = {} },'
+    .. ' body = "return \\"hi from hand_authored\\"" }\n',
+})
+ok(hint:find("reload_tools", 1, true) ~= nil,
+   "write into a tools/ dir warns that the file is not live and names reload_tools")
+ok(bog.tools.registry["hand_authored"] == nil,
+   "a hand-written tool file is NOT registered by write alone")
+
+local added = bog.tools.run("reload_tools", {})
+ok(added:find("hand_authored", 1, true) ~= nil, "reload_tools reports the newly available tool")
+ok(bog.tools.registry["hand_authored"] ~= nil, "reload_tools registers the hand-written tool")
+eq(bog.tools.run("hand_authored", {}), "hi from hand_authored",
+   "the hand-written tool is callable this session after reload_tools")
+
+-- A plain write elsewhere carries no such note.
+local plain = bog.tools.run("write", { path = bog.userdir .. "/notes.txt", content = "hello" })
+ok(plain:find("reload_tools", 1, true) == nil, "a normal write is not annotated with the tools hint")
+
 if bog.db then bog.db:close() end
 sys.rmtree(bog.userdir)
 
