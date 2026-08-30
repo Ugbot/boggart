@@ -692,6 +692,8 @@ core.add_thread(function()
           .. "[link](https://example.com/x) that stays clickable. A long line so "
           .. "that wrapping has real work to do across the width of the panel here.\n\n"
           .. "## Heading Two\n\n- a bullet\n- another\n\n1. first\n2. second\n\n"
+          .. "- [x] a done task\n- [ ] a todo task\n\n"
+          .. "| Col A | Col B |\n| --- | --- |\n| 1 | two |\n| 3 | four |\n\n"
           .. "> a quote\n\n```lua\nlocal function f(a, b) return a + b end\n```\n\n---\n\nDone.\n")
         f:close()
         local mv = core.root_view:open_doc(core.open_doc(FIX))
@@ -713,6 +715,9 @@ core.add_thread(function()
           if h.url and h.url:find("example.com", 1, true) then hasurl = true end
         end
         check(hasurl, "markdown: a link registered a clickable hit carrying its URL")
+        local has_table = false
+        for _, row in ipairs(mv._layout.rows) do if row.kind == "table" then has_table = true end end
+        check(has_table, "markdown: the GFM table produced table rows")
         shot("markdown")
         local node = core.root_view.root_node:get_node_for_view(mv)
         if node then node:set_active_view(mv); node:close_active_view(core.root_view.root_node) end

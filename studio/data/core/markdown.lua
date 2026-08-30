@@ -85,6 +85,16 @@ local function inline(text)
   return out
 end
 
+-- Split a GFM table row "| a | b |" into trimmed cell strings.
+local function split_cells(s)
+  s = s:gsub("^%s*|", ""):gsub("|%s*$", "")
+  local out = {}
+  for cell in (s .. "|"):gmatch("(.-)|") do
+    out[#out + 1] = (cell:gsub("^%s+", ""):gsub("%s+$", ""))
+  end
+  return out
+end
+
 -- ---- block parse -----------------------------------------------------------
 -- Turn the source into a list of blocks (no measurement yet).
 --   { kind = "heading", level=, text= }
@@ -111,26 +121,47 @@ local function parse(src)
       i = i + 1 -- past the closing fence
       blocks[#blocks + 1] = { kind = "code", lang = lang, lines = body }
     else
-      local hashes, htext = line:match("^(#+)%s+(.*)$")
-      local q = line:match("^%s*>%s?(.*)$")
-      local li_ind, li_marker, li_text = line:match("^(%s*)([-*+])%s+(.*)$")
-      local ol_ind, ol_num, ol_text = line:match("^(%s*)(%d+[.)])%s+(.*)$")
-      if line:match("^%s*[-*_]%s*[-*_]%s*[-*_][-*_ ]*$") then
-        blocks[#blocks + 1] = { kind = "rule" }
-      elseif hashes then
-        blocks[#blocks + 1] = { kind = "heading", level = math.min(#hashes, 6), text = htext }
-      elseif q then
-        blocks[#blocks + 1] = { kind = "quote", text = q }
-      elseif li_marker then
-        blocks[#blocks + 1] = { kind = "list", ordered = false, marker = "\u{2022}",
-          indent = #li_ind, text = li_text }
-      elseif ol_num then
-        blocks[#blocks + 1] = { kind = "list", ordered = true, marker = ol_num,
-          indent = #ol_ind, text = ol_text }
-      elseif line:match("^%s*$") then
-        blocks[#blocks + 1] = { kind = "blank" }
+      -- GFM table: a `| ... |` header line followed by a `| --- | :--: |`
+      -- separator. Consume the header, the alignment row, and the body rows.
+      local nxt = lines[i + 1]
+      if line:match("^%s*|.*|%s*$") and nxt and nxt:match("^%s*|?[%s:%-|]-%-%-%-?[%s:%-|]*$") then
+        local header = split_cells(line)
+        local align = {}
+        for c, cell in ipairs(split_cells(nxt)) do
+          local l, r = cell:match("^:"), cell:match(":$")
+          align[c] = (l and r and "center") or (r and "right") or "left"
+        end
+        i = i + 2
+        local trows = {}
+        while i <= #lines and lines[i]:match("^%s*|.*|?%s*$") and lines[i]:find("|") do
+          trows[#trows + 1] = split_cells(lines[i]); i = i + 1
+        end
+        blocks[#blocks + 1] = { kind = "table", header = header, align = align, rows = trows }
       else
-        blocks[#blocks + 1] = { kind = "para", text = line }
+        local hashes, htext = line:match("^(#+)%s+(.*)$")
+        local q = line:match("^%s*>%s?(.*)$")
+        local li_ind, li_marker, li_text = line:match("^(%s*)([-*+])%s+(.*)$")
+        local ol_ind, ol_num, ol_text = line:match("^(%s*)(%d+[.)])%s+(.*)$")
+        if line:match("^%s*[-*_]%s*[-*_]%s*[-*_][-*_ ]*$") then
+          blocks[#blocks + 1] = { kind = "rule" }
+        elseif hashes then
+          blocks[#blocks + 1] = { kind = "heading", level = math.min(#hashes, 6), text = htext }
+        elseif q then
+          blocks[#blocks + 1] = { kind = "quote", text = q }
+        elseif li_marker then
+          -- task list: "- [ ] todo" / "- [x] done"
+          local box, rest = li_text:match("^%[([ xX])%]%s+(.*)$")
+          blocks[#blocks + 1] = { kind = "list", ordered = false, marker = "\u{2022}",
+            indent = #li_ind, text = box and rest or li_text,
+            task = box ~= nil, done = (box == "x" or box == "X") }
+        elseif ol_num then
+          blocks[#blocks + 1] = { kind = "list", ordered = true, marker = ol_num,
+            indent = #ol_ind, text = ol_text }
+        elseif line:match("^%s*$") then
+          blocks[#blocks + 1] = { kind = "blank" }
+        else
+          blocks[#blocks + 1] = { kind = "para", text = line }
+        end
       end
       i = i + 1
     end
@@ -255,15 +286,21 @@ function M.layout(text, width, ctx)
     elseif b.kind == "list" then
       local x0 = pad + b.indent * measure(ctx.body, " ") + 18
       local spans = style_spans(b.text, ctx, ctx.body, colors.text)
-      -- marker as its own leading run on the first row
-      local mk = (b.ordered and b.marker or b.marker) .. " "
-      table.insert(spans, 1, { font = ctx.body, color = colors.text, text = "" })
+      -- the marker: a checkbox for a task item, else the bullet/number.
+      local mk, mkcolor
+      if b.task then
+        mk = (b.done and "\u{2611}" or "\u{2610}") .. " "
+        mkcolor = b.done and (colors.done or colors.link) or (colors.marker or colors.text)
+      else
+        mk = b.marker .. " "
+        mkcolor = colors.marker or colors.text
+      end
       local wr = wrap_runs(spans, avail - (x0 - pad), x0, measure)
       local lh = line_h(ctx.body)
       for ri, r in ipairs(wr) do
         local runs = r.runs
         if ri == 1 then
-          table.insert(runs, 1, { font = ctx.body, color = colors.marker or colors.text,
+          table.insert(runs, 1, { font = ctx.body, color = mkcolor,
             text = mk, x = x0 - measure(ctx.body, mk), w = measure(ctx.body, mk) })
         end
         rows[#rows + 1] = { y = y, h = lh, kind = "list", runs = runs, indent = x0, first = ri == 1 }
@@ -298,6 +335,55 @@ function M.layout(text, width, ctx)
         y = y + clh
       end
       y = y + 4
+    elseif b.kind == "table" then
+      local ncol = math.max(1, #b.header)
+      local cellpad = 8
+      local lh = line_h(ctx.body)
+      -- natural column widths from header + body, then shrink to fit the width.
+      local colw = {}
+      for c = 1, ncol do colw[c] = measure(ctx.body, b.header[c] or "") end
+      for _, row in ipairs(b.rows) do
+        for c = 1, ncol do colw[c] = math.max(colw[c], measure(ctx.body, row[c] or "")) end
+      end
+      local total = 0
+      for c = 1, ncol do colw[c] = colw[c] + cellpad * 2; total = total + colw[c] end
+      if total > avail and total > 0 then
+        local scale = avail / total
+        for c = 1, ncol do colw[c] = math.max(measure(ctx.body, "…") + cellpad * 2,
+          math.floor(colw[c] * scale)) end
+      end
+      local colx, x = {}, pad
+      for c = 1, ncol do colx[c] = x; x = x + colw[c] end
+      local tw = x - pad
+
+      local function emit_table_row(cells, header)
+        local cellrows, maxlines = {}, 1
+        for c = 1, ncol do
+          local base = header and colors.heading or colors.text
+          local spans = style_spans(cells and cells[c] or "", ctx, ctx.body, base)
+          if header then for _, s in ipairs(spans) do s.bold = true end end
+          local wr = wrap_runs(spans, colw[c] - cellpad * 2, colx[c] + cellpad, measure)
+          cellrows[c] = wr
+          maxlines = math.max(maxlines, #wr)
+        end
+        for li = 1, maxlines do
+          local runs = {}
+          for c = 1, ncol do
+            local wr = cellrows[c][li]
+            if wr then for _, run in ipairs(wr.runs) do runs[#runs + 1] = run end end
+          end
+          rows[#rows + 1] = { y = y, h = lh, kind = "table", runs = runs,
+            x = pad, w = tw, bg = header and colors.code_bg or nil }
+          y = y + lh
+        end
+      end
+
+      y = y + 4
+      emit_table_row(b.header, true)
+      rows[#rows + 1] = { y = y, h = 1, kind = "rule", runs = {}, rule = true, x = pad, w = tw }
+      y = y + 2
+      for _, row in ipairs(b.rows) do emit_table_row(row, false) end
+      y = y + 6
     else -- para
       local spans = style_spans(b.text, ctx, ctx.body, colors.text)
       emit_wrapped(spans, pad, "para", nil)

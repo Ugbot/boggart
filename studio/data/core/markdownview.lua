@@ -55,7 +55,7 @@ function MarkdownView:ctx()
       text = style.text, heading = style.accent,
       code = style.inline_code or style.text, quote = style.dim,
       link = style.link or style.accent, rule = style.divider,
-      code_bg = style.background2, marker = style.dim,
+      code_bg = style.background2, marker = style.dim, done = style.good,
     },
   }
 end
@@ -89,7 +89,7 @@ function MarkdownView:draw()
   for _, row in ipairs(self._layout.rows) do
     if row.y + row.h >= top and row.y <= bot then
       local ry = oy + row.y
-      if row.code and row.bg then
+      if row.bg then
         renderer.draw_rect(ox + (row.x or 0), ry, row.w or self.size.x, row.h, row.bg)
       end
       if row.rule then
