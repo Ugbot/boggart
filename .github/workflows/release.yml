@@ -199,6 +199,11 @@ jobs:
           mkdir -p "dist/$name"
           cp boggart boggart-studio "dist/$name/"
           cp README.md "dist/$name/" 2>/dev/null || true
+          # The licence ships WITH the binaries: BSL 1.1 requires this licence
+          # to be displayed on every copy, and the third-party notices it carries
+          # must travel with the work they cover.
+          cp LICENSE "dist/$name/"
+          cp studio/LICENSE-lite studio/LICENSE-rough "dist/$name/" 2>/dev/null || true
           tar -C dist -czf "$name.tar.gz" "$name"
           echo "ARCHIVE=$name.tar.gz" >> "$GITHUB_ENV"
 
@@ -213,6 +218,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
           Copy-Item boggart.exe, boggart-studio.exe "dist/$name/"
           Copy-Item README.md "dist/$name/" -ErrorAction SilentlyContinue
+          # Same on Windows: BSL 1.1 requires the licence on every copy.
+          Copy-Item LICENSE "dist/$name/"
+          Copy-Item studio/LICENSE-lite, studio/LICENSE-rough "dist/$name/" -ErrorAction SilentlyContinue
           Compress-Archive -Path "dist/$name" -DestinationPath "$name.zip"
           "ARCHIVE=$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
 

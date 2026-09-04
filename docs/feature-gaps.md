@@ -75,7 +75,7 @@ The gaps below are almost all buyable; the substrate is not.
 
 | System | What it is | Stack / licence | Why it is in the frame |
 |---|---|---|---|
-| **boggart** | mutable C+Lua agent kernel, two front ends, swarm | C + Lua 5.5, single ~1.8 MB exe | the subject |
+| **boggart** | mutable C+Lua agent kernel, two front ends, swarm | C + Lua 5.5, BUSL-1.1 (→ GPL-3.0-or-later 2030-09-04), single ~1.8 MB exe | the subject — and the only source-available one here; every peer below is MIT or Apache |
 | **Qwen Code** | Alibaba's terminal agent (Gemini-CLI fork tuned to Qwen3-Coder), now a full product with desktop app + channels | TypeScript, Apache-2.0, ~27k★ | **the closest product rival on boggart's own axes**: self-written skills, sub-agents, worktrees, goal budgets |
 | **DeepSeek Harness** (`dsh`) | "everything is a plugin" agent harness on Cordis; no privileged core | TypeScript/Node, MIT, dev preview `0.1.0-rc`, ~203k★ | **the direct thesis rival**: composability by configuration vs boggart's mutation at runtime |
 | **Devin / Cognition** | hosted autonomous-engineer *platform*; Windsurf became Devin Desktop (2026-06-02); Devin Local is a Rust agent with sub-agents | proprietary SaaS, ACU billing ($2.25/ACU) | **the autonomy ceiling**: fleets, triggers, org knowledge, cost accounting |

@@ -466,6 +466,32 @@ docs/images/    the screenshots above, rendered by the app itself
   builder's from **MindStudio**. No code from any of them.
 - Loop mechanics studied from antirez/ds4.
 
-boggart itself has no `LICENSE` file yet. That is a real gap now that the
-release workflow publishes binaries built from the MIT-licensed work above, and
-it should be closed before the first tagged release.
+## Licence
+
+boggart is **source-available, not open source**: [Business Source License
+1.1](./LICENSE) (`SPDX: BUSL-1.1`).
+
+Read it, change it, run it — including commercially and inside your
+organisation. The single restriction is that you may not offer boggart to third
+parties as a competing hosted or embedded product. Every version converts
+automatically to **GPL-3.0-or-later** on **2030-09-04**, or four years after that
+version was first published, whichever comes first; that conversion cannot be
+revoked.
+
+Two notes on the parameters, because both were deliberate:
+
+- The **Change License is GPL-3.0-or-later, not the GPL-2.0 the BSL template
+  suggests.** boggart links Apache-2.0 work (luv, ltui, mbedTLS) and FreeType,
+  neither of which is GPL-2.0-compatible, so a v2 conversion would arrive
+  already broken. BSL's covenant asks for "GPL 2.0 or any later version", which
+  v3 satisfies.
+- Running boggart **for your own work is always permitted**, at any scale. The
+  grant is aimed at someone reselling it as an agent service, not at users.
+
+The third-party components listed above keep their own licences — this one
+cannot and does not change them. Their notices are reproduced in [`LICENSE`](./LICENSE),
+[`studio/LICENSE-lite`](./studio/LICENSE-lite) and
+[`studio/LICENSE-rough`](./studio/LICENSE-rough), and must travel with any copy.
+
+Contributions are taken under the [Developer Certificate of Origin](./DCO) —
+`git commit -s`. See [CONTRIBUTING.md](./CONTRIBUTING.md).
