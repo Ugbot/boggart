@@ -23,6 +23,13 @@ local menu = {
 --   { label =, action = | command = }   a row you can pick
 --   { heading = "xAI" }                 a non-selectable section label
 --   { label =, checked = true }         the current value, marked
+--   { label =, hint = "200k" }          secondary text, dim, right-aligned
+--
+-- The hint is a separate field rather than something the caller concatenates
+-- into the label, because it is a different KIND of text: the label is what you
+-- are choosing, the hint is what you are choosing between. Glued together
+-- ("Autonomous -- tools run without asking") the eye cannot find either one;
+-- in its own dim column it reads at a glance and the columns line up.
 --
 -- Headings exist because a model list is long and unordered without them: with
 -- a dozen providers you are hunting, and grouping is the difference between a
@@ -86,9 +93,12 @@ function menu.draw()
   local bh = widgets.height(font)
   local pad = style.padding.x
   local mark = "\u{2713} "          -- the current value's tick
+  local gap = pad * 2
   local width = 0
   for _, it in ipairs(menu.items) do
-    width = math.max(width, widgets.width(font, (it.heading or it.label or "") .. mark))
+    local w = widgets.width(font, (it.heading or it.label or "") .. mark)
+    if it.hint then w = w + gap + font:get_width(it.hint) end
+    width = math.max(width, w)
   end
   width = math.max(width + pad, menu.anchor.w or 0)
 
@@ -131,6 +141,10 @@ function menu.draw()
       common.draw_text(font, it.checked and style.accent or style.text,
         (it.checked and mark or "") .. (it.label or ""), "left",
         x + pad / 2, iy, width, bh)
+      if it.hint then
+        common.draw_text(font, style.dim, it.hint, "right",
+          x, iy, width - pad / 2, bh)
+      end
       r.item = it
       menu.hits[#menu.hits + 1] = r
     end

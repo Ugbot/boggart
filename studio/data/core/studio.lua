@@ -718,7 +718,7 @@ command.add(nil, {
     local cur_mode = v.mode or (require("perm").state().mode)
     for _, m in ipairs(v.MODES) do
       items[#items + 1] = {
-        label = string.format("%s -- %s", m.label, m.help),
+        label = m.label, hint = m.help,
         checked = (m.id == cur_mode),   -- open on the mode you are actually in
         action = function() v:set_mode(m.id) end,
       }
@@ -885,7 +885,7 @@ command.add(nil, {
         for _, n in ipairs(rnames) do
           local target = roles[n][1]
           items[#items + 1] = {
-            label = string.format("%s  (%s)", n, table.concat(roles[n], " → ")),
+            label = n, hint = table.concat(roles[n], " → "),
             action = function() apply(target) end,
           }
         end
@@ -910,11 +910,11 @@ command.add(nil, {
       for _, pn in ipairs(order) do
         items[#items + 1] = { heading = keyed[pn] and pn or (pn .. "  (no key)") }
         for _, m in ipairs(by_provider[pn]) do
-          local label = m.id
-          if m.context then label = label .. "   " .. math.floor(m.context / 1000) .. "k" end
           listed[m.id] = true
           items[#items + 1] = {
-            label = label, checked = (m.id == current),
+            label = m.id,
+            hint = m.context and (math.floor(m.context / 1000) .. "k") or nil,
+            checked = (m.id == current),
             action = function() apply(m.id) end,
           }
         end
@@ -929,17 +929,24 @@ command.add(nil, {
       table.insert(items, 1, { label = current, checked = true,
                                action = function() apply(current) end })
     end
-    items[#items + 1] = { heading = "" }
-    items[#items + 1] = {
-      label = "Search all models…",
-      action = function() command.perform("agent:models") end,
+    -- The two escape hatches go at the TOP, not the bottom. The catalog is
+    -- longer than the dropdown is tall, so anything after the model list falls
+    -- below the fold -- and the rows that must never be unreachable are exactly
+    -- these two: the search, for when a refresh has pulled in hundreds, and the
+    -- text entry, for a model the catalog has never heard of.
+    local actions = {
+      { label = "Search all models…", hint = "fuzzy find",
+        action = function() command.perform("agent:models") end },
+      { label = "Enter model…", hint = "type an id",
+        action = function() prompt("Model:", apply, current) end },
     }
-    items[#items + 1] = {
-      label = "Enter model…",
-      action = function()
-        prompt("Model:", apply, current)
-      end,
-    }
+    local at = 1
+    -- after the roles block, if there is one, so roles stay first
+    for i, it in ipairs(items) do
+      if it.heading and it.heading ~= "roles" then at = i; break end
+    end
+    for i = #actions, 1, -1 do table.insert(items, at, actions[i]) end
+
     if v and v.model_hit and not studio.legacy then
       menu.show(v.model_hit, items)
       return
