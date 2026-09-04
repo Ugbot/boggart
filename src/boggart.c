@@ -35,6 +35,7 @@ int luaopen_boggart_bus(lua_State *L); /* src/lbus.c: pub/sub + work-queue fabri
 int luaopen_boggart_term(lua_State *L); /* src/lterm.c: REPL completion (CLI only) */
 int luaopen_boggart_termctl(lua_State *L); /* src/ltermctl.c: full-screen cTUI (CLI only) */
 int luaopen_boggart_voice(lua_State *L); /* src/lvoice.c: native voice input (opt-in) */
+int luaopen_boggart_serve(lua_State *L); /* src/lserve.c: the inbound control surface (HTTP+SSE) */
 void boggart_voice_shutdown(void); /* src/lvoice.c: free the warm whisper ctx before exit */
 lua_State *boggart_newstate(void);       /* src/lmem.c: counts real bytes */
 void boggart_open_mem(lua_State *L);
@@ -88,6 +89,11 @@ static void configure(lua_State *L, int argc, char **argv) {
     if (strcmp(argv[i], "init") == 0) { mode = "init"; i++; }
     else if (strcmp(argv[i], "swarm") == 0) { mode = "swarm"; i++; }
     else if (strcmp(argv[i], "doctor") == 0) { mode = "doctor"; i++; }
+    /* `boggart serve` -- run as a service with the control plane up (see
+     * src/lserve.c for why the socket is C and lua/control.lua for the routes).
+     * The port/host/token are read in Lua from flags or the environment; C only
+     * needs to know which mode this is. */
+    else if (strcmp(argv[i], "serve") == 0) { mode = "serve"; i++; }
   }
   for (; i < argc; i++) {
     const char *a = argv[i];
@@ -107,6 +113,15 @@ static void configure(lua_State *L, int argc, char **argv) {
       prompt = argv[++i];
     } else if (strcmp(a, "--model") == 0 && i + 1 < argc) {
       model = argv[++i];
+    } else if ((strcmp(a, "--port") == 0 || strcmp(a, "--host") == 0
+                || strcmp(a, "--token") == 0) && i + 1 < argc) {
+      /* Serve options, set straight onto the boggart table as
+       * boggart.port / .host / .token. C splits the words; lua/control.lua
+       * decides what they mean and whether they are allowed. */
+      lua_pushstring(L, argv[i] + 2);
+      lua_pushstring(L, argv[i + 1]);
+      lua_rawset(L, -3);
+      i++;
     } else if (strcmp(a, "--tui") == 0) {
       tui = 1;
     } else if (strcmp(a, "--") == 0) {
@@ -152,6 +167,8 @@ static void register_boggart(lua_State *L, int argc, char **argv) {
   lua_setglobal(L, "git");
   luaL_requiref(L, "bus", luaopen_boggart_bus, 0);
   lua_setglobal(L, "bus");
+  luaL_requiref(L, "serve", luaopen_boggart_serve, 0);
+  lua_setglobal(L, "serve");
   luaL_requiref(L, "term", luaopen_boggart_term, 0);
   lua_setglobal(L, "term");
   luaL_requiref(L, "tc", luaopen_boggart_termctl, 0);
@@ -211,6 +228,7 @@ static int early_exit_flags(int argc, char **argv) {
         "  boggart \"<prompt>\"         one-shot\n"
         "  boggart --headless         read the prompt from stdin\n"
         "  boggart swarm \"<task>\"     swarm mode (coordinator; --tui adds a dashboard)\n"
+        "  boggart serve              run as a service: control plane + webhooks\n"
         "  boggart doctor             check the install and say what is wrong\n"
         "  boggart init               copy the built-in Lua into the data dir to edit\n"
         "  boggart --reset [file]     drop overlay Lua (all, or one module)\n\n"
@@ -222,10 +240,14 @@ static int early_exit_flags(int argc, char **argv) {
         "      --resume [id]          resume a saved session\n"
         "      --eval <file.lua>      run a Lua file in the harness\n"
         "      --tui                  full-screen UI (chat cTUI; swarm dashboard with swarm)\n"
+        "      --port <n>             serve: port to listen on (0 = pick one)\n"
+        "      --host <addr>          serve: bind address (loopback unless a token is set)\n"
+        "      --token <secret>       serve: require this bearer token\n"
         "  -V, --version              print the version\n\n"
         "environment:\n"
         "  BOGGART_HOME               data directory (store, credentials, overlay Lua)\n"
         "  BOGGART_MAX_AGENTS         fleet fan-out cap (default 16)\n"
+        "  BOGGART_SERVE_PORT/_HOST/_TOKEN   serve defaults\n"
         "  ANTHROPIC_API_KEY          API key; overrides the stored credential\n"
         "  ANTHROPIC_BASE_URL         endpoint, e.g. a local server\n",
         BOGGART_VERSION);

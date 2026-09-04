@@ -1171,6 +1171,99 @@ elseif bog.mode == "swarm" then
   bog.activate_agents()
   return require("swarmmode").run() -- "swarm" is the C bus global; the mode lives in swarmmode.lua
 
+elseif bog.mode == "serve" then
+  -- `boggart serve` -- the same runtime as every other mode, with the inbound
+  -- control plane up and the process staying alive instead of running to
+  -- quiescence. This is the "always-on daemon" every comparison study in
+  -- docs/comparisons.md kept naming as the missing piece: with a listener, a
+  -- webhook can start work, a second client can watch a running fleet, and a
+  -- schedule can fire without anybody sitting at a terminal.
+  --
+  -- The split, once more, because it is the point: the socket, the framing and
+  -- the bind/token rules are C (src/lserve.c) because Lua cannot open a port
+  -- and because those rules must not be rewritable; the routes, the queue and
+  -- everything below are Lua (lua/control.lua) because they should be.
+  bog.activate_agents()
+  bog.new_session()
+  local control = require "control"
+  local srv, url = control.start{
+    host = boggart.host, port = boggart.port, token = boggart.token,
+  }
+  if not srv then
+    io.stderr:write("boggart serve: " .. tostring(url) .. "\n")
+    return 1
+  end
+  io.write("boggart " .. boggart.version .. " serving on " .. url .. "\n")
+  if control.token then io.write("token: " .. control.token .. "\n") end
+  io.write("routes: " .. url .. "/routes   events: " .. url .. "/events\n")
+
+  -- Triggers: schedules restored from the store, plus the one uv timer that
+  -- drives them. This is what makes the daemon act on its own rather than only
+  -- answer -- 9am, every five minutes, or "whenever hook:push arrives".
+  local triggers = require "triggers"
+  local restored = triggers.load()
+  triggers.start()
+  if restored > 0 then io.write("triggers: " .. restored .. " restored\n") end
+  io.flush()
+
+  -- Inbound prompts run one at a time, in arrival order. A queue rather than a
+  -- coroutine per request because a turn spawns a fleet, and two fleets racing
+  -- for one terminal-less process is not throughput, it is a mess. The fan-out
+  -- INSIDE a turn is untouched -- this only serialises the door.
+  local queue = {}
+  bog.events.on("serve:prompt", function(_, ev)
+    queue[#queue + 1] = ev
+  end, { desc = "serve: queue inbound prompts", source = "boot.lua" })
+
+  local stop = false
+  bog.events.on("serve:shutdown", function() stop = true end,
+    { desc = "serve: stop the service", source = "boot.lua" })
+
+  -- The daemon is a scheduler ACTOR, not a uv callback. That distinction is
+  -- the whole reason this works: a turn yields (on HTTP, on a subprocess), and
+  -- yielding is only legal inside a coroutine the scheduler drives -- calling
+  -- run_one_turn from a timer callback would re-enter uv.run and take the
+  -- process down on its first job. As an actor it yields like every other
+  -- agent, and because it never returns, sched.run keeps the loop turning, so
+  -- the C listener keeps accepting while a turn is in flight.
+  local proc = require "proc"
+  local co = coroutine.create(function()
+    while not stop do
+      local job = table.remove(queue, 1)
+      if job then
+        bog.events.emit("serve:running", { id = job.id, text = job.text,
+                                           source = job.source })
+        -- api.run_on, not run_one_turn: the REPL's driver stands up and drains
+        -- the scheduler itself, and doing that from inside an actor re-enters
+        -- the very coroutine being resumed. Here the scheduler is already
+        -- running and this IS an actor, so the turn is just a call that yields
+        -- -- the same thing swarmmode's coordinator does.
+        --
+        -- No approver is attached (there is no terminal to ask), so gated tools
+        -- resolve through perm.headless_decision: one governed, auditable point
+        -- rather than an unattended bypass. Set BOGGART_HEADLESS_POLICY=deny to
+        -- withhold them from inbound work entirely.
+        local out = {}
+        local okr, res = bog.try(function()
+          return bog.api.run_on(bog.active_session(), job.text,
+            function(chunk) out[#out + 1] = chunk end,
+            require("perm").turn_opts({}, {}))
+        end)
+        bog.events.emit("serve:done", { id = job.id, ok = okr,
+                                        text = table.concat(out),
+                                        result = okr and res or tostring(res) })
+      else
+        proc.sleep(0.1)   -- yields a uv timer: the loop turns, the port answers
+      end
+    end
+  end)
+  bog.sched.add("serve", co)
+  bog.sched.run()
+
+  triggers.stop()
+  control.stop()
+  return 0
+
 elseif bog.mode == "eval" then
   local chunk = assert(loadfile(boggart.eval_file))
   local rc = chunk()
