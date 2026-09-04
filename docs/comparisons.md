@@ -8,8 +8,13 @@ API client, a durable local store (memory/sessions/kv), and a `swarm` mode that
 adds cooperative multi-agent fan-out over a C pub/sub bus with a SQLite journal.
 
 Product-surface comparisons (TUI chrome, studio, permissions, MCP UX) against
-**Codex, Goose, and Claude Code** live in [`peers.md`](./peers.md). This file
+**Codex, Goose, and Claude Code** live in [`peers.md`](./peers.md). The ranked
+backlog that falls out of all of these — the feature map, the gaps and the
+opportunities — lives in [`feature-gaps.md`](./feature-gaps.md). This file
 stays the rebuild-the-kernel studies.
+
+Sections §1–§8 are the 2025–early-2026 studies; **§9–§12 (Qwen Code, DeepSeek
+Harness, Devin, OpenCode)** were added on 2026-09-03 and are the current field.
 
 ---
 
@@ -144,7 +149,7 @@ Front-end snapshot (composer vs permission bar vs studio): [`peers.md` §1](./pe
 | Headless / CI | ✅ `codex exec` | ✅ `--headless` / oneshot | parity |
 | Project instructions file | ✅ `AGENTS.md` | ❌ (system prompt only) | easy Lua add |
 | MCP (consume + serve) | ✅ | ◐ consume ✅ (C client, stdio + Streamable HTTP), serve ❌ | boggart connects MCP servers; their tools register as ordinary tools, scoped per-agent by skill allowlists |
-| Model providers | OpenAI + OpenAI-compatible + ChatGPT auth | Anthropic only | mirror-image lock-in |
+| Model providers | OpenAI + OpenAI-compatible + ChatGPT auth | ✅ anthropic / openai / responses wires + presets | *(was "Anthropic only"; the wire adapters have since landed — no longer a gap)* |
 | Config | `config.toml` + profiles | env/flags + Lua overlay | boggart more mutable, less declarative |
 | Image / multimodal input | ✅ | ❌ (Anthropic supports it; not wired) | additive |
 | Plan tool / web search | ✅ `update_plan`, web search | ❌ (could be a `define_tool`) | additive |
@@ -227,7 +232,7 @@ the core:
 
 | "Gap" | How it's actually provided | Verdict |
 |---|---|---|
-| LSP / semantic nav / repo-map | real language servers via MCP (e.g. an external llm-station) | **Not a gap** — real LSP beats a bespoke embedding index |
+| LSP / semantic nav / repo-map | real language servers via MCP — **shipped**: LLM Station is auto-detected and mounted (LSP, TreeSitter ASTs, call graphs, BM25 index, refactoring; 116 tools live in this repo) | **Not a gap** — real LSP beats a bespoke embedding index, and this is the prediction actually cashed |
 | Multi-provider | `api.lua` is overlay-mutable Lua (C only streams bytes); or point at any `http://…` Messages-API gateway | Soft — an adapter written once, or offloaded to the station |
 | Web search, plan/todos, git workflow, `AGENTS.md` loader, multi-hunk patch | `define_tool` — the agent writes them when it needs them | Correctly *not* core |
 | MCP, sub-agents (the things pi cut) | boggart ships both: C MCP client + swarm actor bus | boggart *ahead* of pi here |
@@ -663,8 +668,9 @@ provenance. On review *quality*, boggart is not behind.
 2. **Static-analysis aggregation** — 40+ linters/SAST normalised and deduped into
    one review. boggart can *run* them via `bash`; the aggregation layer is
    missing. Achievable.
-3. **Repo-wide code graph / context** — CodeRabbit indexes the repo; boggart reads
-   bounded files with no index (the repo-map gap; answer: LSP/index via MCP).
+3. **Repo-wide code graph / context** — CodeRabbit indexes the repo; boggart has
+   `code_index`/`code_search` plus **LLM Station**'s call graphs and BM25 index
+   over MCP, so the review agent can reach real structure, not just bounded reads.
 4. **Persistent org-level learnings** — boggart's memory is per-user/local; needs
    shared/team-scoped memory.
 5. **PR-review product surface** — summaries, walkthroughs, committable
@@ -732,6 +738,349 @@ substrate, the recurring unlock.
 
 Sources: [pingdotgg/t3code](https://github.com/pingdotgg/t3code), its docs, and
 2025 coverage.
+
+---
+
+## 9. Qwen Code — Alibaba's terminal agent, and the closest product rival
+
+**What it is.** [Qwen Code](https://github.com/QwenLM/qwen-code) (Alibaba,
+TypeScript, Apache-2.0, ~27k★) began in July 2025 as a fork of Google's Gemini
+CLI tuned for the Qwen3-Coder models, and spent 2026 becoming a *product*: five
+stable releases in August alone, a desktop app, IDE plugins for VS Code, Zed and
+JetBrains, GitHub Actions, and a headless mode. Its 2026 shipping log reads
+almost like boggart's own roadmap, executed by a large team:
+
+- **LSP** (Feb 3) and **Agent Skills GA** (Feb 9), plus `/export` of a session
+  to Markdown / JSONL / HTML.
+- **Channels** (Apr 9) — Telegram, WeChat, DingTalk (with interactive cards),
+  GitHub and GitLab as *inbound* surfaces for the agent.
+- **`/plan`**, **`/review`**, **memory**, **web search**, **real-time steering**
+  (interrupt and redirect mid-stream).
+- **Sub-agents** (May 21) with **worktree isolation** (May 28) and, in August,
+  **per-task permission scoping**: reusable templates in `.qwen/fork-profiles/`,
+  read-only access for read-only work, and deliberate *instruction isolation*
+  so concurrent siblings cannot leak context into each other.
+- **`/learn`** (Jul 16) — turn a finished session into a reusable Skill.
+- **Background agents** (Jul 30) that stay resident after a task completes.
+- **Goal autonomous mode** with **goal budgets** (Aug 27) — long-horizon runs
+  bounded by an explicit token allowance.
+- **Desktop app** (Aug 6) with a **session-workflow flowchart** that shows plan
+  steps running/waiting/done and requires approval before execution, in-terminal
+  image display, and a cheaper model assignable to compaction.
+
+**Verdict.** Of everything in this document, Qwen Code is the system that most
+directly contests boggart's *claims*. Codex is the closest peer in shape, pi is
+the ancestor — but Qwen is the one that shipped, in one year, a product version
+of self-extension (`/learn`), of multi-agent (sub-agents + worktrees +
+per-task permissions), of the inbound channel layer §1 and §4 keep flagging, and
+of the goal-budget discipline that `--until` gestures at. boggart is not behind
+it architecturally. boggart is behind it on *ship count*.
+
+### Scorecard
+
+| Capability | Qwen Code | boggart | Notes |
+|---|---|---|---|
+| Streaming tool loop, core file tools | ✅ | ✅ | peer |
+| Self-written capability | ✅ `/learn` → a Skill (markdown prompt bundle) | ✅ `define_tool` → executable, capability-scoped Lua, live this turn | **boggart deeper**: theirs is a prompt, ours is code with provenance |
+| Sub-agents | ✅ + worktrees + per-task permission templates | ✅ swarm actors, C bus, journal; allowlists per skill | boggart's substrate is stronger, their *scoping* is finer |
+| Sibling instruction isolation | ✅ explicit | ◐ | small Lua fix |
+| Background / resident agents | ✅ | ◐ in-session fleet only | needs §4's daemon |
+| **Inbound channels** | ✅ Telegram / WeChat / DingTalk / GitHub / GitLab | ❌ | the §1+§4 gap, shipped by a peer |
+| Goal mode + token budget | ✅ | ◐ `/until`, `/react`, watchdog | additive Lua |
+| LSP | ✅ forked into the core | ✅ via **LLM Station** over MCP (auto-detected, `mcp__llm-station__*`) | boggart buys the same capability without growing the core |
+| Web search | ✅ | ❌ | trivial Lua add |
+| Session export | ✅ md/jsonl/html | ❌ | trivial |
+| Images | ✅ rendered in-terminal | ❌ | C/front-end work |
+| Cheap-model compaction | ✅ | ❌ | trivial, real cost win |
+| Real-time steering | ✅ inject mid-stream | ◐ Ctrl-C / pause / kill | small |
+| Workflow visualisation | ✅ fixed flowchart view | ✅ **`draw_panel`, agent-authored** | different kind of thing; boggart's is stranger and better |
+| Desktop | ✅ | ✅ studio | peer |
+| Runtime self-modification of the harness | ❌ | ✅ | boggart alone |
+| Single binary, no runtime | ❌ Node | ✅ ~1.8 MB | boggart alone |
+
+### What to take
+
+1. **`/learn`, done properly.** Their loop — *finish a task, distil it into a
+   reusable unit* — is the missing half of `define_tool`. boggart can already
+   author the unit mid-run; what it lacks is the deliberate end-of-session
+   promotion step. And boggart's version is strictly better material: executable
+   Lua with a scope, a git revision and call/fail counts, not a prompt file.
+2. **Fork-profiles.** Per-sub-agent permission *templates* are the right shape
+   for the swarm's allowlists, and the natural consumer of the policy engine
+   from [`feature-gaps.md` §3.1](./feature-gaps.md).
+3. **Goal budgets.** A long-horizon run should carry an explicit token
+   allowance, not just a turn cap.
+4. **Channels as the proof.** Whatever hesitation remained about §4's inbound
+   layer, a mainstream terminal coding agent shipping WeChat and DingTalk
+   adapters settles it: chat-as-a-surface is now a normal feature, not an
+   OpenClaw eccentricity.
+
+**Bottom line.** Qwen Code is the answer to "what if a well-resourced team built
+the product version of boggart's ideas?" — and the answer is that they get the
+features and boggart keeps the substrate. Their skills are prompts; ours are
+sandboxed code. Their flowchart is a view; ours is written by the agent. Their
+harness is Node; ours is one file. Close the parity list above (nearly all Lua)
+and there is no capability Qwen Code has that boggart does not, plus several it
+structurally cannot.
+
+Sources: [QwenLM/qwen-code](https://github.com/QwenLM/qwen-code), the Qwen Code
+docs feature-update log and its 2026 weekly updates (2026-02-09 skills GA,
+2026-05-21 sub-agents, 2026-08-06 desktop + session workflow, 2026-08-13
+sub-agent permissions, 2026-08-27 goal budgets).
+
+---
+
+## 10. DeepSeek Harness (`dsh`) — the thesis rival
+
+**What it is.** [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
+(`dsh`, TypeScript/Node, MIT, published 2026-08-13 alongside DeepSeek-V4-Pro, a
+developer preview at `0.1.0-rc`) is an agent harness whose slogan is
+**"Everything is a Plugin"** — and it means it more literally than the phrase
+usually implies. Built on **Cordis** (a service/event container from a paper on
+"spatiotemporal composability"), a running `dsh` is a **plugin tree composed at
+boot from ordered layers**, with the explicit design claim that **"there is no
+privileged core to patch."** Models, tools, skills, sessions, sandboxes,
+storage, scheduling, the UI — *and the agent loop itself* — are plugins.
+
+Its structural vocabulary:
+
+- **Bundles** package code and configuration; **profiles** are *named
+  compositions* that stack bundles, pin their out-of-tree plugins, and carry the
+  user's own `cordis.patch.yml`. Shipped profiles: `web`, `headless`, `sdk`,
+  `sdk-minimal`, `acp`.
+- **`dsh-base`** is the shared first layer under all of them: model adapters,
+  tools, persistence, **sandbox and approval policy**, settings, credentials,
+  telemetry.
+- **Capability seams** — swappable interfaces with a service definition, a
+  provider and consumers, so changing one provider changes product behaviour
+  wholesale.
+- **Extension points** rather than patches: register providers on `ctx.llm`, add
+  tools via `ctx.tools`, hook the `agent/*` lifecycle events, extend session
+  state through `SessionEventMap`.
+- **The session-log principle: "model-visible means logged."** Anything that
+  reaches a model request must be reconstructible from the session log — which
+  is what makes fork, resume and replay consistent rather than hopeful.
+
+**Verdict.** This is the closest thing to a rival *thesis* boggart has. Both
+reject the fixed-core harness; they disagree about **when** the flexibility
+happens. `dsh` composes at **boot**, from configuration, in TypeScript, written
+ahead of time by a human. boggart mutates at **runtime**, from inside the loop,
+in Lua, written by the agent mid-session. That difference decides everything
+else:
+
+| Axis | dsh | boggart |
+|---|---|---|
+| Unit of flexibility | a plugin in the tree | a Lua module in the overlay, or a `define_tool` body |
+| When | boot-time composition (restart to change) | live (`reload`, next turn) |
+| Who writes it | a human developer, ahead of time | the agent, during the task |
+| Privileged core | **none** by design | a small C core — *deliberately* |
+| Containment of extension code | none: a plugin is full Node | the C/Lua capability boundary (§3) |
+| Footprint | Node + a plugin tree | one ~1.8 MB binary |
+| Surfaces | web-first, plus headless/sdk/acp | terminal + studio |
+
+The interesting result is that **"no privileged core" and "contained
+self-extension" are mutually exclusive**, and each system took one. `dsh` can
+replace its agent loop; it can never promise that a plugin's effects were
+recorded or that a plugin cannot read your keys, because a plugin is arbitrary
+Node. boggart keeps a privileged C core precisely *so* that generated code has
+exactly one lawful channel to the world — which is what makes runtime
+self-modification safe enough to allow at all.
+
+### What to take (three things, all cheap)
+
+1. **The session-log invariant.** *"Model-visible means logged"* is the crispest
+   statement of the discipline §5 and §6 circle. boggart should adopt it as a
+   stated invariant — and then do what `dsh` cannot: **enforce** it. Because
+   every effect in boggart crosses the C capability boundary, the journal can
+   interpose at that one point rather than trusting authors to log. Their rule,
+   our boundary, and replay stops being a convention.
+2. **Profiles as named compositions.** boggart has a golden default and a
+   mutable overlay and *nothing in between*, so a working configuration cannot
+   be named, versioned or handed over. `dsh`'s bundle/profile split is the shape
+   of the "pack" that [`feature-gaps.md` §3.5](./feature-gaps.md) proposes.
+3. **Declared seams and lifecycle events.** `ctx.tools`, `ctx.llm`, `agent/*`
+   and `SessionEventMap` are *documented* extension points. boggart's answer to
+   "where do I hook this?" is "edit any file" — maximal freedom with minimal
+   guidance, and a hostile surface for an agent that has to guess. Publishing a
+   small set of named seams (tool registry, wire adapter, agent lifecycle,
+   session state) costs nothing and makes both the human's and the model's
+   extension attempts land in the right place.
+
+Their `acp` profile is also the cheapest possible argument for
+[`feature-gaps.md` §3.2](./feature-gaps.md): a serious harness treats ACP as a
+first-class output target, not an integration afterthought.
+
+**Bottom line.** `dsh` proves the market for a composable harness and validates
+boggart's core bet from the opposite direction — then hands over three ideas
+(the log invariant, profiles, declared seams) that boggart can implement better
+than they can, because boggart's extension code is contained and theirs is not.
+The one thing not to copy is the plugin-tree-all-the-way-down maximalism: "no
+privileged core" is a fine slogan for a Node framework and a direct contradiction
+of the property boggart's safety rests on.
+
+Sources: [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)
+README and `docs/architecture.md`; the DeepSeek Harness developer-preview
+announcement (2026-08-13, MIT, `0.1.0-rc`).
+
+---
+
+## 11. Cognition / Devin — the autonomy ceiling
+
+**What it is.** [Devin](https://devin.ai) is not a harness, it is a hosted
+autonomous-engineer *platform*, and in 2026 it consolidated: Windsurf was
+retired and rebranded to **Devin Desktop** (2026-06-02), whose default surface
+is an **Agent Command Center** rather than an editor canvas, with the IDE behind
+it; **Devin Local** replaced Cascade as a from-scratch Rust agent (~30% better
+token efficiency) that spawns **sub-agents**. Work is billed in **ACUs**
+(Agentic Compute Units — VM time + inference + bandwidth, ~$2.25 each), which
+means every capability is priced and estimated up front.
+
+The 2026 capability set, in the terms this document cares about:
+
+- **Fleet orchestration.** Sub-Devin sessions form **nested trees** in the
+  sidebar; the expectation is dozens of agents in parallel across cloud and
+  local environments on one project, with a human reviewing results as they land.
+- **Triggers and automations.** Cron and RRULE schedules, run-once, GitHub and
+  GitLab pushes, Jira issues, Linear items, Slack messages, raw webhooks.
+- **Structured output schemas** per session, so a run's result is consumable by
+  a program rather than a reader — plus a Tasks tab, streamed terminal output,
+  and test recordings as replayable cards.
+- **Machine snapshots**: start a session from a saved machine state.
+- **Knowledge**: Devin Wiki v2 and DeepWiki, with ACU costs shown before
+  generation; enterprise knowledge items capped at 300.
+- **MCP** as an ecosystem: 48+ connectors, a marketplace, and *personal* MCP
+  servers with individual OAuth alongside org-scoped ones.
+- **Security profiles** governing **network access** per session and automation,
+  read-only scan profiles, enterprise-scoped secrets, PATs and a v3 API.
+
+**Verdict.** Same verdict as OpenClaw (§1) and CodeRabbit (§7), for the same
+reason: this maps onto boggart's *shell*, not its kernel. Roughly 90% of Devin
+is platform — hosted VMs, billing, org knowledge, review products, connector
+marketplace — and none of it is a kernel property. But Devin is the most useful
+system in this document for one specific purpose: it is **the clearest picture
+of what "the agent runs your work, not your turn" actually requires**, and every
+requirement it exposes is one §4 predicted.
+
+### What Devin demonstrates that boggart should absorb
+
+1. **Structured output is what makes a fleet composable.** boggart's swarm is
+   architecturally ahead of Devin's session trees — a real C bus, a journal,
+   resumability — and yet a boggart sub-agent hands back *prose*. Devin returns
+   against a schema. Until a coordinator can branch on a value instead of
+   re-reading English, fan-out stays a demo. Pure Lua, small, high leverage.
+2. **Cost accounting as a first-class primitive.** ACUs are a normalised unit
+   shown *before* an action runs. boggart has telemetry and a watchdog; what it
+   lacks is a per-node budget on the FLEET tree, which is what turns that view
+   from a monitor into a control surface.
+3. **Triggers, again.** Devin's automation trigger list (push, issue, message,
+   webhook, cron/RRULE) is the concrete specification for §4's inbound layer.
+   Nothing about it is exotic; it is a listener, a matcher, and a scheduler.
+4. **Network policy as a capability grade.** "Security profiles govern network
+   access across sessions and automations" is exactly the *grade* §4.4 proposed
+   (read-only, approval-required) applied to the one axis boggart's capability
+   boundary does not yet distinguish. Worth adding when the policy engine lands.
+5. **Machine snapshots vs git checkpoints.** Devin snapshots the machine because
+   its unit is a VM. boggart checkpoints to `refs/boggart/` because its unit is
+   a repo. Same instinct, and boggart's is cheaper and more portable — but the
+   non-repo case (a business process with no git) is where the snapshot backend
+   `workspace.md` sketches earns its place.
+
+### What not to chase
+
+Hosted VMs and ACU billing; the wiki/knowledge SaaS; the connector marketplace;
+the enterprise console. That is a company, not a feature list. The honest wedge
+against Devin is the same one as against CodeRabbit: **local-first, no code
+leaving the building, no per-seat markup, and a fleet you can actually read the
+source of.**
+
+**Bottom line.** Devin marks the ceiling of the autonomy axis and prices every
+rung of it. boggart's kernel is not outclassed — the swarm, the journal and the
+capability boundary are real answers to problems Devin solves with a VM and a
+credit card. What Devin has that boggart lacks is the *plumbing of unattended
+work*: triggers, budgets, structured results, network grades. All four are on
+[`feature-gaps.md`](./feature-gaps.md)'s Arc 3, and all four are things a single
+binary can do without becoming a platform.
+
+Sources: [Devin docs](https://docs.devin.ai) 2026 release notes and pricing;
+Cognition's Windsurf 2.0 / Devin Desktop announcement (2026-06-02) and the Devin
+Local write-ups.
+
+---
+
+## 12. OpenCode — the control plane, and the permission model to copy
+
+**What it is.** [OpenCode](https://opencode.ai) (TypeScript, MIT, ~150–200k★,
+~6.5M monthly active users, GitHub Copilot auth partnership since January 2026)
+is the OSS field's most-used agent, and its distinguishing engineering choice is
+architectural: **OpenCode is a server**. A local process publishes an **OpenAPI
+3.1** spec at `/doc` and an **SSE** event stream at `/event`; the **TUI, desktop,
+web and IDE clients are all just clients of it**, an SDK is generated from the
+spec, and `/tui` endpoints let a remote client drive the terminal UI (which is
+how its IDE plugins work). Around that sit LSP, MCP, plugins, custom tools,
+formatters, `AGENTS.md` rules, custom commands, plan/build agent modes, undo/redo
+and shareable session links.
+
+Its second distinguishing piece is the **permission model**, which is the
+cleanest in the field:
+
+- Every rule resolves to **`allow` / `ask` / `deny`**, with `"*"` as a catch-all
+  and per-tool overrides.
+- Object syntax gives **glob pattern rules matched against tool inputs**, with
+  **last match wins** — broad rule first, specific exceptions after.
+- The permission set is *named and complete*: `read`, `edit`, `glob`, `grep`,
+  `bash`, `task` (sub-agent launch), `skill`, `lsp`, `question`, `webfetch`,
+  `websearch`, **`external_directory`** (anything outside the workspace) and
+  **`doom_loop`** (the same tool call three times running).
+- Defaults encode judgement: `.env` reads are **denied** by default,
+  `external_directory` and `doom_loop` **ask**.
+- **Agent-level overrides** take precedence over global rules, declared in JSON
+  or in agent-file frontmatter; an `--auto` flag approves anything not explicitly
+  denied, and **`deny` still wins**.
+- The ask flow is *once / always / reject*, with "always" scoped to the session.
+
+**Verdict.** Nearly orthogonal to boggart as a product — it is a Node monolith
+with a huge user base and no self-modification story — but it is the single most
+*copyable* system in this document, because both of its good ideas are pure
+design, not code you would port.
+
+### What to take
+
+1. **The permission schema, near-verbatim.** `perm.lua`'s four modes are a UX
+   layer over a policy engine boggart does not have. OpenCode's is data: three
+   verdicts, glob rules over tool inputs, last-match-wins, agent-level narrowing.
+   `doom_loop` and `external_directory` are both real safety wins boggart lacks
+   entirely, and `.env`-deny-by-default is the kind of default that costs nothing
+   and prevents a genuinely bad day. See
+   [`feature-gaps.md` §3.1](./feature-gaps.md) for the proposed shape.
+2. **Server-as-the-product.** boggart already asserts one engine behind two front
+   ends and *enforces* it with `ninja core-parity` — which is a stronger version
+   of OpenCode's claim, held together by a build check rather than a wire
+   protocol. Making the engine addressable (HTTP + SSE + a published schema)
+   turns that internal invariant into an external one: studio and the TUI become
+   clients, remote and mobile control follow for free, and §8's "be controllable,
+   don't build clients" finally has an endpoint to be controlled through. It is
+   also the same libuv listener §4's triggers need.
+3. **Session share links** as the cheap collaboration primitive — a read-only
+   rendering of a session, no account system required.
+
+### Where boggart is ahead
+
+Runtime self-modification (OpenCode has custom tools, written ahead of time in
+TypeScript); the swarm as a first-class actor system with a durable journal
+(OpenCode has `task`); the capability boundary containing generated code; the
+single self-contained binary; agent-authored UI. OpenCode is ahead on providers
+(narrowly, now that the wires have landed), on client surface area, and — most
+importantly — on **policy**, which is the one place it is ahead on *substance*.
+
+**Bottom line.** Take the permission model and the server shape; ignore the rest.
+Those two are the highest-leverage borrowings identified in this entire document
+relative to their cost — one is a Lua rewrite of a file that already exists, the
+other is a listener that four separate roadmap items are already waiting on.
+
+Sources: [opencode.ai/docs](https://opencode.ai/docs) — the server/client
+architecture page (OpenAPI 3.1, SSE, generated SDK, `/tui` endpoints) and the
+permissions reference; 2026 coverage of its scale and the Copilot auth
+partnership.
 
 ---
 

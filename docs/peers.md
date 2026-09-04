@@ -2,7 +2,9 @@
 
 How the **front ends** stack up against the three coding agents people actually
 compare boggart to. The architecture studies ("could you rebuild X on the
-kernel?") live in [`comparisons.md`](./comparisons.md). This file is the
+kernel?") live in [`comparisons.md`](./comparisons.md); the ranked feature map
+and backlog across the wider 2026 field (Qwen Code, DeepSeek Harness, Devin,
+OpenCode) lives in [`feature-gaps.md`](./feature-gaps.md). This file is the
 **product** snapshot: TUI chrome, studio, permissions, MCP UX.
 
 Snapshot date: 2026-08-19, after the cTUI composer/complete work, studio shell
