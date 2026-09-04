@@ -25,11 +25,20 @@ check(help:find("/model", 1, true), "help lists /model")
 check(help:find("/help", 1, true), "help lists /help")
 check(help:find("/tools", 1, true), "help lists /tools")
 check(help:find("@path", 1, true), "help mentions @path references")
+-- /help is grouped: forty commands as one flat list is a wall nobody reads.
+check(help:find("the conversation", 1, true), "help groups the conversation commands")
+check(help:find("model and credentials", 1, true), "help groups the model commands")
+check(help:find("what it may do", 1, true), "help groups the permission commands")
+-- every command still appears, grouped or not, so one can never be added and
+-- silently vanish from the help
+for _, c in ipairs(C.commands) do
+  check(help:find("/" .. c.name, 1, true), "help lists /" .. c.name)
+end
 
 -- ---- the registry is exactly the intended set ------------------------------
 local want = { help = true, tools = true, auth = true, doctor = true,
   memory = true, sessions = true, resume = true, reload = true, reset = true,
-  trust = true, model = true, endpoint = true, effort = true, agents = true, kpis = true, fork = true,
+  trust = true, model = true, models = true, endpoint = true, effort = true, agents = true, kpis = true, fork = true,
   trace = true,
   ["until"] = true, react = true, new = true, clear = true, compact = true,
   cost = true, copy = true, mode = true, dispatch = true,

@@ -309,8 +309,10 @@ function M.seed_if_empty()
   if not text or text == "" then return false end
   local n, err = M.import_json(text, "seed")
   if not n then return false, err end
-  bog.log(string.format("model catalog seeded: %d providers, %d models",
-    n.providers, n.models))
+  -- Deliberately silent. This used to print above the welcome banner, so the
+  -- first line a new user read was a note about database seeding. It is
+  -- housekeeping: the `catalog:import` event above carries the counts for
+  -- anything that wants them, and `boggart models` is where a person asks.
   return n
 end
 

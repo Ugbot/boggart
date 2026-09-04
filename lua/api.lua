@@ -248,24 +248,72 @@ local function retry_delay(attempt)
   return math.floor(ms * (0.75 + math.random() * 0.5))
 end
 
-local function auth_headers(w_in)
-  -- The cache holds the CONFIGURED endpoint's headers. A routed request names
-  -- its own wire, and caching that would poison the next unrouted one, so a
-  -- routed call builds its list fresh -- two table constructions per request,
-  -- which is nothing next to the round trip.
-  if w_in then
-    return (w_in == "openai" or w_in == "responses")
-      and { "content-type: application/json" }
-      or { "anthropic-version: 2023-06-01", "content-type: application/json" }
+-- The content-type/version pair a wire wants. No credential: that is attached
+-- in C (see boggart_auth_header_for), and the key never enters this state.
+local function base_headers(w)
+  return (w == "openai" or w == "responses")
+    and { "content-type: application/json" }
+    or { "anthropic-version: 2023-06-01", "content-type: application/json" }
+end
+
+-- Is this destination one that legitimately needs no credential? A server on
+-- this machine generally does not, and failing a working local setup for the
+-- wrong reason is worse than sending a request that might 401.
+local function is_local_url(url)
+  if type(url) ~= "string" then return false end
+  return url:match("^https?://127%.0%.0%.1") ~= nil
+      or url:match("^https?://localhost") ~= nil
+      or url:match("^https?://%[::1%]") ~= nil
+      or url:match("^https?://0%.0%.0%.0") ~= nil
+end
+
+-- Headers for a request, and the credential PRE-FLIGHT that goes with them.
+--
+-- `rt` is the resolved route, or nil for the configured endpoint. The
+-- distinction matters twice: a routed request needs its own wire (so the cache
+-- cannot be shared), and it needs the key for ITS provider -- asking
+-- auth.has_key() about the globally configured one would be the wrong question
+-- entirely once a fleet spans two providers.
+--
+-- This function is also where "you have not set a key yet" is caught. An
+-- earlier version of the routing change returned early for any routed request
+-- and skipped the whole check, so a fresh install stopped saying "No API
+-- credentials found" and instead sent a doomed request and printed a raw 401
+-- with the provider's JSON in it. That is the difference between configuration
+-- advice and an error message, so the check runs on every path.
+local function auth_headers(rt)
+  if rt then
+    local w = rt.wire or wire()
+    local h = base_headers(w)
+    local slot = rt.key_slot
+    if slot and auth.has_key(slot) then return h end
+    if not slot and auth.has_key() then return h end
+    if is_local_url(rt.url) then return h end
+    if not rt.url and auth.base_url() then return h end
+    -- Nothing to authenticate with, and somewhere that will want one. Name the
+    -- provider and the exact command, because "no credentials" without saying
+    -- which of a dozen providers is unhelpful now that there is a catalog.
+    local who = rt.provider or rt.name or "this endpoint"
+    local envname
+    local okc, cat = pcall(require, "catalog")
+    if okc and rt.provider then
+      local p = cat.provider(rt.provider)
+      envname = p and p.env
+    end
+    fail(M.ERR.auth, "No credentials for " .. tostring(who) .. ".", {
+      fatal = true,
+      hint = "Set one and boggart will remember it:\n"
+        .. "  /auth key <key> " .. tostring(who) .. "\n"
+        .. (envname and ("  export " .. envname .. "=...\n") or "")
+        .. "\n`boggart models` lists every provider and which ones have a key.",
+    })
   end
   if cached_headers then return cached_headers end
   -- OpenAI-compatible servers reject/ignore the anthropic-version header; send
   -- only content-type. A local llama.cpp wants no credential at all, which the
   -- base_url branch below already handles.
   local w = wire()
-  local h = (w == "openai" or w == "responses")
-    and { "content-type: application/json" }
-    or { "anthropic-version: 2023-06-01", "content-type: application/json" }
+  local h = base_headers(w)
   -- Note what is NOT here: the key. auth.has_key() answers the only question
   -- this code has, and lhttp.c attaches the header itself from the C-side
   -- store when a request sets `auth = true`. The secret never enters the Lua
@@ -996,7 +1044,7 @@ local function stream_async_once(body, on_text, w, on_think, rt)
     or new_decoder(on_text, on_think)
   local raw = {}
   local url = endpoint(rt and rt.url, w)
-  local hdrs = auth_headers(rt and rt.wire)
+  local hdrs = auth_headers(rt)
   -- A provider's own headers, from the catalog (OpenRouter's attribution pair,
   -- for instance). Appended rather than merged: these are additional, and a
   -- provider that needed to REPLACE content-type would be a different problem.

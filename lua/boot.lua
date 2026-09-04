@@ -410,6 +410,11 @@ local function handle_command(line)
     local function model_list()
       local seen, out = {}, {}
       local function add(m) if type(m) == "string" and m ~= "" and not seen[m] then seen[m] = true; out[#out + 1] = m end end
+      -- The catalog first: it is where models live now, and a REPL that offered
+      -- a different set from `boggart models` and the studio picker was the
+      -- kind of inconsistency that makes an app feel unfinished.
+      local okc, cat = pcall(require, "catalog")
+      if okc then for _, m in ipairs(cat.models{}) do add(m.id) end end
       local ok, provs = pcall(bog.api.providers)
       if ok then for _, p in pairs(provs or {}) do for _, m in ipairs(p.models or {}) do add(m) end end end
       add(bog.api.status().model)
@@ -418,8 +423,33 @@ local function handle_command(line)
       table.sort(out); return out
     end
     local list = model_list()
-    -- No argument (or `/models`): show the numbered list, marking the current one.
-    if cmd == "models" or rest == "" then
+    -- `/models` (plural) is the CATALOG: providers, which of them you can
+    -- actually use, and what each role points at -- the same three questions
+    -- `boggart models` answers, because asking them from inside the REPL should
+    -- not need a second program.
+    if cmd == "models" then
+      local okc, cat = pcall(require, "catalog")
+      if okc then
+        local roles = cat.roles()
+        local rnames = {}
+        for n in pairs(roles) do rnames[#rnames + 1] = n end
+        table.sort(rnames)
+        if #rnames > 0 then
+          io.write("roles\n")
+          for _, n in ipairs(rnames) do
+            io.write(string.format("  %-12s %s\n", n, table.concat(roles[n], " -> ")))
+          end
+        end
+        io.write("providers  (key = a credential is stored)\n")
+        for _, p in ipairs(cat.providers()) do
+          local keyed = auth.has_key and auth.has_key(p.key_slot or p.name)
+          io.write(string.format("  %-14s %-9s %-4s %s\n",
+            p.name, p.wire or "?", keyed and "key" or "-", p.url or ""))
+        end
+        io.write(string.format("\n%d models catalogued -- /model to switch, "
+          .. "`boggart models refresh` to update\n", #cat.models{}))
+      end
+    elseif rest == "" then
       local cur = bog.api.status().model
       io.write("models (", #list, ") -- /model <n> to jump, or /model <name|preset>:\n")
       for i, m in ipairs(list) do

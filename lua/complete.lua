@@ -113,6 +113,7 @@ M.commands = {
   { name = "reset",    help = "delete an overlay file (or all with no arg), then reload",
                        args = overlay_names },
   { name = "model",    help = "list models (numbered), or switch by number / name / preset", args = model_names },
+  { name = "models",   help = "the model catalog: providers, which have a key, and what each role points at" },
   { name = "endpoint", help = "saved endpoint presets: list, save <name>, <name> to switch, rm <name>" },
   { name = "effort",   help = "reasoning effort: minimal|low|medium|high|xhigh|max|none (xhigh/max are Anthropic-only)" },
   { name = "agents",   help = "live fleet status: how many agents are running and what each is doing" },
@@ -149,12 +150,59 @@ M.aliases = { exit = "quit" }
 -- ---- /help -----------------------------------------------------------------
 -- Generated from the registry so it cannot describe a command that is gone or
 -- omit one that is new. boot.lua prints this.
+-- /help, grouped.
+--
+-- There are forty-odd commands, and printed as one flat list they read as a
+-- wall: a new user cannot tell which three they need today from the thirty they
+-- will never type. The groups are the questions people actually arrive with --
+-- how do I talk to it, which model, what is it allowed to do, what is it doing
+-- now -- and anything not claimed by a group still appears, under "more", so a
+-- command can never be added and silently vanish from the help.
+M.GROUPS = {
+  { title = "the conversation",
+    names = { "new", "clear", "compact", "cost", "copy", "fork", "sessions", "resume" } },
+  { title = "model and credentials",
+    names = { "model", "models", "auth", "endpoint", "effort" } },
+  { title = "what it may do",
+    names = { "mode", "trust", "tools" } },
+  { title = "running work",
+    names = { "until", "react", "agents", "dispatch", "kpis", "trace" } },
+  { title = "git",
+    names = { "status", "diff", "commit", "push", "sync" } },
+  { title = "the harness itself",
+    names = { "reload", "reset", "memory", "doctor", "help" } },
+}
+
 function M.help_text()
+  local by_name, claimed = {}, {}
+  for _, c in ipairs(M.commands) do by_name[c.name] = c end
+
   local L = { "boggart commands:" }
-  for _, c in ipairs(M.commands) do
+  local function line(c)
     local arg = c.args and " <arg>" or ""
     L[#L + 1] = string.format("  /%-14s %s", c.name .. arg, c.help)
   end
+  for _, g in ipairs(M.GROUPS) do
+    local rows = {}
+    for _, n in ipairs(g.names) do
+      if by_name[n] then rows[#rows + 1] = by_name[n]; claimed[n] = true end
+    end
+    if #rows > 0 then
+      L[#L + 1] = ""
+      L[#L + 1] = g.title
+      for _, c in ipairs(rows) do line(c) end
+    end
+  end
+  local rest = {}
+  for _, c in ipairs(M.commands) do
+    if not claimed[c.name] then rest[#rest + 1] = c end
+  end
+  if #rest > 0 then
+    L[#L + 1] = ""
+    L[#L + 1] = "more"
+    for _, c in ipairs(rest) do line(c) end
+  end
+  L[#L + 1] = ""
   L[#L + 1] = "Anything else is sent to the agent. @path references a file. /<skill> follows a named skill."
   return table.concat(L, "\n") .. "\n"
 end

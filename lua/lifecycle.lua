@@ -355,6 +355,47 @@ function M.doctor()
       .. " is not being used for " .. tostring(provider) .. ".")
   end
 
+  -- the model catalog ---------------------------------------------------------
+  -- Which providers exist and which are actually usable. "Usable" is the whole
+  -- point: sixteen catalogued providers and no keys is a different situation
+  -- from sixteen and three, and doctor is where a person looks to find out.
+  -- Read through doctor's OWN connection, the way every other section here
+  -- does: doctor reports on a store rather than running against it, so it must
+  -- not depend on the harness having opened one.
+  do
+    local conn = select(1, db.open(dbpath))
+    if conn then
+      local function count(tbl)
+        local rows = conn:query("SELECT COUNT(*) AS c FROM " .. tbl)
+        return rows and rows[1] and rows[1].c or nil
+      end
+      local nprov = count("providers")
+      if nprov then
+        head("model catalog")
+        local usable = {}
+        for _, pr in ipairs(conn:query("SELECT name,key_slot FROM providers ORDER BY name") or {}) do
+          if auth.has_key and auth.has_key(pr.key_slot or pr.name) then
+            usable[#usable + 1] = pr.name
+          end
+        end
+        kv("providers", nprov == 0 and "none yet (seeded on first run)"
+          or string.format("%d known, %d with a key%s", nprov, #usable,
+               #usable > 0 and ("  (" .. table.concat(usable, ", ") .. ")") or ""))
+        kv("models", tostring(count("models") or 0) .. "  (`boggart models` lists them)")
+        local parts = {}
+        for _, r in ipairs(conn:query("SELECT name,spec FROM roles ORDER BY name") or {}) do
+          parts[#parts + 1] = r.name .. " = " .. tostring(r.spec):gsub('"', "")
+        end
+        kv("roles", #parts > 0 and table.concat(parts, ", ") or "none bound")
+        if nprov > 0 and #usable == 0 then
+          warn("No provider has a credential, so no model can be reached yet.\n"
+            .. "  `boggart models` shows them; `/auth key <key> <provider>` sets one.")
+        end
+      end
+      conn:close()
+    end
+  end
+
   -- mcp ----------------------------------------------------------------------
   head("mcp servers")
   local okreq, servers = pcall(require, "mcp_servers")

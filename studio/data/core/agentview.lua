@@ -123,9 +123,13 @@ function AgentView:new()
   if bog and not self:has_creds() then
     -- Tag these so welcomeview can retract them once credentials arrive without
     -- matching on their English text (which drifts the moment the copy changes).
-    self:push("system", "No credentials. Command palette: 'agent: set api key',",
+    -- The Welcome tab is open right next to this one with two buttons on it,
+    -- so sending someone to a command-palette incantation instead was the
+    -- application disagreeing with itself. Name the visible thing first.
+    self:push("system", "No model configured yet -- the Welcome tab has the two ways to fix that.",
       { hint = "no-creds" })
-    self:push("system", "or 'agent: set endpoint' for a local server (ds4 on :8000).",
+    self:push("system", "Menu: Agent > Models... to pick one, or Agent > Set API key. "
+      .. "boggart knows 16 providers out of the box.",
       { hint = "no-creds" })
   end
 end
@@ -2665,10 +2669,18 @@ function AgentView:draw()
       shown = slice:sub(1, off) .. "|" .. slice:sub(off + 1)
     end
     if vr == top_row and empty_composer and composing then
-      common.draw_text(font, style.dim,
-        (bog and bog.choice and bog.choice.allow_input)
-          and "Type your own answer..." or "Reply to boggart...",
-        "left", x, ty, w, lh)
+      -- "Reply to boggart..." is right mid-conversation and wrong on an empty
+      -- one, where there is nothing to reply to. An empty chat asks for the
+      -- thing a person is actually here to do.
+      local placeholder
+      if bog and bog.choice and bog.choice.allow_input then
+        placeholder = "Type your own answer..."
+      elseif #(self.entries or {}) <= 4 then
+        placeholder = "Ask boggart to change something in this project..."
+      else
+        placeholder = "Reply to boggart..."
+      end
+      common.draw_text(font, style.dim, placeholder, "left", x, ty, w, lh)
     else
       common.draw_text(font, (not composing) and style.dim or style.text,
         shown, "left", x, ty, w, lh)
