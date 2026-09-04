@@ -236,12 +236,27 @@ function DocView:get_name()
 end
 
 
+-- How far this document can be scrolled.
+--
+-- This used to be `line_height * (nlines - 1) + size.y`, which is lite's
+-- formula and means the maximum scroll puts the LAST line at the TOP -- a whole
+-- viewport of nothing below the end of the file. That is a scrollbar that lies
+-- (its thumb never reaches the bottom at the bottom) and a wheel that keeps
+-- going after the document has run out.
+--
+-- The height of the content is the lines plus a line of breathing room, so the
+-- furthest you can scroll leaves the last line at the BOTTOM. A document
+-- shorter than the view yields a negative maximum, which clamp_scroll_position
+-- pins to zero, so short files do not move at all.
 function DocView:get_scrollable_size()
+  local rows
   if self.wrapping then
     self:ensure_wrap()
-    return self:get_line_height() * (#self.wrap.rows - 1) + self.size.y
+    rows = #self.wrap.rows
+  else
+    rows = #self.doc.lines
   end
-  return self:get_line_height() * (#self.doc.lines - 1) + self.size.y
+  return self:get_line_height() * rows + style.padding.y
 end
 
 

@@ -68,6 +68,17 @@ function LogView:draw()
     end
     y = y + style.padding.y
   end
+
+  -- Measured here because the log is drawn newest-first with per-item heights
+  -- (multi-line messages, an optional info block); there is no cheaper way to
+  -- know how tall it is than to have just drawn it. Without this the view
+  -- inherited View's math.huge and scrolled forever past the oldest entry.
+  self.content_height = (y - oy) + style.padding.y
+end
+
+
+function LogView:get_scrollable_size()
+  return self.content_height or self.size.y
 end
 
 

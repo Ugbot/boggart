@@ -2032,7 +2032,7 @@ function AgentView:on_mouse_released(button, x, y)
 end
 
 function AgentView:get_scrollable_size()
-  return self.content_height or math.huge
+  return self.content_height or self.size.y
 end
 
 -- ---------------------------------------------------------------------------

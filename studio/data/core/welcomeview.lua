@@ -221,7 +221,7 @@ end
 function WelcomeView:get_name() return "Welcome" end
 
 function WelcomeView:get_scrollable_size()
-  return self.content_height or math.huge
+  return self.content_height or self.size.y
 end
 
 -- ---------------------------------------------------------------------------

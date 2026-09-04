@@ -369,7 +369,7 @@ function PickerView:on_mouse_pressed(button, x, y, clicks)
 end
 
 function PickerView:get_scrollable_size()
-  return self.content_height or math.huge
+  return self.content_height or self.size.y
 end
 
 -- Cut a row to the column it is drawn in, measured in display cells.

@@ -1079,6 +1079,21 @@ end]])
     core.on_event("keypressed", "escape")
     check(sv.focus == nil, "settings: escape left the field editing")
 
+    -- Scrolling must stop at the end of the content. SettingsView had no
+    -- get_scrollable_size at all, so it inherited View's math.huge and scrolled
+    -- forever into blank space; every scrollable view needs a real bound, and
+    -- "unknown height" has to mean "do not scroll", never "scroll anywhere".
+    sv.scroll.to.y = 1e9
+    frame(6)
+    local smax = math.max(0, sv:get_scrollable_size() - sv.size.y)
+    check(sv.scroll.to.y <= smax + 1, string.format(
+      "settings: scrolled to %.0f with a maximum of %.0f -- the page scrolls "
+      .. "past its own end", sv.scroll.to.y, smax))
+    check(sv:get_scrollable_size() < math.huge,
+      "settings: the page has no scrollable size, so it scrolls without limit")
+    sv.scroll.to.y = 0
+    frame(2)
+
     -- Committing an empty field says so. It used to return in silence, which
     -- is what clearing the box and pressing enter looks like.
     sv:edit(2)
@@ -1090,6 +1105,32 @@ end]])
     do
       local n = core.root_view.root_node:get_node_for_view(sv)
       if n then n:set_active_view(sv); n:close_active_view(core.root_view.root_node) end
+    end
+
+    -- A document must not scroll past its last line. lite's formula
+    -- (line_height * (nlines - 1) + size.y) leaves a whole viewport of nothing
+    -- below the end of the file, which is a scrollbar whose thumb never reaches
+    -- the bottom at the bottom.
+    do
+      local DocView = require "core.docview"
+      local doc = core.open_doc("lua/api.lua")
+      local dv = DocView(doc)
+      core.root_view:get_primary_node():add_view(dv)
+      core.set_active_view(dv)
+      frame(4)
+      dv.scroll.to.y = 1e9
+      frame(6)
+      local lh = dv:get_line_height()
+      local last_top = lh * (#doc.lines - 1) - dv.scroll.to.y
+      check(last_top < dv.size.y, string.format(
+        "docview: the last line sits %.0f px down a %.0f px view -- the file "
+        .. "scrolls off the top", last_top, dv.size.y))
+      local blank = dv.size.y - last_top - lh
+      check(blank < lh * 2, string.format(
+        "docview: %.0f px of blank space below the last line (about %.1f lines)",
+        blank, blank / lh))
+      local n = core.root_view.root_node:get_node_for_view(dv)
+      if n then n:set_active_view(dv); n:close_active_view(core.root_view.root_node) end
     end
 
     v = studio.open_agent()

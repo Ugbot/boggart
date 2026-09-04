@@ -221,7 +221,7 @@ end
 function LibraryView:get_name() return "Library" end
 
 function LibraryView:get_scrollable_size()
-  return self.content_height or math.huge
+  return self.content_height or self.size.y
 end
 
 function LibraryView:refresh(force)

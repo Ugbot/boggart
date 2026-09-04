@@ -265,6 +265,19 @@ function SettingsView:on_mouse_pressed(button, x, y, clicks)
   return true
 end
 
+-- The settings page had no scrollable size at all, so it inherited View's
+-- `math.huge` and scrolled forever into blank space -- the most visible form of
+-- this bug in the whole application. draw() already measures the page into
+-- self.content_height; this is only ever the number it wrote.
+--
+-- Before the first draw the height is unknown, and the honest answer to that is
+-- "do not scroll" (size.y, giving a maximum of zero) rather than "scroll
+-- anywhere" (math.huge).
+function SettingsView:get_scrollable_size()
+  return self.content_height or self.size.y
+end
+
+
 function SettingsView:draw()
   self:draw_background(style.background)
   local font = style.code_font
