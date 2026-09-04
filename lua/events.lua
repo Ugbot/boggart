@@ -277,6 +277,44 @@ function M.emit(name, data)
   return fired
 end
 
+-- ask(name, data) -> answer | nil
+--
+-- The query half of the bus. `emit` notifies and throws every return value
+-- away, which is right for an observer and useless for a gate: a handler that
+-- wants to REFUSE something has no way to say so. `ask` dispatches the same
+-- handlers in registration order and returns the FIRST non-nil answer, stopping
+-- there -- so a hook can veto a tool call, supply a value, or (by returning
+-- nothing, like every existing handler) decline to have an opinion.
+--
+-- Handlers run directly rather than through invoke's coroutine wrapper because
+-- an answer has to come back on the stack. The same rule as emit still applies:
+-- a handler must not block or yield. One that errors is reported and skipped,
+-- never allowed to take down the call it was asked about.
+function M.ask(name, data)
+  local hs = state.count > 0 and (cache[name] or resolve(name)) or nil
+  local n = hs and #hs or 0
+  if n == 0 then return nil end
+  if state.depth >= MAX_DEPTH then return nil end
+  state.depth = state.depth + 1
+  local answer = nil
+  for i = 1, n do
+    local h = hs[i]
+    if not h.dead then
+      if h.once then M.off(h) end
+      h.calls = h.calls + 1
+      local ok, res = pcall(h.fn, name, data)
+      if not ok then
+        report(h, res)
+      elseif res ~= nil then
+        answer = res
+        break
+      end
+    end
+  end
+  state.depth = state.depth - 1
+  return answer
+end
+
 -- ---------------------------------------------------------------------------
 -- notify -- one function, both worlds (vim.notify)
 --
