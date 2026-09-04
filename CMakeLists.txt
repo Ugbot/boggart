@@ -729,6 +729,20 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
     COMMENT "Rendering the legacy studio composition and checking the agent panel"
     USES_TERMINAL)
 
+  # `ninja ui-overlay` guards the dirty-rect/overlay invariant: a menu dropdown
+  # must survive a frame in which only the content *under* it was damaged. The
+  # empty-clip-is-not-no-clip bug (renderer.c) made an unrelated view paint over
+  # the whole target on exactly those frames, which is what "the menus flicker"
+  # was. Needs the shell composition (the menu bar), so not ui-check's legacy one.
+  add_custom_target(ui-overlay
+    COMMAND ${CMAKE_COMMAND} -E env
+      BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/uioverlay.lua
+      BOGGART_STUDIO_SHOT=${CMAKE_CURRENT_BINARY_DIR}/studio-overlay.bmp
+      $<TARGET_FILE:boggart-studio> ${CMAKE_CURRENT_SOURCE_DIR}
+    DEPENDS boggart-studio
+    COMMENT "Checking an overlay survives a partially damaged frame"
+    USES_TERMINAL)
+
   add_custom_target(studio-start
     COMMAND ${CMAKE_COMMAND} -E env
       BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/uistart.lua

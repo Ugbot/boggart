@@ -32,6 +32,15 @@ local OUT = os.getenv("BOGGART_STUDIO_SHOT") or "/tmp/boggart-studio.bmp"
 local problems = {}
 local function check(ok, msg) if not ok then problems[#problems + 1] = msg end end
 
+-- What a view's edited field currently holds. welcomeview and settingsview each
+-- used to keep a plain `self.buffer` string; both now hold one shared
+-- `ui.textfield` (caret, UTF-8-safe delete, arrows, paste) in `self.field` while
+-- editing, and nil when not. Asked through one helper so a further move of that
+-- state breaks in one place instead of six assertions.
+local function field_value(v)
+  return v and v.field and v.field:value() or nil
+end
+
 -- Scenario shots go beside the main one, named after the scenario.
 local function shot_path(name)
   if not name then return OUT end
@@ -512,12 +521,12 @@ core.add_thread(function()
     check(wv.focus == 1, "welcome: clicking the key field did not focus it")
     core.on_event("textinput", "s")
     core.on_event("textinput", "k")
-    check(wv.buffer == "sk", "welcome: the key field ignored the keyboard ("
-      .. string.format("%q", wv.buffer) .. ")")
+    check(field_value(wv) == "sk", "welcome: the key field ignored the keyboard ("
+      .. string.format("%q", field_value(wv)) .. ")")
     core.on_event("keypressed", "backspace")
-    check(wv.buffer == "s", "welcome: backspace did nothing")
+    check(field_value(wv) == "s", "welcome: backspace did nothing")
     core.on_event("keypressed", "escape")
-    check(wv.focus == nil and wv.buffer == "",
+    check(wv.focus == nil and wv.field == nil,
       "welcome: escape left the field editing")
     check(auth.has_key() == had_key,
       "welcome: an abandoned edit changed the stored credential -- it must not")
@@ -1061,11 +1070,12 @@ end]])
     sv:edit(1)
     core.on_event("textinput", "a")
     core.on_event("textinput", "\u{00e9}")
-    check(sv.buffer == "a\u{00e9}", "settings: the field ignored the keyboard")
+    check(field_value(sv) == "a\u{00e9}", "settings: the field ignored the keyboard ("
+      .. string.format("%q", field_value(sv)) .. ")")
     core.on_event("keypressed", "backspace")
-    check(sv.buffer == "a" and utf8.len(sv.buffer) ~= nil, string.format(
-      "settings: backspace over a two-byte character left %q, which is not "
-      .. "a whole character", sv.buffer))
+    check(field_value(sv) == "a" and utf8.len(field_value(sv) or "") ~= nil,
+      string.format("settings: backspace over a two-byte character left %q, "
+        .. "which is not a whole character", field_value(sv)))
     core.on_event("keypressed", "escape")
     check(sv.focus == nil, "settings: escape left the field editing")
 

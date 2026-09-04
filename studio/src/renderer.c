@@ -135,6 +135,14 @@ static SDL_Renderer *renderer;
 static SDL_Texture *target;
 static int target_w, target_h;
 static struct { int left, top, right, bottom; } clip;
+/* An EMPTY clip means "draw nothing", and must never be confused with "no clip".
+ * rencache replays the whole command list once per dirty rect, intersecting each
+ * SET_CLIP with that rect, so a view whose clip does not touch the rect legally
+ * yields a zero-sized clip. Passing NULL to SDL for that case disables clipping
+ * instead of suppressing the draw, and the view then paints over the entire
+ * target -- including over overlays drawn later in the frame, whose own cells
+ * are not dirty and so are never repaired. That was the menu-dropdown flicker. */
+static bool clip_empty;
 static FT_Library library;
 
 #define GLYPH_BATCH_MAX 256
@@ -182,16 +190,14 @@ static void bind_target(void) {
     clip.left, clip.top,
     clip.right - clip.left, clip.bottom - clip.top
   };
-  if (r.w <= 0 || r.h <= 0) {
-    SDL_SetRenderClipRect(renderer, NULL);
-  } else {
-    SDL_SetRenderClipRect(renderer, &r);
-  }
+  if (r.w < 0) { r.w = 0; }
+  if (r.h < 0) { r.h = 0; }
+  SDL_SetRenderClipRect(renderer, &r);
 }
 
 
 static void glyph_batch_flush(void) {
-  if (glyph_batch_n <= 0 || !renderer) {
+  if (glyph_batch_n <= 0 || !renderer || clip_empty) {
     glyph_batch_n = 0;
     glyph_batch_tex = NULL;
     return;
@@ -212,11 +218,9 @@ static void glyph_batch_flush(void) {
     clip.left, clip.top,
     clip.right - clip.left, clip.bottom - clip.top
   };
-  if (r.w <= 0 || r.h <= 0) {
-    SDL_SetRenderClipRect(renderer, NULL);
-  } else {
-    SDL_SetRenderClipRect(renderer, &r);
-  }
+  if (r.w < 0) { r.w = 0; }
+  if (r.h < 0) { r.h = 0; }
+  SDL_SetRenderClipRect(renderer, &r);
   SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
   SDL_RenderGeometry(renderer, glyph_batch_tex, glyph_batch, glyph_batch_n * 4,
                      indices, glyph_batch_n * 6);
@@ -290,11 +294,12 @@ void ren_update_rects(RenRect *rects, int count) {
 
 
 void ren_set_clip_rect(RenRect rect) {
-  glyph_batch_flush();
+  glyph_batch_flush();   /* flush under the OLD clip, before it changes */
   clip.left   = rect.x;
   clip.top    = rect.y;
   clip.right  = rect.x + rect.width;
   clip.bottom = rect.y + rect.height;
+  clip_empty  = (clip.right <= clip.left) || (clip.bottom <= clip.top);
 }
 
 
@@ -1089,7 +1094,7 @@ static SDL_FColor fcolor(RenColor c) {
  * the edges. Clip is the renderer clip rect. */
 void ren_draw_line(float x0, float y0, float x1, float y1, float thickness,
                    RenColor color) {
-  if (color.a == 0 || !renderer) { return; }
+  if (color.a == 0 || !renderer || clip_empty) { return; }
   glyph_batch_flush();
   bind_target();
   if (thickness < 1.0f) { thickness = 1.0f; }
@@ -1136,7 +1141,7 @@ void ren_draw_line(float x0, float y0, float x1, float y1, float thickness,
 
 
 void ren_draw_rect(RenRect rect, RenColor color) {
-  if (color.a == 0 || !renderer) { return; }
+  if (color.a == 0 || !renderer || clip_empty) { return; }
   glyph_batch_flush();
   bind_target();
   SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
@@ -1157,7 +1162,7 @@ void ren_draw_rect(RenRect rect, RenColor color) {
  * RenImage and having to invalidate it. Linear scaling reads better than nearest
  * for a down-scaled photo/diagram. */
 void ren_draw_image(RenImage *image, RenRect *sub, RenRect *dst, RenColor color) {
-  if (color.a == 0 || !renderer || !image || !sub || !dst) { return; }
+  if (color.a == 0 || !renderer || !image || !sub || !dst || clip_empty) { return; }
   if (sub->width <= 0 || sub->height <= 0 || dst->width <= 0 || dst->height <= 0) { return; }
   glyph_batch_flush();
   bind_target();
@@ -1211,6 +1216,10 @@ int ren_draw_text(RenFont *font, const char *text, int x, int y, RenColor color)
   const char *p = text;
   unsigned codepoint;
   SDL_FColor col = fcolor(color);
+
+  /* Clipped to nothing: skip the raster/batch entirely, but still answer with
+   * the advance the caller would have got, since the return value is the pen. */
+  if (clip_empty) { return x + ren_get_font_width(font, text); }
 
   if (color.a != 0 && renderer) {
     bind_target();
