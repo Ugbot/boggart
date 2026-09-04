@@ -118,6 +118,13 @@ M.tree = {
   -- routes (lua/control.lua). Its own menu because "boggart is a service you
   -- can talk to" is a different idea from "boggart is an app you are using",
   -- and burying it under Tools would hide the whole point.
+  Project = {
+    { "Switch project\u{2026}", "project:switch" },
+    { "New project\u{2026}",    "project:new" },
+    M.SEP,
+    { "Write manifest",      "project:manifest" },
+    { "Check manifest",      "project:check" },
+  },
   Service = {
     { "Start control plane",   "service:start" },
     { "Stop control plane",    "service:stop" },

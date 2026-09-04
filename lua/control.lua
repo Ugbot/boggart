@@ -196,6 +196,35 @@ M.route("POST", "/models/role", function(req)
   return ok({ role = body.name, spec = bound })
 end, "bind a role to a model (or an ordered fallback list)")
 
+-- ---- projects -------------------------------------------------------------
+
+M.route("GET", "/projects", function()
+  local proj = require "project"
+  local out = {}
+  for _, p in ipairs(proj.list()) do
+    out[#out + 1] = { name = p.name, label = p.label, roots = p.roots }
+  end
+  return ok({ current = proj.current(), projects = out })
+end, "the projects, and which one is current")
+
+M.route("POST", "/projects", function(req)
+  local body = body_table(req)
+  local proj = require "project"
+  if type(body.name) ~= "string" or body.name == "" then
+    return err(400, "a project needs a `name`")
+  end
+  local p, why = proj.create(body.name, body.roots or {}, body.label)
+  if not p then return err(400, tostring(why)) end
+  return ok({ project = { name = p.name, roots = p.roots } }, 201)
+end, "create a project")
+
+M.route("POST", "/projects/([%w_%-%.]+)/switch", function(req, name)
+  local proj = require "project"
+  local p, why = proj.switch(name)
+  if not p then return err(404, tostring(why)) end
+  return ok({ current = proj.current(), roots = p.roots })
+end, "switch the current project")
+
 -- ---- the fleet ------------------------------------------------------------
 
 M.route("GET", "/agents", function()

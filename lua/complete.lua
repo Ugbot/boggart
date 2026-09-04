@@ -114,6 +114,13 @@ M.commands = {
                        args = overlay_names },
   { name = "model",    help = "list models (numbered), or switch by number / name / preset", args = model_names },
   { name = "models",   help = "the model catalog: providers, which have a key, and what each role points at" },
+  { name = "project",  help = "the unit of context: list, switch, new <name> [dir], root, assign, forget, promote",
+                       args = function()
+                         local out = { "new", "root", "assign", "forget", "promote", "delete" }
+                         local ok, proj = pcall(require, "project")
+                         if ok then for _, p in ipairs(proj.list()) do out[#out + 1] = p.name end end
+                         return out
+                       end },
   { name = "endpoint", help = "saved endpoint presets: list, save <name>, <name> to switch, rm <name>" },
   { name = "effort",   help = "reasoning effort: minimal|low|medium|high|xhigh|max|none (xhigh/max are Anthropic-only)" },
   { name = "agents",   help = "live fleet status: how many agents are running and what each is doing" },
@@ -160,7 +167,7 @@ M.aliases = { exit = "quit" }
 -- command can never be added and silently vanish from the help.
 M.GROUPS = {
   { title = "the conversation",
-    names = { "new", "clear", "compact", "cost", "copy", "fork", "sessions", "resume" } },
+    names = { "new", "clear", "compact", "cost", "copy", "fork", "sessions", "resume", "project" } },
   { title = "model and credentials",
     names = { "model", "models", "auth", "endpoint", "effort" } },
   { title = "what it may do",

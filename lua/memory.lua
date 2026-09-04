@@ -3,11 +3,26 @@
 -- recall uses FTS5. The remember/recall/forget tool interface is unchanged.
 local M = {}
 
+-- The project a memory operation belongs to. Everything here is scoped to the
+-- CURRENT project, with `global` readable underneath and ranked below it (the
+-- rule lives in store.lua's SQL). A memory written while working on one story
+-- is therefore invisible to another, which is the entire point.
+local function here()
+  local ok, proj = pcall(require, "project")
+  return ok and proj.current() or nil
+end
+M.scope = here
+
 function M.list()
   local out = {}
-  for _, row in ipairs(bog.store.mem_list()) do
+  for _, row in ipairs(bog.store.mem_list(here())) do
     local preview = (row.body or ""):gsub("%s+", " "):sub(1, 100)
-    out[#out + 1] = { title = row.title, preview = preview, body = row.body }
+    -- A global memory surfacing inside a project is labelled, so you can see
+    -- where an answer came from and demote or forget it.
+    -- `is_global`, not `global`: Lua 5.5 made `global` a keyword, so it cannot
+    -- be a bare key in a table constructor.
+    out[#out + 1] = { title = row.title, preview = preview, body = row.body,
+                      project = row.project, is_global = (row.project == nil) }
   end
   return out
 end
@@ -24,18 +39,30 @@ function M.index_text()
   return table.concat(parts, "\n")
 end
 
-function M.remember(title, body) return bog.store.mem_put(title, body) end
+-- Writes land in the current project. Promotion to global is a separate,
+-- explicit act -- the opposite default would recreate exactly the bleed
+-- projects exist to stop.
+function M.remember(title, body) return bog.store.mem_put(title, body, here()) end
 
 function M.recall(query)
-  local rows = bog.store.mem_search(query)
+  local rows = bog.store.mem_search(query, here())
   local parts = {}
   for _, r in ipairs(rows) do
-    parts[#parts + 1] = "# " .. r.title .. "\n" .. (r.body or "")
+    local head = "# " .. r.title
+    if r.project == nil and not (require("project").is_global()) then
+      head = head .. "   (global)"
+    end
+    parts[#parts + 1] = head .. "\n" .. (r.body or "")
   end
   return table.concat(parts, "\n\n---\n\n")
 end
 
-function M.forget(title) return bog.store.mem_del(title) end
+-- Forget within this project; global memories are only forgotten from global.
+function M.forget(title) return bog.store.mem_del(title, here()) end
+
+-- The explicit promotion: move a memory from this project into global, where
+-- every project can read it.
+function M.promote(title) return bog.store.mem_promote(title, here()) end
 
 -- Tool definitions contributed to the registry by tools.lua.
 M.tools = {

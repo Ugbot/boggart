@@ -20,9 +20,16 @@ CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY, value TEXT, updated INTEGER
 );
 
+-- Titles are unique WITHIN a project, not globally: two stories both have a
+-- "protagonist", and a title that could only exist once in the whole store
+-- would make them overwrite each other -- exactly the collision projects exist
+-- to prevent. The uniqueness therefore lives in an index over
+-- (title, COALESCE(project,'')) rather than on the column, because a plain
+-- UNIQUE index would treat every NULL project as distinct and let global
+-- accumulate duplicates.
 CREATE TABLE IF NOT EXISTS memory (
   id INTEGER PRIMARY KEY,
-  title TEXT UNIQUE NOT NULL,
+  title TEXT NOT NULL,
   body TEXT NOT NULL,
   created INTEGER, updated INTEGER
 );
@@ -158,6 +165,39 @@ CREATE INDEX IF NOT EXISTS models_provider ON models(provider);
 CREATE TABLE IF NOT EXISTS roles (
   name TEXT PRIMARY KEY,        -- "default", "utility", "critic"
   spec TEXT,                    -- JSON: a model id, or an ordered list of them
+  updated INTEGER
+);
+
+-- Projects: the unit of context (docs/projects.md).
+--
+-- A project is NAMED, not a directory, and owns zero or more roots -- git is
+-- used where a root is a repo and everything else still works where it is not,
+-- so a story project is as real as a codebase.
+--
+-- `global` is itself a project rather than a separate tier: the loose chat you
+-- have when you are not working on anything in particular. Every project reads
+-- it, ranked below its own results; no project reads another. That one rule is
+-- the whole isolation model.
+CREATE TABLE IF NOT EXISTS projects (
+  name TEXT PRIMARY KEY,        -- "global", "nightjar", "boggart"
+  label TEXT,
+  roots TEXT,                   -- JSON array of directories
+  created INTEGER, updated INTEGER
+);
+
+-- Which projects a skill serves.
+--
+-- Deliberately NOT a join table: the skill carries its list, and nothing
+-- carries a list of skills. One direction of reference, one place to edit, no
+-- pair of foreign keys to drift apart. A skill with no row here is global --
+-- available everywhere -- which is what every skill that exists today is.
+--
+-- The BODY of a skill stays a file (lua/skills/*.lua, builtin or overlay);
+-- this table holds only the keying, so nothing about how skills are written or
+-- loaded changes.
+CREATE TABLE IF NOT EXISTS skills (
+  name TEXT PRIMARY KEY,
+  projects TEXT,                -- JSON list; NULL/empty = every project
   updated INTEGER
 );
 ]]
@@ -412,6 +452,44 @@ function M.open()
   ensure_column(bog.db, "sessions", "status", "TEXT")
   ensure_column(bog.db, "sessions", "subscriptions", "TEXT")
   ensure_column(bog.db, "sessions", "spec", "TEXT")
+  -- Which project a conversation and a memory belong to. NULL means `global`,
+  -- so every row that exists today is already correctly classified and the
+  -- migration is a no-op rather than a rewrite of the store.
+  ensure_column(bog.db, "sessions", "project", "TEXT")
+  ensure_column(bog.db, "memory", "project", "TEXT")
+  -- Drop the old column-level UNIQUE(title) on stores that predate projects.
+  -- SQLite cannot alter a constraint away, so the table is rebuilt once --
+  -- guarded by a meta flag, and by keeping every row and id so the FTS content
+  -- table (content_rowid='id') stays valid.
+  do
+    local done = bog.db:query("SELECT value FROM meta WHERE key='memory_title_unscoped'")[1]
+    if not done then
+      local uniq = false
+      for _, idx in ipairs(bog.db:query("PRAGMA index_list(memory)") or {}) do
+        if (idx.origin == "u" or idx.origin == "pk") and tostring(idx.name):find("autoindex") then
+          uniq = true
+        end
+      end
+      if uniq then
+        bog.db:exec([[
+          CREATE TABLE memory_rebuilt (
+            id INTEGER PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL,
+            created INTEGER, updated INTEGER, project TEXT
+          );
+          INSERT INTO memory_rebuilt(id,title,body,created,updated,project)
+            SELECT id,title,body,created,updated,project FROM memory;
+          DROP TABLE memory;
+          ALTER TABLE memory_rebuilt RENAME TO memory;
+        ]])
+        -- the triggers and the FTS content table referenced the old table
+        bog.db:exec(SCHEMA)
+        bog.db:run("INSERT INTO memory_fts(memory_fts) VALUES('rebuild')")
+      end
+      bog.db:run("INSERT OR REPLACE INTO meta(key,value) VALUES('memory_title_unscoped','1')")
+    end
+  end
+  bog.db:exec("CREATE UNIQUE INDEX IF NOT EXISTS memory_title_project "
+    .. "ON memory(title, COALESCE(project,''))")
   bog.db:run("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",
     { tostring(M.SCHEMA_VERSION) })
   -- Hand C the store so it can consult the credential-slot registry (the
@@ -422,6 +500,15 @@ function M.open()
   -- Seed the model catalog the first time its tables are empty. Idempotent and
   -- quiet: a user who has curated their own catalog is never re-seeded over.
   pcall(function() require("catalog").seed_if_empty() end)
+  -- The `global` project exists from the first run: it is where every chat and
+  -- memory that is not about a particular body of work lives, and every other
+  -- project reads it. Then adopt the project owning this directory, if exactly
+  -- one does (docs/projects.md).
+  pcall(function()
+    local proj = require("project")
+    proj.ensure_global()
+    proj.adopt_cwd()
+  end)
   -- Sweep out blank sessions left by the era when starting a conversation
   -- created a row before anyone had said anything. Silent when there are none,
   -- which is every run after the first.
@@ -481,21 +568,182 @@ function M.kv_list(prefix)
 end
 
 -- ---- memory ----------------------------------------------------------------
-function M.mem_put(title, body)
-  return bog.db:run("INSERT INTO memory(title,body,created,updated) VALUES(?,?,?,?) "
-    .. "ON CONFLICT(title) DO UPDATE SET body=excluded.body, updated=excluded.updated",
-    { title, body or "", now(), now() })
+-- ---- projects --------------------------------------------------------------
+--
+-- The current project is process state (bog.project); these are the rows.
+-- GLOBAL is the name of the project every other one can read.
+M.GLOBAL = "global"
+
+-- NOTE ON NIL PARAMETERS, which cost an hour: a params array with an interior
+-- nil has an UNDEFINED length in Lua, so `{name, nil, roots, t, t}` can bind one
+-- parameter instead of five and the statement silently stores nothing. The C
+-- binder handles nil correctly (it binds NULL); the array never reaches it
+-- intact. So nothing in this file ever puts a nil inside a params array --
+-- either the value is made real, or the SQL branches.
+function M.project_put(name, fields)
+  fields = fields or {}
+  local cur = M.project_get(name)
+  local label = fields.label or (cur and cur.label) or ""
+  local roots = json.encode(fields.roots or (cur and cur.roots) or {})
+  bog.db:run(
+    "INSERT INTO projects(name,label,roots,created,updated) VALUES(?,?,?,?,?) "
+    .. "ON CONFLICT(name) DO UPDATE SET label=excluded.label, "
+    .. "roots=excluded.roots, updated=excluded.updated",
+    { name, label, roots, now(), now() })
+  return name
 end
-function M.mem_get(title)
-  local r = bog.db:query("SELECT title,body FROM memory WHERE title=?", { title })
-  return r[1]
+
+function M.project_get(name)
+  local r = bog.db:query("SELECT name,label,roots,created,updated FROM projects WHERE name=?",
+    { name })
+  local p = r[1]
+  if not p then return nil end
+  if type(p.roots) == "string" and p.roots ~= "" then
+    local ok, t = pcall(json.decode, p.roots)
+    p.roots = ok and t or {}
+  else
+    p.roots = {}
+  end
+  return p
 end
-function M.mem_del(title)
-  local r = bog.db:run("DELETE FROM memory WHERE title=?", { title })
+
+function M.project_list()
+  local rows = bog.db:query("SELECT name,label,roots,updated FROM projects ORDER BY name")
+  for _, p in ipairs(rows) do
+    if type(p.roots) == "string" and p.roots ~= "" then
+      local ok, t = pcall(json.decode, p.roots)
+      p.roots = ok and t or {}
+    else
+      p.roots = {}
+    end
+  end
+  return rows
+end
+
+function M.project_del(name)
+  if name == M.GLOBAL then return false end   -- global is not deletable
+  local r = bog.db:run("DELETE FROM projects WHERE name=?", { name })
   return r.changes > 0
 end
-function M.mem_list()
-  return bog.db:query("SELECT title,body FROM memory ORDER BY updated DESC")
+
+-- Everything a project owns comes home to `global` rather than disappearing
+-- with it: deleting a project must not silently delete a year of chat.
+function M.project_absorb(name)
+  if name == M.GLOBAL then return 0 end
+  local a = bog.db:run("UPDATE sessions SET project=NULL WHERE project=?", { name })
+  local b = bog.db:run("UPDATE memory   SET project=NULL WHERE project=?", { name })
+  return (a.changes or 0) + (b.changes or 0)
+end
+
+-- ---- which projects a skill serves -----------------------------------------
+-- One row per skill carrying its project list. Not a join table: the skill
+-- names its projects and nothing names its skills, so there is one direction of
+-- reference and one place to edit.
+function M.skill_projects_put(name, projects)
+  local payload = json.encode(projects or {})
+  bog.db:run("INSERT INTO skills(name,projects,updated) VALUES(?,?,?) "
+    .. "ON CONFLICT(name) DO UPDATE SET projects=excluded.projects, updated=excluded.updated",
+    { name, payload, now() })
+  return true
+end
+
+function M.skill_projects(name)
+  local r = bog.db:query("SELECT projects FROM skills WHERE name=?", { name })[1]
+  if not r or type(r.projects) ~= "string" or r.projects == "" then return {} end
+  local ok, t = pcall(json.decode, r.projects)
+  return (ok and type(t) == "table") and t or {}
+end
+
+function M.skill_projects_all()
+  local out = {}
+  for _, r in ipairs(bog.db:query("SELECT name,projects FROM skills") or {}) do
+    local ok, t = pcall(json.decode, r.projects or "[]")
+    out[r.name] = (ok and type(t) == "table") and t or {}
+  end
+  return out
+end
+
+-- ---- memory, scoped ---------------------------------------------------------
+--
+-- The resolution rule, in one place: a read returns THIS project's rows first,
+-- then `global`'s underneath, and never another project's. A row with a NULL
+-- project is global, which is why no migration was needed -- every memory that
+-- existed before projects did is already correctly classified.
+local function proj_or_global(p)
+  if p == nil or p == "" or p == M.GLOBAL then return nil end
+  return p
+end
+M.proj_or_global = proj_or_global
+
+-- Update-then-insert rather than ON CONFLICT: the uniqueness is an expression
+-- index over (title, COALESCE(project,'')), and naming that as a conflict
+-- target is both fiddly and easy to get subtly wrong. Two plain statements say
+-- what is meant.
+function M.mem_put(title, body, project)
+  local p = proj_or_global(project)
+  local upd
+  if p then
+    upd = bog.db:run("UPDATE memory SET body=?, updated=? WHERE title=? AND project=?",
+      { body or "", now(), title, p })
+  else
+    upd = bog.db:run("UPDATE memory SET body=?, updated=? WHERE title=? AND project IS NULL",
+      { body or "", now(), title })
+  end
+  if (upd.changes or 0) > 0 then return upd end
+  if p then
+    return bog.db:run(
+      "INSERT INTO memory(title,body,created,updated,project) VALUES(?,?,?,?,?)",
+      { title, body or "", now(), now(), p })
+  end
+  return bog.db:run(
+    "INSERT INTO memory(title,body,created,updated,project) VALUES(?,?,?,?,NULL)",
+    { title, body or "", now(), now() })
+end
+
+function M.mem_get(title, project)
+  local p = proj_or_global(project)
+  -- own first, then global; never a sibling's
+  if p then
+    return bog.db:query(
+      "SELECT title,body,project FROM memory WHERE title=? AND (project=? OR project IS NULL) "
+      .. "ORDER BY (project IS NULL) LIMIT 1", { title, p })[1]
+  end
+  return bog.db:query(
+    "SELECT title,body,project FROM memory WHERE title=? AND project IS NULL LIMIT 1",
+    { title })[1]
+end
+
+-- Forget, scoped. Without a project this removes the global memory; with one it
+-- removes that project's and leaves global (and every sibling) untouched.
+function M.mem_del(title, project)
+  local p = proj_or_global(project)
+  local r
+  if p then r = bog.db:run("DELETE FROM memory WHERE title=? AND project=?", { title, p })
+  else r = bog.db:run("DELETE FROM memory WHERE title=? AND project IS NULL", { title }) end
+  return (r.changes or 0) > 0
+end
+
+-- Move a memory into `global` -- the only way project knowledge becomes
+-- universal, and deliberately an explicit act.
+function M.mem_promote(title, project)
+  local p = proj_or_global(project)
+  if not p then return false end
+  local r = bog.db:run("UPDATE memory SET project=NULL, updated=? WHERE title=? AND project=?",
+    { now(), title, p })
+  return (r.changes or 0) > 0
+end
+
+function M.mem_list(project)
+  local p = proj_or_global(project)
+  -- ORDER BY (project IS NULL): own rows sort before global ones, which is the
+  -- ranking rule expressed once, in SQL, rather than in every caller.
+  if p then
+    return bog.db:query(
+      "SELECT title,body,project FROM memory WHERE (project=? OR project IS NULL) "
+      .. "ORDER BY (project IS NULL), updated DESC", { p })
+  end
+  return bog.db:query(
+    "SELECT title,body,project FROM memory WHERE project IS NULL ORDER BY updated DESC")
 end
 
 -- Turn free text into a safe FTS5 MATCH expression: quote each word token and
@@ -508,19 +756,36 @@ local function fts_query(q)
   return table.concat(toks, " OR ")
 end
 
-function M.mem_search(query)
-  if not query or query:match("^%s*$") then return M.mem_list() end
+function M.mem_search(query, project)
+  local p = proj_or_global(project)
+  if not query or query:match("^%s*$") then return M.mem_list(project) end
   local fq = fts_query(query)
   if not fq then
     local like = "%" .. query .. "%"
+    if p then
+      return bog.db:query(
+        "SELECT title,body,project FROM memory WHERE (body LIKE ? OR title LIKE ?) "
+        .. "AND (project=? OR project IS NULL) ORDER BY (project IS NULL), updated DESC",
+        { like, like, p })
+    end
     return bog.db:query(
-      "SELECT title,body FROM memory WHERE body LIKE ? OR title LIKE ? ORDER BY updated DESC",
-      { like, like })
+      "SELECT title,body,project FROM memory WHERE (body LIKE ? OR title LIKE ?) "
+      .. "AND project IS NULL ORDER BY updated DESC", { like, like })
+  end
+  -- Rank own-project hits above global ones, and relevance within each. A
+  -- global hit still surfaces (that is the point of global) but never outranks
+  -- something this project actually knows.
+  if p then
+    return bog.db:query(
+      "SELECT m.title AS title, m.body AS body, m.project AS project FROM memory_fts f "
+      .. "JOIN memory m ON m.id = f.rowid WHERE memory_fts MATCH ? "
+      .. "AND (m.project=? OR m.project IS NULL) ORDER BY (m.project IS NULL), rank",
+      { fq, p })
   end
   return bog.db:query(
-    "SELECT m.title AS title, m.body AS body FROM memory_fts f "
-    .. "JOIN memory m ON m.id = f.rowid WHERE memory_fts MATCH ? ORDER BY rank",
-    { fq })
+    "SELECT m.title AS title, m.body AS body, m.project AS project FROM memory_fts f "
+    .. "JOIN memory m ON m.id = f.rowid WHERE memory_fts MATCH ? AND m.project IS NULL "
+    .. "ORDER BY rank", { fq })
 end
 
 -- ---- skill search (FTS5) ---------------------------------------------------
@@ -671,11 +936,31 @@ function M.code_search(query, n)
 end
 
 -- ---- sessions --------------------------------------------------------------
-function M.sess_create(title, model)
-  local r = bog.db:run("INSERT INTO sessions(title,model,created,updated,messages) VALUES(?,?,?,?, '[]')",
-    { title, model, now(), now() })
+function M.sess_create(title, model, project)
+  local p = proj_or_global(project)
+  local r
+  if p then
+    r = bog.db:run(
+      "INSERT INTO sessions(title,model,created,updated,messages,project) VALUES(?,?,?,?, '[]',?)",
+      { title or "", model or "", now(), now(), p })
+  else
+    r = bog.db:run(
+      "INSERT INTO sessions(title,model,created,updated,messages,project) VALUES(?,?,?,?, '[]',NULL)",
+      { title or "", model or "", now(), now() })
+  end
   fts_index_session(r.rowid)
   return r.rowid
+end
+
+-- Move a chat into a project (or into global with no name). Retroactive by
+-- design: you often only realise a conversation belonged to a body of work
+-- after having it.
+function M.sess_assign(id, project)
+  local p = proj_or_global(project)
+  local r
+  if p then r = bog.db:run("UPDATE sessions SET project=?, updated=? WHERE id=?", { p, now(), id })
+  else r = bog.db:run("UPDATE sessions SET project=NULL, updated=? WHERE id=?", { now(), id }) end
+  return (r.changes or 0) > 0
 end
 
 function M.sess_save(id, title, model, messages)
@@ -696,10 +981,20 @@ function M.sess_load(id)
   return s
 end
 
-function M.sess_list(limit)
+-- Recent chats for a project: its own, then global's underneath -- the same
+-- own-first rule memory follows, so the recents list matches what the agent
+-- can actually see.
+function M.sess_list(limit, project)
+  local p = proj_or_global(project)
+  if p then
+    return bog.db:query(
+      "SELECT id,title,model,updated,project FROM sessions "
+      .. "WHERE (project=? OR project IS NULL) "
+      .. "ORDER BY (project IS NULL), updated DESC LIMIT ?", { p, limit or 20 })
+  end
   return bog.db:query(
-    "SELECT id,title,model,updated FROM sessions ORDER BY updated DESC LIMIT ?",
-    { limit or 20 })
+    "SELECT id,title,model,updated,project FROM sessions WHERE project IS NULL "
+    .. "ORDER BY updated DESC LIMIT ?", { limit or 20 })
 end
 
 -- Remove session rows that hold nothing at all.

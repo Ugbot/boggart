@@ -374,6 +374,60 @@ command.add(nil, {
     end)
   end,
 
+  -- ---- projects, from the desktop -----------------------------------------
+  --
+  -- The unit of context (docs/projects.md), on the same anchored dropdown the
+  -- model and mode chips use, so switching a project is the same gesture as
+  -- switching a model rather than a fourth kind of picker.
+  ["project:switch"] = function()
+    local proj = require "project"
+    local menu = require "core.menu"
+    local items, cur = {}, proj.current()
+    for _, p in ipairs(proj.list()) do
+      items[#items + 1] = {
+        label = p.name, checked = (p.name == cur),
+        hint = (#(p.roots or {}) > 0) and (#p.roots .. " root" .. (#p.roots == 1 and "" or "s"))
+          or (p.name == proj.GLOBAL and "loose chat" or ""),
+        action = function()
+          proj.switch(p.name)
+          core.log("project: %s", p.name)
+          local sv = package.loaded["core.studio"]
+          if sv and sv.sidebar and sv.sidebar.refresh then pcall(sv.sidebar.refresh, sv.sidebar) end
+        end,
+      }
+    end
+    items[#items + 1] = { heading = "" }
+    items[#items + 1] = { label = "New project…", hint = "names a body of work",
+      action = function() command.perform("project:new") end }
+    -- Anchored to the status bar when we can find it; otherwise the chooser.
+    local v = require("core.studio").view
+    local anchor = v and (v.model_hit or v.mode_hit)
+    if anchor then menu.show(anchor, items); return end
+    require("shell.modal").chooser("Project:", items, function(pick)
+      if pick.action then pick.action() end
+    end)
+  end,
+  ["project:new"] = function()
+    core.command_view:enter("New project:", function(name)
+      if not name or name == "" then return end
+      local proj = require "project"
+      local p, why = proj.create(name, { sys.cwd() })
+      if not p then core.error("%s", tostring(why)); return end
+      proj.switch(p.name)
+      core.log("project: %s  (root %s)", p.name, p.roots[1] or "-")
+    end)
+  end,
+  ["project:manifest"] = function()
+    local proj = require "project"
+    local path, why = proj.write_manifest()
+    if not path then core.error("%s", tostring(why)); return end
+    core.log("wrote %s", path)
+  end,
+  ["project:check"] = function()
+    local rep, why = require("project").reconcile_report()
+    core.log("%s", rep or ("no manifest: " .. tostring(why)))
+  end,
+
   -- ---- the control plane, from the desktop --------------------------------
   --
   -- Same door the CLI's `boggart serve` opens: the C listener (src/lserve.c)

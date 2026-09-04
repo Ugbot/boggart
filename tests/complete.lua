@@ -38,7 +38,7 @@ end
 -- ---- the registry is exactly the intended set ------------------------------
 local want = { help = true, tools = true, auth = true, doctor = true,
   memory = true, sessions = true, resume = true, reload = true, reset = true,
-  trust = true, model = true, models = true, endpoint = true, effort = true, agents = true, kpis = true, fork = true,
+  trust = true, model = true, models = true, project = true, endpoint = true, effort = true, agents = true, kpis = true, fork = true,
   trace = true,
   ["until"] = true, react = true, new = true, clear = true, compact = true,
   cost = true, copy = true, mode = true, dispatch = true,

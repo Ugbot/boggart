@@ -198,7 +198,9 @@ function bog.ensure_session(S)
   S = S or bog.active_session()
   if S.id then return S.id end
   if not (bog.store and bog.store.sess_create) then return nil end
-  local ok, id = pcall(bog.store.sess_create, S.title, S.model)
+  local okp, proj = pcall(require, "project")
+  local ok, id = pcall(bog.store.sess_create, S.title, S.model,
+                       okp and proj.current() or nil)
   if not ok or not id then return nil end
   S.id = id
   if bog.session and bog.session ~= S then bog.session.id = id end
@@ -466,6 +468,103 @@ local function handle_command(line)
       local where = s.is_local and ("local  " .. s.host) or (s.provider .. "  (remote)")
       io.write(string.format("model     %s\nrunning   %s\nendpoint  %s\n", s.model, where, s.endpoint))
     end
+  elseif cmd == "project" or cmd == "projects" then
+    -- The unit of context: what boggart knows and where it works.
+    -- docs/projects.md has the model; this is the door to it in the REPL and
+    -- the cTUI (both take slash commands through the same registry).
+    local proj = require "project"
+    local sub, arg = rest:match("^(%S*)%s*(.*)$")
+
+    if sub == "" or sub == "list" then
+      local cur = proj.current()
+      for _, p in ipairs(proj.list()) do
+        local mark = (p.name == cur) and " <- current" or ""
+        local where = (#p.roots > 0) and ("  " .. table.concat(p.roots, ", ")) or ""
+        io.write(string.format("  %-16s %s%s\n", p.name, p.label or "", where .. mark))
+      end
+      if cur == proj.GLOBAL then
+        io.write("\nin `global` -- loose chat, readable from every project.\n"
+          .. "`/project new <name> [dir]` starts one; `/project <name>` switches.\n")
+      end
+
+    elseif sub == "new" then
+      local name, dirs = arg:match("^(%S+)%s*(.*)$")
+      if not name then io.write("usage: /project new <name> [dir ...]\n")
+      else
+        local roots = {}
+        for d in (dirs or ""):gmatch("%S+") do roots[#roots + 1] = d end
+        if #roots == 0 and dirs == "" then roots = { "." } end
+        local p, err = proj.create(name, roots)
+        if not p then io.write("cannot: ", tostring(err), "\n")
+        else
+          proj.switch(p.name)
+          io.write("created and switched to '", p.name, "'",
+            #p.roots > 0 and ("  roots: " .. table.concat(p.roots, ", ")) or "", "\n")
+        end
+      end
+
+    elseif sub == "root" then
+      local roots, err = proj.add_root(nil, arg ~= "" and arg or ".")
+      if not roots then io.write("cannot: ", tostring(err), "\n")
+      else io.write("roots: ", table.concat(roots, ", "), "\n") end
+
+    elseif sub == "assign" then
+      -- Move a chat into this project, retroactively.
+      local id = tonumber(arg) or (bog.active_session() or {}).id
+      if not id then io.write("usage: /project assign [session-id]\n")
+      elseif bog.store.sess_assign(id, proj.current()) then
+        io.write("session ", tostring(id), " -> ", proj.current(), "\n")
+      else io.write("no session ", tostring(id), "\n") end
+
+    elseif sub == "forget" then
+      if arg == "" then io.write("usage: /project forget <memory title>\n")
+      elseif bog.memory.forget(arg) then
+        io.write("forgotten in ", proj.current(), ": ", arg, "\n")
+      else io.write("no memory called '", arg, "' in ", proj.current(), "\n") end
+
+    elseif sub == "promote" then
+      if arg == "" then io.write("usage: /project promote <memory title>\n")
+      elseif bog.memory.promote(arg) then
+        io.write("promoted to global: ", arg, "\n")
+      else io.write("no memory called '", arg, "' in this project\n") end
+
+    elseif sub == "manifest" then
+      if arg == "read" or arg == "check" then
+        local rep, err = proj.reconcile_report()
+        io.write(rep or ("no manifest: " .. tostring(err)), "\n")
+      else
+        local path, err = proj.write_manifest()
+        if not path then io.write("cannot: ", tostring(err), "\n")
+        else io.write("wrote ", path, "\n") end
+      end
+
+    elseif sub == "skill" then
+      -- Key a skill to this project, so it travels in the manifest.
+      if arg == "" then
+        local sk = require("skills")
+        for name, owners in pairs(sk.project_keys()) do
+          io.write(string.format("  %-20s %s\n", name, table.concat(owners, ", ")))
+        end
+      else
+        local list = require("skills").key_to_project(arg, proj.current())
+        io.write(arg, " -> ", table.concat(list or {}, ", "), "\n")
+      end
+
+    elseif sub == "delete" or sub == "rm" then
+      local moved, err = proj.delete(arg)
+      if not moved then io.write("cannot: ", tostring(err), "\n")
+      else io.write("deleted '", arg, "'; ", tostring(moved),
+        " chat(s)/memory(ies) moved to global\n") end
+
+    else
+      local p, err = proj.switch(sub)
+      if not p then io.write(tostring(err), "\n")
+      else
+        io.write("project: ", p.name,
+          #(p.roots or {}) > 0 and ("  " .. table.concat(p.roots, ", ")) or "", "\n")
+      end
+    end
+
   elseif cmd == "endpoint" or cmd == "preset" then
     local sub, arg = rest:match("^(%S*)%s*(.*)$")
     local presets = require("presets")

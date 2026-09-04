@@ -185,8 +185,54 @@ function M.list()
       end
     end
   end
-  table.sort(out, function(a, b) return a.name < b.name end)
+  -- Project keying. A skill row in the store may name the projects it serves;
+  -- a skill with no row is global and available everywhere, which is what every
+  -- skill that exists today is. The BODY is still a file -- only the keying
+  -- lives in the store, so nothing about how skills are written changes.
+  local keyed = M.project_keys()
+  local here = M.current_project()
+  local kept = {}
+  for _, sk in ipairs(out) do
+    local owners = keyed[sk.name]
+    if owners and #owners > 0 then
+      sk.projects = owners
+      for _, o in ipairs(owners) do
+        if o == here then kept[#kept + 1] = sk; break end
+      end
+    else
+      kept[#kept + 1] = sk         -- global: available in every project
+    end
+  end
+  table.sort(kept, function(a, b) return a.name < b.name end)
+  return kept
+end
+
+-- Every skill that is keyed to at least one project: name -> { project, ... }.
+function M.project_keys()
+  local out = {}
+  if not (bog.db and bog.store and bog.store.skill_projects_all) then return out end
+  local ok, rows = pcall(bog.store.skill_projects_all)
+  if ok then for name, list in pairs(rows) do out[name] = list end end
   return out
+end
+
+function M.current_project()
+  local ok, proj = pcall(require, "project")
+  return ok and proj.current() or "global"
+end
+
+-- Key a skill to a project (or unkey it with no project, making it global).
+function M.key_to_project(name, project)
+  if not bog.db then return nil, "no store" end
+  local list = M.project_keys()[name] or {}
+  if project == nil or project == "" then
+    bog.store.skill_projects_put(name, {})
+    return {}
+  end
+  for _, p in ipairs(list) do if p == project then return list end end
+  list[#list + 1] = project
+  bog.store.skill_projects_put(name, list)
+  return list
 end
 
 -- A skill is "builtin" (trusted) only when it loads from the baked source with no

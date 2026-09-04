@@ -365,13 +365,51 @@ function M.forget_project() project_cache = nil end
 -- to *report* the root must not be the ones to compute it.
 function M.project_root_cached() return project_cache end
 
+-- A NAMED project supersedes the git-derived root.
+--
+-- Before projects existed this was "the git repo you are standing in, else the
+-- working directory", and it decided where project-scoped tools live. A named
+-- project is a better answer to the same question -- it is the body of work you
+-- said you were doing, rather than an inference from your shell -- so when one
+-- is current and has roots, its first root IS the project root. Tools scoped to
+-- a project therefore follow the project, which is the unification BPROJ-2
+-- asked for rather than a second parallel notion of "where am I".
+--
+-- Cached per project name: switching projects must not return a stale root, and
+-- re-deriving it per call would shell out to git.
+local named_root_for = nil
+local named_root = nil
+
 function M.project_root()
+  local okp, proj = pcall(require, "project")
+  if okp then
+    local here = proj.current()
+    if named_root_for == here and named_root then return named_root end
+    local roots = proj.roots(here)
+    if roots and roots[1] then
+      named_root_for, named_root = here, roots[1]
+      return named_root
+    end
+    named_root_for, named_root = here, nil   -- global, or a project with no roots
+  end
   if project_cache then return project_cache end
   local r = require("proc").run("git rev-parse --show-toplevel", 10)
   local root = (r.code == 0) and (r.out or ""):match("^%s*(.-)%s*$") or nil
   if not root or root == "" or root:find("\n") then root = sys.cwd() end
   project_cache = root
   return root
+end
+
+-- Every directory this project works in. Search and file completion want the
+-- whole set (a project may hold several checkouts); anything that needs a
+-- single anchor uses project_root above.
+function M.project_roots()
+  local okp, proj = pcall(require, "project")
+  if okp then
+    local roots = proj.roots()
+    if roots and #roots > 0 then return roots end
+  end
+  return { M.project_root() }
 end
 
 -- A filesystem-safe, human-recognisable directory name for a project path.
