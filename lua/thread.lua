@@ -156,14 +156,24 @@ function M.new_agent(p)
     error("unknown skill(s): " .. table.concat(unknown, ", ")
       .. " (see the `skills` tool for what exists)", 0)
   end
-  -- WHICH MODEL THIS AGENT USES. The spec may be a bare model id or the name of
-  -- a preset, which carries an endpoint and a wire with it -- so a coordinator
-  -- can put a cheap local critic beside a cloud coder with `spawn{ model =
-  -- "ds4" }`. Precedence: the spawn call, then the agent's own spec (an agent
-  -- definition may declare a preferred model), then whatever the parent is on.
-  -- Resolved here rather than per turn so the record shows a real model id and
-  -- the destination is fixed for the child's whole life.
-  local spec_model = p.model or spec.model or bog.session.route or bog.session.model
+  -- WHICH MODEL THIS AGENT USES.
+  --
+  -- The precedence, which is the whole contract and is worth stating once:
+  --
+  --   1. this spawn call            spawn{ model = ... }
+  --   2. the agent spec's model     an explicit choice by whoever wrote it
+  --   3. the agent spec's ROLE      "critic", resolved through the user's binding
+  --   4. whatever the parent is on
+  --
+  -- 3 is the one that makes agent definitions portable. A spec that says
+  -- `role = "critic"` states its INTENT; the user's catalog says what a critic
+  -- is on this machine. The same definition then works for someone with five
+  -- providers and someone running one local model, which is the property that
+  -- makes a shared spec worth having. An unbound role falls through to
+  -- `default` rather than failing (see route.resolve_chain).
+  local spec_model = p.model or spec.model
+    or (spec.role and ("role:" .. spec.role))
+    or bog.session.route or bog.session.model
   local route = require("route").resolve(spec_model)
   local model = route.model
   -- Resume: adopt an existing saved session row (its id + transcript) rather than

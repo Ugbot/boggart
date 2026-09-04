@@ -14,4 +14,5 @@ return {
     .. "the supervisor can see progress; use the supervisor skill when asked to "
     .. "check on the swarm.",
   skills = { "planner", "supervisor", "orchestrate", "core", "memory", "data" },
+  role = "planner",
 }

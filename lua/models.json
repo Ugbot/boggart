@@ -1,0 +1,154 @@
+{
+  "_comment": [
+    "The seeded model catalog, imported into the store the first time the tables",
+    "are empty. This file is the EXCHANGE format, not the store: the DB is truth",
+    "(see lua/store.lua), and this is what `boggart models export` writes and",
+    "`boggart models import` reads, so the seed doubles as a worked example of a",
+    "file you can edit.",
+    "",
+    "Recorded as true on 2026-09-04. Model names change faster than binaries do,",
+    "which is the whole reason for import/refresh -- treat this as a starting",
+    "point, not an authority. `boggart models refresh` updates from providers",
+    "that publish their own list.",
+    "",
+    "Two fields do more than they look like they do:",
+    "  auth      is INDEPENDENT of wire. Z.ai speaks the Anthropic wire with a",
+    "            Bearer token, which no wire-derived rule can express.",
+    "  key_slot  is the credential slot, and src/lauth.c refuses to send a key",
+    "            to a host this table does not register for that slot. It is",
+    "            also explicit because deriving it from the hostname gives 'x'",
+    "            for api.x.ai and 'z' for api.z.ai."
+  ],
+  "version": 1,
+
+  "providers": {
+    "anthropic": {
+      "label": "Anthropic",
+      "url": "https://api.anthropic.com",
+      "wire": "anthropic", "auth": "x-api-key",
+      "key_slot": "anthropic", "env": "ANTHROPIC_API_KEY"
+    },
+    "openai": {
+      "label": "OpenAI",
+      "url": "https://api.openai.com",
+      "wire": "openai", "auth": "bearer",
+      "key_slot": "openai", "env": "OPENAI_API_KEY"
+    },
+    "xai": {
+      "label": "xAI (Grok)",
+      "url": "https://api.x.ai/v1",
+      "wire": "openai", "auth": "bearer",
+      "key_slot": "xai", "env": "XAI_API_KEY"
+    },
+    "zai": {
+      "label": "Z.ai (GLM)",
+      "url": "https://api.z.ai/api/anthropic",
+      "wire": "anthropic", "auth": "bearer",
+      "key_slot": "zai", "env": "ZAI_API_KEY"
+    },
+    "zai-openai": {
+      "label": "Z.ai (GLM, OpenAI wire)",
+      "url": "https://api.z.ai/api/paas/v4",
+      "wire": "openai", "auth": "bearer",
+      "key_slot": "zai", "env": "ZAI_API_KEY"
+    },
+    "openrouter": {
+      "label": "OpenRouter",
+      "url": "https://openrouter.ai/api/v1",
+      "wire": "openai", "auth": "bearer",
+      "key_slot": "openrouter", "env": "OPENROUTER_API_KEY",
+      "headers": { "HTTP-Referer": "https://github.com/Ugbot/boggart", "X-Title": "boggart" },
+      "catalog_url": "https://openrouter.ai/api/v1/models"
+    },
+    "deepseek": {
+      "label": "DeepSeek",
+      "url": "https://api.deepseek.com/anthropic",
+      "wire": "anthropic", "auth": "x-api-key",
+      "key_slot": "deepseek", "env": "DEEPSEEK_API_KEY"
+    },
+    "moonshot": {
+      "label": "Moonshot (Kimi)",
+      "url": "https://api.moonshot.ai/anthropic",
+      "wire": "anthropic", "auth": "bearer",
+      "key_slot": "moonshot", "env": "MOONSHOT_API_KEY"
+    },
+    "minimax": {
+      "label": "MiniMax",
+      "url": "https://api.minimax.io/anthropic",
+      "wire": "anthropic", "auth": "bearer",
+      "key_slot": "minimax", "env": "MINIMAX_API_KEY"
+    },
+    "qwen": {
+      "label": "Qwen (DashScope)",
+      "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "wire": "openai", "auth": "bearer",
+      "key_slot": "dashscope", "env": "DASHSCOPE_API_KEY"
+    },
+    "groq": {
+      "label": "Groq",
+      "url": "https://api.groq.com/openai/v1",
+      "wire": "openai", "auth": "bearer",
+      "key_slot": "groq", "env": "GROQ_API_KEY"
+    },
+    "mistral": {
+      "label": "Mistral",
+      "url": "https://api.mistral.ai/v1",
+      "wire": "openai", "auth": "bearer",
+      "key_slot": "mistral", "env": "MISTRAL_API_KEY"
+    },
+    "gemini": {
+      "label": "Google Gemini (OpenAI-compatible)",
+      "url": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "wire": "openai", "auth": "bearer",
+      "key_slot": "googleapis", "env": "GEMINI_API_KEY"
+    },
+    "local": {
+      "label": "A local server (llama.cpp, vLLM, LM Studio)",
+      "url": "http://127.0.0.1:8000",
+      "wire": "anthropic", "auth": "x-api-key",
+      "key_slot": "local"
+    },
+    "local-openai": {
+      "label": "A local OpenAI-compatible server",
+      "url": "http://127.0.0.1:8080",
+      "wire": "openai", "auth": "bearer",
+      "key_slot": "local"
+    },
+    "ollama": {
+      "label": "Ollama",
+      "url": "http://127.0.0.1:11434/v1",
+      "wire": "openai", "auth": "bearer",
+      "key_slot": "local"
+    }
+  },
+
+  "models": {
+    "claude-opus-5":   { "provider": "anthropic", "label": "Claude Opus 5",   "context": 1000000, "tools": true, "vision": true, "effort": true },
+    "claude-sonnet-5": { "provider": "anthropic", "label": "Claude Sonnet 5", "context": 1000000, "tools": true, "vision": true, "effort": true },
+    "claude-haiku-4-5-20251001": { "provider": "anthropic", "label": "Claude Haiku 4.5", "context": 200000, "tools": true, "vision": true },
+
+    "grok-4.6":      { "provider": "xai", "label": "Grok 4.6",      "context": 2000000, "tools": true, "vision": true },
+    "grok-4.3":      { "provider": "xai", "label": "Grok 4.3",      "context": 1000000, "tools": true, "vision": true },
+    "grok-4.1-fast": { "provider": "xai", "label": "Grok 4.1 Fast", "context": 2000000, "tools": true },
+
+    "glm-5.3":       { "provider": "zai", "label": "GLM-5.3",       "context": 200000, "tools": true },
+    "glm-5.3-flash": { "provider": "zai", "label": "GLM-5.3 Flash", "context": 200000, "tools": true },
+
+    "deepseek-v4-pro":   { "provider": "deepseek", "label": "DeepSeek V4 Pro",   "context": 200000, "tools": true, "effort": true },
+    "deepseek-v4-flash": { "provider": "deepseek", "label": "DeepSeek V4 Flash", "context": 200000, "tools": true, "effort": true },
+
+    "kimi-k2.6":  { "provider": "moonshot", "label": "Kimi K2.6",  "context": 256000, "tools": true },
+    "minimax-m2.7": { "provider": "minimax", "label": "MiniMax M2.7", "context": 200000, "tools": true },
+
+    "qwen3.8-27b":   { "provider": "qwen", "label": "Qwen3.8 27B",   "context": 262144, "tools": true, "vision": true },
+    "qwen3-coder":   { "provider": "qwen", "label": "Qwen3 Coder",   "context": 262144, "tools": true },
+
+    "openrouter/anthropic/claude-opus-5": { "provider": "openrouter", "label": "Claude Opus 5 (via OpenRouter)", "context": 1000000, "tools": true, "vision": true },
+    "openrouter/x-ai/grok-4.6":           { "provider": "openrouter", "label": "Grok 4.6 (via OpenRouter)",      "context": 2000000, "tools": true, "vision": true },
+    "openrouter/z-ai/glm-5.3":            { "provider": "openrouter", "label": "GLM-5.3 (via OpenRouter)",       "context": 200000,  "tools": true }
+  },
+
+  "roles": {
+    "default": "claude-opus-5"
+  }
+}

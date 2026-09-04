@@ -44,14 +44,41 @@ eq(cur.name, "current", "and says so")
 eq(route.resolve("").name, cur.name, "an empty spec resolves the same as nil")
 eq(route.resolve("").model, cur.model, "to the same model")
 
--- ---- a bare model id: same endpoint, different model ---------------------
-local m = route.resolve("claude-opus-5")
-eq(m.model, "claude-opus-5", "a bare id is taken as a model")
+-- ---- an UNCATALOGUED model id: same endpoint, different model ------------
+-- This is what a bare id means once a catalog exists: a name the catalog has
+-- never heard of is assumed to be served by whatever endpoint is configured.
+local m = route.resolve("some-private-finetune-v3")
+eq(m.model, "some-private-finetune-v3", "an unknown id is taken as a model")
 eq(m.url, cur.url, "and stays on the configured endpoint")
 eq(m.wire, cur.wire, "and the configured wire")
 eq(m.name, "model", "labelled as a bare model")
 
+-- ---- a CATALOGUED model id brings its own endpoint -----------------------
+-- The point of the catalog: naming a model is enough, because the catalog
+-- knows where it lives, what it speaks and how it authenticates.
+local catalogued = route.resolve("grok-4.6")
+eq(catalogued.model, "grok-4.6", "a catalogued id keeps its name")
+eq(catalogued.url, "https://api.x.ai/v1", "and arrives with its endpoint")
+eq(catalogued.wire, "openai", "its wire")
+eq(catalogued.auth, "bearer", "and its auth style")
+
+-- ...which is a behaviour change worth being explicit about: naming a model
+-- the catalog knows REDIRECTS away from the configured endpoint. The escape
+-- hatch is a preset, which outranks the catalog precisely so that someone
+-- pointed at a local server can stay there.
+presets.save{
+  mylocal = { url = "http://127.0.0.1:9999", wire = "anthropic", model = "claude-opus-5" },
+}
+local pinned = route.resolve("mylocal")
+eq(pinned.url, "http://127.0.0.1:9999", "a preset keeps you where you put yourself")
+eq(pinned.model, "claude-opus-5", "even when the model name is one the catalog knows")
+
 -- ---- a preset name: the whole destination --------------------------------
+presets.save{
+  ds4   = { url = "http://127.0.0.1:8000", wire = "anthropic", model = "deepseek-v4" },
+  local_qwen = { url = "http://127.0.0.1:8080", wire = "openai", model = "qwen3.8-27b" },
+  cheap = { url = "http://127.0.0.1:8080", wire = "openai", model = "qwen3.8-4b" },
+}
 local p = route.resolve("ds4")
 eq(p.model, "deepseek-v4", "a preset name brings its model")
 eq(p.url, "http://127.0.0.1:8000", "and its endpoint")

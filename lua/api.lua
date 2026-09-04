@@ -996,13 +996,28 @@ local function stream_async_once(body, on_text, w, on_think, rt)
     or new_decoder(on_text, on_think)
   local raw = {}
   local url = endpoint(rt and rt.url, w)
+  local hdrs = auth_headers(rt and rt.wire)
+  -- A provider's own headers, from the catalog (OpenRouter's attribution pair,
+  -- for instance). Appended rather than merged: these are additional, and a
+  -- provider that needed to REPLACE content-type would be a different problem.
+  if rt and type(rt.headers) == "table" then
+    local extra = {}
+    for _, h in ipairs(hdrs) do extra[#extra + 1] = h end
+    for k, v in pairs(rt.headers) do
+      extra[#extra + 1] = tostring(k) .. ": " .. tostring(v)
+    end
+    hdrs = extra
+  end
   local req = http.begin{
     url = url, method = "POST",
-    headers = auth_headers(rt and rt.wire), auth = true,
-    -- `wire` rides along so C picks the right credential SHAPE (Bearer vs
-    -- x-api-key) for this destination; the key itself is chosen in C from the
-    -- url. See boggart_auth_header_for in src/lauth.c.
+    headers = hdrs, auth = true,
+    -- These three tell C which credential to use and how to shape it. The key
+    -- itself never comes back here: `key_slot` names a slot, and C refuses the
+    -- pair unless the providers table registers that slot for this host. See
+    -- boggart_auth_header_for in src/lauth.c.
     wire = rt and rt.wire or nil,
+    key_slot = rt and rt.key_slot or nil,
+    auth_style = rt and rt.auth or nil,
     body = body, timeout = 600,
   }
   local status, err
@@ -1822,8 +1837,11 @@ function M.run_on(sess, user_text, on_text, opts)
       messages = sess.messages,
       stream = true,
       -- Reasoning effort, when the user set one (/effort). Reasoning models
-      -- (deepseek, gpt-oss, o-series) read it; others ignore it.
-      reasoning_effort = sess.effort,
+      -- (deepseek, gpt-oss, o-series) read it; others ignore it -- except the
+      -- ones that REJECT it, which is why the catalog records the capability:
+      -- `effort = false` on a model means the field is withheld rather than
+      -- sent and 400'd. An uncatalogued model is unchanged (sent as before).
+      reasoning_effort = (route.effort ~= false) and sess.effort or nil,
     }
     local tools = tools_fn()
     if #tools > 0 then body.tools = tools end

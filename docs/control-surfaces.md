@@ -287,6 +287,56 @@ Precedence, once, because it is the whole contract: **what this call asked for**
 endpoint**. With nothing specified anywhere, every request goes exactly where it
 went before.
 
+### 3.9 The model catalog — DB-backed, C-enforced, JSON-portable
+
+Adding Grok used to mean knowing that xAI is at `https://api.x.ai/v1`, speaks
+the OpenAI wire and wants a Bearer token, and typing all four into a preset.
+Adding GLM also meant knowing Z.ai's Anthropic-compatible endpoint takes a
+**Bearer** token rather than `x-api-key` — a combination nothing in the code
+could express, because the header shape was derived from the wire.
+
+**The store is the truth.** Three tables (`providers`, `models`, `roles`) with
+their schema beside every other table in `lua/store.lua`, and their operations
+in C (`src/lrepo.c`) on the existing vtable seam. Rows rather than a blob
+because "which models do vision above 500k context" is then a query, the agent
+can already read and edit them through the `sql`/`kv` tools it has, and
+telemetry can join against them. **JSON is the exchange format**, not the store:
+`boggart models import|export|refresh`, with the baked `lua/models.json` seeded
+on first open — so the seed, the export and an import are one format.
+
+**One key can only go where it was registered.** The catalog's `key_slot` is
+not just configuration: `boggart_auth_header_for(url, wire, slot, style)` reads
+the `providers` table and **refuses** a (host, slot) pair nothing registers,
+returning no credential rather than the wrong one. Lua may route anywhere; it
+cannot take a key along. Stated honestly, this stops a routing mistake and a
+single confused request, and makes the mapping auditable — it is not a wall
+against an agent that first INSERTs a provider row, which is what tool
+permissions are for. `auth.slot_allowed(url, slot)` exposes the predicate (never
+the key) so the property is testable, and `tests/catalog.lua` asserts it.
+
+Two defects fell out of building it, both pre-existing and both now fixed:
+`provider_of()` derives a credential slot from the host's second-to-last label,
+giving `api.x.ai → "x"` and `api.z.ai → "z"`; and **`auth.has_key()` ignored its
+argument**, always answering for the current provider — so "is the xai key set?"
+was really "is the anthropic key set?".
+
+**Roles are the UX.** An agent declares intent (`role = "critic"` in
+`lua/agents/critic.lua`); a user binds roles to models
+(`boggart models role critic grok-4.6,glm-5.3`). The same agent definition then
+works for someone with five providers and someone on one local model, which is
+what makes a shared spec worth having. A binding may be an ordered fallback
+chain. Precedence, most specific first: **this call** (`spawn{model=}`,
+`opts.model`) → **this agent** (spec's explicit model) → **its role** → **the
+default**. An explicit model id works at every level, so roles are sugar, never
+a cage.
+
+**One behaviour change worth knowing:** naming a *catalogued* model now
+redirects to that model's provider. `/model grok-4.6` goes to xAI — that is the
+feature — which means `/model claude-opus-5` while pointed at a local
+Anthropic-shaped server now goes to Anthropic rather than staying local. The
+escape hatch is a preset, which outranks the catalog by design, and
+`tests/route.lua` pins both halves.
+
 ---
 
 ## 4. Gates
@@ -296,7 +346,7 @@ is worse than one that was never built.
 
 | Gate | What it holds |
 |---|---|
-| `ctest` (49 suites) | `perm` (72 assertions), `control` (29, real HTTP round trips), `triggers` (36), `structured` (27) among them |
+| `ctest` (51 suites) | `perm` (72 assertions), `control` (29, real HTTP round trips), `triggers` (36), `structured` (27) among them |
 | `ninja core-parity` | the CLI and the studio expose one core — `serve` is registered in both |
 | `ninja ui-discover` | every feature reachable from a menu; no dead rows |
 | `ninja ui-overlay` | overlays survive partial-damage frames |

@@ -94,6 +94,11 @@ static void configure(lua_State *L, int argc, char **argv) {
      * The port/host/token are read in Lua from flags or the environment; C only
      * needs to know which mode this is. */
     else if (strcmp(argv[i], "serve") == 0) { mode = "serve"; i++; }
+    /* `boggart models [list|import|export|refresh] [arg]` -- the model catalog.
+     * Everything after the subcommand is handed to Lua verbatim in
+     * boggart.args, because what those words MEAN is lua/catalog.lua's
+     * business, not this parser's. */
+    else if (strcmp(argv[i], "models") == 0) { mode = "models"; consumed = ++i; }
   }
   for (; i < argc; i++) {
     const char *a = argv[i];
@@ -229,6 +234,7 @@ static int early_exit_flags(int argc, char **argv) {
         "  boggart --headless         read the prompt from stdin\n"
         "  boggart swarm \"<task>\"     swarm mode (coordinator; --tui adds a dashboard)\n"
         "  boggart serve              run as a service: control plane + webhooks\n"
+        "  boggart models [cmd]       the model catalog: list, import, export, refresh\n"
         "  boggart doctor             check the install and say what is wrong\n"
         "  boggart init               copy the built-in Lua into the data dir to edit\n"
         "  boggart --reset [file]     drop overlay Lua (all, or one module)\n\n"

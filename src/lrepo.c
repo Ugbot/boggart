@@ -174,11 +174,308 @@ static int l_sqlite(lua_State *L) {
   return 1;
 }
 
+/* ---- the model catalog ----------------------------------------------------
+ *
+ * Which model lives where, what it can do, and which credential slot may be
+ * used with which host. These are operations rather than SQL in Lua for the
+ * reason the file exists: the harness calls named operations and a second
+ * backend is a second set of identically-named methods. They are also on the
+ * hot path -- a route is resolved for every request -- and one of them
+ * (provider_for_url) is a SECURITY lookup: src/lauth.c asks it whether a
+ * credential slot is registered for the host a request is going to, and
+ * refuses the request's key if it is not. That answer must come from the store,
+ * not from whichever caller assembled the request.
+ */
+
+/* Push a row of the given statement as a table of column name -> value. */
+static void push_row(lua_State *L, sqlite3_stmt *st) {
+  int ncol = sqlite3_column_count(st);
+  lua_newtable(L);
+  for (int i = 0; i < ncol; i++) {
+    const char *name = sqlite3_column_name(st, i);
+    if (!name) continue;
+    switch (sqlite3_column_type(st, i)) {
+      case SQLITE_NULL:
+        continue;                       /* absent rather than a false value */
+      case SQLITE_INTEGER:
+        lua_pushinteger(L, (lua_Integer)sqlite3_column_int64(st, i));
+        break;
+      case SQLITE_FLOAT:
+        lua_pushnumber(L, sqlite3_column_double(st, i));
+        break;
+      default: {
+        const char *v = (const char *)sqlite3_column_blob(st, i);
+        int vlen = sqlite3_column_bytes(st, i);
+        lua_pushlstring(L, v ? v : "", (size_t)vlen);
+        break;
+      }
+    }
+    lua_setfield(L, -2, name);
+  }
+}
+
+/* r:model_get(id) -> row | nil */
+static int sq_model_get(lua_State *L) {
+  RepoSqlite *r = check_sqlite(L);
+  size_t idlen;
+  const char *id = luaL_checklstring(L, 2, &idlen);
+  sqlite3_stmt *st = NULL;
+  if (sqlite3_prepare_v2(r->h, "SELECT * FROM models WHERE id=?", -1, &st, NULL) != SQLITE_OK)
+    return rfail(L, r->h, "model_get prepare");
+  sqlite3_bind_text(st, 1, id, (int)idlen, SQLITE_TRANSIENT);
+  int rc = sqlite3_step(st);
+  if (rc == SQLITE_ROW) push_row(L, st);
+  else if (rc == SQLITE_DONE) lua_pushnil(L);
+  else { sqlite3_finalize(st); return rfail(L, r->h, "model_get step"); }
+  sqlite3_finalize(st);
+  return 1;
+}
+
+/* r:provider_get(name) -> row | nil */
+static int sq_provider_get(lua_State *L) {
+  RepoSqlite *r = check_sqlite(L);
+  size_t nlen;
+  const char *name = luaL_checklstring(L, 2, &nlen);
+  sqlite3_stmt *st = NULL;
+  if (sqlite3_prepare_v2(r->h, "SELECT * FROM providers WHERE name=?", -1, &st, NULL) != SQLITE_OK)
+    return rfail(L, r->h, "provider_get prepare");
+  sqlite3_bind_text(st, 1, name, (int)nlen, SQLITE_TRANSIENT);
+  int rc = sqlite3_step(st);
+  if (rc == SQLITE_ROW) push_row(L, st);
+  else if (rc == SQLITE_DONE) lua_pushnil(L);
+  else { sqlite3_finalize(st); return rfail(L, r->h, "provider_get step"); }
+  sqlite3_finalize(st);
+  return 1;
+}
+
+/* r:catalog_list("models"|"providers"|"roles") -> { row, ... } */
+static int sq_catalog_list(lua_State *L) {
+  RepoSqlite *r = check_sqlite(L);
+  const char *what = luaL_optstring(L, 2, "models");
+  const char *sql;
+  if (strcmp(what, "providers") == 0)   sql = "SELECT * FROM providers ORDER BY name";
+  else if (strcmp(what, "roles") == 0)  sql = "SELECT * FROM roles ORDER BY name";
+  else if (strcmp(what, "models") == 0) sql = "SELECT * FROM models ORDER BY id";
+  else return luaL_error(L, "catalog_list: unknown table %s", what);
+  sqlite3_stmt *st = NULL;
+  if (sqlite3_prepare_v2(r->h, sql, -1, &st, NULL) != SQLITE_OK)
+    return rfail(L, r->h, "catalog_list prepare");
+  lua_newtable(L);
+  int n = 0, rc;
+  while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+    push_row(L, st);
+    lua_rawseti(L, -2, ++n);
+  }
+  sqlite3_finalize(st);
+  if (rc != SQLITE_DONE) return rfail(L, r->h, "catalog_list step");
+  return 1;
+}
+
+/* r:models_where{ vision=true, tools=true, min_context=500000, provider="xai" }
+ * -> { row, ... }
+ *
+ * The capability query. Every filter is optional and absent means "do not
+ * care", so this is one statement with guards rather than a query builder --
+ * a catalog has hundreds of rows, not millions.
+ */
+static int sq_models_where(lua_State *L) {
+  RepoSqlite *r = check_sqlite(L);
+  luaL_checktype(L, 2, LUA_TTABLE);
+  const char *sql =
+    "SELECT * FROM models WHERE "
+    "(:provider IS NULL OR provider = :provider) AND "
+    "(:vision IS NULL OR vision = 1) AND "
+    "(:tools IS NULL OR tools = 1) AND "
+    "(:effort IS NULL OR effort = 1) AND "
+    "(:min_context IS NULL OR context >= :min_context) "
+    "ORDER BY id";
+  sqlite3_stmt *st = NULL;
+  if (sqlite3_prepare_v2(r->h, sql, -1, &st, NULL) != SQLITE_OK)
+    return rfail(L, r->h, "models_where prepare");
+
+  lua_getfield(L, 2, "provider");
+  if (lua_isstring(L, -1)) {
+    size_t plen; const char *pv = lua_tolstring(L, -1, &plen);
+    sqlite3_bind_text(st, sqlite3_bind_parameter_index(st, ":provider"),
+                      pv, (int)plen, SQLITE_TRANSIENT);
+  }
+  lua_pop(L, 1);
+  static const char *flags[] = { "vision", "tools", "effort", NULL };
+  for (int i = 0; flags[i]; i++) {
+    lua_getfield(L, 2, flags[i]);
+    if (lua_toboolean(L, -1)) {
+      char param[16];
+      snprintf(param, sizeof(param), ":%s", flags[i]);
+      sqlite3_bind_int(st, sqlite3_bind_parameter_index(st, param), 1);
+    }
+    lua_pop(L, 1);
+  }
+  lua_getfield(L, 2, "min_context");
+  if (lua_isnumber(L, -1)) {
+    sqlite3_bind_int64(st, sqlite3_bind_parameter_index(st, ":min_context"),
+                       (sqlite3_int64)lua_tointeger(L, -1));
+  }
+  lua_pop(L, 1);
+
+  lua_newtable(L);
+  int n = 0, rc;
+  while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+    push_row(L, st);
+    lua_rawseti(L, -2, ++n);
+  }
+  sqlite3_finalize(st);
+  if (rc != SQLITE_DONE) return rfail(L, r->h, "models_where step");
+  return 1;
+}
+
+/* Upserts. `row` is a table of column -> value; unknown keys are ignored so a
+ * catalog file carrying a field this build does not know is imported rather
+ * than rejected. */
+static void bind_field(lua_State *L, sqlite3_stmt *st, int tbl, const char *col,
+                       const char *param) {
+  int idx = sqlite3_bind_parameter_index(st, param);
+  if (idx == 0) return;
+  lua_getfield(L, tbl, col);
+  switch (lua_type(L, -1)) {
+    case LUA_TSTRING: {
+      size_t len; const char *v = lua_tolstring(L, -1, &len);
+      sqlite3_bind_text(st, idx, v, (int)len, SQLITE_TRANSIENT);
+      break;
+    }
+    case LUA_TNUMBER:
+      if (lua_isinteger(L, -1)) sqlite3_bind_int64(st, idx, (sqlite3_int64)lua_tointeger(L, -1));
+      else sqlite3_bind_double(st, idx, lua_tonumber(L, -1));
+      break;
+    case LUA_TBOOLEAN:
+      sqlite3_bind_int(st, idx, lua_toboolean(L, -1) ? 1 : 0);
+      break;
+    default:
+      sqlite3_bind_null(st, idx);
+      break;
+  }
+  lua_pop(L, 1);
+}
+
+/* r:model_put{ id=, provider=, context=, ... } -> true */
+static int sq_model_put(lua_State *L) {
+  RepoSqlite *r = check_sqlite(L);
+  luaL_checktype(L, 2, LUA_TTABLE);
+  const char *sql =
+    "INSERT INTO models(id,provider,label,context,max_output,tools,vision,effort,"
+    "input_price,output_price,source,updated) "
+    "VALUES(:id,:provider,:label,:context,:max_output,:tools,:vision,:effort,"
+    ":input_price,:output_price,:source,:updated) "
+    "ON CONFLICT(id) DO UPDATE SET provider=excluded.provider, label=excluded.label, "
+    "context=excluded.context, max_output=excluded.max_output, tools=excluded.tools, "
+    "vision=excluded.vision, effort=excluded.effort, input_price=excluded.input_price, "
+    "output_price=excluded.output_price, source=excluded.source, updated=excluded.updated";
+  sqlite3_stmt *st = NULL;
+  if (sqlite3_prepare_v2(r->h, sql, -1, &st, NULL) != SQLITE_OK)
+    return rfail(L, r->h, "model_put prepare");
+  static const char *cols[] = { "id", "provider", "label", "context", "max_output",
+                                "tools", "vision", "effort", "input_price",
+                                "output_price", "source", NULL };
+  for (int i = 0; cols[i]; i++) {
+    char param[24];
+    snprintf(param, sizeof(param), ":%s", cols[i]);
+    bind_field(L, st, 2, cols[i], param);
+  }
+  sqlite3_bind_int64(st, sqlite3_bind_parameter_index(st, ":updated"),
+                     (sqlite3_int64)time(NULL));
+  int rc = sqlite3_step(st);
+  sqlite3_finalize(st);
+  if (rc != SQLITE_DONE) return rfail(L, r->h, "model_put step");
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+/* r:provider_put{ name=, url=, wire=, auth=, key_slot=, ... } -> true */
+static int sq_provider_put(lua_State *L) {
+  RepoSqlite *r = check_sqlite(L);
+  luaL_checktype(L, 2, LUA_TTABLE);
+  const char *sql =
+    "INSERT INTO providers(name,label,url,wire,auth,key_slot,env,headers,"
+    "catalog_url,source,updated) "
+    "VALUES(:name,:label,:url,:wire,:auth,:key_slot,:env,:headers,"
+    ":catalog_url,:source,:updated) "
+    "ON CONFLICT(name) DO UPDATE SET label=excluded.label, url=excluded.url, "
+    "wire=excluded.wire, auth=excluded.auth, key_slot=excluded.key_slot, "
+    "env=excluded.env, headers=excluded.headers, catalog_url=excluded.catalog_url, "
+    "source=excluded.source, updated=excluded.updated";
+  sqlite3_stmt *st = NULL;
+  if (sqlite3_prepare_v2(r->h, sql, -1, &st, NULL) != SQLITE_OK)
+    return rfail(L, r->h, "provider_put prepare");
+  static const char *cols[] = { "name", "label", "url", "wire", "auth", "key_slot",
+                                "env", "headers", "catalog_url", "source", NULL };
+  for (int i = 0; cols[i]; i++) {
+    char param[24];
+    snprintf(param, sizeof(param), ":%s", cols[i]);
+    bind_field(L, st, 2, cols[i], param);
+  }
+  sqlite3_bind_int64(st, sqlite3_bind_parameter_index(st, ":updated"),
+                     (sqlite3_int64)time(NULL));
+  int rc = sqlite3_step(st);
+  sqlite3_finalize(st);
+  if (rc != SQLITE_DONE) return rfail(L, r->h, "provider_put step");
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+/* r:role_get(name) -> spec | nil     r:role_put(name, spec) -> true */
+static int sq_role_get(lua_State *L) {
+  RepoSqlite *r = check_sqlite(L);
+  size_t nlen;
+  const char *name = luaL_checklstring(L, 2, &nlen);
+  sqlite3_stmt *st = NULL;
+  if (sqlite3_prepare_v2(r->h, "SELECT spec FROM roles WHERE name=?", -1, &st, NULL) != SQLITE_OK)
+    return rfail(L, r->h, "role_get prepare");
+  sqlite3_bind_text(st, 1, name, (int)nlen, SQLITE_TRANSIENT);
+  int rc = sqlite3_step(st);
+  if (rc == SQLITE_ROW) {
+    const char *v = (const char *)sqlite3_column_blob(st, 0);
+    int vlen = sqlite3_column_bytes(st, 0);
+    lua_pushlstring(L, v ? v : "", (size_t)vlen);
+  } else if (rc == SQLITE_DONE) {
+    lua_pushnil(L);
+  } else { sqlite3_finalize(st); return rfail(L, r->h, "role_get step"); }
+  sqlite3_finalize(st);
+  return 1;
+}
+
+static int sq_role_put(lua_State *L) {
+  RepoSqlite *r = check_sqlite(L);
+  size_t nlen, slen;
+  const char *name = luaL_checklstring(L, 2, &nlen);
+  const char *spec = luaL_checklstring(L, 3, &slen);
+  sqlite3_stmt *st = NULL;
+  const char *sql =
+    "INSERT INTO roles(name,spec,updated) VALUES(?,?,?) "
+    "ON CONFLICT(name) DO UPDATE SET spec=excluded.spec, updated=excluded.updated";
+  if (sqlite3_prepare_v2(r->h, sql, -1, &st, NULL) != SQLITE_OK)
+    return rfail(L, r->h, "role_put prepare");
+  sqlite3_bind_text(st, 1, name, (int)nlen, SQLITE_TRANSIENT);
+  sqlite3_bind_text(st, 2, spec, (int)slen, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(st, 3, (sqlite3_int64)time(NULL));
+  int rc = sqlite3_step(st);
+  sqlite3_finalize(st);
+  if (rc != SQLITE_DONE) return rfail(L, r->h, "role_put step");
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
 static const luaL_Reg sqlite_methods[] = {
   {"kv_get", sq_kv_get},
   {"kv_set", sq_kv_set},
   {"kv_del", sq_kv_del},
   {"kv_list", sq_kv_list},
+  {"model_get", sq_model_get},
+  {"model_put", sq_model_put},
+  {"models_where", sq_models_where},
+  {"provider_get", sq_provider_get},
+  {"provider_put", sq_provider_put},
+  {"catalog_list", sq_catalog_list},
+  {"role_get", sq_role_get},
+  {"role_put", sq_role_put},
   {"backend", sq_backend},
   {NULL, NULL},
 };

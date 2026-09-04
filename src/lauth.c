@@ -37,6 +37,7 @@
 #include "lua.h"
 #include "lauxlib.h"
 #include "bogpaths.h"
+#include "ldb.h"      /* boggart_db_handle: the providers table is the slot registry */
 
 #define AUTH_MAX 4096
 
@@ -62,7 +63,10 @@ static char g_wire[AUTH_MAX];
  * file. The provider is DERIVED FROM THE ENDPOINT rather than stored, because
  * a stored provider can disagree with the URL the request is actually going
  * to, and that disagreement is invisible at exactly the moment it matters. */
-#define AUTH_MAX_PROVIDERS 8
+/* One slot per provider. Eight was enough for "Anthropic, DeepSeek, a local
+ * server"; a catalog that knows about a dozen vendors is not unusual, and
+ * running out silently would mean a key quietly failing to store. */
+#define AUTH_MAX_PROVIDERS 24
 #define AUTH_NAME_MAX 32
 static struct { char name[AUTH_NAME_MAX]; char value[AUTH_MAX]; }
   g_keys[AUTH_MAX_PROVIDERS];
@@ -231,6 +235,95 @@ static const char *env_key_for(const char *provider) {
   return (v && *v) ? v : NULL;
 }
 
+/* ---- the credential-slot registry ----------------------------------------
+ *
+ * A request names a destination (url) and, when it is routed, the credential
+ * SLOT to use. Those two must agree, and the agreement cannot be decided by the
+ * caller: the Lua that assembles a request is rewritable, so "use the anthropic
+ * key, and by the way send it to evil.example.com" has to be refusable
+ * somewhere the caller cannot reach.
+ *
+ * That somewhere is the `providers` table -- the same rows lua/catalog.lua
+ * imports and the user can inspect. A (host, slot) pair is honoured only if
+ * some provider row registers that slot for that host. Otherwise the request
+ * goes out with NO credential rather than the wrong one.
+ *
+ * The honest limit, because overclaiming here would be worse than not doing it:
+ * this stops a routing MISTAKE and a single confused request from taking a key
+ * somewhere it does not belong, and it makes the mapping auditable -- a durable
+ * row you can read rather than an argument on one call. It is not a defence
+ * against an agent determined to INSERT a provider row first; that path is
+ * gated by tool permissions (lua/perm.lua), which is where a write to the store
+ * should be gated. Defence in depth, not a wall.
+ */
+static sqlite3 *g_store;   /* borrowed from the Lua store; never closed here */
+
+/* The host part of a URL, lowercased, without scheme, port or path. */
+static void host_of(const char *url, char *out, size_t n) {
+  out[0] = '\0';
+  if (!url || !*url) return;
+  const char *h = strstr(url, "://");
+  h = h ? h + 3 : url;
+  size_t len = strcspn(h, ":/");
+  if (len == 0) return;
+  if (len >= n) len = n - 1;
+  memcpy(out, h, len);
+  out[len] = '\0';
+  for (char *p = out; *p; p++) {
+    if (*p >= 'A' && *p <= 'Z') *p = (char) (*p - 'A' + 'a');
+  }
+}
+
+/* Is `slot` registered for `host` by some provider row? With no store bound
+ * (early startup, a test with no DB) the answer is "yes" -- the registry is an
+ * additional check, and its absence must not break a configuration that worked
+ * before the catalog existed. */
+static int slot_registered_for_host(const char *slot, const char *host) {
+  if (!g_store || !slot || !*slot || !host || !*host) return 1;
+  sqlite3_stmt *st = NULL;
+  const char *sql = "SELECT url FROM providers WHERE key_slot = ?";
+  if (sqlite3_prepare_v2(g_store, sql, -1, &st, NULL) != SQLITE_OK) return 1;
+  sqlite3_bind_text(st, 1, slot, -1, SQLITE_TRANSIENT);
+  int found = 0, any = 0;
+  while (sqlite3_step(st) == SQLITE_ROW) {
+    const char *u = (const char *)sqlite3_column_text(st, 0);
+    any = 1;
+    char h[256];
+    host_of(u, h, sizeof(h));
+    if (h[0] && strcmp(h, host) == 0) { found = 1; break; }
+  }
+  sqlite3_finalize(st);
+  /* A slot nothing registers is not yet catalogued -- treat it as the caller's
+   * own arrangement rather than refusing a setup the catalog has no opinion on.
+   * A slot that IS registered, for other hosts only, is a genuine mismatch. */
+  return any ? found : 1;
+}
+
+/* auth.slot_allowed(url, slot) -> bool
+ *
+ * The registry check on its own, with no credential involved: may this slot's
+ * key be sent to this host? Exposed because a security property nothing can
+ * observe is a security property nothing can test -- and because `doctor` and
+ * the model picker want to say "that endpoint is not registered for that key"
+ * before a request fails. It reveals nothing: the answer is a yes/no about
+ * configuration, and the key is not read to produce it. */
+static int l_slot_allowed(lua_State *L) {
+  const char *url = luaL_optstring(L, 1, NULL);
+  const char *slot = luaL_optstring(L, 2, NULL);
+  char host[256];
+  host_of(url, host, sizeof(host));
+  lua_pushboolean(L, slot_registered_for_host(slot, host));
+  return 1;
+}
+
+/* auth.bind_store(db) -- hand C the store so the registry can be consulted.
+ * Called once from lua/store.lua on open. */
+static int l_bind_store(lua_State *L) {
+  g_store = lua_isnoneornil(L, 1) ? NULL : boggart_db_handle(L, 1);
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
 /* The credential for the endpoint a request is ACTUALLY going to.
  *
  * The single-endpoint version of this derived the provider from the globally
@@ -245,11 +338,19 @@ static const char *env_key_for(const char *provider) {
  * `url` and `wire` are the request's own; either may be NULL, in which case the
  * globally configured value stands in. The key itself never crosses into Lua:
  * Lua names a destination, C picks the credential for it. */
-const char *boggart_auth_header_for(const char *url, const char *wire) {
+const char *boggart_auth_header_for(const char *url, const char *wire,
+                                    const char *slot, const char *style) {
   auth_load();
   char pbuf[AUTH_NAME_MAX];
   const char *provider;
-  if (url && *url) {
+  if (slot && *slot) {
+    /* A routed request names its slot. Honour it only if the registry agrees
+     * this slot belongs with this host; otherwise send nothing. */
+    char host[256];
+    host_of(url, host, sizeof(host));
+    if (!slot_registered_for_host(slot, host)) return NULL;
+    provider = slot;
+  } else if (url && *url) {
     provider_of(url, pbuf, sizeof(pbuf));
     provider = pbuf;
   } else {
@@ -264,6 +365,17 @@ const char *boggart_auth_header_for(const char *url, const char *wire) {
    * with a Bearer token; Anthropic uses x-api-key. A wire named by the request
    * wins; otherwise the env override, then the stored value -- matching
    * auth.wire()'s precedence. */
+  /* An explicit style wins. It has to be separate from the wire because the
+   * two genuinely come apart: Z.ai speaks the Anthropic wire and authenticates
+   * with a Bearer token, which no wire-derived rule can express. */
+  if (style && *style) {
+    if (strcmp(style, "bearer") == 0) {
+      snprintf(hdr, sizeof(hdr), "authorization: Bearer %s", key);
+    } else {
+      snprintf(hdr, sizeof(hdr), "x-api-key: %s", key);
+    }
+    return hdr;
+  }
   if (!wire || !*wire) wire = getenv("ANTHROPIC_WIRE");
   if (!wire || !*wire) wire = g_wire;
   if (wire && (strcmp(wire, "openai") == 0 || strcmp(wire, "responses") == 0)) {
@@ -277,7 +389,7 @@ const char *boggart_auth_header_for(const char *url, const char *wire) {
 /* The configured endpoint's credential -- the old behaviour, unchanged, for
  * every caller that is not routing a specific request. */
 const char *boggart_auth_header(void) {
-  return boggart_auth_header_for(NULL, NULL);
+  return boggart_auth_header_for(NULL, NULL, NULL, NULL);
 }
 
 /* ---- Lua surface ---------------------------------------------------------- */
@@ -293,7 +405,21 @@ static int l_set(lua_State *L) {
     return 2;
   }
   auth_load();
-  set_field(k, v);
+  /* auth.set("api_key", v, provider): store a key for a provider you are not
+   * currently pointed at, which a catalog of a dozen vendors makes routine.
+   * Without the third argument this is exactly as it was: the current one. */
+  const char *slot = luaL_optstring(L, 3, NULL);
+  if (slot && *slot && strcmp(k, "api_key") == 0) {
+    char *dst = key_slot(slot, 1);
+    if (!dst) {
+      lua_pushnil(L);
+      lua_pushliteral(L, "no free credential slot");
+      return 2;
+    }
+    snprintf(dst, AUTH_MAX, "%s", v);
+  } else {
+    set_field(k, v);
+  }
   auth_save();
   lua_pushboolean(L, 1);
   return 1;
@@ -321,10 +447,16 @@ static int l_clear(lua_State *L) {
  * need the key itself. */
 static int l_has_key(lua_State *L) {
   auth_load();
-  /* For the provider the endpoint points at, not "any key anywhere": having an
+  /* auth.has_key([provider]).
+   *
+   * For the provider the endpoint points at, not "any key anywhere": having an
    * Anthropic key configured says nothing about whether a request to DeepSeek
-   * will be authenticated. */
-  const char *provider = boggart_auth_provider();
+   * will be authenticated. The optional argument -- the same one l_masked has
+   * always taken -- asks about a specific one instead, which is what a catalog
+   * of a dozen providers needs in order to say which are actually usable.
+   * Without it this silently answered for the CURRENT provider whatever was
+   * asked, so "is the xai key set?" was really "is the anthropic key set?". */
+  const char *provider = luaL_optstring(L, 1, boggart_auth_provider());
   const char *stored = key_slot(provider, 0);
   lua_pushboolean(L, env_key_for(provider) != NULL || (stored && stored[0]));
   return 1;
@@ -418,6 +550,8 @@ static const luaL_Reg auth_lib[] = {
   {"model", l_model},
   {"wire", l_wire},
   {"path", l_path},
+  {"bind_store", l_bind_store},
+  {"slot_allowed", l_slot_allowed},
   {"provider", l_provider},
   {NULL, NULL},
 };

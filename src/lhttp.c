@@ -29,7 +29,8 @@
 const char *boggart_auth_header(void);
 /* The credential for the endpoint THIS request is going to (src/lauth.c). Lua
  * names a url/wire; the key itself never crosses the boundary. */
-const char *boggart_auth_header_for(const char *url, const char *wire);
+const char *boggart_auth_header_for(const char *url, const char *wire,
+                                    const char *slot, const char *style);
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -110,8 +111,12 @@ static int l_http_request(lua_State *L) {
     const char *aurl = lua_tostring(L, -1);
     lua_getfield(L, 1, "wire");
     const char *awire = lua_tostring(L, -1);
-    const char *ah = boggart_auth_header_for(aurl, awire);
-    lua_pop(L, 2);
+    lua_getfield(L, 1, "key_slot");
+    const char *aslot = lua_tostring(L, -1);
+    lua_getfield(L, 1, "auth_style");
+    const char *astyle = lua_tostring(L, -1);
+    const char *ah = boggart_auth_header_for(aurl, awire, aslot, astyle);
+    lua_pop(L, 4);
     if (ah) hdrs = curl_slist_append(hdrs, ah);
   }
   lua_pop(L, 1);
@@ -465,8 +470,12 @@ static int l_http_begin(lua_State *L) {
     const char *aurl = lua_tostring(L, -1);
     lua_getfield(L, 1, "wire");
     const char *awire = lua_tostring(L, -1);
-    const char *ah = boggart_auth_header_for(aurl, awire);
-    lua_pop(L, 2);
+    lua_getfield(L, 1, "key_slot");
+    const char *aslot = lua_tostring(L, -1);
+    lua_getfield(L, 1, "auth_style");
+    const char *astyle = lua_tostring(L, -1);
+    const char *ah = boggart_auth_header_for(aurl, awire, aslot, astyle);
+    lua_pop(L, 4);
     if (ah) r->hdrs = curl_slist_append(r->hdrs, ah);
   }
   lua_pop(L, 1);

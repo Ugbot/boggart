@@ -1264,6 +1264,111 @@ elseif bog.mode == "serve" then
   control.stop()
   return 0
 
+elseif bog.mode == "models" then
+  -- `boggart models ...` -- the catalog, from the command line. The store is
+  -- already open (and seeded) by this point, so every subcommand is a query or
+  -- an import against real rows.
+  local C = require "catalog"
+  local args = boggart.args or {}
+  local cmd = args[1] or "list"
+
+  if cmd == "list" or cmd == "ls" then
+    local roles = C.roles()
+    local rnames = {}
+    for name in pairs(roles) do rnames[#rnames + 1] = name end
+    table.sort(rnames)
+    if #rnames > 0 then
+      io.write("roles\n")
+      for _, name in ipairs(rnames) do
+        io.write(string.format("  %-12s %s\n", name, table.concat(roles[name], " -> ")))
+      end
+      io.write("\n")
+    end
+    io.write("providers\n")
+    for _, p in ipairs(C.providers()) do
+      -- whether a key exists is the thing you actually want to know here
+      local keyed = auth.has_key and auth.has_key(p.key_slot or p.name)
+      io.write(string.format("  %-14s %-9s %-9s %-3s %s\n",
+        p.name, p.wire or "?", p.auth or "?", keyed and "key" or "-", p.url or ""))
+    end
+    io.write("\nmodels\n")
+    for _, m in ipairs(C.models{}) do
+      local caps = {}
+      if m.tools then caps[#caps + 1] = "tools" end
+      if m.vision then caps[#caps + 1] = "vision" end
+      if m.effort then caps[#caps + 1] = "effort" end
+      io.write(string.format("  %-38s %-12s %10s  %s\n",
+        m.id, m.provider or "?",
+        m.context and tostring(math.floor(m.context / 1000)) .. "k" or "",
+        table.concat(caps, ",")))
+    end
+    return 0
+
+  elseif cmd == "export" then
+    local text = C.export_json()
+    local path = args[2]
+    if path then
+      local f = io.open(path, "w")
+      if not f then io.stderr:write("cannot write " .. path .. "\n"); return 1 end
+      f:write(text); f:close()
+      io.write("wrote " .. path .. "\n")
+    else
+      io.write(text, "\n")
+    end
+    return 0
+
+  elseif cmd == "import" then
+    local path = args[2]
+    if not path then io.stderr:write("usage: boggart models import <file>\n"); return 1 end
+    local n, err = C.import_file(path)
+    if not n then io.stderr:write("import failed: " .. tostring(err) .. "\n"); return 1 end
+    io.write(string.format("imported %d providers, %d models, %d roles\n",
+      n.providers, n.models, n.roles))
+    return 0
+
+  elseif cmd == "refresh" then
+    local who = args[2]
+    local targets = {}
+    if who then targets = { who }
+    else
+      for _, p in ipairs(C.providers()) do
+        if p.catalog_url and p.catalog_url ~= "" then targets[#targets + 1] = p.name end
+      end
+    end
+    if #targets == 0 then io.write("no provider publishes a catalog\n"); return 0 end
+    local rc = 0
+    for _, name in ipairs(targets) do
+      local n, err = C.refresh(name)
+      if n then io.write(string.format("%s: %d models\n", name, n.models))
+      else io.stderr:write(string.format("%s: %s\n", name, tostring(err))); rc = 1 end
+    end
+    return rc
+
+  elseif cmd == "role" then
+    local name, spec = args[2], args[3]
+    if not name then
+      for rname, chain in pairs(C.roles()) do
+        io.write(string.format("%-12s %s\n", rname, table.concat(chain, " -> ")))
+      end
+      return 0
+    end
+    if not spec then
+      local chain = C.role(name)
+      io.write(chain and table.concat(chain, " -> ") .. "\n" or "unbound\n")
+      return 0
+    end
+    -- a comma-separated list is a fallback chain
+    local list = {}
+    for one in spec:gmatch("[^,]+") do list[#list + 1] = (one:gsub("^%s+", ""):gsub("%s+$", "")) end
+    local bound, err = C.bind_role(name, list)
+    if not bound then io.stderr:write(tostring(err) .. "\n"); return 1 end
+    io.write(string.format("%s -> %s\n", name, table.concat(bound, " -> ")))
+    return 0
+  end
+
+  io.stderr:write("usage: boggart models [list|import <file>|export [file]|refresh [provider]|role [name] [spec]]\n")
+  return 1
+
 elseif bog.mode == "eval" then
   local chunk = assert(loadfile(boggart.eval_file))
   local rc = chunk()

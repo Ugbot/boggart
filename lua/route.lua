@@ -37,40 +37,115 @@ function M.current()
   }
 end
 
+-- Is `prefix` a name we know, such that "prefix/rest" means "that endpoint,
+-- this model"? The guard matters because OpenRouter's own model ids contain
+-- slashes -- "anthropic/claude-opus-5" is a model, not a provider and a model --
+-- so splitting unconditionally would send it to the wrong place.
+local function known_prefix(name)
+  if not name or name == "" then return false end
+  local presets_t = presets.load() or {}
+  if presets_t[name] then return true end
+  local catalog = require "catalog"
+  return catalog.provider(name) ~= nil
+end
+
 -- Resolve a spec to a complete route. Never errors: an unknown name is treated
 -- as a model id on the current endpoint, because that is what it usually is,
 -- and because failing a turn over a typo in a model name is worse than sending
 -- it and letting the endpoint say it does not know that model.
+--
+-- Order (first match wins):
+--   a table          as written
+--   role:name / @name  the user's binding for that role
+--   a preset name    user config outranks catalog knowledge
+--   a catalog model  its provider's url, wire, auth, headers
+--   prefix/rest      only when `prefix` is a known provider or preset
+--   anything else    a bare model id on the current endpoint
 function M.resolve(spec)
+  local chain = M.resolve_chain(spec)
+  return chain[1] or M.current()
+end
+
+-- The ordered candidates for a spec. Only a role produces more than one; every
+-- other spec resolves to exactly one destination. Callers that can fall through
+-- on failure (see api.lua) use this; callers that just need a destination use
+-- resolve().
+function M.resolve_chain(spec)
   local cur = M.current()
-  if spec == nil or spec == "" then return cur end
+  if spec == nil or spec == "" then return { cur } end
 
   if type(spec) == "table" then
-    return {
+    -- a list of specs is a chain already (a role's binding, expanded)
+    if #spec > 0 and type(spec[1]) == "string" then
+      local out = {}
+      for _, one in ipairs(spec) do
+        for _, r in ipairs(M.resolve_chain(one)) do out[#out + 1] = r end
+      end
+      return #out > 0 and out or { cur }
+    end
+    return { {
       model = spec.model or cur.model,
       url   = spec.url   or cur.url,
       wire  = spec.wire  or cur.wire,
+      auth  = spec.auth, key_slot = spec.key_slot, headers = spec.headers,
       name  = spec.name  or "inline",
-    }
+    } }
   end
 
   spec = tostring(spec)
-  local name, model_override = spec:match("^([^/]+)/(.+)$")
-  local key = name or spec
-  local table_of = presets.load() or {}
-  local p = table_of[key]
-  if p then
-    return {
-      model = model_override or p.model or cur.model,
-      url   = p.url or cur.url,
-      wire  = p.wire or cur.wire,
-      name  = key,
-      effort = p.effort,
-    }
+
+  -- a role: the user's binding, which may be a fallback chain
+  local role_name = spec:match("^role:(.+)$") or spec:match("^@(.+)$")
+  if role_name then
+    local bound = require("catalog").role(role_name)
+    if bound then
+      local out = M.resolve_chain(bound)
+      for _, r in ipairs(out) do r.role = role_name end
+      return out
+    end
+    -- an unbound role falls through to the default rather than failing: an
+    -- agent asking for "critic" on a machine that has never heard of one
+    -- should still run.
+    local dflt = require("catalog").role("default")
+    if dflt then
+      local out = M.resolve_chain(dflt)
+      for _, r in ipairs(out) do r.role = role_name end
+      return out
+    end
+    return { cur }
+  end
+
+  -- a preset: the user's own snapshot of an endpoint
+  local presets_t = presets.load() or {}
+  if presets_t[spec] then
+    local p = presets_t[spec]
+    return { { model = p.model or cur.model, url = p.url or cur.url,
+               wire = p.wire or cur.wire, name = spec, effort = p.effort } }
+  end
+
+  -- a catalogued model: the whole destination comes with it
+  local catalog = require "catalog"
+  local dest = catalog.destination(spec)
+  if dest then return { dest } end
+
+  -- prefix/rest, only when the prefix is something we know
+  local prefix, rest = spec:match("^([^/]+)/(.+)$")
+  if prefix and rest and known_prefix(prefix) then
+    if presets_t[prefix] then
+      local p = presets_t[prefix]
+      return { { model = rest, url = p.url or cur.url, wire = p.wire or cur.wire,
+                 name = prefix } }
+    end
+    local p = catalog.provider(prefix)
+    if p then
+      return { { model = rest, url = p.url, wire = p.wire, auth = p.auth,
+                 key_slot = p.key_slot or p.name, headers = p.headers,
+                 provider = p.name, name = prefix } }
+    end
   end
 
   -- not a preset: a bare model id on the endpoint already configured
-  return { model = spec, url = cur.url, wire = cur.wire, name = "model" }
+  return { { model = spec, url = cur.url, wire = cur.wire, name = "model" } }
 end
 
 -- Every destination that can be named, for a picker or `/model`.
@@ -113,6 +188,12 @@ end
 
 -- The route a bookkeeping turn should use: `cheap`, else `fast`, else current.
 function M.utility()
+  -- A bound `utility` role first -- that is the name for "the model that does
+  -- the bookkeeping" -- then the older cheap/fast presets, then whatever the
+  -- session is on. Nothing is required: with none of them configured this is
+  -- the current route and compaction happens exactly where it used to.
+  local role = require("catalog").role("utility")
+  if role then return M.resolve(role) end
   return M.alias("cheap") or M.alias("fast") or M.current()
 end
 

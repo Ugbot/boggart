@@ -5,4 +5,5 @@ return {
     .. "If you cannot verify something, say so. Prefer the research skill: write cited findings "
     .. "to a Markdown file rather than dumping them into chat.",
   skills = { "core", "memory", "data", "research" },
+  role = "researcher",
 }

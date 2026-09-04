@@ -326,6 +326,47 @@ command.add(nil, {
     else core.log("nothing scheduled") end
   end,
 
+  -- ---- the model catalog, from the desktop --------------------------------
+  --
+  -- Picking a model is the one configuration act people do repeatedly, and it
+  -- was previously "know the id, type it into /model". The picker lists what
+  -- the catalog knows, says which providers actually have a key, and shows the
+  -- context window -- the three things you weigh when choosing.
+  ["agent:models"] = function()
+    local catalog = require "catalog"
+    local items = {}
+    for _, m in ipairs(catalog.models{}) do
+      local p = m.provider and catalog.provider(m.provider)
+      local keyed = p and auth.has_key and auth.has_key(p.key_slot or p.name)
+      items[#items + 1] = {
+        text = m.id,
+        info = string.format("%s%s  %s", m.provider or "?",
+          keyed and "" or " (no key)",
+          m.context and (math.floor(m.context / 1000) .. "k") or ""),
+        model = m.id,
+      }
+    end
+    table.sort(items, function(x, y) return x.text < y.text end)
+    if #items == 0 then core.log("no models catalogued"); return end
+    require("shell.modal").chooser("Model:", items, function(pick)
+      command.perform("agent:set-model", pick.model)
+      core.log("model: %s", pick.model)
+    end)
+  end,
+  ["agent:roles"] = function()
+    local catalog = require "catalog"
+    local roles = catalog.roles()
+    local items = {}
+    for name, chain in pairs(roles) do
+      items[#items + 1] = { text = name, info = table.concat(chain, " -> ") }
+    end
+    table.sort(items, function(x, y) return x.text < y.text end)
+    if #items == 0 then core.log("no roles bound yet"); return end
+    require("shell.modal").chooser("Role:", items, function(pick)
+      core.log("%s -> %s", pick.text, pick.info)
+    end)
+  end,
+
   -- ---- the control plane, from the desktop --------------------------------
   --
   -- Same door the CLI's `boggart serve` opens: the C listener (src/lserve.c)

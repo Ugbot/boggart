@@ -5,4 +5,7 @@ return {
     .. "failure scenario. Report only real issues, most severe first. For branch/PR reviews, "
     .. "use the code_review skill's two-axis (Standards + Spec) process.",
   skills = { "core", "code_review" },
+  -- Intent, not a vendor: the user's catalog binds `critic` to a model.
+  -- Unbound, this falls through to the default and behaves as it always did.
+  role = "critic",
 }

@@ -72,6 +72,8 @@ M.tree = {
     { "Attach file\u{2026}",   "agent:attach-file" },
     { "Search chats\u{2026}",  "agent:search-sessions" },
     { "Set model\u{2026}",     "agent:set-model" },
+    { "Models\u{2026}",        "agent:models" },
+    { "Roles\u{2026}",         "agent:roles" },
     { "Set endpoint\u{2026}",  "agent:set-endpoint" },
     { "Set API key\u{2026}",   "agent:set-api-key" },
     { "Approval mode\u{2026}", "agent:set-mode" },

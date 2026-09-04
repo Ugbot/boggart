@@ -5,4 +5,5 @@ return {
     .. "verified it. Prefer TDD (tdd skill) for features/fixes; use diagnosing_bugs when "
     .. "something is broken before guessing.",
   skills = { "core", "selfmod", "data", "tdd", "diagnosing_bugs" },
+  role = "coder",
 }

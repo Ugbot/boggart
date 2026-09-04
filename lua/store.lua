@@ -108,6 +108,58 @@ CREATE TABLE IF NOT EXISTS records (
   payload TEXT                  -- JSON detail
 );
 CREATE INDEX IF NOT EXISTS records_run ON records(run_id, id);
+
+-- The model catalog: where each model lives, what it can do, and which model
+-- answers to which role.
+--
+-- Rows rather than a JSON blob, for three reasons that all bite in practice:
+-- "which models do vision above 500k context" is a query; the agent can already
+-- read and edit these through the `sql`/`kv` tools it has; and telemetry can
+-- join against them to report what a model actually cost. JSON is how a catalog
+-- is imported, exported and refreshed (lua/catalog.lua) -- it is the exchange
+-- format, not the store.
+--
+-- `providers.key_slot` is load-bearing beyond configuration: it is the registry
+-- of which credential may be used with which host, and src/lauth.c refuses a
+-- (url, slot) pair that is not recorded here. Editing this table therefore
+-- changes what a key is allowed to reach, which is exactly where that decision
+-- should live -- once, in the store, rather than in whichever caller assembled
+-- a request.
+CREATE TABLE IF NOT EXISTS providers (
+  name TEXT PRIMARY KEY,        -- "xai", "zai", "openrouter"
+  label TEXT,                   -- "xAI (Grok)"
+  url TEXT,                     -- base endpoint
+  wire TEXT,                    -- anthropic | openai | responses
+  auth TEXT,                    -- bearer | x-api-key  (independent of wire)
+  key_slot TEXT,                -- credential slot name; NULL = derive from url
+  env TEXT,                     -- environment variable holding a key
+  headers TEXT,                 -- JSON object of extra request headers
+  catalog_url TEXT,             -- where `models refresh` reads a live list
+  source TEXT,                  -- seed | import | refresh | user
+  updated INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS models (
+  id TEXT PRIMARY KEY,          -- "grok-4.6", "anthropic/claude-opus-5"
+  provider TEXT,                -- -> providers.name
+  label TEXT,
+  context INTEGER,              -- context window in tokens
+  max_output INTEGER,
+  tools INTEGER,                -- 0/1 capability flags, read by api.lua
+  vision INTEGER,
+  effort INTEGER,               -- accepts reasoning_effort
+  input_price REAL,             -- per 1M tokens, for the cost estimate
+  output_price REAL,
+  source TEXT,
+  updated INTEGER
+);
+CREATE INDEX IF NOT EXISTS models_provider ON models(provider);
+
+CREATE TABLE IF NOT EXISTS roles (
+  name TEXT PRIMARY KEY,        -- "default", "utility", "critic"
+  spec TEXT,                    -- JSON: a model id, or an ordered list of them
+  updated INTEGER
+);
 ]]
 
 -- Add a column to an existing table if a prior DB predates it (CREATE TABLE
@@ -362,6 +414,14 @@ function M.open()
   ensure_column(bog.db, "sessions", "spec", "TEXT")
   bog.db:run("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",
     { tostring(M.SCHEMA_VERSION) })
+  -- Hand C the store so it can consult the credential-slot registry (the
+  -- `providers` table) when a routed request names a slot. Without this the
+  -- registry is simply absent and credentials resolve exactly as they did
+  -- before the catalog existed -- see boggart_auth_header_for in src/lauth.c.
+  if auth and auth.bind_store then pcall(auth.bind_store, bog.db) end
+  -- Seed the model catalog the first time its tables are empty. Idempotent and
+  -- quiet: a user who has curated their own catalog is never re-seeded over.
+  pcall(function() require("catalog").seed_if_empty() end)
   import_legacy(bog.db)
   -- Session full-text index: ensure the table, then seed it once from sessions
   -- that predate it (see backfill_sessions_fts). Additive -- an older boggart
@@ -389,6 +449,19 @@ local function now() return os.time() end
 -- here moved into src/lrepo.c behind the backend seam; callers (bog.store.kv_*)
 -- are unchanged. This is the template every other op follows as it moves.
 function M.kv_set(k, v) return bog.repo:kv_set(k, v) end
+
+-- ---- the model catalog -----------------------------------------------------
+-- Thin pass-throughs to the C operations (src/lrepo.c), the same shape as the
+-- kv ones above: the harness calls named operations, never SQL, so a second
+-- backend is a second set of identically-named methods.
+function M.model_get(id)        return bog.repo:model_get(id) end
+function M.model_put(row)       return bog.repo:model_put(row) end
+function M.models_where(filter) return bog.repo:models_where(filter or {}) end
+function M.provider_get(name)   return bog.repo:provider_get(name) end
+function M.provider_put(row)    return bog.repo:provider_put(row) end
+function M.catalog_list(what)   return bog.repo:catalog_list(what or "models") end
+function M.role_get(name)       return bog.repo:role_get(name) end
+function M.role_put(name, spec) return bog.repo:role_put(name, spec) end
 function M.kv_get(k) return bog.repo:kv_get(k) end
 function M.kv_del(k) return bog.repo:kv_del(k) end
 function M.kv_list(prefix)

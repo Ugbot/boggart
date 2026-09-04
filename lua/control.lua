@@ -151,13 +151,50 @@ end, "set the mode and/or the rule table")
 
 M.route("GET", "/models", function()
   local route = require "route"
+  local catalog = require "catalog"
   local cur = route.current()
+  local providers = {}
+  for _, p in ipairs(catalog.providers()) do
+    providers[#providers + 1] = {
+      name = p.name, label = p.label, url = p.url, wire = p.wire, auth = p.auth,
+      -- whether a key exists, never the key: the one thing a client needs to
+      -- know to say "that provider is usable"
+      keyed = auth.has_key and auth.has_key(p.key_slot or p.name) or false,
+    }
+  end
+  local models = {}
+  for _, m in ipairs(catalog.models{}) do
+    models[#models + 1] = { id = m.id, provider = m.provider, label = m.label,
+                            context = m.context, tools = m.tools,
+                            vision = m.vision, effort = m.effort }
+  end
   return ok({
     current = { model = cur.model, url = cur.url, wire = cur.wire },
     utility = (function() local u = route.utility(); return { model = u.model, name = u.name } end)(),
+    roles = catalog.roles(),
+    providers = providers,
+    models = models,
     presets = route.list(),
   })
-end, "the current destination and every named one (per-agent model routing)")
+end, "the catalog: current destination, roles, providers (keyed or not), models")
+
+M.route("POST", "/models/refresh", function(req)
+  local body = body_table(req)
+  local catalog = require "catalog"
+  local n, why = catalog.refresh(body.provider or "openrouter")
+  if not n then return err(400, tostring(why)) end
+  return ok({ refreshed = body.provider or "openrouter", models = n.models })
+end, "pull a provider's published catalog")
+
+M.route("POST", "/models/role", function(req)
+  local body = body_table(req)
+  if type(body.name) ~= "string" or body.name == "" then
+    return err(400, "a role needs a `name`")
+  end
+  local bound, why = require("catalog").bind_role(body.name, body.spec or body.model)
+  if not bound then return err(400, tostring(why)) end
+  return ok({ role = body.name, spec = bound })
+end, "bind a role to a model (or an ordered fallback list)")
 
 -- ---- the fleet ------------------------------------------------------------
 
