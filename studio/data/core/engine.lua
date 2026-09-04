@@ -125,10 +125,10 @@ function M.install(studio)
   function studio.ensure_session()
     if bog.session and bog.session.id then return bog.session.id end
     if not (bog and bog.store and bog.session) then return nil end
-    local ok, id = pcall(bog.store.sess_create, nil, bog.session.model)
-    if ok and id then
-      bog.session.id = id
-      if bog.events then pcall(bog.events.emit, "session:created", { id = id }) end
+    -- One implementation, in boot.lua, now that every front end works this way.
+    if bog.ensure_session then
+      local ok, id = pcall(bog.ensure_session, bog.session)
+      if ok then return id end
     end
     return bog.session.id
   end

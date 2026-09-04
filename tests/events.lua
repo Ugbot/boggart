@@ -458,17 +458,26 @@ end
 -- ---- session lifecycle -----------------------------------------------------
 do
   reset()
-  local created, saved, resumed = nil, nil, nil
+  local created, started, saved, resumed = nil, nil, nil, nil
   events.on("session:created", function(_, d) created = d end)
+  events.on("session:new", function(_, d) started = d end)
   events.on("session:saved", function(_, d) saved = d end)
   events.on("session:resumed", function(_, d) resumed = d end)
 
+  -- Starting a conversation and CREATING its row are now two different events,
+  -- because they happen at two different times: a session with nothing in it
+  -- never reaches the store, so `session:created` fires when a row really
+  -- exists and not a moment earlier.
   bog.new_session()
-  ok(created ~= nil and created.id == bog.session.id, "bog.new_session emits session:created")
+  ok(started ~= nil, "bog.new_session emits session:new")
+  ok(created == nil, "and does NOT claim a row was created -- there isn't one yet")
+  ok(bog.session.id == nil, "the session has no id until it has content")
 
   bog.session.messages = { { role = "user", content = "hello" } }
   bog.session.title = "events test"
   bog.save_session()
+  ok(created ~= nil and created.id == bog.session.id,
+     "saving real content creates the row, and says so")
   ok(saved ~= nil and saved.id == bog.session.id, "bog.save_session emits session:saved")
   eq(saved and saved.count, 1, "...with the message count, not the messages")
 
@@ -675,7 +684,7 @@ do
   end
   ok(#missing == 0, "every documented event is emitted by a real code path"
     .. (#missing > 0 and (" -- never saw: " .. table.concat(missing, ", ")) or ""))
-  eq(#names, 18, "the documented event list is the one this suite drove")
+  eq(#names, 19, "the documented event list is the one this suite drove")
 end
 
 -- ---- the fabric bridge (events -> src/lbus.c `bus`) ------------------------

@@ -1667,6 +1667,11 @@ function M.run_on(sess, user_text, on_text, opts)
   local route = require("route").resolve(
     opts.route or opts.model or sess.route or sess.model)
   sess.resolved_route = route   -- so a status line can say where a turn went
+  -- A turn is the thing that makes a conversation worth storing, so this is
+  -- where the row is created (bog.new_session deliberately does not). Sessions
+  -- that already have an id -- resumed ones, and every spawned agent, whose row
+  -- comes from thread_create -- pass straight through.
+  if bog.ensure_session then pcall(bog.ensure_session, sess) end
   local stream_impl = opts.stream or stream_async
   local stream = function(body, sink, think_sink)
     return stream_impl(body, sink, think_sink, route)

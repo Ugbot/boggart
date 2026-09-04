@@ -422,6 +422,15 @@ function M.open()
   -- Seed the model catalog the first time its tables are empty. Idempotent and
   -- quiet: a user who has curated their own catalog is never re-seeded over.
   pcall(function() require("catalog").seed_if_empty() end)
+  -- Sweep out blank sessions left by the era when starting a conversation
+  -- created a row before anyone had said anything. Silent when there are none,
+  -- which is every run after the first.
+  pcall(function()
+    local n = M.prune_empty_sessions()
+    if n and n > 0 then
+      bog.log(string.format("removed %d empty session%s", n, n == 1 and "" or "s"))
+    end
+  end)
   import_legacy(bog.db)
   -- Session full-text index: ensure the table, then seed it once from sessions
   -- that predate it (see backfill_sessions_fts). Additive -- an older boggart
@@ -691,6 +700,32 @@ function M.sess_list(limit)
   return bog.db:query(
     "SELECT id,title,model,updated FROM sessions ORDER BY updated DESC LIMIT ?",
     { limit or 20 })
+end
+
+-- Remove session rows that hold nothing at all.
+--
+-- Sessions used to be created the moment a conversation was STARTED rather than
+-- when it had content, so every launch, every `/new` and every service start
+-- left a blank row behind. Those rows carry no title, no transcript and no
+-- lineage: deleting one loses literally nothing, which is why this can run
+-- unattended where a general "tidy up old sessions" could not.
+--
+-- The guards are what keep it safe. A row is only junk if it has no messages,
+-- no title, no parent (so it is not an agent's thread) and is not marked
+-- running (so it is not an agent mid-flight). Anything a person or an agent put
+-- a single word into is left alone.
+function M.prune_empty_sessions()
+  if not bog.db then return 0 end
+  local sql = "FROM sessions WHERE (messages IS NULL OR messages = '[]') "
+    .. "AND (title IS NULL OR title = '') AND parent_id IS NULL "
+    .. "AND (status IS NULL OR status <> 'running')"
+  local rows = bog.db:query("SELECT id " .. sql)
+  if #rows == 0 then return 0 end
+  for _, r in ipairs(rows) do
+    bog.db:run("DELETE FROM sessions_fts WHERE rowid=?", { r.id })
+  end
+  bog.db:run("DELETE " .. sql)
+  return #rows
 end
 
 function M.sess_delete(id)

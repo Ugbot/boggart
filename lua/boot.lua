@@ -169,22 +169,52 @@ function bog.set_model(m)
   if auth and auth.set then pcall(auth.set, "model", m) end  -- persist for restart / new agents
 end
 
+-- Starting a new conversation does NOT create a row.
+--
+-- It used to, and the result was a store full of empty sessions: every launch
+-- of the REPL, every `/new`, every `boggart serve`, every studio "new session"
+-- left a titleless, messageless row behind whether or not anyone typed
+-- anything. The recents list filled up with nothing.
+--
+-- A session row now appears the moment there is something to put in it -- see
+-- bog.ensure_session, which the first turn calls. studio/data/core/engine.lua
+-- already worked this way and said so ("the studio creates no session until a
+-- turn actually needs one"); this is the same rule everywhere else.
 function bog.new_session()
   local S = bog.active_session()
   S.messages = {}
   S.title = nil
-  S.id = bog.store.sess_create(nil, S.model)
+  S.id = nil
   if bog.session and bog.session ~= S then
-    bog.session.id, bog.session.messages, bog.session.title = S.id, S.messages, S.title
+    bog.session.id, bog.session.messages, bog.session.title = nil, S.messages, S.title
   end
-  bog.events.emit("session:created", { id = S.id })
+  bog.events.emit("session:new", {})
 end
+
+-- The row, created on demand. Idempotent: a session that already has an id --
+-- resumed, or already saved once -- is returned untouched, so callers can ask
+-- for this freely at the start of any turn.
+function bog.ensure_session(S)
+  S = S or bog.active_session()
+  if S.id then return S.id end
+  if not (bog.store and bog.store.sess_create) then return nil end
+  local ok, id = pcall(bog.store.sess_create, S.title, S.model)
+  if not ok or not id then return nil end
+  S.id = id
+  if bog.session and bog.session ~= S then bog.session.id = id end
+  bog.events.emit("session:created", { id = id })
+  return id
+end
+
 function bog.save_session()
   local S = bog.active_session()
-  if S.id then
-    bog.store.sess_save(S.id, S.title, S.model, S.messages)
-    bog.events.emit("session:saved", { id = S.id, count = #S.messages })
-  end
+  -- Nothing said, nothing stored. This is the other half of the lazy row: a
+  -- session that was created (because a turn started) but then produced no
+  -- messages must not be written back into existence either.
+  if not S.messages or #S.messages == 0 then return end
+  if not bog.ensure_session(S) then return end
+  bog.store.sess_save(S.id, S.title, S.model, S.messages)
+  bog.events.emit("session:saved", { id = S.id, count = #S.messages })
 end
 function bog.resume_session(id)
   local s = bog.store.sess_load(id)
@@ -583,7 +613,7 @@ local function handle_command(line)
   elseif cmd == "new" then
     bog.new_session()
     if bog.clear_ui then pcall(bog.clear_ui) end
-    io.write("started new session ", tostring(bog.active_session().id), ".\n")
+    io.write("started a new session.\n")
   elseif cmd == "clear" then
     local S = bog.active_session()
     if S then S.messages = {} end

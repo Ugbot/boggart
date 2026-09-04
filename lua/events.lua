@@ -75,6 +75,7 @@ local MAX_ERRORS = 5
 M.EVENTS = {
   ["store:created"]    = "{ path }  the local store did not exist and was created (first run)",
   ["store:recovered"]  = "{ path, moved_to }  a damaged store was moved aside and recreated -- sessions and memory in it are gone",
+  ["session:new"]      = "{}      a conversation was started (no row yet)",
   ["session:created"]  = "{ id }  a fresh session row exists",
   ["session:resumed"]  = "{ id, count }  count = messages restored",
   ["session:saved"]    = "{ id, count }  transcript persisted to the store",
