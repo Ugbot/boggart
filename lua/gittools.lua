@@ -87,11 +87,25 @@ M.tools = {
         if type(a.path) ~= "string" then return "Tool error: [validation_error] add needs 'path'" end
         local ok, err = git.worktree_add(repo(), a.path, a.ref or "HEAD")
         if not ok then return "Tool error: [host_capability_error] " .. tostring(err) end
-        return "worktree added at " .. a.path
+        -- A worktree is another directory this project works in, so it joins
+        -- the project's roots. That is what "the worktrees are managed there"
+        -- means concretely: one project holding several checkouts, which is
+        -- also where per-agent worktree isolation draws from.
+        local note = ""
+        local okp, proj = pcall(require, "project")
+        if okp and not proj.is_global() then
+          local roots = proj.add_root(nil, a.path)
+          if roots then note = "  (now a root of project '" .. proj.current() .. "')" end
+        end
+        return "worktree added at " .. a.path .. note
       elseif a.op == "remove" then
         if type(a.path) ~= "string" then return "Tool error: [validation_error] remove needs 'path'" end
         local ok, err = git.worktree_remove(repo(), a.path)
         if not ok then return "Tool error: [host_capability_error] " .. tostring(err) end
+        -- ...and stops being one when it is torn down, so a project's roots
+        -- never point at a directory that is no longer there.
+        local okp, proj = pcall(require, "project")
+        if okp and not proj.is_global() then pcall(proj.remove_root, nil, a.path) end
         return "worktree removed at " .. a.path
       end
       return "Tool error: [validation_error] op must be add | remove | list"

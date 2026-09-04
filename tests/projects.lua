@@ -211,5 +211,14 @@ ok(#proj.roots("nightjar") == 2, "and a project can hold several roots at once")
 proj.switch("global")
 ok(bog.tools.project_root() ~= nil, "global still resolves to something (git, else cwd)")
 
+-- ---- bash runs where the project works -----------------------------------
+-- Switching a project has to mean something for commands, not just for what
+-- boggart remembers.
+proj.switch("nightjar")
+local pwd = bog.tools.run("bash", { command = "pwd" })
+ok(tostring(pwd):find(proj.roots("nightjar")[1], 1, true),
+   "bash runs in the project's root, not wherever the shell started")
+proj.switch("global")
+
 io.write(string.format("projects: %d passed, %d failed\n", passed, failed))
 os.exit(failed == 0 and 0 or 1)

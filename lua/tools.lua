@@ -180,7 +180,17 @@ local function tool_bash(a)
   -- polls so a long build no longer freezes every other agent (and every
   -- in-flight LLM stream with it). Off a coroutine it blocks on the loop,
   -- which is the same observable behaviour as before.
-  local r = require("proc").run(a.command, timeout)
+  -- Run where the project works. A named project's first root is its anchor
+  -- (see project_root), so `bash` starts in the body of work you said you were
+  -- doing rather than wherever the shell happened to be launched -- which is
+  -- what makes switching projects mean anything for commands. `cd` inside the
+  -- command still wins, as it always did.
+  local cmd = a.command
+  local okr, root = pcall(M.project_root)
+  if okr and root and root ~= "" and sys.stat(root) == "dir" and root ~= sys.cwd() then
+    cmd = "cd " .. string.format("%q", root) .. " && " .. cmd
+  end
+  local r = require("proc").run(cmd, timeout)
   local out = r.out or ""
   local shaped = util.shape_result(out, { max_bytes = 6000, head_lines = 100 })
   local status = string.format("[exit=%d%s]", r.code, r.timed_out and " TIMED OUT" or "")
