@@ -75,6 +75,26 @@ function M.agent_opts(rec)
         return "Tool error: [permission_error] the " .. name .. " tool is gated for "
           .. "this agent and no approver is attached. Do not retry it."
       end
+      -- Per-agent permission profile. The skill allowlist above answers "may
+      -- this agent use this TOOL"; this answers "may it make THIS CALL" -- a
+      -- read-only reviewer, a child that may run `git *` but not `sudo`. It can
+      -- only ever NARROW what the run already permits (perm.decide takes the
+      -- stricter of the two), so a spawn cannot hand a child more authority
+      -- than the coordinator has. That direction is the whole point.
+      if rec.perms and bog.perm and bog.perm.decide then
+        local st = bog.perm.state()
+        local scoped = {
+          mode = st.mode, tool_policy = st.tool_policy, rules = st.rules,
+          guards = st.guards, recent = rec._recent, agent_rules = rec.perms,
+        }
+        local verdict, why = bog.perm.decide(name, input, scoped)
+        rec._recent = scoped.recent
+        if verdict == "deny" then
+          return "Tool error: [permission_error] this agent's profile does not permit "
+            .. "that " .. name .. " call" .. (why and (" -- " .. why) or "")
+            .. ". Do not retry it; report what you would have done."
+        end
+      end
       return bog.tools.run(name, input)
     end,
     on_tool = bog.log_tool,
@@ -166,8 +186,19 @@ function M.new_agent(p)
     -- must produce (deliverables) and how it is checked (verify).
     run_id = p.run_id or p.parent_id or id,
     deliverables = p.deliverables, verify = p.verify,
+    -- The shape this agent must answer in, if the coordinator asked for one.
+    -- Checked by the exit contract, so a prose answer is a retryable failure
+    -- rather than something the parent has to notice.
+    schema = p.schema,
+    -- A permission profile for this child alone (perm.lua rule tables). May
+    -- only narrow what the run permits; see agent_opts.run_tool.
+    perms = p.perms,
     session = { id = id, model = model, messages = resumed_messages or {}, max_tokens = 16000,
-                compact_at = 400000, token_budget = M.default_token_budget,
+                compact_at = 400000,
+                -- a per-child budget when the coordinator set one; the turn
+                -- loop in api.lua already enforces token_budget and reports
+                -- stop="token_budget", which the exit contract treats as failure
+                token_budget = tonumber(p.budget) or M.default_token_budget,
                 effort = p.effort or M.default_effort },
   }
   rec.may_spawn = not M.at_capacity()
@@ -194,9 +225,78 @@ end
 --   * A budget/round stop is always a failure.
 --   * Verify runs TRUSTED (direct bog.tools.run, not the model or the allow-set)
 --     and a checker "fails" if its output contains a Tool error or "ISSUE"/"FAIL".
+-- ---- structured returns ----------------------------------------------------
+--
+-- A sub-agent that answers in prose is a sub-agent whose coordinator has to
+-- re-read English to decide anything, which is why fan-out so often stops at a
+-- demo. `schema` on spawn makes the child answer with a JSON object instead, so
+-- the parent can branch on a value. The check is part of the EXIT CONTRACT, not
+-- a parse-and-hope: an unparseable or incomplete answer fails, and the existing
+-- bounded retry feeds the failure back and asks again -- which is exactly the
+-- behaviour that makes a schema worth declaring.
+--
+-- Deliberately last-object-wins rather than whole-text-must-be-JSON: models
+-- narrate before they answer, and demanding otherwise fails honest work.
+local function extract_json(text)
+  text = tostring(text or "")
+  local best, i, n = nil, 1, #text
+  while i <= n do
+    if text:sub(i, i) == "{" then
+      -- Walk forward tracking brace depth, skipping string literals (and their
+      -- escapes) so a `}` inside a value cannot end the object early. That is
+      -- the whole reason this is a scanner and not a pattern.
+      local depth, j, in_str, esc = 0, i, false, false
+      while j <= n do
+        local c = text:sub(j, j)
+        if in_str then
+          if esc then esc = false
+          elseif c == "\\" then esc = true
+          elseif c == '"' then in_str = false end
+        elseif c == '"' then in_str = true
+        elseif c == "{" then depth = depth + 1
+        elseif c == "}" then
+          depth = depth - 1
+          if depth == 0 then break end
+        end
+        j = j + 1
+      end
+      if depth == 0 and j <= n then
+        local okj, val = pcall(bog.json.decode, text:sub(i, j))
+        if okj and type(val) == "table" then best = val end
+        i = j        -- continue after this object; a later one wins
+      end
+    end
+    i = i + 1
+  end
+  return best
+end
+
+-- The required keys of a JSON Schema-ish table, checked shallowly: enough to
+-- catch "it answered, but not the thing that was asked for", without pretending
+-- to be a validator.
+local function schema_miss(schema, value)
+  if type(schema) ~= "table" then return nil end
+  if type(value) ~= "table" then return "no JSON object in the answer" end
+  local missing = {}
+  for _, key in ipairs(schema.required or {}) do
+    if value[key] == nil then missing[#missing + 1] = key end
+  end
+  if #missing > 0 then
+    return "missing required field(s): " .. table.concat(missing, ", ")
+  end
+  return nil
+end
+M.extract_json, M.schema_miss = extract_json, schema_miss
+
 local function check_exit_contract(rec, stop)
   if stop == "max_rounds" or stop == "token_budget" then
     return false, false, "stopped by budget: " .. stop
+  end
+  if rec.schema then
+    local value = extract_json(rec.answer_text or "")
+    local miss = schema_miss(rec.schema, value)
+    if miss then return false, false, "structured answer: " .. miss end
+    rec.result = value
   end
   if rec.deliverables then
     for _, pat in ipairs(rec.deliverables) do
@@ -238,6 +338,7 @@ function M._run(rec, task)
       text = "agent error: " .. tostring(_msg); ok = false; why = text
       break -- a crash is not retried
     end
+    rec.answer_text = text
     delivered, verified, why = check_exit_contract(rec, stop)
     ok = delivered and (verified ~= false)
     if ok or attempt >= max_attempts then break end
@@ -262,6 +363,9 @@ function M._run(rec, task)
   if rec.parent_id then
     swarm.send(rec.id, rec.parent_id, bog.json.encode{
       kind = "result", from = rec.id, agent = rec.spec_name or "agent", ok = ok, text = text,
+      -- the parsed object when the child was spawned with a schema, so the
+      -- coordinator branches on a value instead of re-reading prose
+      result = rec.result,
     })
   end
   M.live_recs[rec.id] = nil
@@ -292,7 +396,17 @@ end
 -- next resumes it).
 function M.spawn(p)
   local rec = M.new_agent(p)
-  local co = coroutine.create(function() M._run(rec, p.task or "") end)
+  local task = p.task or ""
+  if p.schema then
+    -- Said plainly and last, where a model actually reads it. The contract
+    -- checks the answer regardless, so this is help, not the enforcement.
+    local okj, shape = pcall(bog.json.encode, p.schema)
+    task = task .. "\n\nWhen you are done, END your reply with a single JSON "
+      .. "object and nothing after it, matching this schema:\n"
+      .. (okj and shape or "{}")
+      .. "\nProse before it is fine; the object must be last."
+  end
+  local co = coroutine.create(function() M._run(rec, task) end)
   bog.sched.add(rec.id, co)
   bog.log(string.format("spawned agent %d (%s): %s", rec.id, p.agent or "agent",
     (p.task or ""):gsub("%s+", " "):sub(1, 60)))

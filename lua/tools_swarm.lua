@@ -44,6 +44,9 @@ defs.spawn = {
       deliverables = { type = "array", description = "absolute paths the agent must create for success" },
       verify = { type = "string", description = "a checker tool run (trusted) on the deliverable to confirm success" },
       effort = { type = "string", description = "reasoning effort for this child: minimal|low|medium|high|none (default medium). Use low for simple tasks, high for hard ones." },
+      schema = { type = "object", description = "a JSON Schema the child MUST answer with (its reply ends with a matching JSON object). Its `required` keys are enforced by the exit contract, so a prose-only answer is retried. Use this whenever you intend to branch on the result rather than read it." },
+      perms = { type = "object", description = "a permission profile for this child alone: {bash={[\"git *\"]=\"allow\",[\"*\"]=\"deny\"}, edit={[\"src/**\"]=\"allow\"}}. It can only NARROW what this run already permits, never widen it -- use it to make a reviewer read-only." },
+      budget = { type = "integer", description = "output-token budget for this child. Exceeding it stops the child and reports failure, so a runaway worker cannot spend the whole run." },
     },
     required = { "task" },
   },
@@ -60,6 +63,7 @@ defs.spawn = {
     local id = bog.thread.spawn{
       task = a.task, agent = a.agent, model = a.model, skills = a.skills,
       deliverables = a.deliverables, verify = a.verify, effort = a.effort,
+      schema = a.schema, budget = a.budget, perms = a.perms,
       parent_id = bog.sched.current(),
     }
     return json.encode{ spawned = id }
