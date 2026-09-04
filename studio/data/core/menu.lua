@@ -15,14 +15,59 @@ local menu = {
   hits = {},
   anchor = nil,
   mouse = nil,
+  sel = nil,      -- index of the keyboard-highlighted row
+  scroll = 0,     -- first drawn row, when the list is taller than the space
 }
+
+-- An item is one of:
+--   { label =, action = | command = }   a row you can pick
+--   { heading = "xAI" }                 a non-selectable section label
+--   { label =, checked = true }         the current value, marked
+--
+-- Headings exist because a model list is long and unordered without them: with
+-- a dozen providers you are hunting, and grouping is the difference between a
+-- list and a menu.
+local function selectable(it) return it and not it.heading end
 
 function menu.show(anchor, items)
   menu.anchor = anchor
   menu.items = items or {}
   menu.hits = {}
+  menu.scroll = 0
+  -- Open on the current value when there is one, so the highlighted row is the
+  -- answer to "what am I on?" before you have moved anything.
+  menu.sel = nil
+  for i, it in ipairs(menu.items) do
+    if it.checked and selectable(it) then menu.sel = i; break end
+  end
+  if not menu.sel then
+    for i, it in ipairs(menu.items) do
+      if selectable(it) then menu.sel = i; break end
+    end
+  end
   menu.open = #menu.items > 0 and anchor ~= nil
   core.redraw = true
+end
+
+-- Move the highlight to the next selectable row, skipping headings, stopping at
+-- the ends rather than wrapping (a wrap in a long list loses your place).
+function menu.move(dir)
+  if not menu.open then return end
+  local i = menu.sel or 0
+  for _ = 1, #menu.items do
+    i = i + dir
+    if i < 1 or i > #menu.items then return end
+    if selectable(menu.items[i]) then menu.sel = i; core.redraw = true; return end
+  end
+end
+
+function menu.activate()
+  local it = menu.sel and menu.items[menu.sel]
+  if not selectable(it) then return false end
+  menu.hide()
+  if it.action then it.action()
+  elseif it.command then require("core.command").perform(it.command) end
+  return true
 end
 
 function menu.hide()
@@ -30,6 +75,7 @@ function menu.hide()
   menu.open = false
   menu.items = {}
   menu.hits = {}
+  menu.sel, menu.scroll = nil, 0
   core.redraw = true
 end
 
@@ -39,31 +85,64 @@ function menu.draw()
   local font = style.font
   local bh = widgets.height(font)
   local pad = style.padding.x
+  local mark = "\u{2713} "          -- the current value's tick
   local width = 0
   for _, it in ipairs(menu.items) do
-    width = math.max(width, widgets.width(font, it.label or ""))
+    width = math.max(width, widgets.width(font, (it.heading or it.label or "") .. mark))
   end
   width = math.max(width + pad, menu.anchor.w or 0)
-  local h = #menu.items * bh + pad
+
   local win_w, win_h = renderer.get_size()
+  -- How many rows fit above (preferred) or below the anchor. A dropdown that
+  -- runs off the screen is worse than one that scrolls, and a model list can be
+  -- long, so the height is clamped to what there is room for.
+  local above = menu.anchor.y - 8
+  local below = win_h - (menu.anchor.y + (menu.anchor.h or bh)) - 8
+  local space = math.max(above, below)
+  local rows = math.max(1, math.min(#menu.items, math.floor((space - pad) / bh)))
+  menu.rows = rows
+
+  -- keep the highlighted row in view
+  if menu.sel then
+    if menu.sel <= menu.scroll then menu.scroll = menu.sel - 1
+    elseif menu.sel > menu.scroll + rows then menu.scroll = menu.sel - rows end
+  end
+  menu.scroll = math.max(0, math.min(menu.scroll, math.max(0, #menu.items - rows)))
+
+  local h = rows * bh + pad
   local x = menu.anchor.x
   if x + width > win_w then x = math.max(0, win_w - width) end
-  local y = menu.anchor.y - h - 4
-  if y < 0 then y = menu.anchor.y + (menu.anchor.h or bh) + 4 end
+  local y = (above >= h) and (menu.anchor.y - h - 4)
+    or (menu.anchor.y + (menu.anchor.h or bh) + 4)
   if y + h > win_h then y = math.max(0, win_h - h) end
 
   renderer.draw_rect(x - 1, y - 1, width + 2, h + 2, style.divider)
   renderer.draw_rect(x, y, width, h, style.background2)
   local iy = y + pad / 2
-  for _, it in ipairs(menu.items) do
+  for i = menu.scroll + 1, math.min(#menu.items, menu.scroll + rows) do
+    local it = menu.items[i]
     local r = { x = x, y = iy, w = width, h = bh }
-    local hov = menu.mouse and widgets.inside(r, menu.mouse.x, menu.mouse.y)
-    if hov then renderer.draw_rect(x, iy, width, bh, style.line_highlight) end
-    common.draw_text(font, style.text, it.label or "", "left",
-      x + pad / 2, iy, width, bh)
-    r.item = it
-    menu.hits[#menu.hits + 1] = r
+    if it.heading then
+      common.draw_text(font, style.dim, it.heading, "left", x + pad / 2, iy, width, bh)
+    else
+      local hov = (menu.mouse and widgets.inside(r, menu.mouse.x, menu.mouse.y))
+        or (menu.sel == i)
+      if hov then renderer.draw_rect(x, iy, width, bh, style.line_highlight) end
+      common.draw_text(font, it.checked and style.accent or style.text,
+        (it.checked and mark or "") .. (it.label or ""), "left",
+        x + pad / 2, iy, width, bh)
+      r.item = it
+      menu.hits[#menu.hits + 1] = r
+    end
     iy = iy + bh
+  end
+  -- Say that there is more, rather than silently truncating.
+  if #menu.items > rows then
+    local hidden = #menu.items - rows - menu.scroll
+    if hidden > 0 then
+      common.draw_text(font, style.dim, "  " .. hidden .. " more \u{2193}", "left",
+        x + pad / 2, y + h - bh, width, bh)
+    end
   end
 end
 
@@ -108,6 +187,31 @@ function menu.install()
   function RootView:draw()
     od(self)
     if menu.open then menu.draw() end
+  end
+
+  -- The wheel scrolls the list rather than the view underneath it.
+  local omw = RootView.on_mouse_wheel
+  function RootView:on_mouse_wheel(y, ...)
+    if menu.open then
+      menu.scroll = math.max(0, menu.scroll - (y > 0 and 1 or -1))
+      core.redraw = true
+      return
+    end
+    return omw(self, y, ...)
+  end
+
+  -- Keyboard. A dropdown you can only use with the mouse is half a control,
+  -- and this one opens from a keyboard-reachable button.
+  local keymap = require "core.keymap"
+  local okp = keymap.on_key_pressed
+  function keymap.on_key_pressed(k, ...)
+    if menu.open then
+      if k == "up" then menu.move(-1); return true end
+      if k == "down" then menu.move(1); return true end
+      if k == "return" or k == "keypad enter" then return menu.activate() end
+      if k == "escape" then menu.hide(); return true end
+    end
+    return okp(k, ...)
   end
 end
 

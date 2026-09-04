@@ -299,6 +299,13 @@ function shell.attach()
       return SwarmView.current()
     end
   end)
+  -- The anchored dropdown (core/menu.lua). It was written, wired to the model
+  -- and permission-mode chips, and never installed -- so `menu.show` set a flag
+  -- that nothing drew and nothing routed clicks to, and clicking either chip
+  -- did nothing at all. Installed AFTER the modal spine so its Escape and
+  -- arrow keys are seen first: an open dropdown owns those keys while it is up.
+  core.try(function() require("core.menu").install() end)
+
   shell.switch("agent")
   core.try(function() require("core.welcomeview").maybe_open() end)
   -- The shell suppresses studio.attach, which is otherwise the only MCP start.

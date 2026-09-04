@@ -78,6 +78,30 @@ core.add_thread(function()
       .. "or justify it in uidiscover.lua's INTERNAL list")
   end
 
+  -- The anchored dropdown has to be INSTALLED, not merely written. It was
+  -- wired to the model and permission-mode chips and never installed, so
+  -- menu.show() set a flag nothing drew: clicking either chip did nothing at
+  -- all, and no test noticed because the code was all present and correct.
+  local menu = require "core.menu"
+  check(menu._installed == true,
+    "core.menu is not installed -- the model/mode dropdowns will not draw")
+
+  -- ...and the model dropdown has to contain models. It used to offer exactly
+  -- two rows (the current model and "Enter model..."), which looks like a
+  -- picker and behaves like a text prompt.
+  command.perform("agent:set-model")
+  check(menu.open, "agent:set-model did not open a dropdown")
+  local rows, checked = 0, 0
+  for _, it in ipairs(menu.items or {}) do
+    if not it.heading then rows = rows + 1 end
+    if it.checked then checked = checked + 1 end
+  end
+  check(rows >= 5, "the model dropdown offers only " .. rows
+    .. " choice(s) -- it should list the catalog")
+  check(checked <= 1, "the model dropdown marks " .. checked
+    .. " rows as current; at most one can be")
+  menu.hide()
+
   -- The palette has to be reachable without knowing the palette exists.
   check(inmenu["core:find-command"] ~= nil,
     "the command palette itself is not in any menu")

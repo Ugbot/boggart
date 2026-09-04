@@ -715,9 +715,11 @@ command.add(nil, {
   ["agent:set-mode"] = function()
     local v = studio.view or studio.open_agent()
     local items = {}
+    local cur_mode = v.mode or (require("perm").state().mode)
     for _, m in ipairs(v.MODES) do
       items[#items + 1] = {
         label = string.format("%s -- %s", m.label, m.help),
+        checked = (m.id == cur_mode),   -- open on the mode you are actually in
         action = function() v:set_mode(m.id) end,
       }
     end
@@ -861,10 +863,77 @@ command.add(nil, {
       bog.session.model = model
       core.log("model: %s", model)
     end
-    local items = {}
-    if current ~= "" then
-      items[#items + 1] = { label = current, action = function() apply(current) end }
+    -- The dropdown, filled from the catalog.
+    --
+    -- It used to offer exactly two rows -- the model you were already on, and
+    -- "Enter model…" -- so the control looked like a picker and behaved like a
+    -- text prompt. Now it lists what is actually available, grouped by
+    -- provider, with the providers you can REACH first: a model whose key is
+    -- missing is not a choice, it is a detour, so those are shown last and
+    -- labelled rather than mixed in.
+    local items, listed = {}, {}
+    local okc, cat = pcall(require, "catalog")
+    if okc then
+      -- roles first: they are the answer to "which model for this kind of
+      -- work", which is what a person is usually choosing between.
+      local roles = cat.roles()
+      local rnames = {}
+      for n in pairs(roles) do rnames[#rnames + 1] = n end
+      table.sort(rnames)
+      if #rnames > 0 then
+        items[#items + 1] = { heading = "roles" }
+        for _, n in ipairs(rnames) do
+          local target = roles[n][1]
+          items[#items + 1] = {
+            label = string.format("%s  (%s)", n, table.concat(roles[n], " → ")),
+            action = function() apply(target) end,
+          }
+        end
+      end
+
+      -- models, grouped by provider, keyed providers first
+      local by_provider, order = {}, {}
+      for _, m in ipairs(cat.models{}) do
+        local pn = m.provider or "other"
+        if not by_provider[pn] then by_provider[pn] = {}; order[#order + 1] = pn end
+        table.insert(by_provider[pn], m)
+      end
+      local keyed = {}
+      for _, pn in ipairs(order) do
+        local pr = cat.provider(pn)
+        keyed[pn] = pr and auth.has_key and auth.has_key(pr.key_slot or pn) or false
+      end
+      table.sort(order, function(a, b)
+        if keyed[a] ~= keyed[b] then return keyed[a] end
+        return a < b
+      end)
+      for _, pn in ipairs(order) do
+        items[#items + 1] = { heading = keyed[pn] and pn or (pn .. "  (no key)") }
+        for _, m in ipairs(by_provider[pn]) do
+          local label = m.id
+          if m.context then label = label .. "   " .. math.floor(m.context / 1000) .. "k" end
+          listed[m.id] = true
+          items[#items + 1] = {
+            label = label, checked = (m.id == current),
+            action = function() apply(m.id) end,
+          }
+        end
+      end
     end
+    -- Pin the current model at the top only when the catalog does not already
+    -- list it (a hand-typed id, or one from a provider that has been removed).
+    -- Compared by ID, not by the drawn label: the label carries the context
+    -- size, so matching on it always failed and always produced a duplicate row
+    -- above the list.
+    if current ~= "" and not listed[current] then
+      table.insert(items, 1, { label = current, checked = true,
+                               action = function() apply(current) end })
+    end
+    items[#items + 1] = { heading = "" }
+    items[#items + 1] = {
+      label = "Search all models…",
+      action = function() command.perform("agent:models") end,
+    }
     items[#items + 1] = {
       label = "Enter model…",
       action = function()
