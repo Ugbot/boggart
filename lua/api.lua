@@ -45,9 +45,13 @@ local function wire()
 end
 M.wire = wire
 
-local function endpoint()
-  local base = auth.base_url()
-  if wire() == "openai" then
+-- The URL a request goes to. Both arguments default to the configured endpoint
+-- and wire, so every existing caller is unchanged; a ROUTE (lua/route.lua)
+-- passes its own so one turn can talk to a different server than the next.
+local function endpoint(base, w)
+  base = base or auth.base_url()
+  w = w or wire()
+  if w == "openai" then
     -- OpenAI-compatible: POST <base>/v1/chat/completions. Accept a bare origin,
     -- a base already ending in /v1, or the full path, so the user doesn't have
     -- to remember the exact suffix.
@@ -57,7 +61,7 @@ local function endpoint()
     if base:match("/v1$") then return base .. "/chat/completions" end
     return base .. "/v1/chat/completions"
   end
-  if wire() == "responses" then
+  if w == "responses" then
     -- OpenAI's modern Responses API: POST <base>/v1/responses.
     if not base or base == "" then base = "https://api.openai.com" end
     base = base:gsub("/+$", "")
@@ -244,7 +248,16 @@ local function retry_delay(attempt)
   return math.floor(ms * (0.75 + math.random() * 0.5))
 end
 
-local function auth_headers()
+local function auth_headers(w_in)
+  -- The cache holds the CONFIGURED endpoint's headers. A routed request names
+  -- its own wire, and caching that would poison the next unrouted one, so a
+  -- routed call builds its list fresh -- two table constructions per request,
+  -- which is nothing next to the round trip.
+  if w_in then
+    return (w_in == "openai" or w_in == "responses")
+      and { "content-type: application/json" }
+      or { "anthropic-version: 2023-06-01", "content-type: application/json" }
+  end
   if cached_headers then return cached_headers end
   -- OpenAI-compatible servers reject/ignore the anthropic-version header; send
   -- only content-type. A local llama.cpp wants no credential at all, which the
@@ -977,13 +990,19 @@ local function to_anthropic_body(body)
 end
 
 -- ---- the transport (always runs inside a scheduler coroutine) --------------
-local function stream_async_once(body, on_text, w, on_think)
+local function stream_async_once(body, on_text, w, on_think, rt)
   local dec = (w == "responses" and new_responses_decoder(on_text, on_think))
     or (w == "openai" and new_openai_decoder(on_text, on_think))
     or new_decoder(on_text, on_think)
   local raw = {}
+  local url = endpoint(rt and rt.url, w)
   local req = http.begin{
-    url = endpoint(), method = "POST", headers = auth_headers(), auth = true,
+    url = url, method = "POST",
+    headers = auth_headers(rt and rt.wire), auth = true,
+    -- `wire` rides along so C picks the right credential SHAPE (Bearer vs
+    -- x-api-key) for this destination; the key itself is chosen in C from the
+    -- url. See boggart_auth_header_for in src/lauth.c.
+    wire = rt and rt.wire or nil,
     body = body, timeout = 600,
   }
   local status, err
@@ -1003,20 +1022,20 @@ end
 
 -- Same policy as the sync path. The backoff yields rather than sleeping, so a
 -- rate-limited agent does not stop the others from working.
-local function stream_async(body_tbl, on_text, on_think)
+local function stream_async(body_tbl, on_text, on_think, rt)
   -- Belt-and-suspenders: the primary fix scrubs content at ingest, but a
   -- session resumed from the store that was written *before* that fix could
   -- still carry invalid bytes. Scrubbing the fully-encoded body once here
   -- guarantees the outbound request is always valid UTF-8 no matter its
   -- provenance. It is a no-op (a single O(n) scan, no allocation) whenever the
   -- body is already valid, which after the ingest scrub is the normal case.
-  local w = wire()
+  local w = (rt and rt.wire) or wire()
   local tbl = (w == "responses" and to_responses_body(body_tbl))
     or (w == "openai" and to_openai_body(body_tbl))
     or to_anthropic_body(body_tbl)
   local body = util.to_valid_utf8(json.encode(tbl))
   for attempt = 1, M.RETRY.attempts do
-    local msg, stop, serr, status, terr, raw = stream_async_once(body, on_text, w, on_think)
+    local msg, stop, serr, status, terr, raw = stream_async_once(body, on_text, w, on_think, rt)
     if status == 200 and not serr then return msg, stop end
     if status == 401 or status == 403 then cached_headers = nil end
 
@@ -1334,7 +1353,19 @@ function M.compact(sess, opts)
   -- deterministic run (opts.stream set) must summarise through the SAME mock,
   -- never fall back to the network. Otherwise "no model call" would be a lie the
   -- moment a session crosses the compaction threshold.
-  local stream = opts.stream or stream_async
+  --
+  -- Compaction is bookkeeping, not judgement: summarising a transcript does not
+  -- need the model doing the work. If a `cheap` (or `fast`) preset exists, the
+  -- summary goes there and the conversation stays where it is -- the one place
+  -- a per-call model change pays for itself on every long session. With no such
+  -- preset, route.utility() returns the current route and nothing changes.
+  local route = opts.compact_route and require("route").resolve(opts.compact_route)
+    or (sess.compact_route and require("route").resolve(sess.compact_route))
+    or require("route").utility()
+  local stream_impl = opts.stream or stream_async
+  local stream = function(body, sink, think_sink)
+    return stream_impl(body, sink, think_sink, route)
+  end
   local system = opts.system or function() return bog.prompt.system() end
 
   if #sess.messages == 0 then return false end
@@ -1351,7 +1382,7 @@ function M.compact(sess, opts)
     copy[#copy + 1] = last
     copy[#copy + 1] = { role = "user", content = COMPACT_PROMPT }
   end
-  local msg = stream({ model = sess.model, max_tokens = 4096, system = system(),
+  local msg = stream({ model = route.model or sess.model, max_tokens = 4096, system = system(),
     messages = copy, stream = true }, nil)
   local summary = msg_text(msg)
 
@@ -1612,7 +1643,19 @@ function M.run_on(sess, user_text, on_text, opts)
   -- drive the whole loop deterministically with no network (boggart had no such
   -- seam -- the "mock wire" was only "point at a local server"). A scripted
   -- stream(body, sink) returns the same (msg, stop) shape as stream_async.
-  local stream = opts.stream or stream_async
+  --
+  -- WHICH MODEL, WHERE. Resolved once per run and carried on every request of
+  -- this turn. Precedence: what this CALL asked for (opts.model / opts.route),
+  -- then what this AGENT was given (sess.route / sess.model), then the
+  -- configured endpoint. A spec may name a preset, so "use ds4 for this child"
+  -- switches the model, the endpoint, the wire and the credential in one word.
+  local route = require("route").resolve(
+    opts.route or opts.model or sess.route or sess.model)
+  sess.resolved_route = route   -- so a status line can say where a turn went
+  local stream_impl = opts.stream or stream_async
+  local stream = function(body, sink, think_sink)
+    return stream_impl(body, sink, think_sink, route)
+  end
   local system = opts.system or function() return bog.prompt.system() end
   local tools_fn = opts.tools or function() return bog.tools.schemas() end
   -- Gate by default. If the front end did not pass its own run_tool, wrap the
@@ -1771,7 +1814,9 @@ function M.run_on(sess, user_text, on_text, opts)
     M.maybe_compact(sess, opts)
 
     local body = {
-      model = sess.model,
+      -- the ROUTE's model: it may differ from sess.model when this call or this
+      -- agent was pointed somewhere else
+      model = route.model or sess.model,
       max_tokens = sess.max_tokens or 16000,
       system = system(),
       messages = sess.messages,

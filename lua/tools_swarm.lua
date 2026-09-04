@@ -39,7 +39,7 @@ defs.spawn = {
     properties = {
       task = { type = "string" },
       agent = { type = "string", description = "standard agent name" },
-      model = { type = "string" },
+      model = { type = "string", description = "model for this child. Either a model id, or the NAME of a configured endpoint preset -- which carries its own server, wire and credential, so a child can run on a different provider entirely (e.g. a cheap local model for a mechanical subtask). `preset/model-id` picks a specific model at that endpoint." },
       skills = { type = "array", description = "skill names" },
       deliverables = { type = "array", description = "absolute paths the agent must create for success" },
       verify = { type = "string", description = "a checker tool run (trusted) on the deliverable to confirm success" },

@@ -147,6 +147,18 @@ M.route("POST", "/permissions", function(req)
   return ok({ mode = st.mode, rules = st.rules or {} })
 end, "set the mode and/or the rule table")
 
+-- ---- models ---------------------------------------------------------------
+
+M.route("GET", "/models", function()
+  local route = require "route"
+  local cur = route.current()
+  return ok({
+    current = { model = cur.model, url = cur.url, wire = cur.wire },
+    utility = (function() local u = route.utility(); return { model = u.model, name = u.name } end)(),
+    presets = route.list(),
+  })
+end, "the current destination and every named one (per-agent model routing)")
+
 -- ---- the fleet ------------------------------------------------------------
 
 M.route("GET", "/agents", function()

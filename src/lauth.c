@@ -231,18 +231,40 @@ static const char *env_key_for(const char *provider) {
   return (v && *v) ? v : NULL;
 }
 
-const char *boggart_auth_header(void) {
+/* The credential for the endpoint a request is ACTUALLY going to.
+ *
+ * The single-endpoint version of this derived the provider from the globally
+ * configured base URL, which is fine while there is one endpoint and wrong the
+ * moment there is more than one: a fleet with a local model on one port and a
+ * cloud model on another would have sent one provider's key to the other's
+ * host. This file already warned about exactly that -- "a stored provider can
+ * disagree with the URL the request is actually going to, and that disagreement
+ * is invisible at exactly the moment it matters" -- so routing per request is
+ * the correctness fix and the per-agent-model feature at once.
+ *
+ * `url` and `wire` are the request's own; either may be NULL, in which case the
+ * globally configured value stands in. The key itself never crosses into Lua:
+ * Lua names a destination, C picks the credential for it. */
+const char *boggart_auth_header_for(const char *url, const char *wire) {
   auth_load();
-  const char *provider = boggart_auth_provider();
+  char pbuf[AUTH_NAME_MAX];
+  const char *provider;
+  if (url && *url) {
+    provider_of(url, pbuf, sizeof(pbuf));
+    provider = pbuf;
+  } else {
+    provider = boggart_auth_provider();
+  }
   const char *env = env_key_for(provider);
   const char *stored = key_slot(provider, 0);
   const char *key = env ? env : ((stored && stored[0]) ? stored : NULL);
   if (!key) return NULL;
   static char hdr[AUTH_MAX + 32];
   /* OpenAI-shaped wires (chat-completions and the Responses API) authenticate
-   * with a Bearer token; Anthropic uses x-api-key. The wire is env-overridable,
-   * matching auth.wire()'s precedence. */
-  const char *wire = getenv("ANTHROPIC_WIRE");
+   * with a Bearer token; Anthropic uses x-api-key. A wire named by the request
+   * wins; otherwise the env override, then the stored value -- matching
+   * auth.wire()'s precedence. */
+  if (!wire || !*wire) wire = getenv("ANTHROPIC_WIRE");
   if (!wire || !*wire) wire = g_wire;
   if (wire && (strcmp(wire, "openai") == 0 || strcmp(wire, "responses") == 0)) {
     snprintf(hdr, sizeof(hdr), "authorization: Bearer %s", key);
@@ -250,6 +272,12 @@ const char *boggart_auth_header(void) {
     snprintf(hdr, sizeof(hdr), "x-api-key: %s", key);
   }
   return hdr;
+}
+
+/* The configured endpoint's credential -- the old behaviour, unchanged, for
+ * every caller that is not routing a specific request. */
+const char *boggart_auth_header(void) {
+  return boggart_auth_header_for(NULL, NULL);
 }
 
 /* ---- Lua surface ---------------------------------------------------------- */

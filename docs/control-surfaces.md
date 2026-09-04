@@ -46,6 +46,7 @@ Every C module in `src/`, why it is C, and what would be lost if it were not.
 
 | Module | What it is | Why C | If it were Lua |
 |---|---|---|---|
+| `lauth.c` (routing) | the credential for the endpoint a request is **actually going to** | (2) the key must never be readable from Lua: Lua names a url, C picks the key | a fleet spanning two providers would send one's key to the other's host |
 | `lserve.c` | **inbound control plane**: TCP listen/accept, HTTP/1.1 framing, SSE pump, bind rule, token check | (1) Lua has no sockets; (2) the loopback-default and the constant-time token compare must not be editable | there would be no inbound at all — and an auth check the agent can rewrite is decoration |
 | `lhttp.c` | outbound HTTP + SSE streaming (libcurl) | (1) TLS and sockets | no model calls |
 | `lsys.c` | fs, exec, paths, globs, process caps — **with the refusals in it** | (1) syscalls; (2) `rmtree` refusing `/`, `getenv` refusing secrets | the capability boundary would have a hole in exactly the places it matters |
@@ -238,6 +239,54 @@ spawn{
   stricter of the two), so a spawn can never hand a child more authority than
   the coordinator has. That direction is the whole point.
 
+### 3.8 Per-agent and per-call models — C credential routing + Lua routes
+
+`model` was per-session, but the endpoint, the wire and the key were **global**,
+so "use a different model" only worked if the other model happened to live on
+the same server behind the same protocol. A fleet could not put a cheap local
+critic next to a strong cloud coder — the obvious thing to want the moment there
+is more than one agent.
+
+A **route** is the whole destination — `{ model, url, wire }` — resolved per
+request rather than read from global state:
+
+```lua
+spawn{ task = "review this diff", model = "ds4" }        -- a whole provider, in one word
+spawn{ task = "rename the symbol", model = "cheap" }     -- somewhere else entirely
+route.resolve("ds4/deepseek-v4-pro")                     -- that endpoint, a specific model
+```
+
+A spec may be `nil` (unchanged behaviour), a bare model id (same endpoint), the
+name of an endpoint **preset** — which already bundled exactly this trio — or
+`preset/model-id`. An unknown name is treated as a model id rather than an
+error, because failing a turn over a typo is worse than letting the endpoint say
+it does not know that model.
+
+**The C part, and why it had to be C.** `boggart_auth_header()` derived the
+credential from the *globally configured* base URL. That is fine with one
+endpoint and wrong with two: a fleet spanning a local port and a cloud host
+would have sent one provider's key to the other's server. `lauth.c` already
+warned about exactly this — *"a stored provider can disagree with the URL the
+request is actually going to, and that disagreement is invisible at exactly the
+moment it matters"* — so `boggart_auth_header_for(url, wire)` is the correctness
+fix and the feature at once. It stays in C for rule 2: **the key must never be
+readable from Lua**, so Lua names a destination and C picks the credential
+registered for it. The store was already keyed per provider; nothing new is
+stored.
+
+Two things fall out for free. **Compaction gets the cheap seat**: summarising a
+transcript is bookkeeping, not judgement, so if a `cheap` (or `fast`) preset
+exists the summary goes there while the conversation stays put — the one place
+per-call routing pays for itself on every long session. And `GET /models` on the
+control plane reports the current destination, the utility route and every named
+one, so a client can see where each agent is pointed.
+
+Precedence, once, because it is the whole contract: **what this call asked for**
+(`opts.model` / `opts.route`) → **what this agent was given** (`sess.route` /
+`sess.model`, from `spawn{model=}` or the agent's own spec) → **the configured
+endpoint**. With nothing specified anywhere, every request goes exactly where it
+went before.
+
 ---
 
 ## 4. Gates
@@ -247,7 +296,7 @@ is worse than one that was never built.
 
 | Gate | What it holds |
 |---|---|
-| `ctest` (48 suites) | `perm` (72 assertions), `control` (29, real HTTP round trips), `triggers` (36), `structured` (27) among them |
+| `ctest` (49 suites) | `perm` (72 assertions), `control` (29, real HTTP round trips), `triggers` (36), `structured` (27) among them |
 | `ninja core-parity` | the CLI and the studio expose one core — `serve` is registered in both |
 | `ninja ui-discover` | every feature reachable from a menu; no dead rows |
 | `ninja ui-overlay` | overlays survive partial-damage frames |

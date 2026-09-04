@@ -156,7 +156,16 @@ function M.new_agent(p)
     error("unknown skill(s): " .. table.concat(unknown, ", ")
       .. " (see the `skills` tool for what exists)", 0)
   end
-  local model = p.model or spec.model or bog.session.model
+  -- WHICH MODEL THIS AGENT USES. The spec may be a bare model id or the name of
+  -- a preset, which carries an endpoint and a wire with it -- so a coordinator
+  -- can put a cheap local critic beside a cloud coder with `spawn{ model =
+  -- "ds4" }`. Precedence: the spawn call, then the agent's own spec (an agent
+  -- definition may declare a preferred model), then whatever the parent is on.
+  -- Resolved here rather than per turn so the record shows a real model id and
+  -- the destination is fixed for the child's whole life.
+  local spec_model = p.model or spec.model or bog.session.route or bog.session.model
+  local route = require("route").resolve(spec_model)
+  local model = route.model
   -- Resume: adopt an existing saved session row (its id + transcript) rather than
   -- forking a fresh one, so the conversation continues in place -- what
   -- `boggart --tui --resume [id]` wants. Falls through to a fresh row if the id
@@ -167,6 +176,7 @@ function M.new_agent(p)
     if s then
       id, resumed_messages = s.id, s.messages or {}
       model = s.model or model
+      if s.model then route = require("route").resolve(s.model) end
       pcall(bog.store.thread_save, id, { status = "running" })
     end
   end
@@ -193,7 +203,8 @@ function M.new_agent(p)
     -- A permission profile for this child alone (perm.lua rule tables). May
     -- only narrow what the run permits; see agent_opts.run_tool.
     perms = p.perms,
-    session = { id = id, model = model, messages = resumed_messages or {}, max_tokens = 16000,
+    session = { id = id, model = model, route = route,
+                messages = resumed_messages or {}, max_tokens = 16000,
                 compact_at = 400000,
                 -- a per-child budget when the coordinator set one; the turn
                 -- loop in api.lua already enforces token_budget and reports

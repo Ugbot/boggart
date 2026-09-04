@@ -27,6 +27,9 @@
  * the Lua state: a request asks for auth with `auth = true` and the header is
  * built in C from the C-side store. */
 const char *boggart_auth_header(void);
+/* The credential for the endpoint THIS request is going to (src/lauth.c). Lua
+ * names a url/wire; the key itself never crosses the boundary. */
+const char *boggart_auth_header_for(const char *url, const char *wire);
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -98,10 +101,17 @@ static int l_http_request(lua_State *L) {
   }
   lua_pop(L, 1); /* headers table */
 
-  /* auth = true: attach the credential in C. Lua never holds the value. */
+  /* auth = true: attach the credential in C. Lua never holds the value.
+   * The credential is chosen for the URL this request is actually going to,
+   * so a fleet running two models on two endpoints sends each its own key. */
   lua_getfield(L, 1, "auth");
   if (lua_toboolean(L, -1)) {
-    const char *ah = boggart_auth_header();
+    lua_getfield(L, 1, "url");
+    const char *aurl = lua_tostring(L, -1);
+    lua_getfield(L, 1, "wire");
+    const char *awire = lua_tostring(L, -1);
+    const char *ah = boggart_auth_header_for(aurl, awire);
+    lua_pop(L, 2);
     if (ah) hdrs = curl_slist_append(hdrs, ah);
   }
   lua_pop(L, 1);
@@ -451,7 +461,12 @@ static int l_http_begin(lua_State *L) {
   lua_pop(L, 1);
   lua_getfield(L, 1, "auth");
   if (lua_toboolean(L, -1)) {
-    const char *ah = boggart_auth_header();
+    lua_getfield(L, 1, "url");
+    const char *aurl = lua_tostring(L, -1);
+    lua_getfield(L, 1, "wire");
+    const char *awire = lua_tostring(L, -1);
+    const char *ah = boggart_auth_header_for(aurl, awire);
+    lua_pop(L, 2);
     if (ah) r->hdrs = curl_slist_append(r->hdrs, ah);
   }
   lua_pop(L, 1);
