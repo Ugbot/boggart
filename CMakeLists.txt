@@ -745,6 +745,18 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
     COMMENT "Checking an overlay survives a partially damaged frame"
     USES_TERMINAL)
 
+  # `ninja ui-discover` guards findability: no menu row pointing at a command
+  # that does not exist, and no product-surface command without a menu home.
+  # Written after a measurement -- 248 commands, 76 in menus -- because "some
+  # features are too hard to find" is a bug with a number attached.
+  add_custom_target(ui-discover
+    COMMAND ${CMAKE_COMMAND} -E env
+      BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/uidiscover.lua
+      $<TARGET_FILE:boggart-studio> ${CMAKE_CURRENT_SOURCE_DIR}
+    DEPENDS boggart-studio
+    COMMENT "Checking every studio feature can be found from a menu"
+    USES_TERMINAL)
+
   add_custom_target(studio-start
     COMMAND ${CMAKE_COMMAND} -E env
       BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/uistart.lua

@@ -13,7 +13,7 @@ local MenuBar = View:extend()
 
 MenuBar.menus = {
   "boggart", "File", "Edit", "Selection", "View", "Go",
-  "Agent", "Run", "Fleet", "Tools", "Help",
+  "Agent", "Run", "Fleet", "Service", "Tools", "Help",
 }
 
 local GAP = 10  -- px around each title

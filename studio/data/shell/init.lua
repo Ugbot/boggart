@@ -325,6 +325,37 @@ command.add(nil, {
     if require("shell.automations").stop_schedule() then core.log("schedule stopped")
     else core.log("nothing scheduled") end
   end,
+
+  -- ---- the control plane, from the desktop --------------------------------
+  --
+  -- Same door the CLI's `boggart serve` opens: the C listener (src/lserve.c)
+  -- with the Lua routes (lua/control.lua) on top. Exposed here because a
+  -- feature nobody can find is a feature nobody has -- the studio is where
+  -- most people will want to turn this on, hand the URL to a phone or a
+  -- webhook, and turn it off again.
+  ["service:start"] = function()
+    local control = require "control"
+    if control.server then core.log("service already on: %s", control.url()); return end
+    local srv, url = control.start{}
+    if not srv then core.error("service: %s", tostring(url)); return end
+    core.log("service on: %s  (routes: %s/routes)", url, url)
+  end,
+  ["service:stop"] = function()
+    if require("control").stop() then core.log("service off")
+    else core.log("service was not running") end
+  end,
+  ["service:status"] = function()
+    local control = require "control"
+    if not control.server then core.log("service: off"); return end
+    core.log("service: %s  %d event client(s)%s", control.url(),
+      control.server:clients(), control.token and "  [token set]" or "")
+  end,
+  ["service:copy-url"] = function()
+    local control = require "control"
+    if not control.url() then core.log("service is off"); return end
+    system.set_clipboard(control.url())
+    core.log("copied %s", control.url())
+  end,
 })
 keymap.add {
   ["ctrl+1"] = "shell:workspace-agent",
