@@ -72,8 +72,10 @@ local function apply_inline_edit(doc, l1, c1, l2, c2, selection, instruction)
       return
     end
     local before = doc_text(doc)
+    doc:commit_undo() -- boundary: the apply must not merge with prior typing
     doc:remove(l1, c1, l2, c2)
     doc:insert(l1, c1, out)
+    doc:commit_undo() -- nor with whatever the user types next
     local after = doc_text(doc)
     pcall(marks.from_edit, doc, before, after, {})
     core.log("Cmd-K: applied — alt+n to review, alt+r to revert")

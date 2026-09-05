@@ -430,7 +430,10 @@ function DocView:on_mouse_pressed(button, x, y, clicks)
   -- "revert" and get a caret.
   local item = widgets.hit(self.mark_hits, x, y)
   if item and button == "left" then
-    if item.action == "revert" then
+    if item.fn then
+      -- A mark that brought its own actions handles its own click.
+      core.try(item.fn, self, item.mark)
+    elseif item.action == "revert" then
       self:revert_mark(item.mark)
     elseif item.action == "accept" then
       self:accept_mark(item.mark)
@@ -534,16 +537,66 @@ function DocView:draw_line_highlight(x, y)
 end
 
 
+-- Per-span colour overrides. A view may carry `color_spans`:
+--   { [line] = { { col1, col2, color }, ... } }        (byte cols, [col1,col2))
+-- honoured by both draw paths below. This is presentation state only -- it
+-- lives on the view, never the doc, and the caller owns invalidating it when
+-- the text moves. It exists for text that is really in the buffer but must
+-- read differently: ghost completions, dimmed conflict markers, a semantic
+-- overlay.
+function DocView:set_color_spans(line, spans)
+  if spans and #spans > 0 then
+    self.color_spans = self.color_spans or {}
+    self.color_spans[line] = spans
+  elseif self.color_spans then
+    self.color_spans[line] = nil
+  end
+end
+
+-- Draw one token slice, split wherever a colour span begins or ends. `ttext`
+-- starts at absolute byte column `tstart` of line `idx`; returns advanced x.
+-- The no-span case is a single draw call, so lines without overrides cost
+-- exactly what they did before this existed.
+local function draw_slice(self, idx, font, ttext, tstart, x, y, base)
+  local spans = self.color_spans and self.color_spans[idx]
+  if not spans then return renderer.draw_text(font, ttext, x, y, base) end
+  local tend = tstart + #ttext
+  local a = tstart
+  while a < tend do
+    local color, nb = base, tend
+    for _, s in ipairs(spans) do
+      if a >= s[1] and a < s[2] then
+        color = s[3] or color
+        nb = math.min(nb, s[2])
+      elseif s[1] > a then
+        nb = math.min(nb, s[1])
+      end
+    end
+    x = renderer.draw_text(font, ttext:sub(a - tstart + 1, nb - tstart), x, y, color)
+    a = nb
+  end
+  return x
+end
+
 function DocView:draw_line_text(idx, x, y)
   local tx, ty = x, y + self:get_line_text_y_offset()
   local font = self:get_font()
+  local bpos = 1
   for _, type, text in self.doc.highlighter:each_token(idx) do
-    local color = style.syntax[type]
-    tx = renderer.draw_text(font, text, tx, ty, color)
+    tx = draw_slice(self, idx, font, text, bpos, tx, ty, style.syntax[type])
+    bpos = bpos + #text
   end
   return tx
 end
 
+
+-- The standard control pair for an agent hunk (a mark carrying data.revert).
+-- One shared table, never mutated: this is read once per marked visible line
+-- per frame, and allocating it fresh each time is per-frame litter.
+local REVERT_ACCEPT = {
+  { label = "revert", action = "revert", tone = style.warn },
+  { label = "accept", action = "accept", tone = style.good },
+}
 
 -- Virtual text, and whatever controls the mark carries, drawn past the end of
 -- the line.
@@ -557,7 +610,7 @@ end
 function DocView:draw_line_marks(idx, at, x, y)
   local m
   for _, k in ipairs(at) do
-    if k.text or (k.data and k.data.revert) then m = k; break end
+    if k.text or (k.data and (k.data.revert or k.data.actions)) then m = k; break end
   end
   if not m then return end
 
@@ -572,31 +625,28 @@ function DocView:draw_line_marks(idx, at, x, y)
     tx = tx + font:get_width(m.text) + style.padding.x * 0.5
   end
 
-  if m.data and m.data.revert then
+  -- The mark's controls. A mark may carry its own action row (`data.actions`,
+  -- a list of { label, tone, fn }); an agent hunk carries `data.revert` and
+  -- gets the standard pair. Revert and accept sit side by side: the two
+  -- answers to "what about this change?" are a pair, so they are drawn as a
+  -- pair. Accept is the quieter of the two -- it only lifts the decoration,
+  -- never the text -- so it takes the calm "good" tone against revert's
+  -- "warn", the same inversion the two words carry.
+  local actions = m.data and (m.data.actions
+    or (m.data.revert and REVERT_ACCEPT))
+  if actions then
     local hover = self.mark_hover
-    -- Revert and accept sit side by side: the two answers to "what about this
-    -- change?" are a pair, so they are drawn as a pair. Accept is the quieter
-    -- of the two -- it only lifts the decoration, never the text -- so it takes
-    -- the calm "good" tone against revert's "warn", the same inversion the two
-    -- words carry.
-    local rw = widgets.width(font, "revert")
-    local rect = { x = tx, y = y, w = rw, h = lh }
-    widgets.button(font, "revert", tx, y, {
-      w = rw, h = lh, tone = style.warn,
-      hover = hover and widgets.inside(rect, hover.x, hover.y),
-    })
-    rect.item = { mark = m, action = "revert" }
-    self.mark_hits[#self.mark_hits + 1] = rect
-    tx = tx + rw + style.padding.x * 0.5
-
-    local aw = widgets.width(font, "accept")
-    local arect = { x = tx, y = y, w = aw, h = lh }
-    widgets.button(font, "accept", tx, y, {
-      w = aw, h = lh, tone = style.good,
-      hover = hover and widgets.inside(arect, hover.x, hover.y),
-    })
-    arect.item = { mark = m, action = "accept" }
-    self.mark_hits[#self.mark_hits + 1] = arect
+    for _, a in ipairs(actions) do
+      local w = widgets.width(font, a.label)
+      local rect = { x = tx, y = y, w = w, h = lh }
+      widgets.button(font, a.label, tx, y, {
+        w = w, h = lh, tone = a.tone or style.accent,
+        hover = hover and widgets.inside(rect, hover.x, hover.y),
+      })
+      rect.item = { mark = m, action = a.action, fn = a.fn }
+      self.mark_hits[#self.mark_hits + 1] = rect
+      tx = tx + w + style.padding.x * 0.5
+    end
   end
 end
 
@@ -706,7 +756,7 @@ function DocView:draw_wrapped_text(row, x, y)
     if b > a then
       local sub = ttext:sub(a - tstart + 1, b - tstart)
       if not drawn_x then drawn_x = x + font:get_width(text:sub(row.s, a - 1)) end
-      drawn_x = renderer.draw_text(font, sub, drawn_x, y, style.syntax[type])
+      drawn_x = draw_slice(self, row.line, font, sub, a, drawn_x, y, style.syntax[type])
     end
   end
 end

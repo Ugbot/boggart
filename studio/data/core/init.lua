@@ -907,6 +907,18 @@ function core.on_event(type, ...)
 end
 
 
+-- A discrete event sometimes needs a few settled frames after it -- a menu
+-- opening over a repaint, a font reload, a theme switch -- and having every
+-- such site hand-crank core.redraw across frames is how flicker bugs are
+-- born. request_frames(n) keeps the loop drawing for the next n frames; the
+-- counter is consumed in core.step and never goes backwards mid-burst.
+core.frames_to_render = 0
+
+function core.request_frames(n)
+  core.frames_to_render = math.max(core.frames_to_render, n or 2)
+  core.redraw = true
+end
+
 function core.step()
   -- handle events
   local did_keymap = false
@@ -924,6 +936,11 @@ function core.step()
       local _, res = core.try(core.on_event, type, a, b, c, d)
       did_keymap = res or did_keymap
     end
+    core.redraw = true
+    core.last_event = core.frame_start
+  end
+  if core.frames_to_render > 0 then
+    core.frames_to_render = core.frames_to_render - 1
     core.redraw = true
   end
   if mouse_moved then
@@ -1037,11 +1054,24 @@ function core.run()
       -- Nothing changed this frame: block until an event arrives or the earliest
       -- thread is due, instead of busy-spinning at config.fps (the old loop only
       -- blocked when *unfocused*, so a focused-but-idle window pinned a core at
-      -- 60fps forever). When focused we still cap the wait at the caret's blink
-      -- half-period so the cursor keeps blinking; unfocused there is no caret to
-      -- service, so we can afford to wait longer. Either way a real event wakes
-      -- immediately, and time_to_wake keeps the file watcher / threads prompt.
-      local cap = system.window_has_focus() and (blink_period / 2) or 0.25
+      -- 60fps forever). The cap is tiered by how alive the window is:
+      --   * input in the last half second -> one frame period, so a pause in
+      --     typing does not turn the very next keystroke into a long-wait wake;
+      --   * focused but quiet -> the caret's blink half-period, the slowest
+      --     wake at which the cursor still blinks;
+      --   * unfocused -> there is no caret to service, so wait long; the
+      --     file-watcher and other threads still wake us via time_to_wake.
+      -- (The old unfocused cap of 0.25s was SHORTER than the focused one,
+      -- waking the window nobody was looking at more often -- backwards.)
+      -- Either way a real event interrupts the wait immediately.
+      local cap
+      if not system.window_has_focus() then
+        cap = 2.0
+      elseif core.last_event and core.frame_start - core.last_event < 0.5 then
+        cap = 1 / config.fps
+      else
+        cap = blink_period / 2
+      end
       system.wait_event(math.max(0, math.min(cap, time_to_wake)))
     end
     local elapsed = system.get_time() - core.frame_start

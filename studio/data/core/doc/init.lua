@@ -367,6 +367,21 @@ function Doc:redo()
 end
 
 
+-- Undo boundary for structural edits (conflict accept, inline edit apply,
+-- replace-all): everything already on the stack is shifted into the past by
+-- more than the merge timeout, so the next edit can never coalesce with it,
+-- while time deltas inside the committed group are preserved. Undoing the
+-- structural edit then restores exactly the pre-edit state in one step.
+function Doc:commit_undo()
+  local stack = self.undo_stack
+  local shift = config.undo_merge_timeout * 2
+  for i = math.max(1, stack.idx - config.max_undos), stack.idx - 1 do
+    local cmd = stack[i]
+    if cmd then cmd.time = cmd.time - shift end
+  end
+end
+
+
 function Doc:text_input(text)
   if self:has_selection() then
     self:delete_to()
