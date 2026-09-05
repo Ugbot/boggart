@@ -397,6 +397,48 @@ if(BOGGART_VOICE)
   set(VOICE_DEFS BOGGART_VOICE=1)
 endif()
 
+# ---- LLM Station client: libzmq (opt-in) -----------------------------------
+# The native DEALER client for LLM Station's ZeroMQ daemon protocol
+# (src/lstation.c, docs/station-zmq.md). Opt-in behind BOGGART_STATION and OFF
+# by default on the BOGGART_VOICE doctrine: a normal build and CI never fetch
+# libzmq, src/lstation.c is compiled into both binaries regardless, and
+# without the option it degrades to station.built()==false (discovery and the
+# msgpack codec still work -- they need only sqlite/cJSON). libzmq is C++, so
+# like voice this turns CXX on and the executables link with the C++ driver.
+option(BOGGART_STATION "Build the native LLM Station ZeroMQ client" OFF)
+
+set(STATION_LIBS "")
+set(STATION_DEFS "")
+if(BOGGART_STATION)
+  enable_language(CXX)
+  set(BOGGART_ZMQ_VERSION 4.3.5)
+  set(BOGGART_ZMQ_SHA256 6653ef5910f17954861fe72332e68b03ca6e4d9c7160eb3a8de5a5a913bfab43)
+
+  # Static library only: no tests, no perf tools, no draft sockets, no docs.
+  set(BUILD_TESTS     OFF CACHE BOOL "" FORCE)
+  set(ZMQ_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(BUILD_SHARED    OFF CACHE BOOL "" FORCE)
+  set(BUILD_STATIC    ON  CACHE BOOL "" FORCE)
+  set(WITH_PERF_TOOL  OFF CACHE BOOL "" FORCE)
+  set(WITH_DOCS       OFF CACHE BOOL "" FORCE)
+  set(ENABLE_DRAFTS   OFF CACHE BOOL "" FORCE)
+  set(WITH_LIBSODIUM  OFF CACHE BOOL "" FORCE)
+
+  include(FetchContent)
+  FetchContent_Declare(libzmq
+    URL https://github.com/zeromq/libzmq/releases/download/v${BOGGART_ZMQ_VERSION}/zeromq-${BOGGART_ZMQ_VERSION}.tar.gz
+    URL_HASH SHA256=${BOGGART_ZMQ_SHA256}
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  # The 4.3.5 release predates CMake's current minimum-version floor; scope
+  # the compatibility knob to this fetch so nothing else inherits it.
+  set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+  FetchContent_MakeAvailable(libzmq)
+  unset(CMAKE_POLICY_VERSION_MINIMUM)
+
+  set(STATION_LIBS libzmq-static)
+  set(STATION_DEFS BOGGART_STATION=1)
+endif()
+
 # ---- generated embedded Lua ------------------------------------------------
 # Bakes lua/**/*.lua into a C lookup table. Regenerated whenever any Lua
 # source changes; written to the build dir to keep the source tree clean.
@@ -438,16 +480,18 @@ add_executable(boggart
   src/lbus.c
   src/lserve.c
   src/lvoice.c
+  src/lstation.c
   ${EMBEDDED_C})
 
 target_include_directories(boggart PRIVATE src)
 target_link_libraries(boggart PRIVATE
   boggart_warnings
   lua_vendor sqlite_vendor cjson_vendor ltui_curses luv_lua uv_a
-  isocline_vendor CURL::libcurl ${VOICE_LIBS})
-target_compile_definitions(boggart PRIVATE ${VOICE_DEFS})
-if(BOGGART_VOICE)
-  # C executable, C++ static deps (whisper/ggml): link with the C++ driver.
+  isocline_vendor CURL::libcurl ${VOICE_LIBS} ${STATION_LIBS})
+target_compile_definitions(boggart PRIVATE ${VOICE_DEFS} ${STATION_DEFS})
+if(BOGGART_VOICE OR BOGGART_STATION)
+  # C executable, C++ static deps (whisper/ggml, libzmq): link with the C++
+  # driver so libc++/libstdc++ comes along.
   set_target_properties(boggart PROPERTIES LINKER_LANGUAGE CXX)
 endif()
 if(NOT WIN32)
@@ -647,6 +691,7 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
   src/lbus.c
   src/lserve.c
   src/lvoice.c
+  src/lstation.c
     ${EMBEDDED_C})
 
   target_include_directories(boggart-studio PRIVATE
@@ -654,12 +699,12 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
     ${CMAKE_CURRENT_SOURCE_DIR}/studio/src
     ${VENDOR}/stb
     ${SDL3_INCLUDE_DIRS})
-  target_compile_definitions(boggart-studio PRIVATE BOGGART_STUDIO=1 ${VOICE_DEFS})
+  target_compile_definitions(boggart-studio PRIVATE BOGGART_STUDIO=1 ${VOICE_DEFS} ${STATION_DEFS})
   target_link_libraries(boggart-studio PRIVATE
     boggart_warnings
     lua_vendor sqlite_vendor cjson_vendor luv_lua uv_a isocline_vendor
-    CURL::libcurl freetype ${VOICE_LIBS})
-  if(BOGGART_VOICE)
+    CURL::libcurl freetype ${VOICE_LIBS} ${STATION_LIBS})
+  if(BOGGART_VOICE OR BOGGART_STATION)
     set_target_properties(boggart-studio PROPERTIES LINKER_LANGUAGE CXX)
   endif()
   if(NOT WIN32)
@@ -782,7 +827,7 @@ endif()
 # rule itself under test -- it still resolves %LOCALAPPDATA%, that just now
 # points somewhere disposable.
 enable_testing()
-foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects)
+foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home}

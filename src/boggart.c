@@ -35,6 +35,7 @@ int luaopen_boggart_bus(lua_State *L); /* src/lbus.c: pub/sub + work-queue fabri
 int luaopen_boggart_term(lua_State *L); /* src/lterm.c: REPL completion (CLI only) */
 int luaopen_boggart_termctl(lua_State *L); /* src/ltermctl.c: full-screen cTUI (CLI only) */
 int luaopen_boggart_voice(lua_State *L); /* src/lvoice.c: native voice input (opt-in) */
+int luaopen_boggart_station(lua_State *L); /* src/lstation.c: LLM Station ZMQ client (opt-in) */
 int luaopen_boggart_serve(lua_State *L); /* src/lserve.c: the inbound control surface (HTTP+SSE) */
 void boggart_voice_shutdown(void); /* src/lvoice.c: free the warm whisper ctx before exit */
 lua_State *boggart_newstate(void);       /* src/lmem.c: counts real bytes */
@@ -180,6 +181,8 @@ static void register_boggart(lua_State *L, int argc, char **argv) {
   lua_setglobal(L, "tc");
   luaL_requiref(L, "voice", luaopen_boggart_voice, 0);
   lua_setglobal(L, "voice");
+  luaL_requiref(L, "station", luaopen_boggart_station, 0);
+  lua_setglobal(L, "station");
 
   /* ltui's curses binding, as package.preload["ltui.lcurses"] rather than an
    * eager require: opening it allocates metatables and calls setlocale, which

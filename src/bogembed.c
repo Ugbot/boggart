@@ -28,6 +28,7 @@ int luaopen_boggart_worker(lua_State *L);
 int luaopen_boggart_git(lua_State *L);
 int luaopen_boggart_bus(lua_State *L);  /* src/lbus.c: pub/sub + work-queue fabric */
 int luaopen_boggart_voice(lua_State *L); /* src/lvoice.c: native voice input (opt-in) */
+int luaopen_boggart_station(lua_State *L); /* src/lstation.c: LLM Station ZMQ client (opt-in) */
 int luaopen_boggart_serve(lua_State *L); /* src/lserve.c: the inbound control surface (HTTP+SSE) */
 int luaopen_luv(lua_State *L);
 void boggart_open_mem(lua_State *L);
@@ -91,6 +92,7 @@ void boggart_open_libs(lua_State *L) {
   luaL_requiref(L, "bus", luaopen_boggart_bus, 0);     lua_setglobal(L, "bus");
   luaL_requiref(L, "serve", luaopen_boggart_serve, 0); lua_setglobal(L, "serve");
   luaL_requiref(L, "voice", luaopen_boggart_voice, 0); lua_setglobal(L, "voice");
+  luaL_requiref(L, "station", luaopen_boggart_station, 0); lua_setglobal(L, "station");
 
   /* luv lazily: opening it creates a uv_loop_t, and the app only needs one
    * once an agent actually runs. */
