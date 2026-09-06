@@ -956,6 +956,45 @@ function M.clear_cursors(dv)
   if v then v.cursors, v.mc_word = nil, nil end
 end
 
+-- Find-all -> multi-cursor: a caret at EVERY occurrence of `word` (or of the
+-- word under the caret). The interaction that makes multi-cursor pay for
+-- itself: find once, edit everywhere, one dot-repeat fan. Cursors carry their
+-- spawn column as the preferred column (cur[3]), so a fan that lands on a
+-- shorter line clamps for that line only and later fans go back to the
+-- column the cursor was born at.
+function M.add_cursor_all(dv, word)
+  local v = vstate(dv)
+  local doc = dv.doc
+  if not word or word == "" then
+    local l, c = doc:get_selection()
+    local s = doc.lines[l]
+    local function isw(ch)
+      return ch ~= "" and ch ~= "\n" and not config.non_word_chars:find(ch, nil, true)
+    end
+    local a, b = c, c
+    while a > 1 and isw(s:sub(a - 1, a - 1)) do a = a - 1 end
+    while b <= #s and isw(s:sub(b, b)) do b = b + 1 end
+    word = s:sub(a, b - 1)
+  end
+  if word == "" then return 0 end
+  v.mc_word = word
+  local cursors, seen = {}, {}
+  local l, c = 1, 1
+  while true do
+    local nl, nc = search.find(doc, l, c, word, {})
+    if not nl then break end
+    local key = nl * 1e7 + nc
+    if seen[key] then break end
+    seen[key] = true
+    cursors[#cursors + 1] = { nl, nc, nc }
+    l, c = nl, nc + 1
+  end
+  if #cursors == 0 then return 0 end
+  v.cursors = cursors
+  doc:set_selection(cursors[#cursors][1], cursors[#cursors][2])
+  return #cursors
+end
+
 -- Replay M.last_change_keys once at the current primary caret.
 local function replay_change(dv)
   local seq = M.last_change_keys
@@ -988,14 +1027,19 @@ local function fan_to_cursors(dv)
   M.replaying = true
   local updated = {}
   for _, cur in ipairs(others) do
-    doc:set_selection(cur[1], math.min(cur[2], line_last_col(doc, cur[1]) + 1))
+    -- cur[3] is the cursor's preferred column (its spawn column): a fan that
+    -- landed on a shorter line clamps for that line only, and the next fan
+    -- aims back at the preferred column rather than inheriting the clamp.
+    local want = cur[3] or cur[2]
+    doc:set_selection(cur[1], math.min(want, line_last_col(doc, cur[1]) + 1))
     replay_change(dv)
     local nl, nc = doc:get_selection()
-    updated[#updated + 1] = { nl, nc }
+    updated[#updated + 1] = { nl, nc, cur[3] or nc }
   end
   M.replaying = was_replaying
   -- keep the cursor set for further edits
-  updated[#updated + 1] = { doc:get_selection() }
+  local pl, pc = doc:get_selection()
+  updated[#updated + 1] = { pl, pc, pc }
   dv.vim.cursors = updated
 end
 M.fan_to_cursors = fan_to_cursors
@@ -1613,7 +1657,30 @@ command.add(editing_cmd, {
     if v.mode == "vblock" then M.to_normal(dv) else M.start_vblock(dv) end
   end,
   ["vim:add-cursor-next-match"] = function() M.add_cursor_next(core.active_view) end,
+  ["vim:add-cursors-all-matches"] = function()
+    local n = M.add_cursor_all(core.active_view)
+    core.log(n > 0 and (n .. " cursors") or "no matches")
+  end,
   ["vim:clear-cursors"] = function() M.clear_cursors(core.active_view) end,
+})
+
+-- The non-vim entry point aliases into the same machinery: spawning cursors
+-- turns vim on for the fan (the replay engine IS the multi-cursor engine),
+-- which is the honest description of what happens rather than a parallel
+-- implementation. Uses the last find text when the find bar drove it, else
+-- the word under the caret.
+command.add("core.docview", {
+  ["doc:cursors-at-all-matches"] = function()
+    local dv = core.active_view
+    if not M.enabled then
+      M.enabled = true
+      config.vim_mode = true
+      vstate(dv).mode = "normal"
+      core.log("multi-cursor uses the vim engine — vim mode enabled")
+    end
+    local n = M.add_cursor_all(dv)
+    core.log(n > 0 and (n .. " cursors — edit once, it fans to all") or "no matches")
+  end,
 })
 
 -- Toggle is always available (predicate is unconditional) so vim can be turned
@@ -1633,6 +1700,8 @@ command.add(nil, {
 -- unwanted doc command in normal mode. Because keymap.add prepends and
 -- command.perform skips a command whose predicate fails, each of these falls
 -- through to its original binding when vim is off or we're in insert mode.
+keymap.add { ["alt+shift+m"] = "doc:cursors-at-all-matches" }
+
 keymap.add {
   ["escape"] = "vim:normal-mode",
   ["backspace"] = "vim:backspace",

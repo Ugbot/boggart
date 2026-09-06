@@ -63,6 +63,44 @@ for _, must in ipairs {
   ok(loadfile(root .. "/" .. must) ~= nil, "present and compiles: " .. must)
 end
 
+-- Folding: the fold model is pure Lua over a doc-shaped table, so the
+-- detection scans and the collapse rules are checked headlessly here (the
+-- geometry integration is covered by ui-check rendering with folds active).
+do
+  package.path = package.path .. ";" .. root .. "/studio/data/?.lua"
+  local okf, folds = pcall(require, "core.folds")
+  ok(okf, "core.folds loads headlessly (" .. tostring(folds) .. ")")
+  if okf then
+    local function fakedoc(name, lines)
+      local rev = 1
+      for i = 1, #lines do lines[i] = lines[i] .. "\n" end
+      return { filename = name, lines = lines,
+               get_change_id = function() return rev end,
+               bump = function() rev = rev + 1 end }
+    end
+    -- bracket language: a brace pair spanning lines folds; an inline pair not
+    local d = fakedoc("a.c", {
+      "int f() {", "  if (x) { y(); }", "  return 1;", "}", "int g;" })
+    local st = folds.get(d)
+    ok(#st.ranges == 1 and st.ranges[1].s == 1 and st.ranges[1].e == 4,
+      "bracket scan finds the spanning pair only")
+    ok(folds.toggle(d, 1), "toggle collapses at the start line")
+    local hid = folds.hidden(d)
+    ok(hid[2] == 1 and hid[4] == 1 and not hid[1] and not hid[5],
+      "collapsed range hides its body, not its head or the rest")
+    -- collapsed state survives a rescan (edit elsewhere)
+    d.bump()
+    ok(folds.get(d).ranges[1].collapsed, "collapse survives re-detection")
+    -- indent language
+    local d2 = fakedoc("b.py", {
+      "def f():", "    a = 1", "", "    b = 2", "x = 3" })
+    local st2 = folds.get(d2)
+    ok(#st2.ranges >= 1 and st2.ranges[1].s == 1 and st2.ranges[1].e == 4,
+      "indent scan folds the block, trailing blank trimmed (got " ..
+      (st2.ranges[1] and (st2.ranges[1].s .. "-" .. st2.ranges[1].e) or "none") .. ")")
+  end
+end
+
 -- MCP must start from one place. Two threads used to spawn two llm-station
 -- children; one abort()ed on a ZMQ bind race ~2s after the window appeared.
 do

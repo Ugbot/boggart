@@ -47,6 +47,7 @@ M.tree = {
     { "Select all",  "doc:select-all" },
     { "Select word", "doc:select-word" },
     { "Select line", "doc:select-lines" },
+    { "Cursors at all matches", "doc:cursors-at-all-matches" },
   },
   View = {
     { "Workspace: Agent", "shell:workspace-agent" },
@@ -62,6 +63,9 @@ M.tree = {
     { "Toggle station completions", "station-complete:toggle" },
     { "Toggle station diagnostics", "station-diagnostics:toggle" },
     { "Toggle ghost text", "ghost-text:toggle" },
+    { "Fold: toggle at caret", "fold:toggle" },
+    { "Fold all",   "fold:fold-all" },
+    { "Unfold all", "fold:unfold-all" },
     { "Toggle fullscreen", "core:toggle-fullscreen" },
     { "Open log",          "core:open-log" },
   },

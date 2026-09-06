@@ -5,6 +5,7 @@ local style = require "core.style"
 local keymap = require "core.keymap"
 local translate = require "core.doc.translate"
 local marks = require "core.marks"
+local folds = require "core.folds"
 local widgets = require "core.widgets"
 local command = require "core.command"
 local View = require "core.view"
@@ -140,24 +141,48 @@ function DocView:wrap_line_starts(line)
 end
 
 
+-- Display rows are built for BOTH modes now (BSTUD-56): with wrap off a row
+-- is simply the whole line, which costs a table per line and zero font
+-- measurement, and with wrap on it is the measured slices as before. Folding
+-- rides the same table -- a line inside a collapsed range gets no row, and
+-- first[] points it at its fold head's row (the nearestDisplayRow rule), so
+-- every geometry question below has one answer instead of two code paths.
 function DocView:build_wrap()
   local rows, first = {}, {}
   local lines = self.doc.lines
+  local hidden = folds.hidden(self.doc)
+  local head_row = {}
   for line = 1, #lines do
-    first[line] = #rows + 1
-    local starts = self:wrap_line_starts(line)
-    for k = 1, #starts do
-      rows[#rows + 1] = { line = line, s = starts[k], e = starts[k + 1] or (#lines[line] + 1) }
+    local hider = hidden[line]
+    if hider then
+      first[line] = head_row[hider] or 1
+    else
+      first[line] = #rows + 1
+      head_row[line] = #rows + 1
+      if self.wrapping then
+        local starts = self:wrap_line_starts(line)
+        for k = 1, #starts do
+          rows[#rows + 1] = { line = line, s = starts[k], e = starts[k + 1] or (#lines[line] + 1) }
+        end
+      else
+        rows[#rows + 1] = { line = line, s = 1, e = #lines[line] + 1 }
+      end
     end
   end
-  self.wrap = { rows = rows, first = first, w = self:get_wrap_width(), rev = self.doc:get_change_id() }
+  self.wrap = { rows = rows, first = first,
+    w = self.wrapping and self:get_wrap_width() or -1,
+    rev = self.doc:get_change_id(),
+    fold_rev = folds.version(self.doc),
+    wrapping = self.wrapping }
 end
 
 
 function DocView:ensure_wrap()
-  if not self.wrapping then self.wrap = nil; return end
-  if not self.wrap or self.wrap.w ~= self:get_wrap_width()
-     or self.wrap.rev ~= self.doc:get_change_id() then
+  local w = self.wrapping and self:get_wrap_width() or -1
+  if not self.wrap or self.wrap.w ~= w
+     or self.wrap.rev ~= self.doc:get_change_id()
+     or self.wrap.fold_rev ~= folds.version(self.doc)
+     or self.wrap.wrapping ~= self.wrapping then
     self:build_wrap()
   end
 end
@@ -167,7 +192,8 @@ end
 -- the start of the next row.
 function DocView:vrow_of(line, col)
   self:ensure_wrap()
-  local rows, v = self.wrap.rows, self.wrap.first[line]
+  local rows = self.wrap.rows
+  local v = self.wrap.first[math.max(1, math.min(line, #self.wrap.first))] or 1
   while v < #rows and rows[v + 1].line == line and rows[v + 1].s <= col do v = v + 1 end
   return v
 end
@@ -249,14 +275,8 @@ end
 -- shorter than the view yields a negative maximum, which clamp_scroll_position
 -- pins to zero, so short files do not move at all.
 function DocView:get_scrollable_size()
-  local rows
-  if self.wrapping then
-    self:ensure_wrap()
-    rows = #self.wrap.rows
-  else
-    rows = #self.doc.lines
-  end
-  return self:get_line_height() * rows + style.padding.y
+  self:ensure_wrap()
+  return self:get_line_height() * #self.wrap.rows + style.padding.y
 end
 
 
@@ -279,11 +299,8 @@ function DocView:get_line_screen_position(idx, col)
   local x, y = self:get_content_offset()
   local lh = self:get_line_height()
   local gw = self:get_gutter_width()
-  if self.wrapping then
-    local v = self:vrow_of(idx, col or 1)
-    return x + gw, y + (v - 1) * lh + style.padding.y
-  end
-  return x + gw, y + (idx-1) * lh + style.padding.y
+  local v = self:vrow_of(idx, col or 1)
+  return x + gw, y + (v - 1) * lh + style.padding.y
 end
 
 
@@ -297,16 +314,12 @@ end
 function DocView:get_visible_line_range()
   local x, y, x2, y2 = self:get_content_bounds()
   local lh = self:get_line_height()
-  if self.wrapping then
-    self:ensure_wrap()
-    local rows = self.wrap.rows
-    local vmin = common.clamp(math.floor(y / lh), 1, #rows)
-    local vmax = common.clamp(math.floor(y2 / lh) + 1, 1, #rows)
-    return rows[vmin].line, rows[vmax].line
-  end
-  local minline = math.max(1, math.floor(y / lh))
-  local maxline = math.min(#self.doc.lines, math.floor(y2 / lh) + 1)
-  return minline, maxline
+  self:ensure_wrap()
+  local rows = self.wrap.rows
+  if #rows == 0 then return 1, 1 end
+  local vmin = common.clamp(math.floor(y / lh), 1, #rows)
+  local vmax = common.clamp(math.floor(y2 / lh) + 1, 1, #rows)
+  return rows[vmin].line, rows[vmax].line
 end
 
 
@@ -346,21 +359,16 @@ end
 
 
 function DocView:resolve_screen_position(x, y)
-  if self.wrapping then
-    self:ensure_wrap()
-    local ox, oy = self:get_content_offset()
-    local lh = self:get_line_height()
-    local v = math.floor((y - (oy + style.padding.y)) / lh) + 1
-    v = common.clamp(v, 1, #self.wrap.rows)
-    local gw = self:get_gutter_width()
-    local col = self:col_at_vrow(v, x - (ox + gw))
-    return self.wrap.rows[v].line, col
-  end
-  local ox, oy = self:get_line_screen_position(1)
-  local line = math.floor((y - oy) / self:get_line_height()) + 1
-  line = common.clamp(line, 1, #self.doc.lines)
-  local col = self:get_x_offset_col(line, x - ox)
-  return line, col
+  self:ensure_wrap()
+  local ox, oy = self:get_content_offset()
+  local lh = self:get_line_height()
+  local v = math.floor((y - (oy + style.padding.y)) / lh) + 1
+  v = common.clamp(v, 1, math.max(1, #self.wrap.rows))
+  local row = self.wrap.rows[v]
+  if not row then return 1, 1 end
+  local gw = self:get_gutter_width()
+  local col = self:col_at_vrow(v, x - (ox + gw))
+  return row.line, col
 end
 
 
@@ -368,7 +376,8 @@ function DocView:scroll_to_line(line, ignore_if_visible, instant)
   local min, max = self:get_visible_line_range()
   if not (ignore_if_visible and line > min and line < max) then
     local lh = self:get_line_height()
-    self.scroll.to.y = math.max(0, lh * (line - 1) - self.size.y / 2)
+    local v = self:vrow_of(line, 1)
+    self.scroll.to.y = math.max(0, lh * (v - 1) - self.size.y / 2)
     if instant then
       self.scroll.y = self.scroll.to.y
     end
@@ -378,24 +387,18 @@ end
 
 function DocView:scroll_to_make_visible(line, col)
   local lh = self:get_line_height()
+  local v = self:vrow_of(line, col or 1)
+  self.scroll.to.y = math.min(self.scroll.to.y, lh * (v - 1))
+  self.scroll.to.y = math.max(self.scroll.to.y, lh * (v + 2) - self.size.y)
   if self.wrapping then
-    -- Vertical only -- wrapped text never scrolls sideways -- and by visual row.
-    local v = self:vrow_of(line, col or 1)
-    local min = lh * (v - 1)
-    local max = lh * (v + 2) - self.size.y
-    self.scroll.to.y = math.min(self.scroll.to.y, min)
-    self.scroll.to.y = math.max(self.scroll.to.y, max)
+    -- Wrapped text never scrolls sideways.
     self.scroll.to.x = 0
-    return
+  else
+    local gw = self:get_gutter_width()
+    local xoffset = self:get_col_x_offset(line, col)
+    local mx = xoffset - self.size.x + gw + self.size.x / 5
+    self.scroll.to.x = math.max(0, mx)
   end
-  local min = lh * (line - 1)
-  local max = lh * (line + 2) - self.size.y
-  self.scroll.to.y = math.min(self.scroll.to.y, min)
-  self.scroll.to.y = math.max(self.scroll.to.y, max)
-  local gw = self:get_gutter_width()
-  local xoffset = self:get_col_x_offset(line, col)
-  local mx = xoffset - self.size.x + gw + self.size.x / 5
-  self.scroll.to.x = math.max(0, mx)
 end
 
 
@@ -705,7 +708,7 @@ function DocView:draw_line_body(idx, x, y)
           while px < x2 do
             local nx = math.min(px + step, x2)
             renderer.draw_line(px, up and ty + 2 or ty, nx, up and ty or ty + 2,
-              math.max(1, math.floor(SCALE)), color)
+              color, math.max(1, math.floor(SCALE)))
             px = nx
             up = not up
           end
@@ -768,6 +771,36 @@ function DocView:draw_line_gutter(idx, x, y)
   local yoffset = self:get_line_text_y_offset()
   x = x + style.padding.x
   renderer.draw_text(self:get_font(), idx, x, y + yoffset, color)
+
+  -- Fold triangle: a range starting here gets a disclosure marker at the
+  -- gutter's right edge -- collapsed points right, open points down -- with a
+  -- click rect through the same hit list the mark controls use.
+  local fr = folds.range_at(self.doc, idx)
+  if fr then
+    local lh = self:get_line_height()
+    local sz = math.max(3, math.floor(3 * SCALE))
+    local fx = x - style.padding.x + self:get_gutter_width() - sz * 2 - 1
+    local fy = y + math.floor(lh / 2)
+    local t = math.max(1, math.floor(SCALE))
+    local tricolor = fr.collapsed and style.accent or style.line_number
+    if fr.collapsed then
+      renderer.draw_line(fx, fy - sz, fx + sz, fy, tricolor, t)
+      renderer.draw_line(fx + sz, fy, fx, fy + sz, tricolor, t)
+    else
+      renderer.draw_line(fx - sz, fy - 1, fx, fy + sz - 1, tricolor, t)
+      renderer.draw_line(fx, fy + sz - 1, fx + sz, fy - 1, tricolor, t)
+    end
+    self.mark_hits[#self.mark_hits + 1] = {
+      x = fx - sz * 2, y = y, w = sz * 5, h = lh,
+      item = { fn = function(dv)
+        folds.toggle(dv.doc, idx)
+        -- A caret swallowed by the collapse surfaces at the fold head.
+        local hid = folds.hidden(dv.doc)
+        local l = dv.doc:get_selection()
+        if hid[l] then dv.doc:set_selection(hid[l], 1) end
+      end },
+    }
+  end
 end
 
 
@@ -800,24 +833,42 @@ function DocView:draw()
   local lh = self:get_line_height()
   local pos = self.position
 
-  if self.wrapping then
-    self:draw_background(style.background)
-    self:ensure_wrap()
-    local rows = self.wrap.rows
-    local ox, oy = self:get_content_offset()
-    local gw = self:get_gutter_width()
-    local yoff = self:get_line_text_y_offset()
-    local vmin, vmax = self:get_visible_vrow_range()
-    local sl1, sc1, sl2, sc2 = self.doc:get_selection(true)
-    local cline, ccol = self.doc:get_selection()
+  self:draw_background(style.background)
+  self:ensure_wrap()
+  local rows = self.wrap.rows
+  local ox, oy = self:get_content_offset()
+  local gw = self:get_gutter_width()
+  local vmin, vmax = self:get_visible_vrow_range()
 
+  for v = vmin, vmax do
+    local row = rows[v]
+    if row and row.s == 1 then
+      local y = oy + (v - 1) * lh + style.padding.y
+      self:draw_line_gutter(row.line, pos.x, y)
+    end
+  end
+
+  core.push_clip_rect(pos.x + gw, pos.y, self.size.x, self.size.y)
+  if not self.wrapping then
+    -- Whole-line rows take the rich body path (washes, marks, squiggles,
+    -- carets, vim overlays) exactly as before folding existed; the rows table
+    -- decides WHICH lines draw and where.
     for v = vmin, vmax do
       local row = rows[v]
-      local y = oy + (v - 1) * lh + style.padding.y
-      if row.s == 1 then self:draw_line_gutter(row.line, pos.x, y) end
+      if row then
+        local y = oy + (v - 1) * lh + style.padding.y
+        self:draw_line_body(row.line, ox + gw, y)
+      end
     end
+    core.pop_clip_rect()
+    self:draw_scrollbar()
+    return
+  end
 
-    core.push_clip_rect(pos.x + gw, pos.y, self.size.x, self.size.y)
+  do
+    local yoff = self:get_line_text_y_offset()
+    local sl1, sc1, sl2, sc2 = self.doc:get_selection(true)
+    local cline, ccol = self.doc:get_selection()
     for v = vmin, vmax do
       local row = rows[v]
       local text = self.doc.lines[row.line]
@@ -849,29 +900,8 @@ function DocView:draw()
         renderer.draw_rect(cx, y, w, lh, style.caret)
       end
     end
-    core.pop_clip_rect()
-    self:draw_scrollbar()
-    return
-  end
-
-  self:draw_background(style.background)
-  local minline, maxline = self:get_visible_line_range()
-  local _, y = self:get_line_screen_position(minline)
-  local x = self.position.x
-  for i = minline, maxline do
-    self:draw_line_gutter(i, x, y)
-    y = y + lh
-  end
-
-  local x, y = self:get_line_screen_position(minline)
-  local gw = self:get_gutter_width()
-  core.push_clip_rect(pos.x + gw, pos.y, self.size.x, self.size.y)
-  for i = minline, maxline do
-    self:draw_line_body(i, x, y)
-    y = y + lh
   end
   core.pop_clip_rect()
-
   self:draw_scrollbar()
 end
 
@@ -998,6 +1028,45 @@ end
 -- marks:next / marks:prev are the plain names the keymap binds. The older
 -- -change / -hunk spellings are kept beside them so that nothing already
 -- reaching for one -- keymap.lua binds alt+n/alt+p/alt+r to them -- breaks.
+-- Folding commands: toggle folds the innermost range at the caret (or
+-- unfolds the range starting there); fold-all / unfold-all sweep the file.
+command.add(DocView, {
+  ["fold:toggle"] = function()
+    local dv = core.active_view
+    local doc = dv.doc
+    local line = doc:get_selection()
+    local target = folds.range_at(doc, line)
+    if not target then
+      -- the innermost range containing the caret
+      for _, r in ipairs(folds.get(doc).ranges) do
+        if r.s <= line and line <= r.e and (not target or r.s > target.s) then
+          target = r
+        end
+      end
+    end
+    if not target then core.log("no fold here") return end
+    folds.toggle(doc, target.s)
+    local hid = folds.hidden(doc)
+    local l = doc:get_selection()
+    if hid[l] then doc:set_selection(hid[l], 1) end
+  end,
+  ["fold:fold-all"] = function()
+    local doc = core.active_view.doc
+    folds.set_all(doc, true)
+    local hid = folds.hidden(doc)
+    local l = doc:get_selection()
+    if hid[l] then doc:set_selection(hid[l], 1) end
+  end,
+  ["fold:unfold-all"] = function()
+    folds.set_all(core.active_view.doc, false)
+  end,
+})
+
+keymap.add {
+  ["alt+z"] = "fold:toggle",
+  ["alt+shift+z"] = "fold:unfold-all",
+}
+
 command.add(DocView, {
   ["marks:next"] = function() core.active_view:goto_mark(1) end,
   ["marks:prev"] = function() core.active_view:goto_mark(-1) end,
