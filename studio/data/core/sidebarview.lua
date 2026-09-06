@@ -487,7 +487,12 @@ function SidebarView:draw()
         common.draw_text(font, style.dim, count, "left",
           x + w - pad / 2 - font:get_width(count), y, w, lh)
       end
-      local label = fit(font, g.label or g.name, w - (cx0 - x) - cw - pad)
+      -- label is TEXT NOT NULL DEFAULT '' in the store, so an unlabelled
+      -- project has "" -- which is truthy in Lua, so `label or name` showed a
+      -- blank row. Prefer a real label, fall back to the name, and never hand
+      -- fit() a negative width on a narrow rail.
+      local text = (g.label and g.label ~= "" and g.label) or g.name
+      local label = fit(font, text, math.max(0, w - (cx0 - x) - cw - pad))
       common.draw_text(font, is_cur and style.accent or style.text, label,
         "left", cx0, y, w, lh)
       add({ x = x, y = y, w = w, h = lh }, {
