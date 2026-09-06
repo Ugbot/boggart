@@ -856,6 +856,45 @@ static int l_call_done(lua_State *L) {
   return 1;
 }
 
+/* h:cancel() -- give up on the call. Locally the handle fails immediately
+ * ("cancelled") and its corr id is forgotten, so a late reply is dropped as
+ * stale; a best-effort `cancel` query also tells the daemon to drop the
+ * result instead of routing it. Idempotent. */
+static int l_call_cancel(lua_State *L) {
+  stcall *h = (stcall *)luaL_checkudata(L, 1, API_TYPE_STCALL);
+  if (h->done) { lua_pushboolean(L, 1); return 1; }
+  stconn *c = h->c;
+  if (c) {
+    for (int i = 0; i < ST_MAX_PENDING; i++)
+      if (c->pending[i] == h) c->pending[i] = NULL;
+    h->c = NULL;
+    if (c->sock && !c->dead) {
+      /* fixmap{msg_type:"cancel", tool:"", payload:{corr_id:<corr>}} */
+      char env[128];
+      size_t cn = strlen(h->corr);
+      size_t n = 0;
+      env[n++] = (char)0x83;
+      env[n++] = (char)0xa8; memcpy(env + n, "msg_type", 8); n += 8;
+      env[n++] = (char)0xa6; memcpy(env + n, "cancel", 6); n += 6;
+      env[n++] = (char)0xa4; memcpy(env + n, "tool", 4); n += 4;
+      env[n++] = (char)0xa0;
+      env[n++] = (char)0xa7; memcpy(env + n, "payload", 7); n += 7;
+      env[n++] = (char)0x81;
+      env[n++] = (char)0xa7; memcpy(env + n, "corr_id", 7); n += 7;
+      env[n++] = (char)(0xa0 | (cn < 32 ? cn : 31));
+      memcpy(env + n, h->corr, cn < 32 ? cn : 31); n += (cn < 32 ? cn : 31);
+      char corr[48];
+      snprintf(corr, sizeof corr, "bog-cancel-%llu",
+               (unsigned long long)(++g_corr_seq));
+      send_frames(c, "query", corr, env, n);
+    }
+  }
+  h->err = "cancelled";
+  h->done = 1;
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
 static int l_call_gc(lua_State *L) {
   stcall *h = (stcall *)luaL_checkudata(L, 1, API_TYPE_STCALL);
   if (h->c) {
@@ -969,9 +1008,10 @@ int luaopen_boggart_station(lua_State *L) {
 
   luaL_newmetatable(L, API_TYPE_STCALL);
   lua_newtable(L);
-  lua_pushcfunction(L, l_call_wait); lua_setfield(L, -2, "wait");
-  lua_pushcfunction(L, l_call_done); lua_setfield(L, -2, "done");
-  lua_pushcfunction(L, l_call_gc);   lua_setfield(L, -2, "close");
+  lua_pushcfunction(L, l_call_wait);   lua_setfield(L, -2, "wait");
+  lua_pushcfunction(L, l_call_done);   lua_setfield(L, -2, "done");
+  lua_pushcfunction(L, l_call_cancel); lua_setfield(L, -2, "cancel");
+  lua_pushcfunction(L, l_call_gc);     lua_setfield(L, -2, "close");
   lua_setfield(L, -2, "__index");
   lua_pushcfunction(L, l_call_gc);
   lua_setfield(L, -2, "__gc");
