@@ -218,9 +218,40 @@ function bog.save_session()
   bog.store.sess_save(S.id, S.title, S.model, S.messages)
   bog.events.emit("session:saved", { id = S.id, count = #S.messages })
 end
+-- Thinking blocks in a STORED transcript cannot be replayed: their signatures
+-- are validated by the API and do not survive model generations, compaction
+-- rewrites, or wire adapters -- resuming an old session then 400s with
+-- "Invalid signature in thinking block" on the first message. They are also
+-- never NEEDED for continuation (only the live tool-use turn must return its
+-- own blocks, and those never pass through here). So a resumed history is
+-- scrubbed: thinking and redacted_thinking blocks dropped, and an assistant
+-- message that was nothing but thinking dropped whole.
+local function scrub_thinking(messages)
+  local out = {}
+  for _, m in ipairs(messages or {}) do
+    if m.role == "assistant" and type(m.content) == "table" then
+      local kept = {}
+      for _, b in ipairs(m.content) do
+        local t = type(b) == "table" and b.type
+        if t ~= "thinking" and t ~= "redacted_thinking" then
+          kept[#kept + 1] = b
+        end
+      end
+      if #kept > 0 then
+        m.content = kept
+        out[#out + 1] = m
+      end
+    else
+      out[#out + 1] = m
+    end
+  end
+  return out
+end
+
 function bog.resume_session(id)
   local s = bog.store.sess_load(id)
   if not s then return false end
+  s.messages = scrub_thinking(s.messages)
   local function apply(S)
     if not S then return end
     S.id = s.id

@@ -124,5 +124,32 @@ ok(bog.store.sess_load(child) ~= nil, "an agent's thread survives (it has a pare
 ok(bog.store.sess_load(live) ~= nil, "a running agent survives")
 eq(bog.store.prune_empty_sessions(), 0, "pruning again finds nothing")
 
+-- ---- resume scrubs stored thinking -----------------------------------------
+-- Signatures on thinking blocks do not survive storage across model
+-- generations or compaction; replaying them 400s. Resume must drop them (and
+-- drop an assistant message that was nothing but thinking) while leaving
+-- text and tool blocks intact.
+do
+  local id = bog.store.sess_create("thinky", "m")
+  bog.store.sess_save(id, "thinky", "m", {
+    { role = "user", content = "hi" },
+    { role = "assistant", content = {
+        { type = "thinking", thinking = "pondering", signature = "stale-sig" },
+        { type = "text", text = "hello" },
+    } },
+    { role = "assistant", content = {
+        { type = "redacted_thinking", data = "opaque" },
+    } },
+    { role = "user", content = "and?" },
+  })
+  ok(bog.resume_session(id), "thinky session resumes")
+  local msgs = bog.session.messages
+  eq(#msgs, 3, "the thinking-only assistant message is dropped whole")
+  local a = msgs[2]
+  eq(#a.content, 1, "thinking block stripped from the mixed message")
+  eq(a.content[1].type, "text", "the text block survives")
+  bog.store.sess_delete(id)
+end
+
 io.write(string.format("sessions: %d passed, %d failed\n", passed, failed))
 os.exit(failed == 0 and 0 or 1)
