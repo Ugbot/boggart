@@ -148,6 +148,7 @@ extern void bus_emit(const char *topic, const char *data, size_t len);
 /* lhttp.c: tear down this state's curl_multi + socket polls, so a worker that
  * ran http (a model turn) can drain its loop and exit instead of hanging. */
 extern void boggart_http_shutdown(lua_State *L);
+extern void boggart_station_shutdown(lua_State *L);
 
 /* ---- slots and rings ------------------------------------------------------ */
 
@@ -723,7 +724,7 @@ static void worker_main(void *arg) {
    * loop can drain. An onmessage worker keeps http alive for its message loop
    * and is shut down after it. Idempotent, and a no-op if the worker did no
    * HTTP. This is also what lets a worker run a model turn AND exit cleanly. */
-  if (!h->want_loop) boggart_http_shutdown(L);
+  if (!h->want_loop) { boggart_http_shutdown(L); boggart_station_shutdown(L); }
 
   /* Run the loop out. Plain workers: everything the source started (timers,
    * sys.exec pipes) has already finished or finishes here, then uv_run
@@ -744,6 +745,7 @@ static void worker_main(void *arg) {
    * 4. only then publish the exit, so a joiner can never observe "exited"
    *    while the state or loop still exists. */
   boggart_http_shutdown(L); /* onmessage path + neutralise curl handles before */
+  boggart_station_shutdown(L);
                             /* lua_close's loop_gc (idempotent after the above) */
   uv_sem_wait(&h->gate);
   h->accepting = 0;

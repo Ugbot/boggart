@@ -23,6 +23,7 @@
 
 int luaopen_boggart_http(lua_State *L);
 void boggart_http_shutdown(lua_State *L); /* src/lhttp.c: close raw uv handles before lua_close */
+void boggart_station_shutdown(lua_State *L); /* src/lstation.c: same doctrine for the ZMQ polls */
 int luaopen_boggart_sys(lua_State *L);
 int luaopen_boggart_db(lua_State *L);
 int luaopen_boggart_repo(lua_State *L); /* src/lrepo.c: semantic data API */
@@ -309,6 +310,7 @@ int main(int argc, char **argv) {
    * which would otherwise type-confuse on their non-luv handle->data and fault
    * at exit (the exit-139 crash). See boggart_http_shutdown in src/lhttp.c. */
   boggart_http_shutdown(L);
+  boggart_station_shutdown(L);
   /* Free the warm whisper context before GGML's Metal device destructors run at
    * exit, which assert every residency set was released. See src/lvoice.c. */
   boggart_voice_shutdown();

@@ -73,6 +73,8 @@
 
 #ifdef BOGGART_STATION
 #include <zmq.h>
+#include <uv.h>
+extern uv_loop_t *luv_loop(lua_State *L); /* the interpreter's one loop (luv) */
 #endif
 
 void bus_emit(const char *topic, const char *data, size_t len); /* src/lbus.c */
@@ -449,12 +451,21 @@ typedef struct stcall {
   uint64_t deadline;
 } stcall;
 
+/* The uv_poll handle riding the interpreter's loop, malloc'd separately from
+ * the conn userdata: libuv requires the handle memory to stay valid until its
+ * close callback runs, and the userdata's lifetime belongs to the GC. */
+typedef struct pollbox {
+  uv_poll_t p;
+  struct stconn *conn;      /* NULL once the conn is gone; late cbs no-op */
+} pollbox;
+
 struct stconn {
   void *sock;               /* NULL after close */
   int dead;
   char endpoint[64];
   stcall *pending[ST_MAX_PENDING];
   struct zctxbox *box;
+  pollbox *pb;              /* NULL when no loop integration (or after close) */
 };
 
 /* One zmq context per interpreter, in the registry. Its __gc closes any
@@ -477,7 +488,21 @@ static void conn_fail_pending(stconn *c, const char *why) {
   }
 }
 
+static void pollbox_close_cb(uv_handle_t *h) {
+  free((pollbox *)h->data);
+}
+
 static void conn_close(stconn *c) {
+  if (c->pb) {
+    c->pb->conn = NULL;
+    uv_poll_stop(&c->pb->p);
+    /* data points at the box itself so the close cb can free it; if the
+     * process is tearing down instead, boggart_station_shutdown() has
+     * already NULLed data and detached pb, and we never get here. */
+    c->pb->p.data = c->pb;
+    uv_close((uv_handle_t *)&c->pb->p, pollbox_close_cb);
+    c->pb = NULL;
+  }
   if (c->sock) { zmq_close(c->sock); c->sock = NULL; }
   c->dead = 1;
   conn_fail_pending(c, "station connection closed");
@@ -909,6 +934,8 @@ static int l_call_gc(lua_State *L) {
 
 /* ---- connect --------------------------------------------------------------- */
 
+static void conn_watch(lua_State *L, stconn *c);
+
 /* station.connect([workspace]) -> conn | nil, err. Resolves the workspace's
  * port and connects a DEALER. zmq connects lazily, so success here means
  * "socket aimed", not "daemon alive" -- ping it (query/ping) to find out. */
@@ -959,7 +986,56 @@ static int l_connect(lua_State *L) {
   }
   c->box = box;
   box->conns[slot] = c;
+  conn_watch(L, c);
   return 1;
+}
+
+/* The loop-side delivery path (BSTAT-9): readiness on ZMQ_FD wakes this, and
+ * the edge-triggered contract is honoured to the letter -- after EVERY wake,
+ * drain and then re-check ZMQ_EVENTS in a loop until it reports no POLLIN,
+ * because with ZMQ_FD readiness does NOT imply a message and a message does
+ * not always re-edge the fd. Getting this wrong presents as intermittent
+ * hangs, the exact bug class docs/async.md exists to prevent. The handle is
+ * uv_unref'd so an idle connection never holds the loop open. */
+static void station_poll_cb(uv_poll_t *h, int status, int events) {
+  (void)status; (void)events;
+  pollbox *pb = (pollbox *)h->data;
+  stconn *c = pb ? pb->conn : NULL;
+  if (!c || !c->sock) return;
+  for (;;) {
+    conn_drain(c, NULL);
+    int ev = 0;
+    size_t sz = sizeof ev;
+    if (zmq_getsockopt(c->sock, ZMQ_EVENTS, &ev, &sz) != 0) break;
+    if (!(ev & ZMQ_POLLIN)) break;
+  }
+}
+
+/* Put the connection's ZMQ_FD on the interpreter's uv loop, so subscribed
+ * events arrive while the program is just sitting in uv.run -- no pump call
+ * needed anywhere. Best-effort: a failure leaves pb NULL and the slice-poll
+ * waits still work exactly as before. */
+static void conn_watch(lua_State *L, stconn *c) {
+  uv_loop_t *loop = luv_loop(L);
+  if (!loop) return;
+  zmq_fd_t fd;
+  size_t sz = sizeof fd;
+  if (zmq_getsockopt(c->sock, ZMQ_FD, &fd, &sz) != 0) return;
+  pollbox *pb = (pollbox *)calloc(1, sizeof(*pb));
+  if (!pb) return;
+  if (uv_poll_init_socket(loop, &pb->p, (uv_os_sock_t)fd) != 0) {
+    free(pb);
+    return;
+  }
+  pb->conn = c;
+  pb->p.data = pb;
+  if (uv_poll_start(&pb->p, UV_READABLE, station_poll_cb) != 0) {
+    pb->p.data = pb;
+    uv_close((uv_handle_t *)&pb->p, pollbox_close_cb);
+    return;
+  }
+  uv_unref((uv_handle_t *)&pb->p);
+  c->pb = pb;
 }
 
 static int l_conn_endpoint_of(lua_State *L) {
@@ -968,7 +1044,35 @@ static int l_conn_endpoint_of(lua_State *L) {
   return 1;
 }
 
+/* Neutralise the raw uv_poll handles this module leaves on luv's shared loop,
+ * called from C right before lua_close() -- the same doctrine and the same
+ * trap as boggart_http_shutdown (src/lhttp.c): lua_close runs luv's loop_gc,
+ * which uv_walks the loop and closes every handle through luv_close_cb, and
+ * that cb casts handle->data to a luv_handle_t*. Ours carries a pollbox*, so
+ * without this the cast is a type confusion and the process faults at exit.
+ * We stop each poll and NULL its data (luv_close_cb no-ops on NULL), detach
+ * it from its conn, and deliberately leak the box -- loop_gc still touches
+ * the handle memory while closing it. Idempotent; a no-op when no station
+ * connection was ever made. */
+void boggart_station_shutdown(lua_State *L) {
+  lua_rawgetp(L, LUA_REGISTRYINDEX, &g_zctx_key);
+  zctxbox *b = (zctxbox *)lua_touserdata(L, -1);
+  lua_pop(L, 1);
+  if (!b) return;
+  for (int i = 0; i < ST_MAX_CONNS; i++) {
+    stconn *c = b->conns[i];
+    if (c && c->pb) {
+      uv_poll_stop(&c->pb->p);
+      c->pb->p.data = NULL;
+      c->pb->conn = NULL;
+      c->pb = NULL; /* box leaks at exit, as lhttp's ctx does, on purpose */
+    }
+  }
+}
+
 #else /* !BOGGART_STATION ---------------------------------------------------- */
+
+void boggart_station_shutdown(lua_State *L) { (void)L; }
 
 static int l_connect(lua_State *L) {
   lua_pushnil(L);

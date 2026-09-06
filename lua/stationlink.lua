@@ -88,6 +88,11 @@ end
 -- Connect + ping, once. Success wires subscriptions and announces station.up.
 local function try_connect(workspace)
   local st = rawget(_G, "station")
+  -- The C client parks the socket's ZMQ_FD on the interpreter's uv loop so
+  -- subscribed events arrive while the program just sits in uv.run -- but
+  -- luv only creates that loop when required, so make sure it exists before
+  -- the connect that would watch it.
+  pcall(require, "uv")
   local conn, err = st.connect(workspace or (sys.cwd and sys.cwd()) or ".")
   if not conn then return nil, err end
   M.conn = conn
