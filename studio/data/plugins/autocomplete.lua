@@ -131,6 +131,22 @@ local function get_partial_symbol()
 end
 
 
+-- Recompute the open popup against the current caret. For providers that add
+-- items asynchronously (stationcomplete): a result that lands between
+-- keystrokes would otherwise stay invisible until the next key.
+function autocomplete.refresh()
+  local av = core.active_view
+  if not (av and av.doc and getmetatable(av) == DocView) then return end
+  partial = get_partial_symbol()
+  if #partial >= 3 then
+    update_suggestions()
+    last_line, last_col = av.doc:get_selection()
+  else
+    reset_suggestions()
+  end
+end
+
+
 local function get_active_view()
   if getmetatable(core.active_view) == DocView then
     return core.active_view

@@ -59,6 +59,7 @@ M.tree = {
     { "Toggle git gutter",  "git:toggle-gutter" },
     { "Toggle git blame",   "git:toggle-blame" },
     { "Toggle minimap",     "minimap:toggle" },
+    { "Toggle station completions", "station-complete:toggle" },
     { "Toggle fullscreen", "core:toggle-fullscreen" },
     { "Open log",          "core:open-log" },
   },
