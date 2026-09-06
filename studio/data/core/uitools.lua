@@ -66,7 +66,14 @@ end
 function uitools.save(name, source)
   sys.mkdir_p(uitools.dir())
   local body = source
-  if not body:match("^%s*%-%-") then body = header(name) .. body end
+  -- Prepend provenance unless it is already there. The old guard was "starts
+  -- with any comment", which suppressed the header for nearly every panel --
+  -- model-written Lua almost always opens with a comment -- so the one thing
+  -- the header exists to answer ("where did this come from") was missing
+  -- precisely where it mattered.
+  if not body:find("a boggart-studio panel", 1, true) then
+    body = header(name) .. body
+  end
   local ok, err = bog.util.write_file(uitools.path(name), body)
   if not ok then return nil, tostring(err) end
   return uitools.path(name)
@@ -100,14 +107,16 @@ function uitools.register(studio)
       "ctx.sketch_rect(x,y,w,h,colour,thickness,opts), ctx.sketch_ellipse, " ..
       "ctx.sketch_circle(cx,cy,d,...), ctx.sketch_polygon(points,...), " ..
       "ctx.sketch_path(points,...), ctx.sketch_curve(points,...), " ..
-      "ctx.arrow(x1,y1,x2,y2,colour,thickness), and " ..
-      "ctx.box(text,x,y,w,h,colour) for a labelled box. `points` is a list of " ..
+      "ctx.sketch_line(x1,y1,x2,y2,colour,thickness,opts), " ..
+      "ctx.arrow(x1,y1,x2,y2,colour,thickness), " ..
+      "ctx.box(text,x,y,w,h,colour) for a labelled box, and " ..
+      "ctx.offset_points(points,dx,dy). `points` is a list of " ..
       "{x,y} pairs in screen coordinates. opts may set roughness, bowing, " ..
       "fill (a colour), fillStyle ('hachure'|'solid'|'zigzag'|'cross-hatch'|" ..
-      "'dots'), hachureAngle. Sketch shapes do NOT clip to the panel, so keep " ..
-      "them inside ctx.x..ctx.x+ctx.w. " ..
-      "The environment has math, string, table and os.time/clock/date only: " ..
-      "no io, no require, no network.",
+      "'dots'), hachureAngle. Sketch shapes clip to the tab, not to the " ..
+      "padded panel rect, so keep them inside ctx.x..ctx.x+ctx.w. " ..
+      "The environment has math (incl. atan/asin/acos), string, table and " ..
+      "os.time/clock/date only: no io, no require, no network.",
     input_schema = {
       type = "object",
       properties = {

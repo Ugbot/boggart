@@ -198,6 +198,40 @@ ok(rout:find("1 done") ~= nil, "plan_report tool reports the done count")
 ok(rout:find("auto%-finished") ~= nil, "plan_report tool auto-finishes a fully-resolved plan")
 local fout = tools.run("plan_finish", { plan_id = e2e_pid, result = "synthesis" })
 ok(fout:find("finished as done") ~= nil, "plan_finish tool closes the plan")
+-- The panel must RUN, not just compile. Compile the rendered source in a
+-- sandbox-shaped env (only what uisandbox grants) and call draw(ctx) against
+-- a snapshot that has real plan rows -- exactly the case that caught a
+-- chunk-level helper reaching for a global `ctx` that only exists as draw's
+-- parameter (the panel drew fine empty and died the moment it had data).
+do
+  local colour = { 1, 1, 1, 1 }
+  local styles = setmetatable({}, { __index = function() return colour end })
+  local env = {
+    math = math, string = string, table = table,
+    os = { time = os.time, clock = os.clock, date = os.date },
+    style = styles,
+    tostring = tostring, tonumber = tonumber, ipairs = ipairs, pairs = pairs,
+    select = select, type = type,
+  }
+  local chunk, cerr = load(src, "swarm-panel", "t", env)
+  ok(chunk ~= nil, "panel compiles in a sandbox env (" .. tostring(cerr) .. ")")
+  if chunk then
+    local rok, rerr = pcall(chunk)
+    ok(rok, "panel chunk runs (" .. tostring(rerr) .. ")")
+    local ctx = {
+      x = 0, y = 0, w = 800, h = 600, line_height = 14, mouse = nil,
+      state = {},
+      rect = function() end, line = function() end, text = function() end,
+      text_width = function(s) return #tostring(s or "") * 7 end,
+      button = function() return false end,
+      button_height = function() return 18 end,
+    }
+    local dok, derr = pcall(env.draw, ctx)
+    ok(dok, "draw(ctx) renders a populated snapshot without reaching for globals ("
+      .. tostring(derr) .. ")")
+  end
+end
+
 local st = tools.run("plan_status", { project = tag })
 ok(st:find("#" .. e2e_pid) ~= nil, "plan_status tool lists the plan")
 local fs = tools.run("fleet_status")

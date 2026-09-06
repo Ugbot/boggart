@@ -158,8 +158,11 @@ M.tree = {
     { "Edit mcp_servers.lua", "agent:edit-mcp-servers" },
     { "Event handlers", "agent:show-event-handlers" },
     { "Panels\u{2026}",      "studio:open-panel" },
-    { "Open a panel the agent wrote\u{2026}", "agent:open-panel" },
-    { "Toggle panel",       "agent:toggle-panel" },
+    -- agent:open-panel / agent:toggle-panel are the CHAT panel, not an
+    -- agent-written drawing panel; the old label here claimed otherwise and
+    -- sent people to the wrong feature.
+    { "Open the chat panel", "agent:open-panel" },
+    { "Toggle the chat panel", "agent:toggle-panel" },
     { "Edit panel\u{2026}",     "studio:edit-panel" },
     M.SEP,
     { "Voice input (toggle)", "agent:voice-toggle" },

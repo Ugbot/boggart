@@ -642,7 +642,10 @@ local function trunc(s, n)
   if #s <= n then return s end
   return s:sub(1, n - 1) .. "…"
 end
-local function bar(x, y, w, frac, colour)
+-- ctx is draw()'s PARAMETER, not a global: the sandbox env has no ctx, so a
+-- chunk-level helper must take it explicitly or the panel dies with "index a
+-- nil value (global 'ctx')" the moment it has a plan row to draw.
+local function bar(ctx, x, y, w, frac, colour)
   ctx.rect(x, y, w, 5, style.divider)
   ctx.rect(x, y, math.floor(w * frac), 5, colour)
 end
@@ -654,7 +657,8 @@ function draw(ctx)
 
   -- header
   ctx.text("◈ swarm supervision", ctx.x, y, style.text)
-  ctx.text(os.date("%H:%M:%S"), ctx.x + W - ctx.text_width("%H:%M:%S"), y, style.dim)
+  local clock = os.date("%H:%M:%S")
+  ctx.text(clock, ctx.x + W - ctx.text_width(clock), y, style.dim)
   y = y + lh
   ctx.rect(ctx.x, y, W, 1, style.divider)
   y = y + 4
@@ -671,7 +675,7 @@ function draw(ctx)
     local col = p.status == "done" and style.good or (p.status == "failed" and style.error or style.accent)
     local head = string.format("#%d %-9s %d/%d  %s", p.id, p.status, p.done, p.total, trunc(p.goal, 40))
     ctx.text(head, ctx.x, y, col)
-    bar(ctx.x + ctx.text_width(head) + 8, y + 3, 40, frac, col)
+    bar(ctx, ctx.x + ctx.text_width(head) + 8, y + 3, 40, frac, col)
     y = y + lh
   end
   y = y + 2
@@ -956,15 +960,21 @@ M.tools = {
 
   panel_refresh = t{
     description = "Refresh the studio swarm-supervision dashboard: regenerate "
-      .. "~/.boggart/ui/swarm.lua from a fresh snapshot (fleet + plans + claims + timestamp); "
-      .. "the studio hot-reloads the file. Returns the path and time. Safe to run headless.",
+      .. "the studio's ui/swarm.lua panel from a fresh snapshot (fleet + plans + claims "
+      .. "+ timestamp); the studio hot-reloads the file. Returns the path and time. "
+      .. "Safe to run headless.",
     input_schema = { type = "object", properties = {} },
     run = function()
       M.ensure()
       local snap = M.snapshot(bog.db)
       local src = M.render_panel(snap)
-      local home = (sys and sys.home and sys.home()) or os.getenv("HOME") or "."
-      local dir = home .. "/.boggart/ui"
+      -- The studio reads panels from bog.userdir/ui (uitools.dir), which
+      -- honours $BOGGART_HOME and the XDG/LOCALAPPDATA layouts. Hardcoding
+      -- ~/.boggart/ui only coincided with that on a default macOS install --
+      -- everywhere else the panel landed where the Panels chooser never looks.
+      local base = (bog and bog.userdir)
+        or ((sys and sys.home and sys.home()) or os.getenv("HOME") or ".") .. "/.boggart"
+      local dir = base .. "/ui"
       if sys and sys.mkdir_p then sys.mkdir_p(dir) end
       local path = dir .. "/swarm.lua"
       local ok, err = pcall(function() return (require("gold").fs or require("gold")).write(path, src) end)
