@@ -133,11 +133,18 @@ end
 -- err. Any transport-shaped failure (send, timeout) flips the state down so
 -- the caller's next tier takes over immediately.
 --   opts.timeout_ms, opts.channel ("query" forces the inline path once the
---   daemon serves this msg_type there), opts.msg_type (default tool_exec).
+--   daemon serves this msg_type there), opts.msg_type (default tool_exec),
+--   opts.workspace (route to another workspace through the SAME daemon --
+--   the workspace collapse, llm-station ADR-023; first use cold-builds that
+--   workspace's components daemon-side, so give it a generous timeout).
 function M.call(tool, params, opts)
   opts = opts or {}
   local conn, err = M.ensure()
   if not conn then return nil, err end
+  if opts.workspace then
+    params = params or {}
+    params.workspace = tostring(opts.workspace)
+  end
 
   local msg_type = opts.msg_type or "tool_exec"
   local channel = opts.channel
