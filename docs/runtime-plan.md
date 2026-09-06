@@ -176,7 +176,11 @@ Each step ships something usable on its own; nothing waits on the whole vision.
 Deliberately later, external, and not on this critical path: **LLM Station** as an
 MCP tool server — cyclomatic complexity, step-through debuggers, deep code
 intelligence — plugs in as `mcp__llmstation__*` once the gateway and grades exist,
-and needs nothing from the kernel it does not already have.
+and needs nothing from the kernel it does not already have. (Since landed, and
+then superseded as the *preferred* transport by the native ZMQ client,
+`src/lstation.c` + `lua/stationlink.lua`: when built and a daemon answers,
+station traffic rides its own wire and MCP is the compatibility path. See
+docs/station-zmq.md.)
 
 ## What this is not
 

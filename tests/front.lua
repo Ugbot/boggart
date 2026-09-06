@@ -26,6 +26,44 @@ local uniq = mention.resolve("lua/complete.lua")
 check(uniq == "lua/complete.lua",
   "resolve of an exact path returns that path (got " .. tostring(uniq) .. ")")
 
+-- ---- mention kinds ---------------------------------------------------------
+-- The preceded-by rule: an @ inside a word is not a mention at all.
+local mail, n3 = mention.expand("mail user@host.com about it")
+check(mail == "mail user@host.com about it", "user@host is not a mention")
+check(#n3 == 0, "an email address produces no note")
+
+-- Minimum token length: a lone @x is ignored.
+local short, n4 = mention.expand("ping @x now")
+check(short == "ping @x now" and #n4 == 0, "single-char token is ignored")
+
+-- Classification.
+check(mention.classify("problems") == "problems", "@problems is ambient")
+check(mention.classify("code:foo") == "code", "@code: prefix classifies")
+check(mention.classify("dir:lua") == "folder", "@dir: aliases folder")
+check(mention.classify("lua/") == "folder", "trailing slash is a folder")
+check(mention.classify("a.lua") == "file", "dot+alpha is a file")
+check(mention.classify("bus_emit") == "symbol", "bare word is a symbol")
+check(mention.classify("https://x.dev/y") == "url", "bare https url classifies")
+
+-- @git:ref attaches git show output (the tests run inside the repo).
+local gt, n5 = mention.expand("what changed in @git:HEAD ?")
+check(#n5 == 1 and n5[1].kind == "git", "@git:HEAD is classified git")
+check(n5[1].ok and gt:find("--- git:HEAD ---", 1, true) ~= nil,
+  "@git:HEAD attaches the commit")
+
+-- @folder: attaches a listing.
+local ft, n6 = mention.expand("look in @folder:lua")
+check(#n6 == 1 and n6[1].ok and ft:find("complete.lua", 1, true) ~= nil,
+  "@folder:lua attaches a listing")
+
+-- Ambient sources resolve through the registry; unregistered stays a note.
+local _, n7 = mention.expand("check @problems")
+check(#n7 == 1 and not n7[1].ok, "unregistered @problems is an unresolved note")
+mention.sources.problems = function() return "E42: something is wrong" end
+local pt, n8 = mention.expand("check @problems")
+check(n8[1].ok and pt:find("E42", 1, true) ~= nil, "registered @problems attaches")
+mention.sources.problems = nil
+
 -- ---- take.parse ------------------------------------------------------------
 check(take.parse("").kind == "empty", "blank line is empty")
 check(take.parse("  ").kind == "empty", "whitespace is empty")

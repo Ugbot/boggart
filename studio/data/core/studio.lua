@@ -86,6 +86,8 @@ function studio.start_mcp()
     if bog.mcphost then bog.try(bog.mcphost.load) end
     if bog.llmstation then bog.try(bog.llmstation.autostart) end
     bog._mcp_loading = false
+    -- Panels that were open last session come back once the app is up.
+    core.try(studio.restore_panels)
   end)
 end
 
@@ -473,6 +475,39 @@ end
 
 studio.panels = {}
 
+-- Open-panel persistence: the FILES already survive a restart
+-- (bog.userdir/ui), but which of them were open as tabs did not, so every
+-- restart meant reopening panels by hand. One name per line in ui/.open;
+-- rewritten on open/close, replayed once at startup for files that still
+-- exist.
+local function panels_state_path()
+  return bog.userdir .. "/ui/.open"
+end
+
+local function save_open_panels()
+  local names = {}
+  for name in pairs(studio.panels) do names[#names + 1] = name end
+  table.sort(names)
+  local fp = io.open(panels_state_path(), "wb")
+  if fp then fp:write(table.concat(names, "\n")) fp:close() end
+end
+
+function studio.restore_panels()
+  local fp = io.open(panels_state_path(), "rb")
+  if not fp then return 0 end
+  local body = fp:read("*a") or ""
+  fp:close()
+  local uitools = require "core.uitools"
+  local n = 0
+  for name in body:gmatch("[^\n]+") do
+    if not studio.panels[name] and sys.stat(uitools.path(name)) == "file" then
+      core.try(studio.open_panel, name)
+      n = n + 1
+    end
+  end
+  return n
+end
+
 function studio.open_panel(name)
   -- One instance per panel name, reused wherever it lives -- see open_settings
   -- for the whole-root search and the re-home-instead-of-duplicate rule. Reload
@@ -491,6 +526,7 @@ function studio.open_panel(name)
   end
   local view = PanelView(name)
   studio.panels[name] = view
+  save_open_panels()
   core.root_view:get_primary_node():add_view(view)
   core.set_active_view(view)
   return view
@@ -499,6 +535,7 @@ end
 function studio.close_panel(name)
   local view = studio.panels[name]
   studio.panels[name] = nil
+  save_open_panels()
   if not view then return false end
   local node = core.root_view.root_node:get_node_for_view(view)
   if node then

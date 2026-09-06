@@ -62,7 +62,10 @@ actually hit either streams or parks, so it's catchable with the design below.
 ## Don't build it — port your own
 
 This exact architecture already exists across venus, chukonu, and bolt. We port
-and adapt, we do not reinvent (and we do not adopt ZeroMQ — "ok until it wasn't").
+and adapt, we do not reinvent (and we do not adopt ZeroMQ — "ok until it wasn't"
+— *as our own fabric*. Speaking ZMQ at a process boundary because a peer speaks
+it natively is interop, not adoption: `src/lstation.c` talks to LLM Station's
+ROUTER the same way `lhttp.c` "adopts" HTTP. See docs/station-zmq.md).
 
 | Need | Source (exact) | Notes |
 |---|---|---|

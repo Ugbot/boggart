@@ -787,7 +787,7 @@ it architecturally. boggart is behind it on *ship count*.
 | Background / resident agents | ✅ | ◐ in-session fleet only | needs §4's daemon |
 | **Inbound channels** | ✅ Telegram / WeChat / DingTalk / GitHub / GitLab | ❌ | the §1+§4 gap, shipped by a peer |
 | Goal mode + token budget | ✅ | ◐ `/until`, `/react`, watchdog | additive Lua |
-| LSP | ✅ forked into the core | ✅ via **LLM Station** over MCP (auto-detected, `mcp__llm-station__*`) | boggart buys the same capability without growing the core |
+| LSP | ✅ forked into the core | ✅ via **LLM Station** — native ZMQ transport when built (opt-in, ~1ms query-channel calls; docs/station-zmq.md), MCP mount otherwise (auto-detected, `mcp__llm-station__*`) | boggart buys the same capability without growing the core |
 | Web search | ✅ | ❌ | trivial Lua add |
 | Session export | ✅ md/jsonl/html | ❌ | trivial |
 | Images | ✅ rendered in-terminal | ❌ | C/front-end work |

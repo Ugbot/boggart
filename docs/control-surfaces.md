@@ -58,6 +58,7 @@ Every C module in `src/`, why it is C, and what would be lost if it were not.
 | `lgit.c` | git plumbing, checkpoints confined to `refs/boggart/` | (2) the ref-prefix confinement is enforcement | an agent could write any ref, including yours |
 | `lauth.c` | credential storage and endpoint/wire resolution | (2) credentials | keys reachable from generated tool code |
 | `lvoice.c` | whisper.cpp + audio capture (opt-in) | (1) audio devices | no voice |
+| `lstation.c` | LLM Station's ZMQ wire (opt-in): DEALER frames, msgpack envelope, correlation, deadlines | (1) libzmq sockets; (2) the frame layout and the ack-holds-the-handle rule are protocol facts, not policy — get them wrong and calls hang or results vanish silently | no native station transport; the MCP detour and its latency come back |
 | `lterm.c` / `termctl.c` / `ltermctl.c` | tty control, line editing, the full-screen cell grid | (1) termios/ioctl; (3) per-keystroke | no TUI |
 | `lmem.c` | memory/FTS5 surface | (3) hot; (1) the C library | slower search |
 | `jwriter.c` | lock-free journal ring buffer | (3) hot; (1) atomics | dropped records under load |
