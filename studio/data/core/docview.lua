@@ -684,6 +684,36 @@ function DocView:draw_line_body(idx, x, y)
   -- draw line's text
   self:draw_line_text(idx, x, y)
 
+  -- Squiggle underlines: a mark carrying data.spans = { {col1, col2}, ... }
+  -- (byte columns, [col1, col2)) gets a zigzag under each span in its kind's
+  -- colour -- the diagnostics rendering. Alternating y in 4px steps, the NED
+  -- algorithm; drawn over the text so it reads on any wash.
+  if at then
+    local lh = self:get_line_height()
+    for _, m in ipairs(at) do
+      local spans = m.data and m.data.spans
+      if spans then
+        local color = marks.color(m.kind)
+        local ty = y + lh - math.max(2, math.floor(2 * SCALE))
+        local step = math.max(3, math.floor(4 * SCALE))
+        for _, sp in ipairs(spans) do
+          local x1 = x + self:get_col_x_offset(idx, math.max(1, sp[1]))
+          local x2 = x + self:get_col_x_offset(idx, math.max(sp[1] + 1, sp[2]))
+          if x2 - x1 < step then x2 = x1 + step end
+          local up = true
+          local px = x1
+          while px < x2 do
+            local nx = math.min(px + step, x2)
+            renderer.draw_line(px, up and ty + 2 or ty, nx, up and ty or ty + 2,
+              math.max(1, math.floor(SCALE)), color)
+            px = nx
+            up = not up
+          end
+        end
+      end
+    end
+  end
+
   -- ...and the annotations after it
   if at then self:draw_line_marks(idx, at, x, y) end
 

@@ -60,6 +60,8 @@ M.tree = {
     { "Toggle git blame",   "git:toggle-blame" },
     { "Toggle minimap",     "minimap:toggle" },
     { "Toggle station completions", "station-complete:toggle" },
+    { "Toggle station diagnostics", "station-diagnostics:toggle" },
+    { "Toggle ghost text", "ghost-text:toggle" },
     { "Toggle fullscreen", "core:toggle-fullscreen" },
     { "Open log",          "core:open-log" },
   },
