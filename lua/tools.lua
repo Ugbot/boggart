@@ -1390,13 +1390,24 @@ M.register("code_search", {
     limit = { type = "integer", description = "max results (default 12)" } },
     required = { "query" } },
   -- Introspectable by `tools`/doctor; the run below is the live chain.
-  fallback_chain = { "mcp__llm-station__code_search", "code_search (native bm25)", "bash grep" },
+  fallback_chain = { "station zmq code_search", "mcp__llm-station__code_search",
+    "code_search (native bm25)", "bash grep" },
   run = function(a)
     local q = a and a.query
     if type(q) ~= "string" or q:match("^%s*$") then
       return M.err(M.ERR.validation, "code_search needs a non-empty 'query'")
     end
     local limit = (a and tonumber(a.limit)) or 12
+
+    -- 0. the native ZMQ transport, when it is up. Any failure here means the
+    -- transport just went down (station.lua flips it and emits station.down);
+    -- the next tier answers instead -- never a stall, never MCP-as-backup
+    -- while a station binary is present but its daemon is not.
+    local okz, stn = pcall(require, "stationlink")
+    if okz and stn and stn.up and stn.up() then
+      local out = stn.call("code_search", { query = q, limit = tostring(limit) })
+      if out and out ~= "" then return out end
+    end
 
     -- 1. code-intelligence server, if it is connected (registered).
     if M.registry["mcp__llm-station__code_search"] then

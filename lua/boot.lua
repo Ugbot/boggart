@@ -1262,6 +1262,7 @@ if not boggart.model then
 end
 
 bog.llmstation = require("llmstation")
+bog.station = require("stationlink") -- ZMQ transport policy; dormant unless built
 -- Eval skips MCP so tests do not spawn subprocesses. Embedded (studio)
 -- skips it here too: connect/handshake block the thread, and the window
 -- stays hidden until boot returns. Studio starts the same load after the

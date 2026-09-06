@@ -485,13 +485,34 @@ function M.doctor()
   -- Which backend `code_search` will use right now: a code-intelligence server
   -- if connected, else boggart's own bm25 index, else grep.
   head("code search")
+  local stn = bog.station
+  local zmq_up = stn and stn.up and stn.up()
   local station = bog.tools and bog.tools.registry
     and bog.tools.registry["mcp__llm-station__code_search"] ~= nil
   local nidx = (bog.store and bog.store.code_index_count and bog.store.code_index_count()) or 0
-  kv("backend", station and "llm-station (ranked, AST-aware)"
-    or (nidx > 0 and "native bm25 index" or "grep (native index not built yet)"))
-  kv("llm-station", station and "connected" or "not connected")
+  kv("backend", zmq_up and "llm-station (native ZMQ, ranked, AST-aware)"
+    or (station and "llm-station (MCP, ranked, AST-aware)"
+    or (nidx > 0 and "native bm25 index" or "grep (native index not built yet)")))
+  kv("llm-station", zmq_up and ("ZMQ " .. (stn.conn and stn.conn:endpoint() or ""))
+    or (station and "connected (MCP)" or "not connected"))
   kv("native index", nidx > 0 and (nidx .. " files indexed") or "empty (builds on first code_search)")
+
+  -- The native ZMQ transport gets its own section when the binary carries it;
+  -- built-but-down is worth explaining, not-built is not worth mentioning
+  -- (the voice rule).
+  local stlib = rawget(_G, "station")
+  if stlib and stlib.built and stlib.built() then
+    head("station transport")
+    if zmq_up then
+      kv("status", "up (" .. (stn.conn and stn.conn:endpoint() or "?") .. ")")
+    else
+      kv("status", "down: " .. tostring(stn and stn.why or "?"))
+      local ep = stlib.endpoint(".")
+      kv("endpoint", ep or "workspace not registered with llm-station")
+    end
+    kv("rule", "ZMQ when up; native tiers when down; MCP only for unbuilt binaries "
+      .. "or BOGGART_STATION_FORCE_MCP=1")
+  end
 
   -- voice --------------------------------------------------------------------
   -- Only worth a section when the binary was built with voice; otherwise it is
