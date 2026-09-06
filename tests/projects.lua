@@ -220,5 +220,36 @@ ok(tostring(pwd):find(proj.roots("nightjar")[1], 1, true),
    "bash runs in the project's root, not wherever the shell started")
 proj.switch("global")
 
+-- ---- the sidebar's grouping contract --------------------------------------
+-- sess_list_in is STRICT: a project's group holds only its own chats (no
+-- global fallback rows), and the loose list holds only project-less ones --
+-- so every chat appears exactly once in the rail. And resuming a chat
+-- resumes its PROJECT: session is the unit of conversation, project the unit
+-- of context.
+do
+  local a = bog.store.sess_create("in-nightjar", "m", "nightjar")
+  local b = bog.store.sess_create("loose-one", "m")
+  local mine = bog.store.sess_list_in("nightjar", 10)
+  local found_a, found_b = false, false
+  for _, r in ipairs(mine) do
+    if r.id == a then found_a = true end
+    if r.id == b then found_b = true end
+  end
+  ok(found_a, "sess_list_in includes the project's own chat")
+  ok(not found_b, "sess_list_in excludes loose chats (strict, no fallback)")
+  local loose = bog.store.sess_list_in(nil, 50)
+  local loose_has_a = false
+  for _, r in ipairs(loose) do if r.id == a then loose_has_a = true end end
+  ok(not loose_has_a, "the loose list excludes project chats")
+
+  proj.switch("global")
+  bog.resume_session(a)
+  ok(proj.current() == "nightjar", "resuming a project chat switches to its project")
+  bog.resume_session(b)
+  ok(proj.current() == "global", "resuming a loose chat returns to global")
+  bog.store.sess_delete(a)
+  bog.store.sess_delete(b)
+end
+
 io.write(string.format("projects: %d passed, %d failed\n", passed, failed))
 os.exit(failed == 0 and 0 or 1)

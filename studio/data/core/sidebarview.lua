@@ -36,6 +36,8 @@ function SidebarView:new()
   self.search = ""            -- the search box text; "" shows plain recents
   self.results = {}           -- store.sess_search rows for the current query
   self.searching = false      -- the box has focus and is taking keystrokes
+  self.projects = {}          -- { name, label, sessions } groups for the rail
+  self.expanded = {}          -- [project] = true/false; nil = "current only"
 end
 
 function SidebarView:get_name() return "Sidebar" end
@@ -102,6 +104,20 @@ function SidebarView:refresh(force)
   self.last_refresh = now
   local ok, rows = pcall(bog.store.sess_list, 40)
   self.sessions = (ok and rows) or {}
+  -- Projects, each with STRICTLY its own chats (sess_list_in): grouped rows
+  -- for the rail. Global is not a group -- its chats are the loose list below.
+  local okp, plist = pcall(function() return require("project").list() end)
+  local groups = {}
+  for _, pr in ipairs((okp and plist) or {}) do
+    if pr.name ~= "global" then
+      local oks, srows = pcall(bog.store.sess_list_in, pr.name, 20)
+      groups[#groups + 1] = {
+        name = pr.name, label = pr.label,
+        sessions = (oks and srows) or {},
+      }
+    end
+  end
+  self.projects = groups
 end
 
 -- Run the FTS query behind the box. Kept off the draw path -- it is a SQLite
@@ -373,92 +389,165 @@ function SidebarView:draw()
       { id = "search", action = function() self:focus_search() end })
   y = y + sh + vpad * 1.5
 
-  -- ---- Recents / Results --------------------------------------------------
-  -- One list, two sources: search results while a query is live, plain recents
-  -- otherwise. The row draw and open path below are identical for both, so a
-  -- hit opens exactly like a recent does.
-  local rows = (self.search ~= "" and self.results) or self.sessions
-  common.draw_text(font, style.dim, self.search ~= "" and "Results" or "Recents",
-    "left", x, y, w, lh)
-  y = y + lh
+  -- ---- Projects / Recents / Results ---------------------------------------
+  -- One virtualized list over typed rows. Projects are first-class rows with
+  -- their own look -- disclosure triangle, accent name, chat count, a dot on
+  -- the current one -- and their chats live in an expandable group beneath
+  -- (indented, otherwise identical to loose rows: same hover, open, delete).
+  -- Search flattens everything into plain results, exactly as before.
+  local proj_mod = require "project"
+  local cur_proj = proj_mod.current()
+  local items = {}
+  if self.search ~= "" then
+    items[#items + 1] = { kind = "head", text = "Results" }
+    for _, sess in ipairs(self.results) do
+      items[#items + 1] = { kind = "sess", s = sess }
+    end
+    if #self.results == 0 then
+      items[#items + 1] = { kind = "empty", text = "No matches" }
+    end
+  else
+    if #self.projects > 0 then
+      items[#items + 1] = { kind = "head", text = "Projects" }
+      for _, g in ipairs(self.projects) do
+        local open = self.expanded[g.name]
+        if open == nil then open = (g.name == cur_proj) end
+        items[#items + 1] = { kind = "proj", g = g, open = open }
+        if open then
+          for _, sess in ipairs(g.sessions) do
+            items[#items + 1] = { kind = "sess", s = sess, indent = true }
+          end
+          if #g.sessions == 0 then
+            items[#items + 1] = { kind = "empty", text = "(no chats yet)", indent = true }
+          end
+        end
+      end
+    end
+    items[#items + 1] = { kind = "head",
+      text = #self.projects > 0 and "Loose chats" or "Recents" }
+    for _, sess in ipairs(self.sessions) do
+      items[#items + 1] = { kind = "sess", s = sess }
+    end
+    if #self.sessions == 0 then
+      items[#items + 1] = { kind = "empty", text = "No sessions yet" }
+    end
+  end
 
-  -- Where the footer starts. The list used to run to the bottom of the VIEW,
-  -- so the last row or two were drawn under the model name -- and because a
-  -- session's rect is registered before the footer's, and widgets.hit answers
-  -- with the first rect containing the point, clicking the model name opened a
-  -- session instead of the settings.
+  -- Where the footer starts; rows stop above it (rects registered first would
+  -- otherwise swallow the footer's click).
   local footer_top = self.position.y + self.size.y - lh - vpad * 2
 
-  -- Only the rows between the scroll offset and the footer are drawn, and
-  -- content_height counts the WHOLE list rather than the part that fitted.
-  -- Measuring what was drawn made the scrollable size equal the viewport, so
-  -- the clamp pinned the scroll at zero and the rows past the fold could not
-  -- be reached at all -- with no scrollbar to say they were there.
   local list_top = y
-  local n = #rows
+  local n = #items
   local first = math.max(1, math.floor(self.scroll.y / lh) + 1)
   local current = bog.session and bog.session.id
-  if n == 0 then
-    -- An empty list is either "your filter matched nothing" or "you have no
-    -- sessions yet"; a bare header under a blank panel reads as broken, so say
-    -- which it is.
-    local msg = self.search ~= "" and "No matches" or "No sessions yet"
-    common.draw_text(font, style.dim, msg, "left", x + pad / 2, y, w, lh)
-  end
   for i = first, n do
-    local s = rows[i]
+    local it = items[i]
     y = list_top + (i - first) * lh
     if y + lh > footer_top then break end
-    local title = tostring(s.title or "")
-    if title == "" then title = "(untitled)" end
-    local active = (s.id == current)
-    local hov = self.mouse and widgets.inside(
-      { x = x, y = y, w = w, h = lh }, self.mouse.x, self.mouse.y)
-    if active or hov then
-      renderer.draw_rect(x, y, w, lh, active and style.selection or style.line_highlight)
-    end
-    -- Room kept for the delete control at all times, so the title does not
-    -- reflow on hover and the target does not jump under the cursor. Sized as
-    -- a real button (not a single × glyph): the hit box is the row height by
-    -- the width of "Yes", which is the armed label.
-    local dw = math.max(lh, widgets.width(font, "Yes"))
-    local label = fit(font, title, w - pad * 2 - dw)
-    common.draw_text(font, active and style.text or style.dim, label,
-      "left", x + pad / 2, y, w, lh)
+    local ind = it.indent and math.floor(lh * 0.8) or 0
 
-    -- Delete, guarded. Shows on hover, or stays as "Yes" on the armed row; the
-    -- first click arms, a second click confirms, opening any row disarms.
-    -- Registered BEFORE the row's open hit so a click on Del lands on it first.
-    local armed = (self.confirm_delete == s.id)
-    if hov or armed then
-      local bx = x + w - dw
-      local dhov = self.mouse and widgets.inside(
-        { x = bx, y = y, w = dw, h = lh }, self.mouse.x, self.mouse.y)
-      local r = widgets.button(font, armed and "Yes" or "Del", bx, y, {
-        w = dw, h = lh, hover = dhov, active = armed,
-        tone = armed and (style.error or style.text) or nil,
-      })
-      add(r, {
-        id = "del" .. tostring(s.id),
+    if it.kind == "head" then
+      common.draw_text(font, style.dim, it.text, "left", x, y, w, lh)
+
+    elseif it.kind == "empty" then
+      common.draw_text(font, style.dim, it.text, "left", x + ind + pad / 2, y, w, lh)
+
+    elseif it.kind == "proj" then
+      local g = it.g
+      local hov = self.mouse and widgets.inside(
+        { x = x, y = y, w = w, h = lh }, self.mouse.x, self.mouse.y)
+      -- The recessed band is what says "this is a different kind of row": a
+      -- project is a place, not a chat.
+      renderer.draw_rect(x, y, w, lh, style.background)
+      if hov then renderer.draw_rect(x, y, w, lh, style.line_highlight) end
+      local tri = it.open and "\u{25be}" or "\u{25b8}"
+      local cx0 = x + pad / 2
+      common.draw_text(font, style.dim, tri, "left", cx0, y, lh, lh)
+      cx0 = cx0 + font:get_width(tri) + pad / 2
+      local is_cur = (g.name == cur_proj)
+      if is_cur then
+        common.draw_text(font, style.accent, "\u{25cf} ", "left", cx0, y, lh, lh)
+        cx0 = cx0 + font:get_width("\u{25cf} ")
+      end
+      -- Count on the right, always; "+" (new chat here) claims that spot on
+      -- hover, registered first so it wins the overlap.
+      local count = tostring(#g.sessions)
+      local cw = math.max(lh, widgets.width(font, "+"))
+      if hov then
+        local bx = x + w - cw
+        local phov = self.mouse and widgets.inside(
+          { x = bx, y = y, w = cw, h = lh }, self.mouse.x, self.mouse.y)
+        local r = widgets.button(font, "+", bx, y, { w = cw, h = lh, hover = phov })
+        add(r, { id = "pnew" .. g.name, action = function()
+          proj_mod.switch(g.name)
+          command.perform("agent:new-session")
+        end })
+      else
+        common.draw_text(font, style.dim, count, "left",
+          x + w - pad / 2 - font:get_width(count), y, w, lh)
+      end
+      local label = fit(font, g.label or g.name, w - (cx0 - x) - cw - pad)
+      common.draw_text(font, is_cur and style.accent or style.text, label,
+        "left", cx0, y, w, lh)
+      add({ x = x, y = y, w = w, h = lh }, {
+        id = "proj" .. g.name,
         action = function()
-          if self.confirm_delete == s.id then
-            self.confirm_delete = nil
-            require("core.studio").delete_session(s.id)
-          else
-            self.confirm_delete = s.id      -- arm; the next click on Yes confirms
-          end
+          self.expanded[g.name] = not it.open
           core.redraw = true
         end,
       })
+
+    else -- session row, loose or inside a project
+      local sess = it.s
+      local title = tostring(sess.title or "")
+      if title == "" then title = "(untitled)" end
+      local active = (sess.id == current)
+      local hov = self.mouse and widgets.inside(
+        { x = x, y = y, w = w, h = lh }, self.mouse.x, self.mouse.y)
+      if active or hov then
+        renderer.draw_rect(x, y, w, lh, active and style.selection or style.line_highlight)
+      end
+      if it.indent then
+        -- The thread line that ties a chat to its project group.
+        renderer.draw_rect(x + math.floor(ind / 2), y, math.max(1, math.floor(SCALE)),
+          lh, style.divider)
+      end
+      local dw = math.max(lh, widgets.width(font, "Yes"))
+      local label = fit(font, title, w - ind - pad * 2 - dw)
+      common.draw_text(font, active and style.text or style.dim, label,
+        "left", x + ind + pad / 2, y, w, lh)
+
+      local armed = (self.confirm_delete == sess.id)
+      if hov or armed then
+        local bx = x + w - dw
+        local dhov = self.mouse and widgets.inside(
+          { x = bx, y = y, w = dw, h = lh }, self.mouse.x, self.mouse.y)
+        local r = widgets.button(font, armed and "Yes" or "Del", bx, y, {
+          w = dw, h = lh, hover = dhov, active = armed,
+          tone = armed and (style.error or style.text) or nil,
+        })
+        add(r, {
+          id = "del" .. tostring(sess.id),
+          action = function()
+            if self.confirm_delete == sess.id then
+              self.confirm_delete = nil
+              require("core.studio").delete_session(sess.id)
+            else
+              self.confirm_delete = sess.id
+            end
+            core.redraw = true
+          end,
+        })
+      end
+      add({ x = x, y = y, w = w, h = lh }, {
+        id = "sess" .. tostring(sess.id),
+        action = function()
+          self.confirm_delete = nil
+          require("core.studio").open_session(sess.id)
+        end,
+      })
     end
-    add({ x = x, y = y, w = w, h = lh }, {
-      id = "sess" .. tostring(s.id),
-      action = function()
-        self.confirm_delete = nil           -- a stray delete never survives an open
-        local studio = require "core.studio"
-        studio.open_session(s.id)
-      end,
-    })
     y = y + lh
   end
 

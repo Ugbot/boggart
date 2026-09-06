@@ -973,7 +973,7 @@ function M.sess_save(id, title, model, messages)
 end
 
 function M.sess_load(id)
-  local r = bog.db:query("SELECT id,title,model,messages FROM sessions WHERE id=?", { id })
+  local r = bog.db:query("SELECT id,title,model,messages,project FROM sessions WHERE id=?", { id })
   local s = r[1]
   if not s then return nil end
   local ok, msgs = pcall(json.decode, s.messages or "[]")
@@ -984,6 +984,21 @@ end
 -- Recent chats for a project: its own, then global's underneath -- the same
 -- own-first rule memory follows, so the recents list matches what the agent
 -- can actually see.
+-- STRICTLY one project's chats -- no global fallback rows -- for surfaces that
+-- group by project (the sidebar): each chat appears exactly once, under its
+-- own heading. nil/global means the loose (project IS NULL) chats.
+function M.sess_list_in(project, limit)
+  local p = proj_or_global(project)
+  if p then
+    return bog.db:query(
+      "SELECT id,title,model,updated,project FROM sessions WHERE project=? "
+      .. "ORDER BY updated DESC LIMIT ?", { p, limit or 20 })
+  end
+  return bog.db:query(
+    "SELECT id,title,model,updated,project FROM sessions WHERE project IS NULL "
+    .. "ORDER BY updated DESC LIMIT ?", { limit or 20 })
+end
+
 function M.sess_list(limit, project)
   local p = proj_or_global(project)
   if p then

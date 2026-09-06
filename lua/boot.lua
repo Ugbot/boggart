@@ -231,6 +231,18 @@ function bog.resume_session(id)
   apply(bog.session)
   local active = bog.active_session()
   if active ~= bog.session then apply(active) end
+  -- Resuming a chat resumes its PROJECT: the session is the unit of
+  -- conversation, the project is the unit of context, and opening one
+  -- without the other hands the agent the wrong memory and roots. A chat
+  -- whose project has since been deleted falls back to global rather than
+  -- failing the resume.
+  local want = s.project or require("project").GLOBAL
+  if want ~= require("project").current() then
+    local okp = require("project").switch(want)
+    if not okp and want ~= require("project").GLOBAL then
+      require("project").switch(require("project").GLOBAL)
+    end
+  end
   bog.events.emit("session:resumed", { id = s.id, count = #s.messages })
   return true
 end
