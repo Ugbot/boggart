@@ -101,7 +101,8 @@ function MenuBar:dropdown_rect()
   for _, r in ipairs(rows) do
     if not r.sep then
       local key = keymap.get_binding(r[2]) or ""
-      w = math.max(w, font:get_width(r[1]) + font:get_width(key) + 60)
+      local extra = r.state and 40 or 0
+      w = math.max(w, font:get_width(r[1]) + font:get_width(key) + 60 + extra)
     end
   end
   local anchor = self._open_x or (self.position.x + style.padding.x)
@@ -257,9 +258,20 @@ function MenuBar:draw_dropdown()
       end
       local ty = cy + ROW_PAD
       renderer.draw_text(font, r[1], x + 12, ty, style.text)
+      local rx = x + w - 12
       local key = keymap.get_binding(r[2])
       if key then
-        renderer.draw_text(font, key, x + w - font:get_width(key) - 12, ty, style.dim)
+        rx = rx - font:get_width(key)
+        renderer.draw_text(font, key, rx, ty, style.dim)
+        rx = rx - 10
+      end
+      -- A toggle shows its state: on in the good tone, off dim, any other
+      -- value as dim text.
+      if r.state then
+        local v = r.state()
+        local txt = v == true and "on" or v == false and "off" or tostring(v)
+        rx = rx - font:get_width(txt)
+        renderer.draw_text(font, txt, rx, ty, v == true and style.good or style.dim)
       end
       cy = cy + rowh
     end

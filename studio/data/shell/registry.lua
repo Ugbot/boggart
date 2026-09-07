@@ -4,6 +4,7 @@
 -- commands themselves are the existing core/agent/root verbs -- this layer only
 -- gives them structure, names, and a home.
 local keymap = require "core.keymap"
+local config = require "core.config"
 
 local M = {}
 M.SEP = { sep = true }
@@ -49,24 +50,37 @@ M.tree = {
     { "Cursors at all matches", "doc:cursors-at-all-matches" },
   },
 
+  -- Toggle rows carry `state`, drawn as on/off in the dropdown: a switch you
+  -- cannot read is a guess, not a control.
   View = {
     { "Workspace: Agent", "shell:workspace-agent" },
     { "Workspace: Edit",  "shell:workspace-edit" },
     { "Workspace: Fleet", "shell:workspace-fleet" },
     M.SEP,
-    { "Toggle theme (dark/light)", "shell:toggle-theme" },
-    { "Toggle session list", "studio:toggle-sidebar" },
-    { "Toggle file tree",   "studio:toggle-files" },
-    { "Toggle git gutter",  "git:toggle-gutter" },
-    { "Toggle git blame",   "git:toggle-blame" },
-    { "Toggle minimap",     "minimap:toggle" },
-    { "Toggle station completions", "station-complete:toggle" },
-    { "Toggle station diagnostics", "station-diagnostics:toggle" },
-    { "Toggle ghost text", "ghost-text:toggle" },
-    { "Fold: toggle at caret", "fold:toggle" },
+    { "Theme (dark/light)", "shell:toggle-theme" },
+    { "Session list", "studio:toggle-sidebar" },
+    { "File tree",   "studio:toggle-files" },
+    { "Fullscreen", "core:toggle-fullscreen" },
+    M.SEP,
+    { "Git gutter",  "git:toggle-gutter",
+      state = function() return config.git_gutter end },
+    { "Git blame",   "git:toggle-blame",
+      state = function() return config.git_blame end },
+    { "Minimap",     "minimap:toggle",
+      state = function() return config.minimap end },
+    { "Station completions", "station-complete:toggle",
+      state = function() return config.station_complete end },
+    { "Station diagnostics", "station-diagnostics:toggle",
+      state = function() return config.station_diagnostics end },
+    { "Ghost text", "ghost-text:toggle",
+      state = function() return config.ghost_text end },
+    { "Vim mode", "vim:toggle",
+      state = function() return config.vim_mode end },
+    M.SEP,
+    { "Fold at caret", "fold:toggle" },
     { "Fold all",   "fold:fold-all" },
     { "Unfold all", "fold:unfold-all" },
-    { "Toggle fullscreen", "core:toggle-fullscreen" },
+    M.SEP,
     { "Open log",          "core:open-log" },
   },
   Go = {
@@ -190,7 +204,12 @@ function M.choices(menu)
   local out = {}
   for _, r in ipairs(rows) do
     if not r.sep then
-      out[#out + 1] = { text = r[1], cmd = r[2], info = keymap.get_binding(r[2]) or "" }
+      local info = keymap.get_binding(r[2])
+      if not info and r.state then
+        local v = r.state()
+        info = v == true and "on" or v == false and "off" or tostring(v)
+      end
+      out[#out + 1] = { text = r[1], cmd = r[2], info = info or "" }
     end
   end
   return out
