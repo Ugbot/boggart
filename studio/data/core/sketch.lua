@@ -431,7 +431,7 @@ end
 
 -- 'solid' is emulated. The renderer's only vector primitive is a line, so a
 -- solid fill is horizontal scanlines a pixel apart with no wobble at all --
--- genuinely opaque, but one op pair per pixel of height. Use ctx.rect for
+-- opaque, but one op pair per pixel of height. Use ctx.rect for
 -- large flat areas and keep this for small emphasis.
 local function fill_solid(o, polygons)
   local step = o.fillWeight > 0 and o.fillWeight or 1

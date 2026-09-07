@@ -168,10 +168,8 @@ function bog.set_model(m)
   if s then s.model = m end
   if bog.session then bog.session.model = m end   -- keep the default seed in sync
   if auth and auth.set then pcall(auth.set, "model", m) end  -- persist for restart / new agents
-  -- Swapping models mid-conversation changes the history's provenance: the
-  -- old model's thinking signatures will not validate under the new one, so
-  -- the transcript is reloaded the moment the swap happens rather than
-  -- 400ing on the next message.
+  -- The old model's thinking signatures will not validate under the new
+  -- one; reload now rather than 400 on the next message.
   if was and was ~= m and bog.reload_session then
     bog.reload_session("model swap")
   end
@@ -226,10 +224,9 @@ function bog.save_session()
   bog.store.sess_save(S.id, S.title, S.model, S.messages)
   bog.events.emit("session:saved", { id = S.id, count = #S.messages })
 end
--- Re-baseline the ACTIVE conversation's history so it is safe to continue
--- under different provenance (see lua/transcript.lua for what that means and
--- why). Called on resume and on model swap; public so a wire change or a
--- migration can say bog.reload_session("why") too.
+-- Re-baseline the active conversation's history for new provenance (see
+-- lua/transcript.lua). Called on resume and model swap; public so a wire
+-- change or a migration can call it too.
 function bog.reload_session(reason)
   local transcript = require("transcript")
   local function one(S)
@@ -267,11 +264,9 @@ function bog.resume_session(id)
   apply(bog.session)
   local active = bog.active_session()
   if active ~= bog.session then apply(active) end
-  -- Resuming a chat resumes its PROJECT: the session is the unit of
-  -- conversation, the project is the unit of context, and opening one
-  -- without the other hands the agent the wrong memory and roots. A chat
-  -- whose project has since been deleted falls back to global rather than
-  -- failing the resume.
+  -- Resuming a chat resumes its project: session is the unit of
+  -- conversation, project the unit of context. A deleted project falls
+  -- back to global rather than failing the resume.
   local want = s.project or require("project").GLOBAL
   if want ~= require("project").current() then
     local okp = require("project").switch(want)
@@ -1259,7 +1254,7 @@ if bog.mode == "doctor" then return bog.lifecycle.main() end
 
 -- Open the local SQLite store (memory, sessions, kv, metadata), creating the
 -- directory, the database and the schema if this is a new machine. A damaged
--- store is moved aside and recreated here, loudly; anything genuinely
+-- store is moved aside and recreated here, loudly; anything
 -- unfixable arrives as a diagnosed error carrying its own explanation.
 local sok, serr = bog.try(bog.store.open)
 if not sok then
@@ -1279,7 +1274,7 @@ end
 -- install, and someone who set one before ever launching the GUI is.
 bog.first_run = (bog.store.state and bog.store.state.first_run) or false
 
--- The welcome, on a genuinely new install only: store.state.first_run is true
+-- The welcome, on a new install only: store.state.first_run is true
 -- exactly when this start created the database. Not in eval (tests) or
 -- embedded (the studio draws its own), and on stderr so a piped one-shot run
 -- still emits only the model's answer on stdout.

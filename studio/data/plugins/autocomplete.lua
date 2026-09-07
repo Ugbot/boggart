@@ -131,9 +131,8 @@ local function get_partial_symbol()
 end
 
 
--- Recompute the open popup against the current caret. For providers that add
--- items asynchronously (stationcomplete): a result that lands between
--- keystrokes would otherwise stay invisible until the next key.
+-- Recompute the popup at the current caret, so an async provider's result
+-- shows now rather than one keystroke late.
 function autocomplete.refresh()
   local av = core.active_view
   if not (av and av.doc and getmetatable(av) == DocView) then return end

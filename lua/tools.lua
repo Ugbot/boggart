@@ -235,12 +235,12 @@ end
 --
 -- This is emphatically NOT a security boundary against the agent itself -- the
 -- agent can edit lua/tools.lua and reload, which is the entire point of the
--- project. It is a capability boundary, and it earns its keep three ways:
+-- project. It is a capability boundary, and it does three jobs:
 -- accidental damage stays contained; bounds, limits and tracing can be enforced
 -- once in C because there is no second route; and the model can see exactly
 -- what it has to compose with. It also becomes a real security boundary the day
 -- project-scoped tools are loaded out of a repository someone else wrote.
--- getenv is genuinely useful (HOME, PATH, EDITOR) but it is also a one-line
+-- getenv is useful (HOME, PATH, EDITOR) but it is also a one-line
 -- route to a credential, and "read the key and call the API directly" is a
 -- plausible thing for a model to write while composing a tool. Names that look
 -- like secrets are refused.
@@ -892,7 +892,7 @@ function M.run(name, input)
     local t0 = os.clock()
     res = run_bounded(d, input or {})
     -- Usage accounting (paper §24): calls, failures and cumulative time are
-    -- what turn "did this tool pay for itself" from a rhetorical question into
+    -- what turn "was this tool worth its cost" from a rhetorical question into
     -- an answerable one.
     local failed = type(res) == "string" and res:sub(1, 11) == "Tool error:"
     if bog.db and bog.store and bog.store.tool_used then
@@ -1399,10 +1399,8 @@ M.register("code_search", {
     end
     local limit = (a and tonumber(a.limit)) or 12
 
-    -- 0. the native ZMQ transport, when it is up. Any failure here means the
-    -- transport just went down (station.lua flips it and emits station.down);
-    -- the next tier answers instead -- never a stall, never MCP-as-backup
-    -- while a station binary is present but its daemon is not.
+    -- 0. The ZMQ transport, when up. A failure means it just went down
+    -- (stationlink flips it); the next tier answers. Never MCP as backup.
     local okz, stn = pcall(require, "stationlink")
     if okz and stn and stn.up and stn.up() then
       local out = stn.call("code_search", { query = q, limit = tostring(limit) })

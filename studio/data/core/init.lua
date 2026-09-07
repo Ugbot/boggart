@@ -907,11 +907,9 @@ function core.on_event(type, ...)
 end
 
 
--- A discrete event sometimes needs a few settled frames after it -- a menu
--- opening over a repaint, a font reload, a theme switch -- and having every
--- such site hand-crank core.redraw across frames is how flicker bugs are
--- born. request_frames(n) keeps the loop drawing for the next n frames; the
--- counter is consumed in core.step and never goes backwards mid-burst.
+-- A discrete event (menu open, font reload, theme switch) needs a few
+-- settled frames after it. request_frames(n) keeps the loop drawing for n
+-- frames; the counter is consumed in core.step, never backwards mid-burst.
 core.frames_to_render = 0
 
 function core.request_frames(n)
@@ -1051,19 +1049,12 @@ function core.run()
     local did_redraw = core.step()
     local time_to_wake = run_threads()
     if not did_redraw then
-      -- Nothing changed this frame: block until an event arrives or the earliest
-      -- thread is due, instead of busy-spinning at config.fps (the old loop only
-      -- blocked when *unfocused*, so a focused-but-idle window pinned a core at
-      -- 60fps forever). The cap is tiered by how alive the window is:
-      --   * input in the last half second -> one frame period, so a pause in
-      --     typing does not turn the very next keystroke into a long-wait wake;
-      --   * focused but quiet -> the caret's blink half-period, the slowest
-      --     wake at which the cursor still blinks;
-      --   * unfocused -> there is no caret to service, so wait long; the
-      --     file-watcher and other threads still wake us via time_to_wake.
-      -- (The old unfocused cap of 0.25s was SHORTER than the focused one,
-      -- waking the window nobody was looking at more often -- backwards.)
-      -- Either way a real event interrupts the wait immediately.
+      -- Nothing changed: block until an event or the earliest thread is due.
+      -- The cap tiers by how alive the window is: input in the last half
+      -- second, one frame period; focused but quiet, the blink half-period;
+      -- unfocused, wait long (threads still wake via time_to_wake; the old
+      -- 0.25s unfocused cap woke MORE often than focused, backwards). A real
+      -- event interrupts the wait.
       local cap
       if not system.window_has_focus() then
         cap = 2.0

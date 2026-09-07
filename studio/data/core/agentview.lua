@@ -2046,7 +2046,7 @@ end
 -- The shape is a chat application's, not an editor's: a toolbar of the things
 -- you can do, a centred column of conversation, and a composer at the bottom
 -- with its controls inside it. The column is capped because a chat line
--- stretched across a 2000px monitor is genuinely hard to read -- the limit is
+-- stretched across a 2000px monitor is hard to read -- the limit is
 -- the same reason a newspaper has columns, not a stylistic tic.
 
 local COLUMN_COLS = 96   -- widest the conversation column gets, in characters

@@ -1,24 +1,17 @@
--- inline_edit.lua -- Cmd-K: edit a selection (or the current line) by an
--- instruction, in place. Select text, press Cmd-K, type "make this async" /
--- "add error handling", and the model rewrites just that span.
+-- inline_edit.lua -- Cmd-K: rewrite a selection (or the current line) by an
+-- instruction, in place.
 --
--- The result is PREVIEWED before it lands: the span gets a wash and a
--- floating [apply] [discard] pair (the same marks action row conflicts use)
--- labelled with the +added/-removed line counts, so nothing touches the
--- buffer until you say so. Apply is one discrete undo step
--- (doc:commit_undo), re-verifies the span still holds exactly the text that
--- was sent (refuse-don't-guess, same discipline as marks.revert), and then
--- leaves the change reviewable through the usual alt+n / alt+r surface. A
--- rewrite that changes more than 400 lines skips the preview and applies
--- directly with post-hoc review -- a four-hundred-line wash is noise, not a
--- preview (the NED guiApplyEditToOpenBuffer rule).
+-- The result is previewed: the span gets a wash and an [apply] [discard]
+-- pair labelled with line counts; nothing touches the buffer until you say
+-- so. Apply is one undo step (doc:commit_undo), re-verifies the span still
+-- holds the text that was sent, and leaves the change reviewable via
+-- alt+n / alt+r. A rewrite past 400 lines skips the preview and applies
+-- with post-hoc review; a wash that size is noise.
 --
--- The model call prefers LLM Station's ai_edit over the native ZMQ transport
--- when it is up (lua/stationlink.lua) -- selection + instruction + a
--- ±40-line context window -- and falls back to ONE raw call over boggart's
--- own transport (bog.api.stream_async): no tools, no telemetry, never a
--- phantom agent in the FLEET roster. Runs as a scheduler coroutine; it never
--- writes to disk -- the edit is in the buffer until you save.
+-- The model call prefers station ai_edit over ZMQ (selection + instruction
+-- + a ±40-line context window), else one raw call over bog.api.stream_async:
+-- no tools, no telemetry, no phantom agent in the roster. Runs as a
+-- scheduler coroutine; never writes to disk.
 local core = require "core"
 local command = require "core.command"
 local keymap = require "core.keymap"
@@ -27,11 +20,9 @@ local marks = require "core.marks"
 
 local function doc_text(doc) return table.concat(doc.lines) end
 
--- Strip a surrounding markdown code fence if the model added one -- fences
--- ONLY, never surrounding whitespace: trimming would delete the first line's
--- indent and could eat a needed trailing newline. Models fence even when the
--- prompt forbids it, so this also accepts a missing final newline and a
--- language tag with punctuation (c++, objective-c).
+-- Strip a surrounding code fence. Fences only, never whitespace: trimming
+-- would delete the first line's indent or a needed trailing newline. Accepts
+-- a missing final newline and language tags with punctuation.
 local function unfence(s)
   local body = s:match("^%s*```[%w%+%-%.#]*\r?\n(.-)\r?\n?```%s*$")
   return body or s
@@ -54,9 +45,8 @@ local function split_lines(s)
   return out
 end
 
--- Prefix/suffix line diff -- deliberately not Myers: an LLM edit is almost
--- always one contiguous region, so "common head + common tail + one changed
--- middle" is exact in practice and ~15 lines (the NED InlineDiff insight).
+-- Prefix/suffix line diff, not Myers: an LLM edit is one contiguous region,
+-- so head + tail + one changed middle is exact in practice.
 local function diff_counts(old_text, new_text)
   local a, b = split_lines(old_text), split_lines(new_text)
   local head = 0
@@ -67,7 +57,7 @@ local function diff_counts(old_text, new_text)
   return #b - head - tail, #a - head - tail  -- added, removed
 end
 
--- ±40 lines around the span, the context window station's ai_edit grounds on.
+-- ±40 lines around the span, the context window ai_edit grounds on.
 local function surrounding(doc, l1, l2)
   local from = math.max(1, l1 - 40)
   local to = math.min(#doc.lines, l2 + 40)
@@ -84,8 +74,7 @@ local function language_of(doc)
   return map[ext:lower()] or ext:lower()
 end
 
--- The model call: station ai_edit over ZMQ when the transport is up, one raw
--- streamed call otherwise. Both return the rewritten span text or nil, err.
+-- station ai_edit when up, one raw streamed call otherwise.
 local function rewrite(doc, l1, l2, selection, instruction)
   local stn = rawget(_G, "bog") and bog.station
   if stn and stn.up and stn.up() then
@@ -125,16 +114,14 @@ local WASH_PENDING = { style.link[1], style.link[2], style.link[3], 18 }
 
 local cmdk_seq = 0
 
--- The span still says exactly what we sent -- the buffer may have moved while
--- the model ran (the user typed, an agent wrote the file). Refuse rather than
--- destroy whatever is there now.
+-- The buffer may have moved while the model ran. Refuse rather than destroy.
 local function span_intact(doc, l1, c1, l2, c2, selection)
   return doc:get_text(l1, c1, l2, c2) == selection
 end
 
 local function apply_now(doc, l1, c1, l2, c2, selection, out)
   if not span_intact(doc, l1, c1, l2, c2, selection) then
-    core.error("Cmd-K: buffer changed since the edit started — aborted (nothing applied)")
+    core.error("Cmd-K: buffer changed since the edit started; nothing applied")
     return false
   end
   local before = doc_text(doc)
@@ -144,13 +131,11 @@ local function apply_now(doc, l1, c1, l2, c2, selection, out)
   doc:commit_undo() -- nor with whatever the user types next
   local after = doc_text(doc)
   pcall(marks.from_edit, doc, before, after, {})
-  core.log("Cmd-K: applied — alt+n to review, alt+r to revert")
+  core.log("Cmd-K: applied. alt+n reviews, alt+r reverts")
   return true
 end
 
--- Stage the rewrite as a pending preview: washes over the span plus an
--- apply/discard action row on its first line. Nothing in the buffer changes
--- until apply.
+-- Stage the rewrite: washes over the span, apply/discard on its first line.
 local function stage_preview(doc, l1, c1, l2, c2, selection, out, instruction)
   cmdk_seq = cmdk_seq + 1
   local group = "cmdk:" .. cmdk_seq
@@ -174,7 +159,7 @@ local function stage_preview(doc, l1, c1, l2, c2, selection, out, instruction)
   for line = l1 + 1, l2 do
     marks.set(doc, line, { kind = "changed", hl = WASH_PENDING, group = group })
   end
-  core.log("Cmd-K: +%d -%d staged — apply or discard on the span", added, removed)
+  core.log("Cmd-K: +%d -%d staged; apply or discard on the span", added, removed)
 end
 
 local seq = 0
@@ -187,12 +172,12 @@ local function run_inline_edit(doc, l1, c1, l2, c2, selection, instruction)
     local out, err = rewrite(doc, l1, l2, selection, instruction)
     if not out then core.error("Cmd-K failed: " .. tostring(err)) return end
     if not span_intact(doc, l1, c1, l2, c2, selection) then
-      core.error("Cmd-K: buffer changed since the edit started — aborted (nothing applied)")
+      core.error("Cmd-K: buffer changed since the edit started; nothing applied")
       return
     end
     local _, changed = diff_counts(selection, out)
     if select(2, out:gsub("\n", "")) > 400 or changed > 400 then
-      -- A 400-line wash is noise, not a preview: apply with post-hoc review.
+      -- A 400-line wash is noise: apply with post-hoc review.
       apply_now(doc, l1, c1, l2, c2, selection, out)
     else
       stage_preview(doc, l1, c1, l2, c2, selection, out, instruction)

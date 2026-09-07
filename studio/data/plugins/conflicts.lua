@@ -1,19 +1,11 @@
--- conflicts.lua -- merge-conflict CodeLens: detect <<<<<<< regions, tint each
--- side, and float an accept row on the conflict head, so resolving a merge is
--- three readable choices instead of hand-deleting marker lines.
+-- conflicts.lua -- merge conflicts: detect <<<<<<< regions, tint each side,
+-- float an accept row on the head.
 --
--- Everything visual rides the marks system: side washes are line washes,
--- the controls are a mark action row (data.actions), so this file contains no
--- drawing and no hit-testing of its own. Detection re-runs only when
--- doc:get_change_id() moves, and the scan byte-gates on the first character of
--- each line, so a keystroke in a conflict-free file costs one integer compare
--- per line at worst -- and nothing at all until the next edit.
---
--- Accepting rebuilds the replacement from the CURRENT buffer (the chosen
--- side's lines are already in it), wrapped in doc:commit_undo() boundaries so
--- one accept is exactly one undo step. The regions are re-parsed on every
--- change, so a stale click cannot splice the wrong lines: the mark that was
--- clicked died with the change_id that made it.
+-- Rendering rides the marks system (washes, action rows); this file draws
+-- nothing itself. Detection re-runs when get_change_id() moves; the scan
+-- gates on each line's first byte. Accept rebuilds from the current buffer
+-- inside commit_undo() boundaries: one accept, one undo step. Regions
+-- re-parse on every change, so a stale click cannot splice wrong lines.
 local core = require "core"
 local command = require "core.command"
 local keymap = require "core.keymap"
@@ -26,17 +18,14 @@ config.conflicts = true
 
 local M = {}
 
--- Side washes: ours in the calm green, theirs in the link blue, the optional
--- base in the warn orange, all at mark-wash alpha. Marker lines get the dim
--- tone a touch stronger -- they are scaffolding, not content.
+-- Marker lines dim harder: scaffolding, not content.
 local WASH_OURS   = { style.good[1],  style.good[2],  style.good[3],  20 }
 local WASH_THEIRS = { style.link[1],  style.link[2],  style.link[3],  20 }
 local WASH_BASE   = { style.warn[1],  style.warn[2],  style.warn[3],  14 }
 local WASH_MARKER = { style.dim[1],   style.dim[2],   style.dim[3],   46 }
 
--- Marker classification, NED's rule: exactly seven marker characters followed
--- by end-of-line or whitespace, so a wall of ======== in prose is not a
--- conflict. Returns the kind and the label text after the marker.
+-- Exactly seven marker characters then end-of-line or whitespace, so a wall
+-- of ======== in prose is not a conflict.
 local BYTE = { [60] = "<<<<<<<", [124] = "|||||||", [61] = "=======", [62] = ">>>>>>>" }
 local KIND = { ["<<<<<<<"] = "start", ["|||||||"] = "base",
                ["======="] = "sep",   [">>>>>>>"] = "stop" }
@@ -49,10 +38,8 @@ local function marker(line)
   return KIND[want], rest:match("^%s*(.-)%s*$")
 end
 
--- Scan the buffer into regions { s, b, m, e, ours, theirs }: line numbers of
--- the start/base/sep/stop markers (b is nil for a 2-way conflict) plus the
--- labels git wrote after <<<<<<< and >>>>>>>. An unterminated region is
--- dropped rather than guessed at.
+-- Scan into regions { s, b, m, e, ours, theirs }: marker line numbers (b nil
+-- for a 2-way conflict) plus git's labels. Unterminated regions are dropped.
 local function parse(doc)
   local regions, r = {}, nil
   for i, line in ipairs(doc.lines) do
@@ -72,8 +59,7 @@ local function parse(doc)
   return regions
 end
 
--- One scan result per doc, valid for one change_id. Weak keys: a closed doc
--- takes its cache with it.
+-- One scan result per doc per change_id; weak keys so a closed doc drops it.
 local cache = setmetatable({}, { __mode = "k" })
 
 local function head_actions(doc, idx)
@@ -105,7 +91,7 @@ function M.refresh(doc)
       marks.set(doc, line, { kind = "changed", hl = hl, group = group })
     end
     wash(r.s, WASH_MARKER)
-    -- The head line also carries the label and the three answers.
+    -- Head line carries the label and the actions.
     marks.set(doc, r.s, {
       kind = "changed", hl = WASH_MARKER, group = group,
       text = string.format("%d/%d  %s vs %s", i, #regions,
@@ -126,9 +112,9 @@ function M.refresh(doc)
   return regions
 end
 
--- Accept one side of region `idx`. The replacement is built from the buffer
--- as it stands right now -- refresh() just re-parsed it against the current
--- change_id -- so there is nothing recorded to go stale and nothing to guess.
+-- Accept one side of region `idx`. The replacement comes from the buffer as
+-- it stands (refresh() re-parsed at the current change_id), so nothing
+-- recorded can go stale.
 function M.accept(doc, idx, side)
   local regions = M.refresh(doc)
   local r = regions and regions[idx]
@@ -148,8 +134,7 @@ function M.accept(doc, idx, side)
     doc:remove(r.s, 1, r.e + 1, 1)
     doc:insert(r.s, 1, text)
   else
-    -- The stop marker is the last line; keep its final newline in place and
-    -- insert the kept text without one, the same shape marks.revert uses.
+    -- Last line of the file: keep its newline, insert without one (marks.revert's shape).
     doc:remove(r.s, 1, r.e, #doc.lines[r.e])
     doc:insert(r.s, 1, (text:gsub("\n$", "")))
   end
@@ -157,11 +142,10 @@ function M.accept(doc, idx, side)
   doc:set_selection(r.s, 1)
 
   local left = M.refresh(doc)
-  core.log("conflict resolved (%s) — %d left", side, left and #left or 0)
+  core.log("conflict resolved (%s), %d left", side, left and #left or 0)
 end
 
--- Jump the caret to the next/previous conflict head, wrapping: resolving a
--- merge is a loop, and stopping dead at the last one makes you scroll back.
+-- Jump to the next/previous conflict head, wrapping.
 local function jump(doc, dir)
   local regions = M.refresh(doc)
   if not regions or #regions == 0 then core.log("no conflicts") return end
@@ -181,7 +165,7 @@ local function jump(doc, dir)
   doc:set_selection(best.s, 1)
 end
 
--- The region the caret currently sits inside, for the keyboard accepts.
+-- Region containing the caret.
 local function region_at(doc, line)
   local regions = M.refresh(doc)
   for i, r in ipairs(regions or {}) do
@@ -189,9 +173,7 @@ local function region_at(doc, line)
   end
 end
 
--- Re-detect once per edit, driven from the docview's own update so an open
--- merge shows its conflicts without anyone asking. refresh() early-outs on an
--- unchanged change_id, so the steady-state cost is one comparison per frame.
+-- Re-detect once per edit; refresh() early-outs on an unchanged change_id.
 local update = DocView.update
 function DocView:update()
   update(self)

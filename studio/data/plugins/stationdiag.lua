@@ -1,17 +1,12 @@
--- stationdiag.lua -- live diagnostics: squiggles + gutter dots from LLM
--- Station's lsp_query, computed against the UNSAVED buffer.
+-- stationdiag.lua -- squiggles + gutter dots from lsp_query, computed
+-- against the unsaved buffer.
 --
--- A studio thread watches the active document; when it changes and then
--- holds still for a second, the whole buffer rides the query channel as a
--- `text` overlay (the daemon analyzes what is under the cursor, not the last
--- save) with format=json, so severities and column ranges come back as data
--- rather than prose. Results land as one marks group per doc: the kind
--- colours the gutter dot and the wash-free squiggle (data.spans), and
--- everything clears when the diagnostics do.
---
--- Same absolutes as every station surface: never inside a keystroke, never
--- a blocked frame (handle polled with done()), stale results dropped, and
--- no station at all means this thread simply never publishes.
+-- A studio thread watches the active document. When it changes and holds
+-- still, the buffer rides the query channel as a `text` overlay with
+-- format=json, so severities and column ranges come back as data. Results
+-- land as one marks group per doc: kind colours the gutter dot and the
+-- squiggle spans. Never inside a keystroke, never a blocked frame, stale
+-- results dropped, no station means no publish.
 local core = require "core"
 local config = require "core.config"
 local marks = require "core.marks"
@@ -23,7 +18,7 @@ config.station_diagnostics = true
 
 local GROUP = "stationdiag"
 
--- severity -> marks kind (the wash/sign palette already knows these)
+-- severity -> marks kind
 local KIND = { error = "error", warning = "changed", info = "info", hint = "info" }
 
 local state = setmetatable({}, { __mode = "k" }) -- [doc] = last change_id published
@@ -54,8 +49,7 @@ local function publish(doc, rows)
   for line, d in pairs(by_line) do
     marks.set(doc, line, {
       kind = d.kind, group = GROUP,
-      -- No wash: hl fully transparent so the squiggle carries the signal and
-      -- the line stays readable. The gutter sign still draws from the kind.
+      -- Transparent wash: the squiggle carries the signal, the sign the kind.
       hl = { 0, 0, 0, 0 },
       data = { spans = d.spans, message = table.concat(d.msgs, "; ") },
     })
@@ -71,7 +65,7 @@ core.add_thread(function()
     if doc and doc.filename and doc.get_change_id then
       local rev = doc:get_change_id()
       if state[doc] ~= rev and (stn.up() or stn.ensure()) then
-        -- Debounce: only fire when the buffer has held still for a beat.
+        -- Debounce: fire only after the buffer holds still.
         coroutine.yield(0.6)
         if doc:get_change_id() == rev then
           state[doc] = rev
@@ -87,7 +81,7 @@ core.add_thread(function()
           if okr and h then
             while not h:done() do coroutine.yield(0.03) end
             local p = h:wait()
-            if doc:get_change_id() == rev then -- stale results are dropped
+            if doc:get_change_id() == rev then -- drop stale results
               local rows = {}
               if p and p.ok ~= "false" and p.data then
                 local okj, decoded = pcall(json.decode, p.data)

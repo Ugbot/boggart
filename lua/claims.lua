@@ -1,6 +1,6 @@
 -- claims.lua -- a shared "blackboard" of which agent is editing which file, so
 -- concurrent agents coordinate instead of colliding. In a swarm the actors are
--- coroutines sharing this one process, so this in-memory registry is genuinely
+-- coroutines sharing this one process, so this in-memory registry is
 -- shared between them; a coordinator hands out work, and agents claim the files
 -- they touch.
 --

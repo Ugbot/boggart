@@ -86,7 +86,7 @@ function studio.start_mcp()
     if bog.mcphost then bog.try(bog.mcphost.load) end
     if bog.llmstation then bog.try(bog.llmstation.autostart) end
     bog._mcp_loading = false
-    -- Panels that were open last session come back once the app is up.
+    -- Reopen last session's panels.
     core.try(studio.restore_panels)
   end)
 end
@@ -302,7 +302,7 @@ function studio.status_items()
   if not bog then return {} end
   local v = studio.view or studio.agent_view()
 
-  -- Which model, and crucially where it runs: local (your own server, free) or
+  -- Which model, and where it runs: local (your own server, free) or
   -- remote (a named vendor, per-token money). The status()-derived provider is
   -- the same one a request resolves, so the badge cannot claim you are on local
   -- while a request goes to the cloud. Remote is the one worth flagging -- it is
@@ -475,11 +475,9 @@ end
 
 studio.panels = {}
 
--- Open-panel persistence: the FILES already survive a restart
--- (bog.userdir/ui), but which of them were open as tabs did not, so every
--- restart meant reopening panels by hand. One name per line in ui/.open;
--- rewritten on open/close, replayed once at startup for files that still
--- exist.
+-- Open-panel persistence. Panel files survive a restart; which were open as
+-- tabs did not. One name per line in ui/.open, rewritten on open/close,
+-- replayed at startup for files that still exist.
 local function panels_state_path()
   return bog.userdir .. "/ui/.open"
 end

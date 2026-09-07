@@ -1,25 +1,20 @@
 -- mention.lua -- expand @tokens in a prompt so the TUI and the studio attach
--- the same context. Studio used to do this only in AgentView; the cTUI sent
--- the raw @token and the model had to read(). One expander, both fronts.
+-- the same context. One expander, both fronts.
 --
--- Beyond @path (a file, attached verbatim), tokens carry KINDS, ported from
--- LLM Station's mention parser: @code:query and @docs:query (ranked search
--- through the best available backend -- station over ZMQ when up, native
--- tiers when down), @git:ref (git show), @folder:dir (a listing), @url:...
--- (fetched via station when up), and the ambient @problems / @terminal,
--- resolved through M.sources so a front end can register what "problems"
--- means on its surface. Two rules also ported: a mention only counts when
--- the @ opens a word (start of text, whitespace, or ([{,;: before it -- so
--- user@host is never a mention), and a token needs at least two characters.
+-- Beyond @path (a file, attached verbatim), tokens carry kinds: @code:query
+-- and @docs:query (ranked search, station over ZMQ when up, native tiers
+-- when down), @git:ref (git show), @folder:dir (a listing), @url: (fetched
+-- via station), and the ambient @problems / @terminal resolved through
+-- M.sources. A mention only counts when the @ opens a word (start,
+-- whitespace, or ([{,;: before it; user@host is never a mention), and a
+-- token needs two characters.
 --
--- The contract stays: expansion rides the outgoing payload; the visible
--- bubble shows exactly what the user typed.
+-- Expansion rides the outgoing payload; the bubble shows what was typed.
 local M = {}
 M.MAX = 64 * 1024
 
--- Ambient sources a front end may register: M.sources.problems = function()
--- return "text" end (diagnostics), M.sources.terminal = ... (scrollback).
--- Unregistered ambient mentions are reported as unresolved, never guessed.
+-- Front ends register ambient sources: M.sources.problems = function()
+-- return "text" end. Unregistered ambient mentions report as unresolved.
 M.sources = {}
 
 local function read_path(path)
@@ -50,8 +45,7 @@ function M.resolve(token)
   return nil
 end
 
--- Kind classification (the LLM Station rules). Returns kind, rest where rest
--- is the query/ref/path payload after a prefix, or the token itself.
+-- Returns kind, rest: the payload after a prefix, or the token itself.
 local KIND_PREFIX = { code = true, docs = true, folder = true, dir = true,
                       url = true, git = true }
 
@@ -67,8 +61,7 @@ function M.classify(token)
   return "symbol", token
 end
 
--- sys.exec has returned both a bare string and a { out = ... } table across
--- eras; accept either.
+-- sys.exec has returned a bare string and a { out = ... } table; accept both.
 local function exec_out(cmd, timeout)
   local ok, r = pcall(sys.exec, cmd, timeout or 10)
   if not ok then return nil end
@@ -86,9 +79,8 @@ local function search(query)
   return res
 end
 
--- Resolve a kinded mention to attachable text, or nil. Every path here is
--- bounded and best-effort: an unresolvable mention becomes a note, never an
--- error and never a guess.
+-- Resolve a kinded mention to text, or nil. Bounded and best-effort: an
+-- unresolvable mention becomes a note, never an error.
 function M.resolve_kind(kind, rest)
   if kind == "problems" or kind == "terminal" then
     local src = M.sources[kind]
@@ -100,8 +92,7 @@ function M.resolve_kind(kind, rest)
   end
   if kind == "code" then return search(rest) end
   if kind == "docs" then
-    -- Prefer station's semantic search when the transport is up; the ranked
-    -- code search is the floor either way.
+    -- Station's semantic search when up; ranked code search is the floor.
     local oks, stn = pcall(require, "stationlink")
     if oks and stn and stn.up and stn.up() then
       local out = stn.call("semantic_search", { query = rest, limit = "8" })
@@ -110,7 +101,7 @@ function M.resolve_kind(kind, rest)
     return search(rest)
   end
   if kind == "git" then
-    if rest:find("[^%w%._%-/~^]") then return nil end -- refs only, no shell games
+    if rest:find("[^%w%._%-/~^]") then return nil end -- refs only
     return exec_out("git show --stat --format=medium " .. shq(rest) .. " 2>/dev/null", 10)
   end
   if kind == "folder" then
@@ -131,10 +122,9 @@ function M.resolve_kind(kind, rest)
   return nil
 end
 
--- Walk `@tokens` in `text`. Returns the prompt with attachments appended, and
--- a note list { { path=, bytes=, ok=bool } } so a front end can tell the user
--- what landed (or what did not). A mention only counts when the @ opens a
--- word; user@host stays an email address and produces no note at all.
+-- Walk @tokens in `text`. Returns the prompt with attachments appended and a
+-- note list { { path=, bytes=, ok=bool } }. An email address is no mention
+-- and leaves no note.
 function M.expand(text)
   text = tostring(text or "")
   local seen, attach, notes = {}, {}, {}
@@ -144,7 +134,7 @@ function M.expand(text)
     if not s then break end
     pos = e + 1
     local opens = s == 1 or text:sub(s - 1, s - 1):match("[%s%(%[{,;:]") ~= nil
-    token = token:gsub(":+$", "") -- "@foo:" at the end of a clause is @foo
+    token = token:gsub(":+$", "") -- a clause-final "@foo:" is @foo
     if opens and #token >= 2 and not seen[token] then
       seen[token] = true
       local kind, rest = M.classify(token)

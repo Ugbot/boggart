@@ -84,11 +84,10 @@ end
 -- boggart brings LLM Station up itself rather than only using an already-running
 -- one.
 function M.autostart()
-  -- The transport rule (docs/station-zmq.md) is absolute: when the native ZMQ
-  -- client is built and a daemon answers, EVERYTHING station goes over ZMQ and
-  -- the MCP mount is not connected at all. MCP remains the path for binaries
-  -- built without the client, for machines with no daemon, and for testing
-  -- the MCP adapter itself (BOGGART_STATION_FORCE_MCP=1).
+  -- Transport rule (docs/station-zmq.md): when the ZMQ client is built and a
+  -- daemon answers, station traffic goes over ZMQ and the MCP mount is not
+  -- connected. MCP remains for unbuilt binaries, daemonless machines, and
+  -- testing the adapter (BOGGART_STATION_FORCE_MCP=1).
   local okz, stn = pcall(require, "stationlink")
   if okz and stn and stn.active and stn.active() then
     bog.log("llm-station: native ZMQ transport active; MCP mount not connected")

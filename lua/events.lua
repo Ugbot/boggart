@@ -236,7 +236,7 @@ end
 --
 -- The no-subscriber path is one comparison and a return: that is the whole
 -- reason `count` is maintained rather than derived. Callers still allocate the
--- payload table before calling, so the genuinely hot emits (turn:text, once per
+-- payload table before calling, so the hot emits (turn:text, once per
 -- streamed token) guard with events.any() first; `data` may also be a function,
 -- which is only called if someone is listening.
 function M.emit(name, data)

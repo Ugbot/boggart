@@ -1,23 +1,14 @@
 -- gitgutter.lua -- changed-line bars against HEAD, and inline blame.
 --
--- The buffer is diffed against `git show HEAD:file` (fetched once per doc,
--- again on save), so the gutter shows what THIS editing session has changed
--- whether or not it is saved yet. Deliberately not built on core.marks: marks
--- feed the agent-review surface (marks.review, alt+n), and a few hundred git
--- lines in there would bury the hunks the reviewer actually has to answer
--- for. This keeps its own per-doc line table and draws a 2px bar at the far
--- left of the gutter, beside -- not instead of -- the mark sign column.
+-- The buffer diffs against `git show HEAD:file` (fetched per doc, again on
+-- save): the gutter shows this session's changes, saved or not. Not built on
+-- core.marks; git lines would bury the agent-review hunks there. Own per-doc
+-- table, 2px bar at the gutter edge.
 --
--- All git commands run inside core.add_thread coroutines, where sys.exec
--- yields ("proc", handle) and the frame loop keeps running (the libraryview
--- lesson: a synchronous exec on the render path stalls every frame it takes).
--- The diff itself is in-memory (core.diff), debounced against change_id, and
--- only ever run for the active document.
---
--- Blame is `git blame --line-porcelain`, parsed into a dense per-line array
--- (every line carries full metadata in porcelain, so this is one pass), drawn
--- dim and right-aligned on the caret's line only. Off by default; toggling it
--- on fetches lazily.
+-- Git commands run in core.add_thread coroutines, where sys.exec yields and
+-- the frame loop keeps running. The diff is in-memory, debounced against
+-- change_id, active doc only. Blame: --line-porcelain, one pass to a dense
+-- per-line array, drawn on the caret's line. Off by default.
 local core = require "core"
 local command = require "core.command"
 local config = require "core.config"
@@ -53,8 +44,7 @@ local function dir_and_name(doc)
   return dir, name
 end
 
--- Diff HEAD against the buffer as it stands, into the per-line kind table.
--- Pure in-memory work; the exec that fetched HEAD already happened.
+-- Diff HEAD against the buffer, into the per-line kind table. In-memory.
 local function rediff(doc, st)
   local a = difflib.lines(st.head)
   local b = difflib.lines(table.concat(doc.lines))
@@ -70,8 +60,7 @@ local function rediff(doc, st)
   st.lines, st.rev = out, doc:get_change_id()
 end
 
--- Fetch HEAD's copy of the file, then diff. Runs on a studio thread so the
--- exec yields instead of blocking a frame.
+-- Fetch HEAD's copy, then diff. On a studio thread so exec yields.
 local function fetch_head(doc)
   local st = st_of(doc)
   if st.busy then return end
@@ -88,10 +77,8 @@ local function fetch_head(doc)
   end)
 end
 
--- One porcelain pass into a dense per-line array. Every line of
--- --line-porcelain output carries its own header and metadata, so this is a
--- single forward scan: header gives the final line number, author/author-time
--- fill it in.
+-- One forward scan: each porcelain header gives the final line number,
+-- author and author-time fill it in.
 local function fetch_blame(doc)
   local st = st_of(doc)
   if st.blame or st.busy then return end
@@ -124,8 +111,7 @@ local function fetch_blame(doc)
   end)
 end
 
--- The debounced re-diff: once per half second, only for the active doc, only
--- when the buffer actually changed since the last diff.
+-- Debounced re-diff: half-second cadence, active doc, changed buffers only.
 core.add_thread(function()
   while true do
     local view = core.active_view
@@ -144,8 +130,7 @@ core.add_thread(function()
   end
 end)
 
--- HEAD moves when the file is saved (and, close enough, when branches move
--- underneath us): refetch on save, and drop blame so it reloads lazily.
+-- HEAD moves on save: refetch, and drop blame so it reloads lazily.
 local save = Doc.save
 function Doc:save(...)
   save(self, ...)
@@ -166,8 +151,7 @@ function DocView:draw_line_gutter(idx, x, y)
   local st = state[self.doc]
   local kind = st and st.lines and st.lines[idx]
   if kind then
-    -- Far-left edge: the mark sign column sits at padding.x * 0.3, so the git
-    -- bar at x+1 reads as a second, thinner rail rather than a collision.
+    -- x+1: left of the mark sign column.
     renderer.draw_rect(x + 1, y + 1, math.max(2, math.floor(2 * SCALE)),
       self:get_line_height() - 2, BAR[kind])
   end
@@ -182,7 +166,7 @@ function DocView:draw_line_body(idx, x, y)
   local st = state[self.doc]
   local text = st and st.blame and st.blame[idx]
   if not text then return end
-  -- Right-aligned in the view, clear of both the code and any mark controls.
+  -- Right-aligned, clear of code and mark controls.
   local font = self:get_font()
   local w = font:get_width(text)
   local tx = self.position.x + self.size.x - w - style.padding.x * 2

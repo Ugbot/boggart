@@ -1,56 +1,41 @@
 /* lstation.c -- native client for LLM Station's ZeroMQ daemon protocol.
  *
- * LLM Station (the C++ IDE daemon) speaks ROUTER/DEALER: one ROUTER socket
- * per workspace, msgpack envelopes, topic pub/sub folded onto the same
- * socket. This module is boggart's DEALER end of that wire -- the transport
- * that replaces the MCP stdio detour when a station is reachable. C moves
- * bytes; every policy decision (which tool, when, what to fall back to) is
- * Lua's, in lua/station.lua. Plan of record: docs/station-zmq.md.
+ * LLM Station speaks ROUTER/DEALER: one ROUTER per workspace, msgpack
+ * envelopes, topic pub/sub on the same socket. This is boggart's DEALER end.
+ * C moves bytes; policy (which tool, when, fallbacks) is Lua's, in
+ * lua/stationlink.lua. Plan of record: docs/station-zmq.md.
  *
- * STRICTLY OPT-IN. The file is compiled into both binaries unconditionally
- * (the lvoice.c doctrine), but the socket layer exists only when configured
- * with -DBOGGART_STATION=ON; without it, station.built() == false,
- * station.connect() returns nil + an explanatory error, and nothing else in
- * boggart changes. Two pieces work even in a default build, because they
- * need no libzmq: endpoint discovery (a SQLite read of llm-station's own
- * config.db) and the msgpack envelope codec (exposed as station._encode /
- * station._decode so the default-build test suite can exercise the wire
- * format headlessly).
+ * Opt-in. Compiled into both binaries (the lvoice.c doctrine); the socket
+ * layer exists only under -DBOGGART_STATION=ON. Without it station.built()
+ * is false and connect() returns nil plus why. Discovery (a SQLite read of
+ * config.db) and the msgpack codec (station._encode/_decode) need no libzmq
+ * and work in every build, so the test suite covers the wire headlessly.
  *
- * The wire, from llm-station's src/daemon/DaemonProtocol.h:
- *   DEALER sends/receives 4 frames -- [empty][channel][corr_id|topic][payload]
- *   (the ROUTER sees 5; libzmq adds and strips the identity frame). The
- *   payload is a msgpack map {msg_type, tool, payload} where the inner
- *   payload is a FLAT map<string,string> -- no ints, no floats, no nesting.
- *   Unknown keys are ignored and missing keys default on both ends, so the
- *   format is forward compatible by construction. Channels: "cmd" (ack now,
- *   result later), "query" (answered inline on the daemon's poll thread --
- *   the interactive path), "sub"/"unsub" (topics); inbound "result",
- *   "event" (frame 2 is the topic, not a corr id) and "error". Two distinct
- *   error keys: payload["error"] is a protocol error, payload["err"] (beside
- *   ok="false") is a tool failure. Both are surfaced to Lua as data.
+ * The wire, from llm-station's src/daemon/DaemonProtocol.h: DEALER sends and
+ * receives 4 frames, [empty][channel][corr_id|topic][payload]; the ROUTER
+ * sees 5 (libzmq adds the identity). The payload is a msgpack map
+ * {msg_type, tool, payload} whose inner payload is a flat map<string,string>.
+ * Unknown keys are ignored, missing keys default: forward compatible by
+ * construction. Channels: "cmd" (ack now, result later), "query" (inline on
+ * the poll thread), "sub"/"unsub"; inbound "result", "event" (frame 2 is the
+ * topic), "error". Two error keys: payload["error"] is a protocol error,
+ * payload["err"] beside ok="false" a tool failure. Both surface as data.
  *
  * Discovery reads `SELECT port FROM projects WHERE path = ?` from
- * ~/.llm-station/config.db ($LLM_STATION_HOME and $XDG_DATA_HOME override),
- * keyed by the CANONICAL workspace root. A miss means "no station" -- the
- * C++ client's hash-of-path port fallback is deliberately not reimplemented:
- * it is implementation-defined std::hash AND it can collide onto another
- * workspace's live daemon. boggart only ever connects, never binds, so the
- * historic studio bind race cannot recur from here.
+ * ~/.llm-station/config.db, keyed by the canonical workspace root. A miss
+ * means no station. The C++ client's hash-of-path port fallback is not
+ * reimplemented: implementation-defined, and it can collide onto another
+ * workspace's live daemon. boggart connects, never binds, so the studio
+ * bind race cannot recur here.
  *
- * Crash tolerance is the contract, not a feature. The daemon's correlation
- * state is all in RAM, so a daemon restart makes every outstanding corr_id
- * garbage: pending calls carry deadlines and fail with a clean error rather
- * than being re-awaited, and a dead daemon costs whoever asked one timeout,
- * never a hang. Liveness policy (pings, reconnect backoff, station.up/down
- * bus events) lives in Lua on top of conn:pump() and short call deadlines.
+ * Crash tolerance is the contract. Daemon correlation state is RAM, so a
+ * restart makes every outstanding corr_id garbage: pending calls carry
+ * deadlines and fail rather than re-await. A dead daemon costs one timeout.
+ * Liveness policy (pings, backoff, station.up/down) lives in Lua.
  *
- * Waiting follows lmcp.c: under the swarm scheduler a call handle yields
- * ("io", handle) so other agents keep running; off a coroutine it polls in
- * short slices. Unsolicited event frames become bus events
- * ("station.<topic>", payload as JSON) via bus_emit, the same fabric the
- * studio already attaches to. (A ZMQ_FD/uv_poll integration -- BSTAT-9 --
- * can replace the slice polling later without changing this surface.)
+ * Waiting follows lmcp.c: under the scheduler a handle yields ("io", handle);
+ * off a coroutine it polls in slices. Event frames become bus events
+ * ("station.<topic>", payload as JSON) via bus_emit.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -109,9 +94,8 @@ static int st_canon(const char *in, char *out, size_t n) {
   return 1;
 }
 
-/* The port for a workspace, or 0 with *err set (static string). Opened
- * read-write when possible -- llm-station's own client notes that WAL reads
- * of the daemon's writes need it -- falling back to read-only. */
+/* The port for a workspace, or 0 with *err set. Opened read-write when
+ * possible (WAL reads of the daemon's writes need it), else read-only. */
 static int st_lookup_port(const char *workspace, const char **err) {
   char canon[PATH_MAX], dir[PATH_MAX], dbpath[PATH_MAX + 32];
   *err = NULL;
@@ -148,7 +132,7 @@ static int st_lookup_port(const char *workspace, const char **err) {
 }
 
 /* station.endpoint([workspace]) -> "tcp://127.0.0.1:<port>", port | nil, why.
- * Discovery only -- says where a daemon WOULD be, not whether one is alive. */
+ * Discovery only: where a daemon would be, not whether one is alive. */
 static int l_endpoint(lua_State *L) {
   const char *ws = luaL_optstring(L, 1, ".");
   const char *err = NULL;
@@ -164,10 +148,8 @@ static int l_endpoint(lua_State *L) {
 }
 
 /* ---- msgpack envelope codec (no libzmq needed) ---------------------------
- * Exactly the subset the wire uses: maps and strings. Encoding emits fixmap/
- * map16/map32 and fixstr/str8/str16/str32; decoding additionally skips over
- * any other well-formed value so an envelope that grows a non-string field
- * some day degrades to "key ignored", not "connection broken". */
+ * The subset the wire uses: maps and strings. Decoding also skips other
+ * well-formed values, so a new non-string field degrades to "key ignored". */
 
 typedef struct { luaL_Buffer b; lua_State *L; } stbuf;
 
@@ -203,10 +185,9 @@ static void mp_map_header(stbuf *o, size_t n) {
   }
 }
 
-/* Encode {msg_type, tool, payload} from (msg_type, tool|nil, table|nil) at
- * stack slots base..base+2, leaving the encoded string on top. The inner
- * payload accepts string keys with string-or-number values (numbers are
- * stringified -- the wire is flat strings by design, STATION-138). */
+/* Encode {msg_type, tool, payload} from stack slots base..base+2, leaving
+ * the bytes on top. String keys, string-or-number values; numbers are
+ * stringified (the wire is flat strings, STATION-138). */
 static int envelope_encode(lua_State *L, int base) {
   size_t mtn, tooln;
   const char *mt = luaL_checklstring(L, base, &mtn);
@@ -240,8 +221,7 @@ static int envelope_encode(lua_State *L, int base) {
           (lua_type(L, -1) == LUA_TSTRING || lua_type(L, -1) == LUA_TNUMBER)) {
         size_t kn, vn;
         const char *k = lua_tolstring(L, -2, &kn);
-        /* tolstring on the VALUE copy, never the key: converting the key in
-         * place would corrupt lua_next's traversal. */
+        /* tolstring on the value copy; converting the key breaks lua_next. */
         lua_pushvalue(L, -1);
         const char *v = lua_tolstring(L, -1, &vn);
         mp_str(&o, k, kn);
@@ -290,9 +270,8 @@ static int rd_map_header(stcur *c, size_t *n) {
   return 0;
 }
 
-/* Skip one well-formed value of any common type, so unknown fields are
- * ignored rather than fatal. Depth-capped: the wire is flat, so anything
- * deeply nested is garbage, and refusing beats recursing. */
+/* Skip one well-formed value, so unknown fields are ignored not fatal.
+ * Depth-capped: the wire is flat, deep nesting is garbage. */
 static int rd_skip(stcur *c, int depth) {
   if (depth > 8 || !rd_need(c, 1)) return 0;
   unsigned char t = *c->p;
@@ -402,8 +381,7 @@ static int l_built(lua_State *L) {
   return 1;
 }
 
-/* built AND the workspace is registered. Not a liveness probe -- that is a
- * ping over a connection, and policy in lua/station.lua. */
+/* Built and the workspace registered. Not a liveness probe. */
 static int l_available(lua_State *L) {
 #ifdef BOGGART_STATION
   const char *ws = luaL_optstring(L, 1, ".");
@@ -451,9 +429,8 @@ typedef struct stcall {
   uint64_t deadline;
 } stcall;
 
-/* The uv_poll handle riding the interpreter's loop, malloc'd separately from
- * the conn userdata: libuv requires the handle memory to stay valid until its
- * close callback runs, and the userdata's lifetime belongs to the GC. */
+/* The uv_poll handle, malloc'd apart from the conn userdata: libuv needs the
+ * memory valid until the close callback, and the userdata belongs to the GC. */
 typedef struct pollbox {
   uv_poll_t p;
   struct stconn *conn;      /* NULL once the conn is gone; late cbs no-op */
@@ -468,10 +445,9 @@ struct stconn {
   pollbox *pb;              /* NULL when no loop integration (or after close) */
 };
 
-/* One zmq context per interpreter, in the registry. Its __gc closes any
- * socket still open BEFORE zmq_ctx_term: term blocks until every socket is
- * closed, and __gc order between the context and a leftover connection is
- * undefined -- resolving that here is what makes lua_close never hang. */
+/* One zmq context per interpreter, in the registry. Its __gc closes leftover
+ * sockets before zmq_ctx_term: term blocks until all sockets close, and __gc
+ * order is undefined. This is what keeps lua_close from hanging. */
 typedef struct zctxbox {
   void *ctx;
   stconn *conns[ST_MAX_CONNS];
@@ -538,16 +514,14 @@ static zctxbox *get_ctx(lua_State *L) {
   return b;
 }
 
-/* Deliver one inbound multipart message. frames[0] is the empty delimiter;
- * [1] channel, [2] corr id or topic, [3] the envelope. */
+/* Deliver one inbound message: [0] empty, [1] channel, [2] corr id or
+ * topic, [3] envelope. */
 static void route_message(stconn *c, char frames[][256], size_t lens[],
                           const unsigned char *payload, size_t payload_n,
                           lua_State *L) {
   const char *channel = frames[1];
   if (strcmp(channel, "event") == 0) {
-    /* Topic pub/sub: re-emit on boggart's bus as station.<topic>, envelope
-     * flattened to JSON. Subscribers in Lua (CLI scheduler or the studio,
-     * which already calls bus.attach_main) pick it up identically. */
+    /* Re-emit on the bus as station.<topic>, envelope flattened to JSON. */
     stcur cur = { payload, payload + payload_n };
     size_t fields;
     cJSON *o = cJSON_CreateObject();
@@ -601,16 +575,10 @@ static void route_message(stconn *c, char frames[][256], size_t lens[],
     return;
   }
 
-  /* result / error / ack: match the corr id against a pending call. A corr
-   * we no longer know is a stale reply from before a timeout or restart --
-   * dropped, exactly as the client-side staleness rule requires.
-   *
-   * The cmd channel is two-phase: the daemon replies msg_type "ack"
-   * IMMEDIATELY and posts the real tool_result later under the SAME corr id
-   * (the work runs on a detached thread its side). An ack therefore marks
-   * the call acked but leaves it pending -- completing on the ack would
-   * throw the actual result away, which the first live test against a real
-   * daemon demonstrated within the hour. */
+  /* Match the corr id against a pending call; an unknown corr is a stale
+   * reply and is dropped. The cmd channel is two-phase: an immediate "ack",
+   * then the real result under the same corr id. An ack marks the call
+   * acked and leaves it pending; completing on it would drop the result. */
   for (int i = 0; i < ST_MAX_PENDING; i++) {
     stcall *h = c->pending[i];
     if (h && !h->done && strcmp(h->corr, frames[2]) == 0) {
@@ -643,8 +611,7 @@ static void route_message(stconn *c, char frames[][256], size_t lens[],
   }
 }
 
-/* Drain every message currently queued on the socket. Non-blocking; safe to
- * call any time. Returns the number of messages consumed. */
+/* Drain every queued message. Non-blocking. Returns messages consumed. */
 static int conn_drain(stconn *c, lua_State *L) {
   int consumed = 0;
   if (!c->sock) return 0;
@@ -721,10 +688,9 @@ static int l_conn_close(lua_State *L) {
 
 static uint64_t g_corr_seq = 0;
 
-/* conn:request(channel, msg_type[, tool[, payload[, timeout_ms]]]) -> handle.
- * Fire the envelope and hand back a call handle; handle:wait() collects the
- * reply. "query" is the interactive channel; "cmd" acks now and results
- * later under the SAME corr id, so one handle serves both. */
+/* conn:request(channel, msg_type[, tool[, payload[, timeout_ms]]]) -> handle;
+ * handle:wait() collects the reply. "cmd" acks now and results later under
+ * the same corr id, so one handle serves both. */
 static int l_conn_request(lua_State *L) {
   stconn *c = check_conn(L);
   const char *channel = luaL_checkstring(L, 2);
@@ -770,10 +736,9 @@ static int l_conn_request(lua_State *L) {
   return 1;
 }
 
-/* conn:subscribe(topic) / conn:unsubscribe(topic). Fire-and-forget; events
- * arrive on the bus as "station.<topic>" whenever the socket is drained
- * (any wait, or conn:pump). Re-issue after a daemon restart -- its
- * subscription table was RAM. */
+/* conn:subscribe(topic) / conn:unsubscribe(topic). Fire and forget; events
+ * arrive on the bus as "station.<topic>". Re-issue after a daemon restart:
+ * its subscription table was RAM. */
 static int sub_common(lua_State *L, const char *channel) {
   stconn *c = check_conn(L);
   const char *topic = luaL_checkstring(L, 2);
@@ -802,8 +767,7 @@ static int sub_common(lua_State *L, const char *channel) {
 static int l_conn_subscribe(lua_State *L) { return sub_common(L, "sub"); }
 static int l_conn_unsubscribe(lua_State *L) { return sub_common(L, "unsub"); }
 
-/* conn:pump([ms]) -> messages consumed. Drives event delivery when no call
- * is outstanding; a UI calls this from its frame loop or a timer. */
+/* conn:pump([ms]) -> messages consumed. Event delivery with no call out. */
 static int l_conn_pump(lua_State *L) {
   stconn *c = check_conn(L);
   int ms = (int)luaL_optinteger(L, 2, 0);
@@ -822,8 +786,7 @@ static int call_push(lua_State *L, stcall *h) {
   int n = envelope_decode(L, (const unsigned char *)(h->reply ? h->reply : ""),
                           h->reply_n);
   if (n == 2) return 2;  /* nil, decode error */
-  /* (msg_type, tool, payload) -> return payload, msg_type, channel; the
-   * error channel and the two error keys are data for Lua to rule on. */
+  /* Return payload, msg_type, channel; the error keys are Lua's to rule on. */
   lua_pushvalue(L, -1);            /* payload */
   lua_pushvalue(L, -4);            /* msg_type */
   lua_pushstring(L, h->channel[0] ? h->channel : "result");
@@ -851,8 +814,7 @@ static int call_cont(lua_State *L, int status, lua_KContext ctx) {
 }
 
 /* Wait for the reply: yields ("io", handle) under the scheduler, polls in
- * slices otherwise -- exactly lmcp.c's shape, so the studio's frame loop and
- * the swarm scheduler both keep breathing while a call is in flight. */
+ * slices otherwise. lmcp.c's shape. */
 static int call_wait(lua_State *L) {
   stcall *h = (stcall *)luaL_checkudata(L, HANDLE_IDX, API_TYPE_STCALL);
   for (;;) {
@@ -881,10 +843,9 @@ static int l_call_done(lua_State *L) {
   return 1;
 }
 
-/* h:cancel() -- give up on the call. Locally the handle fails immediately
- * ("cancelled") and its corr id is forgotten, so a late reply is dropped as
- * stale; a best-effort `cancel` query also tells the daemon to drop the
- * result instead of routing it. Idempotent. */
+/* h:cancel(): the handle fails now ("cancelled") and its corr id is
+ * forgotten, so a late reply drops as stale; a best-effort cancel query
+ * tells the daemon to drop the result too. Idempotent. */
 static int l_call_cancel(lua_State *L) {
   stcall *h = (stcall *)luaL_checkudata(L, 1, API_TYPE_STCALL);
   if (h->done) { lua_pushboolean(L, 1); return 1; }
@@ -936,9 +897,9 @@ static int l_call_gc(lua_State *L) {
 
 static void conn_watch(lua_State *L, stconn *c);
 
-/* station.connect([workspace]) -> conn | nil, err. Resolves the workspace's
- * port and connects a DEALER. zmq connects lazily, so success here means
- * "socket aimed", not "daemon alive" -- ping it (query/ping) to find out. */
+/* station.connect([workspace]) -> conn | nil, err. Resolves the port and
+ * connects a DEALER. zmq connects lazily: success means socket aimed, not
+ * daemon alive. Ping to find out. */
 static int l_connect(lua_State *L) {
   const char *ws = luaL_optstring(L, 1, ".");
   const char *err = NULL;
@@ -990,13 +951,11 @@ static int l_connect(lua_State *L) {
   return 1;
 }
 
-/* The loop-side delivery path (BSTAT-9): readiness on ZMQ_FD wakes this, and
- * the edge-triggered contract is honoured to the letter -- after EVERY wake,
- * drain and then re-check ZMQ_EVENTS in a loop until it reports no POLLIN,
- * because with ZMQ_FD readiness does NOT imply a message and a message does
- * not always re-edge the fd. Getting this wrong presents as intermittent
- * hangs, the exact bug class docs/async.md exists to prevent. The handle is
- * uv_unref'd so an idle connection never holds the loop open. */
+/* Loop-side delivery (BSTAT-9). After every wake: drain, then re-check
+ * ZMQ_EVENTS until no POLLIN. ZMQ_FD readiness does not imply a message and
+ * a message does not always re-edge the fd; wrong here means intermittent
+ * hangs (the docs/async.md bug class). The handle is uv_unref'd so an idle
+ * connection never holds the loop open. */
 static void station_poll_cb(uv_poll_t *h, int status, int events) {
   (void)status; (void)events;
   pollbox *pb = (pollbox *)h->data;
@@ -1011,10 +970,9 @@ static void station_poll_cb(uv_poll_t *h, int status, int events) {
   }
 }
 
-/* Put the connection's ZMQ_FD on the interpreter's uv loop, so subscribed
- * events arrive while the program is just sitting in uv.run -- no pump call
- * needed anywhere. Best-effort: a failure leaves pb NULL and the slice-poll
- * waits still work exactly as before. */
+/* Park ZMQ_FD on the interpreter's uv loop, so subscribed events arrive
+ * while the program sits in uv.run. Best-effort: on failure pb stays NULL
+ * and the slice-poll waits still work. */
 static void conn_watch(lua_State *L, stconn *c) {
   uv_loop_t *loop = luv_loop(L);
   if (!loop) return;
@@ -1044,16 +1002,12 @@ static int l_conn_endpoint_of(lua_State *L) {
   return 1;
 }
 
-/* Neutralise the raw uv_poll handles this module leaves on luv's shared loop,
- * called from C right before lua_close() -- the same doctrine and the same
- * trap as boggart_http_shutdown (src/lhttp.c): lua_close runs luv's loop_gc,
- * which uv_walks the loop and closes every handle through luv_close_cb, and
- * that cb casts handle->data to a luv_handle_t*. Ours carries a pollbox*, so
- * without this the cast is a type confusion and the process faults at exit.
- * We stop each poll and NULL its data (luv_close_cb no-ops on NULL), detach
- * it from its conn, and deliberately leak the box -- loop_gc still touches
- * the handle memory while closing it. Idempotent; a no-op when no station
- * connection was ever made. */
+/* Neutralise the raw uv_poll handles before lua_close(), the
+ * boggart_http_shutdown doctrine: luv's loop_gc close-walk casts
+ * handle->data to luv_handle_t*, ours is a pollbox*, and the confusion
+ * faults at exit. Stop each poll, NULL its data (luv_close_cb no-ops on
+ * NULL), detach, and leak the box; loop_gc still touches the handle memory.
+ * Idempotent. */
 void boggart_station_shutdown(lua_State *L) {
   lua_rawgetp(L, LUA_REGISTRYINDEX, &g_zctx_key);
   zctxbox *b = (zctxbox *)lua_touserdata(L, -1);

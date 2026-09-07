@@ -1,31 +1,20 @@
--- ghosttext.lua -- inline (Copilot-style) completion as REAL buffer bytes
--- painted a ghost colour. Off by default; `ghost-text:toggle` or
--- config.ghost_text = true turns it on (the popup provider stationcomplete
--- is the default surface -- running both would fight over the same prefix).
+-- ghosttext.lua -- inline completion as real buffer bytes painted a ghost
+-- colour. Off by default; `ghost-text:toggle` turns it on. The popup
+-- provider is the default surface; both would fight over one prefix.
 --
--- The representation is the NED ai_tab trick: the candidate's suffix is
--- spliced into the buffer for real and dimmed via the DocView colour-span
--- hook (BSTUD-65), so every piece of layout, wrap, cursor and scroll math
--- just works -- there is no phantom text with its own geometry. What keeps
--- it honest:
+-- The suffix is spliced into the buffer and dimmed via the colour-span hook,
+-- so layout, wrap, cursor and scroll math need no phantom-text cases. Rules:
 --
---   * Ghost splices go through doc:raw_insert/raw_remove with a SCRATCH
---     undo stack, so a dismissed ghost leaves no undo noise and undo can
---     never resurrect ghost bytes. Accepting removes the ghost the same
---     way and re-inserts the text as a normal edit in one commit_undo
---     bracket -- the undo step is exactly the accepted text.
---   * The caret never moves for a ghost: it stays at the prefix end, the
---     ghost begins after it. Typing, caret movement, or any other edit
---     dismisses first (the cancel-on-edit rule), then the keystroke does
---     what it always did.
---   * The protocol side is the unwired EditorProtocol's: ~300ms debounce,
---     live-buffer prefix, the prefix-guard rule (only a candidate that
---     case-insensitively STARTS WITH the typed prefix may complete it --
---     splicing a fuzzy match corrupts the word), request staleness by
---     caret+prefix key, single-line only.
+--   * Ghost splices use raw_insert/raw_remove with a scratch undo stack:
+--     no undo noise, and undo cannot resurrect ghost bytes. Accept removes
+--     the ghost the same way and re-inserts as one commit_undo edit.
+--   * The caret never moves for a ghost. Typing, caret movement, or any
+--     edit dismisses first; the keystroke then does what it always did.
+--   * ~300ms debounce, live-buffer prefix, prefix guard (only a candidate
+--     that starts with the typed prefix, case-insensitive; splicing a fuzzy
+--     match corrupts the word), staleness by caret+prefix key, single line.
 --
--- Keys while a ghost is visible: tab accepts all, alt+right accepts one
--- word (pure index arithmetic on the ghost span), escape dismisses.
+-- tab accepts all, alt+right accepts a word, escape dismisses.
 local core = require "core"
 local config = require "core.config"
 local command = require "core.command"
@@ -60,9 +49,7 @@ local function dismiss()
   ghost = nil
   paint(false)
   g.dv:set_color_spans(g.line, nil)
-  -- Remove the ghost bytes via the scratch stack: no undo entry, and the
-  -- refuse-don't-guess check first -- if the span no longer says what we
-  -- spliced, something else edited it and we must not touch it.
+  -- Scratch-stack removal, only if the span still holds what we spliced.
   local have = g.doc:get_text(g.line, g.col, g.line, g.col + #g.text)
   if have == g.text then
     g.doc:raw_remove(g.line, g.col, g.line, g.col + #g.text, scratch, 0)
@@ -76,8 +63,7 @@ local function stage(dv, line, col, text)
   if text == "" then return end
   local doc = dv.doc
   doc:raw_insert(line, col, text, scratch, 0)
-  -- The splice moved the caret's sanity but not its position; pin it back to
-  -- the prefix end so typing continues where the user left off.
+  -- Pin the caret at the prefix end; typing continues there.
   doc:set_selection(line, col)
   ghost = { dv = dv, doc = doc, line = line, col = col, text = text }
   paint(true)
@@ -89,8 +75,7 @@ local function accept(words)
   local g = ghost
   local take = g.text
   if words then
-    -- One word: the ghost's leading run of word chars plus any joiner right
-    -- after it (pure index arithmetic, the ai_tab acceptWord rule).
+    -- One word: the ghost's leading run of word characters.
     take = g.text:match("^%s*[%w_]+") or g.text:sub(1, 1)
   end
   local rest = g.text:sub(#take + 1)
@@ -101,19 +86,17 @@ local function accept(words)
   if have ~= g.text then core.redraw = true return end
   g.doc:raw_remove(g.line, g.col, g.line, g.col + #g.text, scratch, 0)
   g.doc:commit_undo()
-  g.doc:insert(g.line, g.col, take) -- a real edit: THIS is the undo step
+  g.doc:insert(g.line, g.col, take) -- the real edit; this is the undo step
   g.doc:commit_undo()
   g.doc:set_selection(g.line, g.col + #take)
   if words and rest ~= "" then
-    -- The unaccepted tail returns as a fresh ghost after the caret.
+    -- The tail returns as a fresh ghost after the caret.
     stage(g.dv, g.line, g.col + #take, rest)
   end
   core.redraw = true
 end
 
--- Cancel-on-edit and cancel-on-move, at the view seams (every buffer change
--- a user can make arrives through one of these or through a command that
--- moves the caret, which update() sees).
+-- Cancel on edit and on caret movement, at the view seams.
 local on_text_input = DocView.on_text_input
 function DocView:on_text_input(text)
   if ghost and ghost.dv == self then dismiss() end
@@ -129,8 +112,7 @@ function DocView:update()
   update(self)
 end
 
--- The fetch loop: same cadence and staleness discipline as stationcomplete,
--- but it takes only the TOP candidate and only under the prefix guard.
+-- Fetch loop: stationcomplete's cadence, top candidate only, prefix-guarded.
 core.add_thread(function()
   local last_key
   while true do
@@ -166,8 +148,7 @@ core.add_thread(function()
               local top = okj and decoded and decoded.completions
                 and decoded.completions[1]
               local label = top and top.label or ""
-              -- The prefix guard: only a candidate that starts with what was
-              -- typed may complete it.
+              -- Prefix guard: the candidate must start with what was typed.
               if #label > #prefix
                  and label:sub(1, #prefix):lower() == prefix:lower() then
                 stage(dv, line2, col2, label:sub(#prefix + 1))

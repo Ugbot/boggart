@@ -43,9 +43,7 @@ local SAFE_TABLE = { "concat", "insert", "remove", "sort", "unpack" }
 local SAFE_MATH = {
   "abs", "ceil", "cos", "exp", "floor", "fmod", "huge", "log", "max", "min",
   "modf", "pi", "sin", "sqrt", "tan", "random",
-  -- The inverse trig a panel needs to aim an arrow or rotate a label, and the
-  -- integer helpers. All pure; "has math" in the tool description should not
-  -- be a trap.
+  -- Inverse trig (aiming an arrow needs atan) and the integer helpers.
   "atan", "asin", "acos", "tointeger", "maxinteger", "mininteger",
 }
 
@@ -222,10 +220,8 @@ function uisandbox.context(panel, x, y, w, h, mouse, font)
     -- decided whether a click happened inside it.
     button = function(label, bx, by, bw)
       label = tostring(label or "")
-      -- The click latch is keyed by label PLUS this frame's occurrence
-      -- ordinal, so two buttons that happen to say the same thing ("open",
-      -- "open") each answer only for themselves. Draw order is stable frame
-      -- to frame, which is what makes the ordinal a valid identity.
+      -- Latch key = label + occurrence ordinal, so two same-label buttons
+      -- answer separately. Stable draw order makes the ordinal an identity.
       button_nth[label] = (button_nth[label] or 0) + 1
       local key = label .. "\0" .. button_nth[label]
       local rect = widgets.button(font, label, bx, by, {

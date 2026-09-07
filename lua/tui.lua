@@ -924,7 +924,7 @@ function M.run()
   -- The between-turns prompt is the same event loop as a turn, just with no
   -- actors running: drain every buffered key, act on it, then sleep in a single
   -- uv.run("once") until the next keypress wakes us (stdin is on the loop). No
-  -- poll timeout, no spin -- the process is genuinely asleep between keystrokes.
+  -- poll timeout, no spin -- the process is asleep between keystrokes.
   local ok, err = pcall(function()
     draw(st)
     local quit = false

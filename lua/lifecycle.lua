@@ -154,7 +154,7 @@ end
 -- than using bog.db, so it works whether or not boot got that far.
 --
 -- Returns (report_text, ok, problems) so the GUI can render it as well as the
--- CLI printing it. `ok` is false only when something is genuinely broken;
+-- CLI printing it. `ok` is false only when something is broken;
 -- advisory findings come back as warnings inside the text.
 function M.doctor()
   local L, problems, warnings = {}, {}, {}

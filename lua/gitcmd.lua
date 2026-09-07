@@ -25,7 +25,7 @@ function M.run(name, arg)
 
   elseif name == "commit" then
     if arg == "" then
-      -- no message given: this genuinely needs judgement, so go straight to the
+      -- no message given: this needs judgement, so go straight to the
       -- model to write one from the diff and commit.
       return { run = "Stage all changes (git add -A) and commit them with a "
         .. "concise, conventional commit message you write from the diff. "

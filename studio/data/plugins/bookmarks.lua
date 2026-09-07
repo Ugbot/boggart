@@ -1,11 +1,7 @@
--- bookmarks.lua -- nine numbered slots of {file, line, col, scroll}, so a
--- place you will come back to does not cost an open tab. Set with
--- cmd+shift+1..9, jump with cmd+1..9, list with cmd+b. A jump restores the
--- scroll position as well as the caret: a bookmark is a view you were looking
--- at, not just a coordinate.
---
--- Slots persist per project in .studio-bookmarks.lua at the project root --
--- a plain Lua table, written on every change, loaded once at startup.
+-- bookmarks.lua -- nine slots of {file, line, col, scroll}. Set with
+-- cmd+shift+1..9, jump with cmd+1..9, list with cmd+b. A jump restores
+-- scroll as well as caret: a bookmark is a view, not a coordinate.
+-- Slots persist in .studio-bookmarks.lua at the project root.
 local core = require "core"
 local command = require "core.command"
 local keymap = require "core.keymap"
@@ -57,7 +53,7 @@ local function set_slot(i)
     scroll_y = math.floor(dv.scroll.y),
   }
   save()
-  core.log("bookmark %d set — %s", i, label(i))
+  core.log("bookmark %d set: %s", i, label(i))
 end
 
 local function jump(i)
@@ -69,9 +65,7 @@ local function jump(i)
   local ok, err = core.try(function()
     local dv = core.root_view:open_doc(core.open_doc(b.file))
     dv.doc:set_selection(b.line, b.col)
-    -- The caret is placed first, then the remembered scroll aims the view:
-    -- open_doc's own ensure-visible lands nearby and this refines it back to
-    -- exactly what was on screen when the mark was set.
+    -- Caret first, then the saved scroll overrides open_doc's ensure-visible.
     dv.scroll.to.y = b.scroll_y
   end)
   if not ok then core.error("bookmark %d: %s", i, tostring(err)) end

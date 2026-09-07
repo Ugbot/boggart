@@ -130,7 +130,7 @@ Cheap because the substrate exists. Any order; all parallelizable.
     the vim model instead: per-cursor preferred columns (today one shared
     `last_x_offset`), and a find-all seeder — Ctrl+Enter in find spawns a
     cursor at every match (`search.find` loop → `dv.vim.cursors`), the NED
-    interaction that makes multi-cursor pay for itself. Works in vim mode
+    interaction that justifies multi-cursor. Works in vim mode
     first; a non-vim entry point can alias into the same machinery.
 
 ## AI-flow items (tracked in BSTAT, listed for completeness)

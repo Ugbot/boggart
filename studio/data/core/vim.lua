@@ -956,12 +956,9 @@ function M.clear_cursors(dv)
   if v then v.cursors, v.mc_word = nil, nil end
 end
 
--- Find-all -> multi-cursor: a caret at EVERY occurrence of `word` (or of the
--- word under the caret). The interaction that makes multi-cursor pay for
--- itself: find once, edit everywhere, one dot-repeat fan. Cursors carry their
--- spawn column as the preferred column (cur[3]), so a fan that lands on a
--- shorter line clamps for that line only and later fans go back to the
--- column the cursor was born at.
+-- Find-all -> multi-cursor: a caret at every occurrence of `word` (or the
+-- word under the caret). Cursors carry their spawn column (cur[3]) as the
+-- preferred column: a fan onto a shorter line clamps for that line only.
 function M.add_cursor_all(dv, word)
   local v = vstate(dv)
   local doc = dv.doc
@@ -1027,9 +1024,7 @@ local function fan_to_cursors(dv)
   M.replaying = true
   local updated = {}
   for _, cur in ipairs(others) do
-    -- cur[3] is the cursor's preferred column (its spawn column): a fan that
-    -- landed on a shorter line clamps for that line only, and the next fan
-    -- aims back at the preferred column rather than inheriting the clamp.
+    -- cur[3] is the preferred column; a clamp lasts one fan, not forever.
     local want = cur[3] or cur[2]
     doc:set_selection(cur[1], math.min(want, line_last_col(doc, cur[1]) + 1))
     replay_change(dv)
@@ -1664,11 +1659,8 @@ command.add(editing_cmd, {
   ["vim:clear-cursors"] = function() M.clear_cursors(core.active_view) end,
 })
 
--- The non-vim entry point aliases into the same machinery: spawning cursors
--- turns vim on for the fan (the replay engine IS the multi-cursor engine),
--- which is the honest description of what happens rather than a parallel
--- implementation. Uses the last find text when the find bar drove it, else
--- the word under the caret.
+-- The non-vim entry aliases into the same machinery: the replay engine is
+-- the multi-cursor engine, so spawning cursors turns vim on and says so.
 command.add("core.docview", {
   ["doc:cursors-at-all-matches"] = function()
     local dv = core.active_view
@@ -1676,10 +1668,10 @@ command.add("core.docview", {
       M.enabled = true
       config.vim_mode = true
       vstate(dv).mode = "normal"
-      core.log("multi-cursor uses the vim engine — vim mode enabled")
+      core.log("multi-cursor uses the vim engine; vim mode enabled")
     end
     local n = M.add_cursor_all(dv)
-    core.log(n > 0 and (n .. " cursors — edit once, it fans to all") or "no matches")
+    core.log(n > 0 and (n .. " cursors; edit once, it fans to all") or "no matches")
   end,
 })
 

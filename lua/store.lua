@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- belong on disk where they can be read and edited, whereas call counts change
 -- on every invocation and rewriting the file each time would be absurd.
 --
--- The counts are the point. The paper's sharpest observation is that a tool
+-- The counts are the point. The paper observes that a tool
 -- costing 2,000 tokens to build that saves 50 once is noise, while one that
 -- removes four round trips on each of twenty later calls is infrastructure --
 -- and you cannot tell those apart without measuring. git_rev is recorded so a
@@ -984,9 +984,8 @@ end
 -- Recent chats for a project: its own, then global's underneath -- the same
 -- own-first rule memory follows, so the recents list matches what the agent
 -- can actually see.
--- STRICTLY one project's chats -- no global fallback rows -- for surfaces that
--- group by project (the sidebar): each chat appears exactly once, under its
--- own heading. nil/global means the loose (project IS NULL) chats.
+-- One project's chats, no global fallback rows, for surfaces that group by
+-- project: each chat appears once. nil/global means the loose chats.
 function M.sess_list_in(project, limit)
   local p = proj_or_global(project)
   if p then

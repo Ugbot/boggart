@@ -1,13 +1,11 @@
--- folds.lua -- code folding: the ranges, their collapsed state, and the
--- hidden-line answer the display-row builder asks. Detection is the NED
--- fork's pair of scans, ported: a bracket-stack walk (with a small state
--- machine for strings and comments) for brace languages, an indent walk for
--- everything else. A range is { s = start_line, e = end_line, collapsed }.
+-- folds.lua -- fold ranges, collapsed state, and the hidden-line answer the
+-- display-row builder asks. Detection: a bracket-stack walk (string and
+-- comment aware) for brace languages, an indent walk otherwise. A range is
+-- { s = start_line, e = end_line, collapsed }.
 --
--- Collapsed state survives re-detection by snapshotting the collapsed start
--- lines before a rescan and re-applying them after -- cheap, and behaviorally
--- right for typical edits. `version` bumps on every toggle so the docview's
--- row cache can key on (change_id, fold version) without inspecting ranges.
+-- Collapsed state survives re-detection: collapsed start lines are
+-- snapshotted before a rescan and re-applied after. `version` bumps on every
+-- toggle so the row cache keys on (change_id, fold version).
 local M = {}
 
 local BRACE_EXTS = {
@@ -17,8 +15,7 @@ local BRACE_EXTS = {
   zig = true, glsl = true, proto = true,
 }
 
--- One linear byte scan with a brace stack. Only a pair that spans lines
--- earns a range -- an inline {...} makes a useless triangle.
+-- One byte scan with a brace stack. Only a pair spanning lines makes a range.
 local function detect_by_brackets(lines)
   local ranges, stack = {}, {}
   local in_block_comment, in_string, string_ch = false, false, nil
@@ -55,13 +52,12 @@ local function detect_by_brackets(lines)
 end
 
 local function indent_of(line)
-  if line:match("^%s*$") then return -1 end -- blank: belongs to any fold
+  if line:match("^%s*$") then return -1 end -- blank belongs to any fold
   local ws = line:match("^[ \t]*")
   return #(ws:gsub("\t", "    "))
 end
 
--- For each line, if the next non-blank line indents deeper, the fold runs
--- until the next line with indent <= base, trailing blanks trimmed.
+-- A line whose next non-blank indents deeper folds until indent <= base.
 local function detect_by_indent(lines)
   local ind = {}
   for i = 1, #lines do ind[i] = indent_of(lines[i]) end
@@ -76,7 +72,7 @@ local function detect_by_indent(lines)
         while e + 1 <= #lines and (ind[e + 1] == -1 or ind[e + 1] > base) do
           e = e + 1
         end
-        while e > j and ind[e] == -1 do e = e - 1 end -- trim trailing blanks
+        while e > j and ind[e] == -1 do e = e - 1 end -- drop trailing blanks
         if e > i then ranges[#ranges + 1] = { s = i, e = e } end
       end
     end
@@ -98,8 +94,7 @@ local function detect(doc)
   return ranges
 end
 
--- The fold state for a doc, recomputed when the buffer changes; collapsed
--- start-lines are carried across the rescan.
+-- Fold state per doc, recomputed when the buffer changes.
 function M.get(doc)
   local st = states[doc]
   local rev = doc.get_change_id and doc:get_change_id() or 0
@@ -118,8 +113,7 @@ function M.get(doc)
   return st
 end
 
--- hidden[line] = the fold-start line that hides it, computed lazily per
--- (rescan, toggle) and consumed by the row builder.
+-- hidden[line] = the fold-start line that hides it. Lazy per rescan/toggle.
 function M.hidden(doc)
   local st = M.get(doc)
   if not st.hidden then
@@ -136,8 +130,7 @@ function M.hidden(doc)
   return st.hidden
 end
 
--- The range starting exactly at `line`, or nil. The gutter triangle and the
--- toggle both key on start lines.
+-- The range starting at `line`, or nil.
 function M.range_at(doc, line)
   for _, r in ipairs(M.get(doc).ranges) do
     if r.s == line then return r end
@@ -162,8 +155,7 @@ function M.set_all(doc, collapsed)
   st.hidden = nil
 end
 
--- The cache key half the row builder folds into its own: bumps on toggle
--- and on rescan.
+-- Bumps on toggle and rescan; half of the row builder's cache key.
 function M.version(doc)
   local st = M.get(doc)
   return st.version

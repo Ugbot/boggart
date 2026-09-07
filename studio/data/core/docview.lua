@@ -141,12 +141,11 @@ function DocView:wrap_line_starts(line)
 end
 
 
--- Display rows are built for BOTH modes now (BSTUD-56): with wrap off a row
--- is simply the whole line, which costs a table per line and zero font
--- measurement, and with wrap on it is the measured slices as before. Folding
--- rides the same table -- a line inside a collapsed range gets no row, and
--- first[] points it at its fold head's row (the nearestDisplayRow rule), so
--- every geometry question below has one answer instead of two code paths.
+-- Display rows are built for both modes (BSTUD-56): wrap off, a row is the
+-- whole line (a table per line, no font measurement); wrap on, the measured
+-- slices. Folding rides the same table: a line inside a collapsed range gets
+-- no row, and first[] points it at its fold head's row. Every geometry
+-- question below has one answer instead of two code paths.
 function DocView:build_wrap()
   local rows, first = {}, {}
   local lines = self.doc.lines
@@ -542,11 +541,9 @@ end
 
 -- Per-span colour overrides. A view may carry `color_spans`:
 --   { [line] = { { col1, col2, color }, ... } }        (byte cols, [col1,col2))
--- honoured by both draw paths below. This is presentation state only -- it
--- lives on the view, never the doc, and the caller owns invalidating it when
--- the text moves. It exists for text that is really in the buffer but must
--- read differently: ghost completions, dimmed conflict markers, a semantic
--- overlay.
+-- honoured by both draw paths. Presentation state only: it lives on the
+-- view, and the caller invalidates it when the text moves. For text that is
+-- in the buffer but reads differently: ghost completions, dimmed markers.
 function DocView:set_color_spans(line, spans)
   if spans and #spans > 0 then
     self.color_spans = self.color_spans or {}
@@ -556,10 +553,9 @@ function DocView:set_color_spans(line, spans)
   end
 end
 
--- Draw one token slice, split wherever a colour span begins or ends. `ttext`
--- starts at absolute byte column `tstart` of line `idx`; returns advanced x.
--- The no-span case is a single draw call, so lines without overrides cost
--- exactly what they did before this existed.
+-- Draw one token slice, split where colour spans begin or end. `ttext`
+-- starts at byte column `tstart` of line `idx`; returns advanced x. The
+-- no-span case is one draw call, so lines without overrides cost as before.
 local function draw_slice(self, idx, font, ttext, tstart, x, y, base)
   local spans = self.color_spans and self.color_spans[idx]
   if not spans then return renderer.draw_text(font, ttext, x, y, base) end
@@ -593,9 +589,8 @@ function DocView:draw_line_text(idx, x, y)
 end
 
 
--- The standard control pair for an agent hunk (a mark carrying data.revert).
--- One shared table, never mutated: this is read once per marked visible line
--- per frame, and allocating it fresh each time is per-frame litter.
+-- Control pair for an agent hunk (data.revert). Shared table, never mutated:
+-- read once per marked visible line per frame.
 local REVERT_ACCEPT = {
   { label = "revert", action = "revert", tone = style.warn },
   { label = "accept", action = "accept", tone = style.good },
@@ -628,13 +623,8 @@ function DocView:draw_line_marks(idx, at, x, y)
     tx = tx + font:get_width(m.text) + style.padding.x * 0.5
   end
 
-  -- The mark's controls. A mark may carry its own action row (`data.actions`,
-  -- a list of { label, tone, fn }); an agent hunk carries `data.revert` and
-  -- gets the standard pair. Revert and accept sit side by side: the two
-  -- answers to "what about this change?" are a pair, so they are drawn as a
-  -- pair. Accept is the quieter of the two -- it only lifts the decoration,
-  -- never the text -- so it takes the calm "good" tone against revert's
-  -- "warn", the same inversion the two words carry.
+  -- A mark may carry its own action row (data.actions, { label, tone, fn });
+  -- an agent hunk carries data.revert and gets the revert/accept pair.
   local actions = m.data and (m.data.actions
     or (m.data.revert and REVERT_ACCEPT))
   if actions then
@@ -687,10 +677,8 @@ function DocView:draw_line_body(idx, x, y)
   -- draw line's text
   self:draw_line_text(idx, x, y)
 
-  -- Squiggle underlines: a mark carrying data.spans = { {col1, col2}, ... }
-  -- (byte columns, [col1, col2)) gets a zigzag under each span in its kind's
-  -- colour -- the diagnostics rendering. Alternating y in 4px steps, the NED
-  -- algorithm; drawn over the text so it reads on any wash.
+  -- Squiggles: a mark with data.spans = { {col1, col2}, ... } gets a zigzag
+  -- under each span in its kind's colour. Drawn over the text.
   if at then
     local lh = self:get_line_height()
     for _, m in ipairs(at) do
@@ -772,9 +760,7 @@ function DocView:draw_line_gutter(idx, x, y)
   x = x + style.padding.x
   renderer.draw_text(self:get_font(), idx, x, y + yoffset, color)
 
-  -- Fold triangle: a range starting here gets a disclosure marker at the
-  -- gutter's right edge -- collapsed points right, open points down -- with a
-  -- click rect through the same hit list the mark controls use.
+  -- Fold triangle at the gutter edge: collapsed points right, open down.
   local fr = folds.range_at(self.doc, idx)
   if fr then
     local lh = self:get_line_height()
@@ -794,7 +780,7 @@ function DocView:draw_line_gutter(idx, x, y)
       x = fx - sz * 2, y = y, w = sz * 5, h = lh,
       item = { fn = function(dv)
         folds.toggle(dv.doc, idx)
-        -- A caret swallowed by the collapse surfaces at the fold head.
+        -- A caret inside the collapse surfaces at the fold head.
         local hid = folds.hidden(dv.doc)
         local l = dv.doc:get_selection()
         if hid[l] then dv.doc:set_selection(hid[l], 1) end
@@ -850,9 +836,8 @@ function DocView:draw()
 
   core.push_clip_rect(pos.x + gw, pos.y, self.size.x, self.size.y)
   if not self.wrapping then
-    -- Whole-line rows take the rich body path (washes, marks, squiggles,
-    -- carets, vim overlays) exactly as before folding existed; the rows table
-    -- decides WHICH lines draw and where.
+    -- Whole-line rows take the body path (washes, marks, squiggles, carets,
+    -- overlays); the rows table decides which lines draw and where.
     for v = vmin, vmax do
       local row = rows[v]
       if row then
@@ -1028,8 +1013,7 @@ end
 -- marks:next / marks:prev are the plain names the keymap binds. The older
 -- -change / -hunk spellings are kept beside them so that nothing already
 -- reaching for one -- keymap.lua binds alt+n/alt+p/alt+r to them -- breaks.
--- Folding commands: toggle folds the innermost range at the caret (or
--- unfolds the range starting there); fold-all / unfold-all sweep the file.
+-- fold:toggle acts on the innermost range at the caret; the alls sweep.
 command.add(DocView, {
   ["fold:toggle"] = function()
     local dv = core.active_view

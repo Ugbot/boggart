@@ -58,7 +58,7 @@ is a direct DEALER to the already-warm daemon:
   stuff" layer, e.g. station's heavy C++ planning/indexing machinery.
 
 This also positions the commercial story: boggart stays a lean single binary;
-a running station is the bolt-on superpower pack it attaches to.
+a running station is the bolt-on power pack it attaches to.
 
 Relationship to docs/ds4-abi.md: complementary, not competing. The ds4 ABI is
 in-process model inference; this is cross-process access to station's tools,
@@ -215,7 +215,7 @@ Borrow **algorithms and interaction design**, restyled to boggart. The NED-fork
 editor (`src/editor_app`, ~91k LOC ImGui) was surveyed in full; the render
 layer is the antithesis of studio's dirty-rect rencache (one AddText per
 character, an ImVec4 per byte of file) and must not be ported — but the
-algorithms are excellent and mostly pure. What this milestone takes:
+algorithms are mostly pure and port directly. What this milestone takes:
 
 - **Ghost text as real buffer bytes painted with a ghost color**
   (`ai/ai_tab.cpp`): the completion is spliced into the buffer for real and
@@ -277,7 +277,7 @@ under BSTUD, not here.
   discovery, uv_poll integration, handles, shutdown hook.
 - **P2 Station upgrades** — query-channel completions, buffer overlay,
   format=json, base_url. (Parallel with P1; different repo.)
-- **P3 Lua superpowers** — station.lua selection policy, fallback-chain tier,
+- **P3 Lua policy** — station.lua selection policy, fallback-chain tier,
   doctor, subscribe→bus.
 - **P4 Studio as-you-type** — autocomplete provider, composer ghost text,
   menu entry.

@@ -66,11 +66,9 @@ end
 function uitools.save(name, source)
   sys.mkdir_p(uitools.dir())
   local body = source
-  -- Prepend provenance unless it is already there. The old guard was "starts
-  -- with any comment", which suppressed the header for nearly every panel --
-  -- model-written Lua almost always opens with a comment -- so the one thing
-  -- the header exists to answer ("where did this come from") was missing
-  -- precisely where it mattered.
+  -- Prepend provenance unless present. The old guard, "starts with any
+  -- comment", suppressed the header for nearly every panel: model-written
+  -- Lua opens with a comment.
   if not body:find("a boggart-studio panel", 1, true) then
     body = header(name) .. body
   end

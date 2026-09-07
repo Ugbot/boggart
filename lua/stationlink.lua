@@ -1,20 +1,18 @@
 -- stationlink.lua -- policy for the native LLM Station ZMQ transport (src/lstation.c).
 --
--- C moves bytes; this file decides. The transport rule is binary and absolute
+-- C moves bytes; this file decides. The transport rule is binary
 -- (docs/station-zmq.md): when the ZMQ client is built and a daemon answers a
--- ping, EVERYTHING that uses LLM Station goes over ZMQ and the MCP mount is
--- not connected at all. When it is not built, or no daemon is reachable, or a
--- call dies mid-flight, station-backed tools degrade to boggart's native
--- tiers (bm25, grep, no-completion) exactly as if no station existed -- never
--- to MCP. Forcing the MCP path stays possible for testing the MCP adapter:
--- BOGGART_STATION_FORCE_MCP=1.
+-- ping, everything that uses LLM Station goes over ZMQ and the MCP mount is
+-- not connected. When it is not built, or no daemon is reachable, or a call
+-- dies mid-flight, station-backed tools degrade to the native tiers (bm25,
+-- grep, no completion) as if no station existed. Never to MCP. Forcing the
+-- MCP path stays possible for testing the adapter: BOGGART_STATION_FORCE_MCP=1.
 --
 -- Crash tolerance: the daemon's correlation and subscription state is RAM, so
--- this layer treats "down" as a normal state. A failed send, a timed-out call
--- or a failed ping flips the transport down (one "station.down" bus event, no
--- retry storm); reconnection is attempted lazily on the next use, behind a
--- jittered backoff, and success re-issues subscriptions and emits
--- "station.up". A dead daemon costs whoever asked one bounded timeout.
+-- down is a normal state here. A failed send, a timed-out call or a failed
+-- ping flips the transport down (one "station.down" bus event, no retry
+-- storm). Reconnection is lazy, behind a jittered backoff; success re-issues
+-- subscriptions and emits "station.up". A dead daemon costs one timeout.
 local M = {}
 
 M.PING_TIMEOUT_MS = 1500
@@ -27,17 +25,13 @@ M.why = "not yet attempted"    -- last reason for being down
 M.topics = { "chat.*" }        -- re-subscribed after every (re)connect
 local last_attempt = 0
 
--- msg_types the daemon answers inline on its poll thread. tool_exec rides
--- "cmd" (ack now, result later, same corr id -- the C layer holds the handle
--- open through the ack).
+-- msg_types the daemon answers inline on its poll thread.
 local QUERY_MSG = { ping = true, list_tools = true, tool_schema = true, status = true }
 
--- Tools fast enough to ride the query channel: answered inline on the
--- daemon's poll thread, no ack round-trip, no detached thread, no outbound
--- queue, no <=100ms poll tick -- measured ~0.1ms vs 10-110ms for the same
--- call over cmd. The judgement that a tool is fast is OURS (a slow tool here
--- stalls every station client), so the set stays small and index-backed:
--- completions and LSP-quality queries, the as-you-type path.
+-- Tools that ride the query channel: answered inline on the daemon's poll
+-- thread, ~0.1ms vs 10-110ms over cmd. The judgement that a tool is fast is
+-- ours (a slow one stalls every client), so the set stays small: index-backed
+-- completions and LSP queries, the as-you-type path.
 M.fast_tools = {
   smart_complete = true,
   lsp_query = true,
@@ -88,10 +82,7 @@ end
 -- Connect + ping, once. Success wires subscriptions and announces station.up.
 local function try_connect(workspace)
   local st = rawget(_G, "station")
-  -- The C client parks the socket's ZMQ_FD on the interpreter's uv loop so
-  -- subscribed events arrive while the program just sits in uv.run -- but
-  -- luv only creates that loop when required, so make sure it exists before
-  -- the connect that would watch it.
+  -- The uv loop must exist before connect() parks ZMQ_FD on it.
   pcall(require, "uv")
   local conn, err = st.connect(workspace or (sys.cwd and sys.cwd()) or ".")
   if not conn then return nil, err end
@@ -109,9 +100,8 @@ local function try_connect(workspace)
   return conn
 end
 
--- The lazy driver: give me a live transport or a reason. Down states retry at
--- most once per backoff window (jittered), so a missing daemon costs one
--- cheap discovery miss per window, not a storm.
+-- The lazy driver: a live transport or a reason. Down states retry at most
+-- once per jittered backoff window.
 function M.ensure(workspace)
   if M.up() then return M.conn end
   local okd, why = M.enabled()
@@ -130,13 +120,12 @@ function M.ensure(workspace)
 end
 
 -- One station tool call over ZMQ. Returns the tool's text output, or nil +
--- err. Any transport-shaped failure (send, timeout) flips the state down so
--- the caller's next tier takes over immediately.
---   opts.timeout_ms, opts.channel ("query" forces the inline path once the
---   daemon serves this msg_type there), opts.msg_type (default tool_exec),
---   opts.workspace (route to another workspace through the SAME daemon --
---   the workspace collapse, llm-station ADR-023; first use cold-builds that
---   workspace's components daemon-side, so give it a generous timeout).
+-- err. A transport-shaped failure (send, timeout) flips the state down so
+-- the caller's next tier takes over.
+--   opts.timeout_ms, opts.channel ("query" forces the inline path),
+--   opts.msg_type (default tool_exec), opts.workspace (route to another
+--   workspace through the same daemon, llm-station ADR-023; first use
+--   cold-builds that workspace daemon-side, so allow a generous timeout).
 function M.call(tool, params, opts)
   opts = opts or {}
   local conn, err = M.ensure()
@@ -161,8 +150,7 @@ function M.call(tool, params, opts)
     return nil, "station call failed: " .. tostring(p)
   end
   if not p then
-    -- Timed out or the send failed. Distinguish "slow tool" from "dead
-    -- daemon" with one cheap ping before deciding the transport is gone.
+    -- One ping distinguishes a slow tool from a dead daemon.
     if not M.ping() then mark_down(why or "timeout") end
     return nil, "station call failed: " .. tostring(why)
   end
@@ -176,9 +164,8 @@ function M.call(tool, params, opts)
 end
 
 -- As-you-type completion: query channel, short deadline, nil on any trouble.
--- The caller computes `prefix` from the LIVE buffer (the daemon's index sees
--- the saved file), which is the reference EditorProtocol's compensation for
--- unsaved edits. Never raises; a miss is "no candidates", not an error.
+-- The caller passes `prefix` from the live buffer since the daemon's index
+-- sees only the saved file. Never raises; a miss means no candidates.
 function M.complete(file, line, col, prefix, limit)
   if not M.up() then return nil end
   local ok, out = pcall(M.call, "smart_complete", {
@@ -195,15 +182,12 @@ function M.query(msg_type, params, timeout_ms)
     msg_type = msg_type, channel = "query", timeout_ms = timeout_ms })
 end
 
--- Drive event delivery (subscribed topics -> bus "station.<topic>") when no
--- call is in flight to drain the socket. Cheap; safe to call every frame.
+-- Drain the socket for event delivery when no call is in flight.
 function M.pump()
   if M.conn then pcall(function() M.conn:pump(0) end) end
 end
 
--- The one-line answer doctor and llmstation.autostart need: is the ZMQ
--- transport the active way to reach LLM Station right now? Probes (and so
--- connects) on first ask when enabled.
+-- Is ZMQ the active way to reach LLM Station? Probes on first ask.
 function M.active()
   if M.up() then return true end
   local okd = M.enabled()

@@ -400,7 +400,7 @@ end
 M.def = {
   description = "Ask the user to pick from a small A/B/C/D menu (or type their own answer), "
     .. "and get their choice back so you continue THIS turn on it. Use it when the next step "
-    .. "is genuinely the user's call. `options` is an array of { label, and ONE of: `prompt` "
+    .. "is the user's call. `options` is an array of { label, and ONE of: `prompt` "
     .. "(text handed back so you act on it) or `run` (code whose result is handed back): "
     .. "run = { tool=<name>, args={…} } | { lua=\"return …\" } | { cmd=\"/slash\" } }. Free "
     .. "input is allowed unless input=false. Renders in the cTUI, the studio, and the REPL.",

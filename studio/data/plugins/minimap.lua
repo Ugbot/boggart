@@ -1,16 +1,9 @@
--- minimap.lua -- the code-shape silhouette: one rect per line, no glyphs.
+-- minimap.lua -- one rect per line, no glyphs.
 --
--- A minimap earns its keep by showing the SHAPE of the file -- indent rhythm,
--- block sizes, where the long lines are -- and shape needs no font. Each line
--- is a single rect whose width tracks its character count; blank lines leave a
--- gap so the silhouette breathes. That keeps the whole strip at one draw call
--- per visible row and makes it cheap enough to redraw with every frame the
--- rencache already repaints.
---
--- Long files scroll the strip like a second scrollbar: when the document has
--- more lines than the strip has rows, the window into it tracks the view's own
--- scroll fraction, so the translucent viewport box always sits under the
--- pointer where you expect it. Click to jump; the box follows.
+-- Shape needs no font: each line is a rect whose width tracks its character
+-- count; blank lines leave a gap. One draw call per visible row. When the
+-- document has more lines than the strip has rows, the window tracks the
+-- view's scroll fraction. Click to jump.
 local core = require "core"
 local command = require "core.command"
 local config = require "core.config"
@@ -30,8 +23,7 @@ local function strip_rect(self)
   return x, self.position.y, w, self.size.y
 end
 
--- The geometry shared by drawing and hit-testing: pixels per row, how many
--- rows fit, and which document line the strip starts at.
+-- Shared by drawing and hit-testing: pixels per row, rows that fit, first line.
 local function geometry(self)
   local _, _, _, h = strip_rect(self)
   local count = #self.doc.lines
@@ -58,8 +50,7 @@ function DocView:draw()
   local plh, rows, first, count = geometry(self)
   renderer.draw_rect(x, y, w, h, style.background2)
 
-  -- ~120 columns spans the strip; anything longer saturates. Byte length is
-  -- close enough to character count for a silhouette.
+  -- ~120 columns spans the strip; byte length stands in for characters.
   local cw = (w - 2) / 120
   local last = math.min(count, first + rows - 1)
   for i = first, last do
@@ -73,7 +64,7 @@ function DocView:draw()
     end
   end
 
-  -- The viewport box: the lines currently on screen, in strip coordinates.
+  -- Viewport box: the lines on screen, in strip coordinates.
   local minline, maxline = self:get_visible_line_range()
   local vy = y + (minline - first) * plh
   local vh = math.max(plh, (maxline - minline + 1) * plh)

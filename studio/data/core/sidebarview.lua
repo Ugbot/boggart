@@ -104,8 +104,7 @@ function SidebarView:refresh(force)
   self.last_refresh = now
   local ok, rows = pcall(bog.store.sess_list, 40)
   self.sessions = (ok and rows) or {}
-  -- Projects, each with STRICTLY its own chats (sess_list_in): grouped rows
-  -- for the rail. Global is not a group -- its chats are the loose list below.
+  -- Projects, each with strictly its own chats; global is the loose list.
   local okp, plist = pcall(function() return require("project").list() end)
   local groups = {}
   for _, pr in ipairs((okp and plist) or {}) do
@@ -390,11 +389,10 @@ function SidebarView:draw()
   y = y + sh + vpad * 1.5
 
   -- ---- Projects / Recents / Results ---------------------------------------
-  -- One virtualized list over typed rows. Projects are first-class rows with
-  -- their own look -- disclosure triangle, accent name, chat count, a dot on
-  -- the current one -- and their chats live in an expandable group beneath
-  -- (indented, otherwise identical to loose rows: same hover, open, delete).
-  -- Search flattens everything into plain results, exactly as before.
+  -- One virtualized list over typed rows. Project rows carry a disclosure
+  -- triangle, accent name, chat count, and a dot on the current one; their
+  -- chats expand beneath, indented, otherwise identical to loose rows.
+  -- Search flattens everything into plain results.
   local proj_mod = require "project"
   local cur_proj = proj_mod.current()
   local items = {}
@@ -433,8 +431,7 @@ function SidebarView:draw()
     end
   end
 
-  -- Where the footer starts; rows stop above it (rects registered first would
-  -- otherwise swallow the footer's click).
+  -- Rows stop above the footer, or their rects swallow its click.
   local footer_top = self.position.y + self.size.y - lh - vpad * 2
 
   local list_top = y
@@ -457,8 +454,7 @@ function SidebarView:draw()
       local g = it.g
       local hov = self.mouse and widgets.inside(
         { x = x, y = y, w = w, h = lh }, self.mouse.x, self.mouse.y)
-      -- The recessed band is what says "this is a different kind of row": a
-      -- project is a place, not a chat.
+      -- Recessed band: a project is a place, not a chat.
       renderer.draw_rect(x, y, w, lh, style.background)
       if hov then renderer.draw_rect(x, y, w, lh, style.line_highlight) end
       local tri = it.open and "\u{25be}" or "\u{25b8}"
@@ -470,8 +466,7 @@ function SidebarView:draw()
         common.draw_text(font, style.accent, "\u{25cf} ", "left", cx0, y, lh, lh)
         cx0 = cx0 + font:get_width("\u{25cf} ")
       end
-      -- Count on the right, always; "+" (new chat here) claims that spot on
-      -- hover, registered first so it wins the overlap.
+      -- Count on the right; "+" (new chat here) claims the spot on hover.
       local count = tostring(#g.sessions)
       local cw = math.max(lh, widgets.width(font, "+"))
       if hov then
@@ -514,7 +509,7 @@ function SidebarView:draw()
         renderer.draw_rect(x, y, w, lh, active and style.selection or style.line_highlight)
       end
       if it.indent then
-        -- The thread line that ties a chat to its project group.
+        -- Thread line tying a chat to its group.
         renderer.draw_rect(x + math.floor(ind / 2), y, math.max(1, math.floor(SCALE)),
           lh, style.divider)
       end

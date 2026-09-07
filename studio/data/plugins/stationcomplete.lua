@@ -1,22 +1,16 @@
 -- stationcomplete.lua -- LLM Station completions in the editor popup.
 --
--- Feeds the existing autocomplete popup (plugins/autocomplete.lua) with
--- ranked, index-backed candidates from a running LLM Station daemon over the
--- native ZMQ transport (lua/stationlink.lua): member/scope/import context
--- detection and same-file > same-scope > imported > global ranking, at
--- query-channel latency (~1ms round trip).
+-- Feeds the autocomplete popup with ranked candidates from the daemon over
+-- ZMQ (lua/stationlink.lua), at query-channel latency (~1ms round trip).
 --
--- The keystroke rule is absolute -- nothing here runs inside one. A studio
--- thread watches the caret, waits for the buffer to hold still for a beat,
--- fires ONE query-channel request, and polls the handle with done() (a
--- non-blocking drain) so no frame ever waits on a socket. Results are
--- published only if the prefix and caret still match what was asked
--- (request staleness, the CompletionManager rule), and land in the popup via
+-- Nothing here runs inside a keystroke. A studio thread watches the caret,
+-- waits for the buffer to hold still, fires one query-channel request, and
+-- polls the handle with done() so no frame waits on a socket. Results
+-- publish only if prefix and caret still match the ask, via
 -- autocomplete.add + autocomplete.refresh.
 --
--- Strictly additive: no station binary, no daemon, or a mid-flight crash
--- mean this thread finds stationlink down and publishes nothing -- the
--- buffer-symbol provider keeps working exactly as before.
+-- Additive: no daemon, or a mid-flight crash, and this thread publishes
+-- nothing; the buffer-symbol provider works as before.
 local core = require "core"
 local config = require "core.config"
 local autocomplete = require "plugins.autocomplete"
@@ -37,8 +31,7 @@ local function partial_at(doc)
   return doc:get_text(line1, col1, line2, col2), line2, col2
 end
 
--- smart_complete's wire format: "completions: N\ncontext: c\n---\n" then one
--- "label\tkind\tdetail" row per candidate. The popup wants {text = info}.
+-- Wire format: "completions: N\ncontext: c\n---\n" then label\tkind\tdetail rows.
 local function parse(out)
   local items, n = {}, 0
   local body = out:match("%-%-%-\n(.*)$") or ""
@@ -63,15 +56,14 @@ core.add_thread(function()
       local prefix, line, col = partial_at(doc)
       local key = doc.filename .. ":" .. line .. ":" .. col .. ":" .. prefix
       if #prefix >= 3 and key ~= last_key then
-        -- Debounce: fire only when the buffer held still for a beat.
+        -- Debounce: fire only after the buffer holds still.
         coroutine.yield(0.12)
         local p2, l2, c2 = partial_at(doc)
         if p2 == prefix and l2 == line and c2 == col
            and (stn.up() or stn.ensure()) then
           last_key = key
           local okr, h = pcall(function()
-            -- column is 0-based on the wire; the live prefix compensates for
-            -- unsaved edits the daemon's index has not seen.
+            -- Column is 0-based on the wire; the live prefix covers unsaved edits.
             return stn.conn:request("query", "tool_exec", "smart_complete", {
               file = doc.filename, line = tostring(line),
               column = tostring(col - 1), prefix = prefix, limit = "8",
@@ -81,7 +73,7 @@ core.add_thread(function()
             while not h:done() do coroutine.yield(0.02) end
             local p = h:wait()
             local out = p and p.ok ~= "false" and p.data or nil
-            -- Publish only if the ask is still current (staleness rule).
+            -- Publish only if the ask is still current.
             local p3, l3 = partial_at(doc)
             if p3 == prefix and l3 == line then
               local items = out and parse(out) or {}

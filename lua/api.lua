@@ -1420,7 +1420,7 @@ function M.compact(sess, opts)
   -- Compaction is bookkeeping, not judgement: summarising a transcript does not
   -- need the model doing the work. If a `cheap` (or `fast`) preset exists, the
   -- summary goes there and the conversation stays where it is -- the one place
-  -- a per-call model change pays for itself on every long session. With no such
+  -- a per-call model change is worth it on every long session. With no such
   -- preset, route.utility() returns the current route and nothing changes.
   local route = opts.compact_route and require("route").resolve(opts.compact_route)
     or (sess.compact_route and require("route").resolve(sess.compact_route))
@@ -1810,7 +1810,7 @@ function M.run_on(sess, user_text, on_text, opts)
     end
   end })
 
-  -- Wrapped rather than replaced: turn:text is the one genuinely hot emit here
+  -- Wrapped rather than replaced: turn:text is the one hot emit here
   -- (once per streamed delta), so the payload is built only when something is
   -- subscribed. events.any is a single table lookup once the name has resolved.
   local sink = function(chunk)
