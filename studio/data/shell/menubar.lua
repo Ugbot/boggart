@@ -12,8 +12,8 @@ local registry = require "shell.registry"
 local MenuBar = View:extend()
 
 MenuBar.menus = {
-  "boggart", "File", "Edit", "Selection", "View", "Go",
-  "Agent", "Run", "Fleet", "Project", "Service", "Tools", "Help",
+  "boggart", "File", "Edit", "View", "Go",
+  "Agent", "Run", "Project", "Tools", "Help",
 }
 
 local GAP = 10  -- px around each title

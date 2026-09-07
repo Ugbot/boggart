@@ -492,6 +492,7 @@ function SidebarView:draw()
         "left", cx0, y, w, lh)
       add({ x = x, y = y, w = w, h = lh }, {
         id = "proj" .. g.name,
+        project = g,
         action = function()
           self.expanded[g.name] = not it.open
           core.redraw = true
@@ -542,6 +543,7 @@ function SidebarView:draw()
       end
       add({ x = x, y = y, w = w, h = lh }, {
         id = "sess" .. tostring(sess.id),
+        session = sess,
         action = function()
           self.confirm_delete = nil
           require("core.studio").open_session(sess.id)
@@ -567,6 +569,73 @@ function SidebarView:draw()
 
   self:draw_scrollbar()
 end
+
+-- Move a chat between projects. The active chat drags its context with it,
+-- the resume rule in reverse.
+function SidebarView:move_session(s, project)
+  pcall(bog.store.sess_set_project, s.id, project)
+  if bog.session and bog.session.id == s.id then
+    local proj = require "project"
+    local target = project or proj.GLOBAL
+    if not proj.switch(target) then proj.switch(proj.GLOBAL) end
+  end
+  s.project = project
+  self:refresh(true)
+  core.redraw = true
+end
+
+-- Right-click: chats move between projects, projects act on themselves,
+-- the background offers the new-things.
+require("core.contextmenu").add(SidebarView, function(self, x, y)
+  local proj_mod = require "project"
+  local item
+  for _, h in ipairs(self.hits) do
+    if widgets.inside(h, x, y) then item = h.item break end
+  end
+  local items = {}
+  if item and item.session then
+    local s = item.session
+    local title = tostring(s.title or "")
+    if title == "" then title = "(untitled)" end
+    if #title > 30 then title = title:sub(1, 29) .. "\u{2026}" end
+    items[#items + 1] = { heading = title }
+    items[#items + 1] = { label = "Open", action = function()
+      require("core.studio").open_session(s.id)
+    end }
+    items[#items + 1] = { heading = "Move to" }
+    for _, g in ipairs(self.projects or {}) do
+      local label = (g.label and g.label ~= "" and g.label) or g.name
+      items[#items + 1] = { label = label, checked = s.project == g.name,
+        action = function() self:move_session(s, g.name) end }
+    end
+    items[#items + 1] = { label = "Loose chats",
+      checked = not s.project or s.project == "",
+      action = function() self:move_session(s, nil) end }
+    items[#items + 1] = { heading = "" }
+    items[#items + 1] = { label = "Delete\u{2026}", action = function()
+      self.confirm_delete = s.id
+      core.log("click Yes on the row to confirm")
+      core.redraw = true
+    end }
+  elseif item and item.project then
+    local g = item.project
+    items[#items + 1] = { heading = (g.label and g.label ~= "" and g.label) or g.name }
+    items[#items + 1] = { label = "New chat here", action = function()
+      proj_mod.switch(g.name)
+      command.perform("agent:new-session")
+    end }
+    items[#items + 1] = { label = "Switch to this project",
+      checked = proj_mod.current() == g.name,
+      action = function()
+        proj_mod.switch(g.name)
+        core.log("project: %s", g.name)
+      end }
+  else
+    items[#items + 1] = { label = "New chat", command = "agent:new-session" }
+    items[#items + 1] = { label = "New project\u{2026}", command = "project:new" }
+  end
+  return items
+end)
 
 -- Registered from here, not studio.lua, so the rail owns its own command. The
 -- sidebar instance is built later (studio.setup), so it is looked up at call

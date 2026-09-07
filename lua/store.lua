@@ -984,6 +984,15 @@ end
 -- Recent chats for a project: its own, then global's underneath -- the same
 -- own-first rule memory follows, so the recents list matches what the agent
 -- can actually see.
+-- Move a chat between projects. nil/global clears the column (loose).
+function M.sess_set_project(id, project)
+  local p = proj_or_global(project)
+  if p then
+    return bog.db:run("UPDATE sessions SET project=? WHERE id=?", { p, id })
+  end
+  return bog.db:run("UPDATE sessions SET project=NULL WHERE id=?", { id })
+end
+
 -- One project's chats, no global fallback rows, for surfaces that group by
 -- project: each chat appears once. nil/global means the loose chats.
 function M.sess_list_in(project, limit)

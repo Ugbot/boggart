@@ -42,13 +42,13 @@ M.tree = {
     { "Conflict: keep current",   "conflicts:accept-current" },
     { "Conflict: keep incoming",  "conflicts:accept-incoming" },
     { "Conflict: keep both",      "conflicts:accept-both" },
-  },
-  Selection = {
+    M.SEP,
     { "Select all",  "doc:select-all" },
     { "Select word", "doc:select-word" },
     { "Select line", "doc:select-lines" },
     { "Cursors at all matches", "doc:cursors-at-all-matches" },
   },
+
   View = {
     { "Workspace: Agent", "shell:workspace-agent" },
     { "Workspace: Edit",  "shell:workspace-edit" },
@@ -114,6 +114,13 @@ M.tree = {
     { "Cancel turn",      "agent:cancel" },
   },
   Run = {
+    { "Open fleet",        "shell:workspace-fleet" },
+    { "Swarm dashboard",   "agent:swarm" },
+    { "Review changes\u{2026}", "agent:review" },
+    { "Open the swarm view",  "swarm:open" },
+    { "Start the fleet",      "swarm:start" },
+    { "Stop the fleet",       "swarm:stop" },
+    M.SEP,
     { "Run automation\u{2026}",    "automations:run" },
     { "New automation\u{2026}",    "automations:new" },
     { "Manage automations\u{2026}", "automations:manage" },
@@ -141,22 +148,15 @@ M.tree = {
     M.SEP,
     { "Write manifest",      "project:manifest" },
     { "Check manifest",      "project:check" },
-  },
-  Service = {
+    M.SEP,
+    -- The control plane: boggart as a service you can talk to (src/lserve.c
+    -- + lua/control.lua).
     { "Start control plane",   "service:start" },
     { "Stop control plane",    "service:stop" },
-    { "Status",                "service:status" },
-    { "Copy URL",              "service:copy-url" },
+    { "Control plane status",  "service:status" },
+    { "Copy service URL",      "service:copy-url" },
   },
-  Fleet = {
-    { "Open fleet",        "shell:workspace-fleet" },
-    { "Swarm dashboard",   "agent:swarm" },
-    { "Review changes\u{2026}", "agent:review" },
-    M.SEP,
-    { "Open the swarm view",  "swarm:open" },
-    { "Start the fleet",      "swarm:start" },
-    { "Stop the fleet",       "swarm:stop" },
-  },
+
   Tools = {
     { "Library\u{2026}",     "agent:library" },
     { "Tools",          "agent:show-tools" },
