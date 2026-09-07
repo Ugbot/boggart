@@ -897,7 +897,11 @@ command.add(nil, {
       if text == "" then return end
       local model, err = require("core.settings").set("model", text)
       if not model then core.error("%s", err); return end
+      local was = bog.session.model
       bog.session.model = model
+      if was and was ~= model and bog.reload_session then
+        bog.reload_session("model swap")
+      end
       core.log("model: %s", model)
     end
     -- The dropdown, filled from the catalog.

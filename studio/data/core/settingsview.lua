@@ -143,7 +143,11 @@ function SettingsView:fields()
       set = function(v)
         local model, err = require("core.settings").set("model", v)
         if not model then return nil, err end
+        local was = bog.session and bog.session.model
         if bog.session then bog.session.model = model end
+        if was and was ~= model and bog.reload_session then
+          bog.reload_session("model swap")
+        end
         return "model: " .. model
       end,
     },

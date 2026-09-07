@@ -151,5 +151,25 @@ do
   bog.store.sess_delete(id)
 end
 
+-- ---- reload on model swap ---------------------------------------------------
+-- The same scrub, triggered by the OTHER provenance change: swapping models
+-- mid-session invalidates the old model's thinking signatures, so set_model
+-- reloads the live transcript the moment the model actually changes.
+do
+  bog.session.model = "model-a"
+  bog.session.messages = {
+    { role = "user", content = "hi" },
+    { role = "assistant", content = {
+        { type = "thinking", thinking = "signed by model-a", signature = "sig-a" },
+        { type = "text", text = "hello" },
+    } },
+  }
+  bog.set_model("model-b")
+  eq(#bog.session.messages[2].content, 1, "model swap scrubs old thinking")
+  eq(bog.session.messages[2].content[1].type, "text", "text survives the swap")
+  eq(bog.session.model, "model-b", "and the model actually changed")
+  bog.session.messages = {}
+end
+
 io.write(string.format("sessions: %d passed, %d failed\n", passed, failed))
 os.exit(failed == 0 and 0 or 1)

@@ -164,9 +164,17 @@ end
 function bog.set_model(m)
   if not m or m == "" then return end
   local s = bog.active_session()
+  local was = (s and s.model) or (bog.session and bog.session.model)
   if s then s.model = m end
   if bog.session then bog.session.model = m end   -- keep the default seed in sync
   if auth and auth.set then pcall(auth.set, "model", m) end  -- persist for restart / new agents
+  -- Swapping models mid-conversation changes the history's provenance: the
+  -- old model's thinking signatures will not validate under the new one, so
+  -- the transcript is reloaded the moment the swap happens rather than
+  -- 400ing on the next message.
+  if was and was ~= m and bog.reload_session then
+    bog.reload_session("model swap")
+  end
 end
 
 -- Starting a new conversation does NOT create a row.
@@ -218,40 +226,37 @@ function bog.save_session()
   bog.store.sess_save(S.id, S.title, S.model, S.messages)
   bog.events.emit("session:saved", { id = S.id, count = #S.messages })
 end
--- Thinking blocks in a STORED transcript cannot be replayed: their signatures
--- are validated by the API and do not survive model generations, compaction
--- rewrites, or wire adapters -- resuming an old session then 400s with
--- "Invalid signature in thinking block" on the first message. They are also
--- never NEEDED for continuation (only the live tool-use turn must return its
--- own blocks, and those never pass through here). So a resumed history is
--- scrubbed: thinking and redacted_thinking blocks dropped, and an assistant
--- message that was nothing but thinking dropped whole.
-local function scrub_thinking(messages)
-  local out = {}
-  for _, m in ipairs(messages or {}) do
-    if m.role == "assistant" and type(m.content) == "table" then
-      local kept = {}
-      for _, b in ipairs(m.content) do
-        local t = type(b) == "table" and b.type
-        if t ~= "thinking" and t ~= "redacted_thinking" then
-          kept[#kept + 1] = b
-        end
-      end
-      if #kept > 0 then
-        m.content = kept
-        out[#out + 1] = m
-      end
-    else
-      out[#out + 1] = m
-    end
+-- Re-baseline the ACTIVE conversation's history so it is safe to continue
+-- under different provenance (see lua/transcript.lua for what that means and
+-- why). Called on resume and on model swap; public so a wire change or a
+-- migration can say bog.reload_session("why") too.
+function bog.reload_session(reason)
+  local transcript = require("transcript")
+  local function one(S)
+    if not (S and S.messages) then return 0, 0 end
+    local msgs, stats = transcript.reload(S.messages)
+    S.messages = msgs
+    return stats.thinking, stats.dropped
   end
-  return out
+  local t1, d1 = one(bog.session)
+  local active = bog.active_session()
+  local t2, d2 = 0, 0
+  if active ~= bog.session then t2, d2 = one(active) end
+  local thinking, dropped = t1 + t2, d1 + d2
+  if thinking > 0 or dropped > 0 then
+    bog.log(string.format("reloaded transcript (%s): %d thinking block(s) scrubbed%s",
+      tostring(reason or "reload"), thinking,
+      dropped > 0 and (", " .. dropped .. " empty turn(s) dropped") or ""))
+  end
+  bog.events.emit("session:reloaded",
+    { reason = reason, thinking = thinking, dropped = dropped })
+  return thinking, dropped
 end
 
 function bog.resume_session(id)
   local s = bog.store.sess_load(id)
   if not s then return false end
-  s.messages = scrub_thinking(s.messages)
+  s.messages = require("transcript").reload(s.messages)
   local function apply(S)
     if not S then return end
     S.id = s.id
