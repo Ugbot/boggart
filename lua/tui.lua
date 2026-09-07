@@ -235,6 +235,12 @@ local function status_runs(st)
     { text = "\u{00B7} " .. s.model .. " ", fg = C.text, bg = bg },
   }
   if s.is_local then runs[#runs + 1] = { text = "\u{00B7} " .. s.host .. " ", fg = C.dim, bg = bg } end
+  -- The unit of context, visible: which project this conversation feeds.
+  local pcur
+  pcall(function() pcur = require("project").current() end)
+  if pcur and pcur ~= "global" then
+    runs[#runs + 1] = { text = "\u{00B7} " .. pcur .. " ", fg = C.tool, bg = bg }
+  end
   runs[#runs + 1] = { text = string.format("\u{00B7} ctx %d%% ", math.floor(frac * 100 + 0.5)), fg = C.dim, bg = bg }
   runs[#runs + 1] = { text = string.format("\u{00B7} %d agent%s ", agents, agents == 1 and "" or "s"), fg = C.dim, bg = bg }
   local mode = (st.mode or perm.state().mode or "smart")

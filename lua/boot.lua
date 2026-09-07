@@ -382,10 +382,30 @@ local function handle_command(line)
   elseif cmd == "memory" then
     io.write(bog.memory.index_text(), "\n")
   elseif cmd == "sessions" then
-    for _, s in ipairs(bog.store.sess_list(20)) do
-      io.write(string.format("  %d  %s  %s\n", s.id,
-        os.date("%Y-%m-%d %H:%M", s.updated), s.title or "(untitled)"))
+    -- Grouped by project, the sidebar's shape: each chat appears once, the
+    -- open one starred. Opening a chat switches to its project.
+    local proj = require "project"
+    local cur = (bog.active_session() or {}).id
+    local function row(s)
+      io.write(string.format("  %s%4d  %s  %s\n", s.id == cur and "*" or " ",
+        s.id, os.date("%m-%d %H:%M", s.updated), s.title or "(untitled)"))
     end
+    for _, p in ipairs(proj.list()) do
+      if p.name ~= proj.GLOBAL then
+        local rows = bog.store.sess_list_in(p.name, 10)
+        if #rows > 0 then
+          local label = (p.label and p.label ~= "" and p.label) or p.name
+          io.write(label, p.name == proj.current() and "   <- current\n" or "\n")
+          for _, s in ipairs(rows) do row(s) end
+        end
+      end
+    end
+    local loose = bog.store.sess_list_in(nil, 10)
+    if #loose > 0 then
+      io.write("loose chats\n")
+      for _, s in ipairs(loose) do row(s) end
+    end
+    io.write("(`/resume <id>` opens one and switches to its project)\n")
   elseif cmd == "resume" then
     local id = tonumber(rest)
     if id and bog.resume_session(id) then
