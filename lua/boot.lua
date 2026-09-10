@@ -1347,6 +1347,25 @@ end
 -- is only needed once the cap allows more than one agent.
 bog.skills = require("skills")
 bog.call = require("callable")
+-- Wire the eval primitive: callable.model{} runs one scoped model turn through
+-- the same transport the agent uses (api.stream_async), no tools, returning
+-- the assistant text. This is the interpreter of last resort for the Callable
+-- language (docs/callables.md); everything else in a skill is compiled Lua.
+bog.call.evaluator = function(prompt, opts)
+  opts = opts or {}
+  if not (bog.api and bog.api.stream_async) then
+    error("no model transport (bog.api.stream_async) for callable.model", 0)
+  end
+  local body = {
+    model = opts.model or (bog.session and bog.session.model),
+    max_tokens = opts.max_tokens or 4096,
+    system = opts.system or "",
+    messages = { { role = "user", content = prompt } },
+    stream = true,
+  }
+  local msg = bog.api.stream_async(body, function() end)
+  return bog.api.msg_text(msg)
+end
 -- bog.C(name) -> a Callable for a skill or a tool, by name. The one resolver
 -- for "call this thing from anywhere": chain them, invoke them, attach to them,
 -- the same objects the model reaches by name.
