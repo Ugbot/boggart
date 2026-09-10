@@ -250,6 +250,10 @@ local function status_runs(st)
   if st.voice and st.voice.active then
     runs[#runs + 1] = { text = "\u{00B7} \u{1F3A4} listening\u{2026} (Ctrl-V) ", fg = C.tool, bg = bg }
   end
+  if st.ptt then
+    runs[#runs + 1] = { text = st.ptt_rec and "\u{00B7} \u{25CF} talking "
+      or "\u{00B7} hold space to talk ", fg = st.ptt_rec and C.amber or C.dim, bg = bg }
+  end
   if st.running then runs[#runs + 1] = { text = "\u{00B7} working\u{2026} (Esc) ", fg = C.amber, bg = bg } end
   -- You can keep typing while a turn runs; Enter is held until it finishes. Say so
   -- when there is composed text waiting, so a blocked Enter never feels broken.
@@ -557,12 +561,64 @@ local function toggle_voice(st)
   end
 end
 
--- /voice [toggle|start|stop|status|download]
+-- Push-to-talk. Terminals have no key-release event, so "held" is inferred:
+-- the first space opens the mic, auto-repeat spaces refresh st.ptt_last, and
+-- a timer treats a quiet gap as the release. The threshold sits above the
+-- slowest common initial key-repeat delay (X11 defaults to 660ms).
+local PTT_RELEASE_MS = 800
+
+local function ptt_stop(st)
+  if st.ptt_timer then
+    st.ptt_timer:stop()
+    st.ptt_timer:close()
+    st.ptt_timer = nil
+  end
+  st.ptt_rec = nil
+  voice_stop_apply(st)
+end
+
+local function ptt_key(st, ev)
+  if not st.ptt then return false end
+  if ev.type ~= "key" or ev.key ~= "char" or ev.char ~= " " then return false end
+  st.ptt_last = now_ms()
+  if st.ptt_rec then return true end   -- auto-repeat while held; swallow
+  if not (voice and voice.built and voice.built() and voice.available()) then
+    voice_note(st, "system", "ptt: voice not ready (`/voice status`)")
+    st.ptt = false
+    return true
+  end
+  if not voice.listening() then toggle_voice(st) end
+  if not st.voice then return true end -- the mic failed to open; note already shown
+  st.ptt_rec = true
+  st.ptt_timer = uv.new_timer()
+  st.ptt_timer:start(120, 120, function()
+    if st.ptt_rec and now_ms() - st.ptt_last > PTT_RELEASE_MS then
+      ptt_stop(st)
+      draw(st)
+    end
+  end)
+  return true
+end
+
+-- /voice [toggle|start|stop|ptt|status|download]
 local function voice_command(st, rest)
   rest = (rest or ""):gsub("^%s+", ""):gsub("%s+$", "")
   if rest == "" or rest == "toggle" then toggle_voice(st)
   elseif rest == "start" then if not voice.listening() then toggle_voice(st) end
   elseif rest == "stop" then if voice.listening() then voice_stop_apply(st) end
+  elseif rest == "ptt" then
+    if st.ptt then
+      if st.ptt_rec then ptt_stop(st) end
+      st.ptt = nil
+      voice_note(st, "system", "push-to-talk off")
+    elseif not (voice and voice.built and voice.built()) then
+      voice_note(st, "system", "voice input is not built (configure with -DBOGGART_VOICE=ON)")
+    else
+      st.ptt = true
+      voice_note(st, "system",
+        "push-to-talk on: hold space to talk, release to insert. Space no "
+        .. "longer types; `/voice ptt` again to turn it off.")
+    end
   elseif rest == "status" then
     local msg
     if not (voice and voice.built and voice.built()) then
@@ -579,7 +635,7 @@ local function voice_command(st, rest)
       "\ndownload one with, e.g.:\n  mkdir -p \"$(dirname '" .. p .. "')\" && curl -L -o '" .. p ..
       "' \\\n    https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin")
   else
-    voice_note(st, "system", "usage: /voice [toggle|start|stop|status|download]")
+    voice_note(st, "system", "usage: /voice [toggle|start|stop|ptt|status|download]")
   end
 end
 
@@ -727,6 +783,7 @@ local function run_turn(st, text)
       elseif st.help then st.help = false; st.dirty = true
       elseif handle_choice_input(st, ev) then
         -- parked choose (mid-turn tool or after-turn capture) owns the keyboard
+      elseif ptt_key(st, ev) then st.dirty = true
       elseif ev.key == "esc" or ev.key == "escape" then
         st.abort = true
       else
@@ -962,6 +1019,7 @@ function M.run()
           else
             local empty = (st.box.line or "") == ""
             if bog.choice and handle_choice_input(st, ev) then draw(st)
+            elseif ptt_key(st, ev) then draw(st)
             elseif empty and ev.key == "char" and ev.char == "?" then
               st.help = true; draw(st)
             elseif empty and ev.key == "char" and ev.char == "{" then
@@ -984,6 +1042,7 @@ function M.run()
               -- just close the mic and forget the span before the turn runs.
               if voice and voice.listening() then voice.stop() end
               st.voice = nil
+              if st.ptt_rec then ptt_stop(st) end
               if bog.choice and handle_choice_input(st, { type = "key", key = "enter" }) then
                 -- pending after-turn menu: Enter submits a typed answer
               else

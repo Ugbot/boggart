@@ -23,6 +23,7 @@ M.KEYS = {
   { "Ctrl-O",       "expand / collapse tool strip" },
   { "Ctrl-V",       "voice dictation on / off" },
   { "/voice",       "dictation (start/stop/status/download)" },
+  { "/voice ptt",   "push-to-talk: hold space to speak" },
   { "/clear",       "new conversation" },
   { "/compact",     "summarise context" },
   { "/cost",        "token spend" },
