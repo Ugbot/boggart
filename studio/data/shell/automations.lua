@@ -16,19 +16,53 @@ end
 
 local function path(name) return dir() .. "/" .. (name:gsub("[^%w_%-]", "_")) .. ".txt" end
 
+-- Built-in automations, shipped with boggart. A saved file of the same name
+-- overrides one (the skills overlay rule), so these are editable starting
+-- points, not fixtures. Kept useful and generic: each is a prompt you would
+-- otherwise retype, with {{holes}} for the parts that change.
+M.DEFAULTS = {
+  ["review-file"] =
+    "Review @{{file}} for correctness bugs, then for clarity. List each finding "
+    .. "as file:line -- one-line problem -- suggested fix, most severe first. "
+    .. "No praise, no restating the code.",
+  ["explain-file"] =
+    "Explain @{{file}}: what it is for, the one idea that makes it work, and the "
+    .. "part most likely to surprise a new reader. Lead with the purpose.",
+  ["write-tests"] =
+    "Write tests for @{{file}}. Cover the public behaviour and the edge cases "
+    .. "that would actually break; expected values from an independent source, "
+    .. "never recomputed from the code. Run them and show green.",
+  ["commit-message"] =
+    "Read the staged diff (git diff --cached). Write a commit message: a concise "
+    .. "imperative subject under ~70 chars, then a body explaining WHY, not what. "
+    .. "Output only the message.",
+  ["standup"] =
+    "Summarise what changed in this repo in the last {{days}} day(s): read the "
+    .. "git log and diffs, group by theme, and give me a short standup update -- "
+    .. "what landed, what is in progress, what looks risky.",
+  ["fix-failing"] =
+    "Run {{command}}. If it fails, diagnose the first real failure, fix the "
+    .. "cause (not the symptom), and re-run until it passes. Show the failing "
+    .. "output, the fix, and the passing run.",
+}
+
 function M.list()
-  local out = {}
+  local seen, out = {}, {}
   for _, f in ipairs(sys.listdir(dir()) or {}) do
     local n = f:match("^(.+)%.txt$")
-    if n then out[#out + 1] = n end
+    if n and not seen[n] then seen[n] = true; out[#out + 1] = n end
+  end
+  for n in pairs(M.DEFAULTS) do
+    if not seen[n] then seen[n] = true; out[#out + 1] = n end
   end
   table.sort(out)
   return out
 end
 
 function M.load(name)
-  local f = io.open(path(name), "r"); if not f then return nil end
-  local s = f:read("*a"); f:close(); return s
+  local f = io.open(path(name), "r")
+  if f then local s = f:read("*a"); f:close(); return s end
+  return M.DEFAULTS[name]   -- fall through to the built-in
 end
 
 function M.save(name, prompt)
@@ -36,7 +70,14 @@ function M.save(name, prompt)
   f:write(prompt or ""); f:close(); return true
 end
 
-function M.remove(name) os.remove(path(name)); return true end
+-- Removing a file-backed automation deletes it. Removing a built-in (or a
+-- built-in you had edited) drops your copy and the default comes back -- you
+-- reset it, you cannot destroy it. Returns "deleted" or "reset" so the caller
+-- can say which happened.
+function M.remove(name)
+  os.remove(path(name))
+  return M.DEFAULTS[name] and "reset" or "deleted"
+end
 
 -- ---- parameters ({{placeholders}}, ported from the old recipes) -------------
 -- Every {{placeholder}} in first-appearance order, without duplicates.
@@ -176,7 +217,13 @@ function M.edit_picker()
   if #names == 0 then core.log("no automations to edit yet"); return end
   core.command_view:enter("Edit automation:", function(text, item)
     local name = item or text
-    if M.load(name) then core.root_view:open_doc(core.open_doc(path(name))) end
+    local body = M.load(name)
+    if not body then return end
+    -- Editing a built-in materializes it as a file first, so the edit has
+    -- somewhere to live and the default becomes an overridable copy.
+    local f = io.open(path(name), "r")
+    if f then f:close() else M.save(name, body) end
+    core.root_view:open_doc(core.open_doc(path(name)))
   end, function(text) return common_fuzzy(names, text) end)
 end
 
