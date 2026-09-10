@@ -107,6 +107,35 @@ be a step in a chain, and a stop-evaluation can invoke a tool to check state —
 all without a model turn, all crossing the permission gate the same way a
 model-issued call does.
 
+## Converting a skill: what moves to code, what stays prose
+
+Not every step should move. The rule that keeps a conversion safe:
+
+- **`before` is safe, idempotent setup only** — reads and checks (pin a ref,
+  read a fixed file, gather state), never a side-effecting action. A build, a
+  deploy, a test run is the skill's *action*, and the model decides to take it;
+  a `before` runs on every adoption, including when the skill was adopted to
+  answer a question. Putting an action in `before` is the one real footgun.
+- **`before` short-circuits with `{ done }` only when the answer is complete
+  and free** — an empty diff, no merge in progress, a CLEAR report. Otherwise
+  it `{ set }`s facts and lets the model do the judgment.
+- **`verify` / `finally` checks should not need a runtime-chosen argument.** A
+  check over the whole tree (conflict markers, leftover worktrees) runs as code
+  cleanly. A check over "the file the model just wrote" needs the path the model
+  chose, so it stays the model-run `verify` STRING until the skill threads its
+  target — correct, not a gap.
+- **Pure judgment, craft, and knowledge skills stay prose.** They are already
+  Callables: an entity with a single model run. Guidance (grilling, research),
+  craft (prose, tension), and knowledge packs (the luadox skills) have no
+  deterministic slice to extract; converting them adds nothing.
+
+The wins cluster where there is real plumbing: the git / build / diagnosis
+skills for `before` and arg-free `verify`, and the state-reading skills
+(supervisor) for `before`. The base set converted this way: code_review
+(before), supervisor (before + short-circuit), resolving_merge_conflicts
+(before + verify), git_worktree (finally teardown). The rest stay prose because
+prose is already the right shape for them.
+
 ## Trust
 
 Code that runs instead of the model runs with authority and no human mid-step,

@@ -4,30 +4,45 @@ return {
   description = "Supervise the swarm: read live fleet status (who is running, how long, whether "
     .. "stuck), plan progress (what is done/running/failed), cross-check claims, and report "
     .. "exactly what needs attention. Use whenever asked to check on, watch, or debug other agents.",
-  instructions = [[
-You are the supervisor of the swarm. Your job is to know what every other agent
-is doing, whether anything is stuck or broken, and to report it plainly. You are
-a READER: you never edit plans or nudge agents without saying what you are doing.
+  -- before: STEPs 1-3 are deterministic reads (fleet_status, plan_status,
+  -- swarm_report, all no-arg). Run them as CODE and thread the results in, so
+  -- the model starts at STEP 4 (judgment) already holding the state. When
+  -- swarm_report says CLEAR, there is nothing to act on -- short-circuit with
+  -- zero model turns.
+  before = function()
+    local fleet = bog.C("fleet_status")({})
+    local plans = bog.C("plan_status")({})
+    local report = bog.C("swarm_report")({})
+    if type(report) == "string" and report:find("CLEAR") and not report:find("STUCK") then
+      return { done = "swarm is CLEAR -- nothing needs attention.\n\n" .. report }
+    end
+    return { set = { fleet = fleet, plans = plans, report = report } }
+  end,
 
-## STEP 1 — READ THE FLEET
-- fleet_status: every sub-agent, its status (running/idle/done/error), age, time
-  since its last activity, and a STUCK flag.
-- A running agent silent for more than 10 minutes is STUCK. Say so, with its id,
-  what it was doing, and how long it has been silent.
-- A done/error agent is not stuck; note what it returned if it matters.
+  instructions = function(ctx)
+    local fleet = (ctx and ctx.fleet) or "(run fleet_status)"
+    local plans = (ctx and ctx.plans) or "(run plan_status)"
+    local report = (ctx and ctx.report) or "(run swarm_report)"
+    return [[
+You are the supervisor of the swarm. The live state is already read (below).
+Your job is to know what every agent is doing, whether anything is stuck or
+broken, and to report it plainly. You are a READER: you never edit plans or
+nudge agents without saying what you are doing.
 
-## STEP 2 — READ THE PLANS
-- plan_status: every plan, its status, and progress (done/running/failed/total).
-- For any active plan, read the steps' current owners. A step is 'running' with
-  an agent id -- that is who is working on it right now.
+## FLEET
+]] .. fleet .. [[
 
-## STEP 3 — RUN THE SUPERVISION PASS
-- swarm_report cross-checks everything: stuck agents, running steps and their
-  agents, FAILED steps, STALLED plans (active with pending work but nothing
-  running), plans left in 'planning' that were never dispatched, and claims held
-  by agents that are no longer running. It lists findings or says CLEAR.
+## PLANS
+]] .. plans .. [[
 
-## STEP 4 — ACT ON WHAT YOU FIND
+## SUPERVISION PASS (swarm_report)
+]] .. report .. [[
+
+A running agent silent for more than 10 minutes is STUCK. swarm_report already
+cross-checked stuck agents, FAILED steps, STALLED plans, undispatched 'planning'
+plans, and claims held by dead agents.
+
+## ACT ON WHAT YOU FIND
 - Stuck agent: check threads, read its mail (inbox), then either nudge it
   (send to=<id> message="...") or tell the human it needs killing/restarting.
 - Failed step in an active plan: say which step, which plan, and what the error
@@ -42,7 +57,8 @@ a READER: you never edit plans or nudge agents without saying what you are doing
 - Self-check: your report must cover everything swarm_report flagged. If you
   nudge or change anything, re-run swarm_report to confirm the picture is now
   accurate before you claim it is.
-]],
+]]
+  end,
   tools = {
     "fleet_status", "plan_status", "swarm_report", "panel_refresh",
     "threads", "inbox", "send", "claims", "plan_audit",

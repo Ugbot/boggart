@@ -42,4 +42,26 @@ manage; the user's commits are theirs.
     "claim", "release", "claims",
     "spawn", "await", "send",
   },
+
+  -- finally: the teardown discipline as code, not "the model remembered." A
+  -- worktree leaked on error is a mess for the user, so on the way out this
+  -- lists worktrees and warns about any left standing. It warns rather than
+  -- auto-removing: a worktree may hold a child's unfinished work, and deleting
+  -- that silently is worse than naming it. Always runs, even after a raise.
+  finally = function(ctx, res)
+    local ok, list = pcall(function() return bog.C("worktree")({ op = "list" }) end)
+    if ok and type(list) == "string" then
+      local extra = {}
+      for line in list:gmatch("[^\n]+") do
+        -- the main checkout is first; any additional worktree is one this work
+        -- may have added and should have removed.
+        if line:match("%S") and not line:match("%[") then extra[#extra + 1] = line end
+      end
+      if #extra > 1 and type(res) == "string" then
+        return res .. "\n\n(worktree note: " .. (#extra - 1) ..
+          " extra worktree(s) still checked out; `worktree op=remove` any you added.)"
+      end
+    end
+    return res
+  end,
 }
