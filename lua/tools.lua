@@ -1570,4 +1570,16 @@ load_user_tools()
 -- the tool files so they survive /reload the same way. See M.materialize_skills.
 M.materialize_skills()
 
+-- get(name) -> a Callable wrapping this tool, so any Lua invokes a tool the
+-- way the model does (registry -> run), and tools compose into pipelines.
+-- The model's tool_use path still calls M.run directly; this is the
+-- call-from-anywhere and chaining surface, on the same run.
+function M.get(name)
+  local callable = require("callable")
+  return callable.new({
+    name = name,
+    run = function(args) return M.run(name, args or {}) end,
+  })
+end
+
 return M

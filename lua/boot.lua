@@ -1346,6 +1346,16 @@ end
 -- requires uv, which allocates a loop, so it stays lazy and swarm-only -- and it
 -- is only needed once the cap allows more than one agent.
 bog.skills = require("skills")
+bog.call = require("callable")
+-- bog.C(name) -> a Callable for a skill or a tool, by name. The one resolver
+-- for "call this thing from anywhere": chain them, invoke them, attach to them,
+-- the same objects the model reaches by name.
+function bog.C(name)
+  if bog.skills and bog.skills.load and bog.skills.load(name) then
+    return bog.skills.as_callable(name)
+  end
+  return bog.tools.get(name)
+end
 bog.agents = require("agents")
 bog.thread = require("thread")
 bog.supervisor = require("supervisor") -- the bus control plane (installed in activate_agents)

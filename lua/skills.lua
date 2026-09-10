@@ -92,6 +92,18 @@ function M.validate(s)
       return "'fallback' must be a skill name or a list of skill names"
     end
   end
+  -- lifecycle: before/run/finally are Lua functions boggart calls directly
+  -- (the code path). `components` is a list of attached behaviors, Unity-style.
+  -- Only meaningful in a trusted (builtin) skill; a sandboxed import cannot
+  -- carry raw functions, only `body` strings via provides.
+  for _, h in ipairs({ "before", "run", "finally" }) do
+    if s[h] ~= nil and type(s[h]) ~= "function" then
+      return "'" .. h .. "' must be a function"
+    end
+  end
+  if s.components ~= nil and type(s.components) ~= "table" then
+    return "'components' must be a list of component tables"
+  end
   -- provides: the described table of callable tools the skill carries. Each entry
   -- has a name and exactly one of `body` (a Lua source string, sandboxed) or
   -- `run` (a function, trusted -- only meaningful in a builtin skill file).
@@ -727,5 +739,50 @@ M.tools = {
     end,
   },
 }
+
+-- as_callable(name) -> a Callable GameObject for the skill: its before/run/
+-- finally become the main component, and any `components` list on the skill is
+-- attached in order. Nil for an unknown skill. This is how a skill runs as
+-- CODE -- before can short-circuit the model with { done = ... }, finally
+-- always runs the verify/teardown -- callable from anywhere, the same object
+-- the model adopts as prose.
+function M.as_callable(name)
+  local sk = M.load(name)
+  if not sk then return nil end
+  local callable = require("callable")
+  local node = callable.new({
+    name = name,
+    before = sk.before,
+    run = sk.run,
+    finally = sk.finally,
+  })
+  for _, c in ipairs(sk.components or {}) do node:attach(c) end
+  -- A `verify` FUNCTION becomes a code verifier that runs in finally: the
+  -- skill's own output is checked, and a failed check raises rather than
+  -- letting a bad result through. (A `verify` STRING stays the model-run tool
+  -- as before, for skills that have not moved that check into code yet.)
+  if type(sk.verify) == "function" then
+    node:attach({
+      name = "verify",
+      finally = function(ctx, res)
+        if res == nil then return nil end
+        local ok = sk.verify(res, ctx)
+        if ok == true then return res end
+        error("skill '" .. name .. "' verify failed: " ..
+          (type(ok) == "string" and ok or tostring(ok)), 0)
+      end,
+    })
+  end
+  return node
+end
+
+-- invoke(name, ctx) -> run the skill's code path directly. The deterministic
+-- door: no model turn unless a run demands one. Raises for an unknown skill so
+-- a typo is loud.
+function M.invoke(name, ctx)
+  local node = M.as_callable(name)
+  if not node then error("unknown skill: " .. tostring(name), 0) end
+  return node(ctx)
+end
 
 return M
