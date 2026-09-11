@@ -232,6 +232,31 @@ for _, n in ipairs({ "tdd", "diagnosing_bugs", "code_review", "research",
   end
 end
 
+-- resolve() tolerates the Callable lifecycle fields (docs/callables.md). A
+-- `verify` FUNCTION must not be treated as a tool name -- that once emitted a
+-- "run `nil`" nudge. It becomes a note that the output is code-checked; a
+-- `verify` STRING still nudges the model to run that tool.
+do
+  local M = require("skills")
+  M._dbcache = nil
+  package.loaded["skills.__vfn"] = nil
+  local vfn = { description = "fn-verify test skill", instructions = "do the thing",
+    verify = function() return true end }
+  local vstr = { description = "str-verify test skill", instructions = "do it",
+    provides = { checkit = { description = "c", input_schema = { type = "object", properties = {} },
+      run = function() return "ok" end } }, verify = "checkit" }
+  -- inject as db skills so resolve can load them
+  package.preload["skills.__vfn"] = function() return vfn end
+  package.preload["skills.__vstr"] = function() return vstr end
+  local i1 = M.resolve({ "__vfn" })
+  ok(i1:find("run `nil`") == nil, "function-verify emits no nil tool nudge")
+  ok(i1:find("checked in code", 1, true) ~= nil, "function-verify notes code check")
+  local i2 = M.resolve({ "__vstr" })
+  ok(i2:find("run `checkit`", 1, true) ~= nil, "string-verify still nudges the tool")
+  package.preload["skills.__vfn"] = nil
+  package.preload["skills.__vstr"] = nil
+end
+
 sys.rmtree(bog.userdir)
 bog.userdir = saved_userdir
 

@@ -299,11 +299,21 @@ function M.resolve(names)
       if type(it) == "string" and it ~= "" then
         instr[#instr + 1] = "## Skill: " .. n .. "\n" .. it
       end
-      -- Verification is first-class: if the skill names a verify tool, tell the
-      -- agent to run it on its own output and fix what it reports before it can
-      -- call the work done -- the same discipline every skill should share.
+      -- Verification is first-class. Three forms:
+      --   verify = "tool"        the agent runs that tool on its output (model)
+      --   verify = { tool=, nudge= }  same, with a custom nudge
+      --   verify = function       CODE: runs automatically when the skill is
+      --                           invoked as a unit (skills.invoke / bog.C /
+      --                           the callable combinators, docs/callables.md).
+      -- A function verify is not a tool the model runs, so it gets a note that
+      -- the output is checked in code rather than a "run `<tool>`" nudge (which
+      -- would name a nil tool).
       local v = s.verify
-      if v then
+      if type(v) == "function" then
+        instr[#instr + 1] = "### Verify \u{2014} " .. n
+          .. "\nThis skill's output is checked in code before it returns; a "
+          .. "failed check is raised, not ignored. Produce a result that passes."
+      elseif v then
         local vtool = (type(v) == "string" and v) or v.tool
         local nudge = (type(v) == "table" and v.nudge)
           or ("Before you report this skill's work as done, run `" .. vtool

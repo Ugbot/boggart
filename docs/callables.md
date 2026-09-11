@@ -136,6 +136,32 @@ skills for `before` and arg-free `verify`, and the state-reading skills
 (before + verify), git_worktree (finally teardown). The rest stay prose because
 prose is already the right shape for them.
 
+## When the lifecycle runs: a skill as a unit, not an ambient grant
+
+A skill's `before`/`finally`/`verify`-function run when the skill is invoked
+**as a unit** — `bog.skills.invoke(name)`, `bog.C(name)(args)`, the combinators,
+an automation, or a slash command. They do NOT run when a skill is merely
+*resolved into an agent's ambient tool grant*.
+
+This boundary is deliberate. A skill adopted into a long conversation is a set
+of granted tools plus prose; the model reaches for them across many turns.
+Running `code_review`'s `before` (which shells `git_diff`) on every message —
+including "hi" — and short-circuiting on an empty diff would break normal chat.
+`before` is per-invocation, not per-turn.
+
+So `resolve()` (the ambient path, `lua/thread.lua`) reads a skill's
+`instructions` and `tools`, and its `instructions` function degrades correctly
+when called without a ctx: it renders the prose the model then follows
+("see `git status` for the conflicting files"). A `verify` STRING becomes the
+model-run nudge; a `verify` FUNCTION becomes a note that the output is checked
+in code (the function itself runs on the unit path, not here).
+
+The clean next step is wiring `spawn` to honor the lifecycle: a sub-agent whose
+job IS a skill (`spawn{ skills = {"code_review"} }`) is a unit invocation, so
+its `before` can short-circuit the child (returning without a model call) and
+its `finally`/`verify` can gate the child's result. That is where the
+zero-model-turn win lands in the swarm, and it is tracked, not done.
+
 ## Trust
 
 Code that runs instead of the model runs with authority and no human mid-step,
