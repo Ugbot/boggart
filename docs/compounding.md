@@ -64,6 +64,61 @@ turn.
    any member's learning, so the compounding is across people and machines, not
    one process.
 
+## Two axes: deepen and widen
+
+"Increasing the ability base" is two motions, not one, and the compounding
+runtime needs both.
+
+- **Deepen** (cheaper at known work): compile the deterministic slices of a
+  task-shape you already have skills for into code. The model-calls-per-task
+  curve falls. This is everything above.
+- **Widen** (capable at new work): when a genuinely new *domain* appears — a
+  field the runtime has no skills for: a new codebase's conventions, hardware
+  bring-up, legal review, a game's rules — model it. Produce the domain's
+  vocabulary, its actions, its ways of working, and what "correct" means, so
+  the compile and know loops have something to turn on in new territory.
+
+Without widen, the runtime only ever compounds on shapes it was born knowing.
+With it, the ability base grows into fields it has never seen, and then deepens
+there. Deepen makes known work free; widen makes new work possible; both feed
+the same three loops.
+
+## Modeling a new domain
+
+A **domain is the unit above a skill.** A skill is a way of working; a domain is
+a whole field of work — its language, its actions, its procedures, its
+standards. The project is already the unit of context (`lua/project.lua`): it
+scopes memory, skills, tools, and search. So a domain lives in a project, and
+modeling one means giving that project an *executable* model, not a document:
+
+- **Vocabulary** — the domain's entities and relations, the ubiquitous language
+  (DDD). Named once, in project memory, so every skill and prompt in the domain
+  refers to the same things by the same names and cannot drift. (The existing
+  `domain-modeling` skill produces this today as prose; the widen move is to
+  make it also produce the executable parts below.)
+- **Actions** — the domain's verbs, as tools (Callables). `rollout_status` and
+  `scale` for a kubernetes domain; `save_chapter` and `check_canon` for a novel.
+  Drafted by the model via `define_tool`, scoped to the project.
+- **Skills** — the domain's ways of working, as project-keyed skills over those
+  actions, drafted via `define_skill`.
+- **Verifiers** — what correct means in the domain, as code (docs/callables.md):
+  a kubernetes deploy is verified by a healthy rollout, a chapter by its canon
+  check. So domain work is checked in the domain's own terms, not the model's
+  opinion.
+
+Modeling a domain is therefore itself a compile: a bootstrap pass (the
+`domain-modeling` skill, elevated to emit executable capability) that turns a
+description plus some sources into vocabulary + actions + skills + verifiers,
+registered scoped to the project. The output is a **domain-pack** — the same
+shape as a skill-pack, one level up — and it travels across a team by the moot
+protocol (docs/team.md), so a domain one person models is a field the whole team
+can then work and compound in.
+
+Once a domain is modeled, the three loops turn inside it: its skills compile
+their slices to code (deepen), its memory accrues and decays (know), its
+domain-pack is shared (share). Widen bootstraps a field; deepen and the loops
+compound it.
+
 ## The load-bearing rule: prefer, never replace
 
 The failure mode that kills this vision is over-compilation. Code is
@@ -127,6 +182,8 @@ measurable, then make it self-driving.
 - **docs/team.md** M4 (memory) — the know loop. M0-M3 (moot) — the share loop.
 - **docs/extending.md** — the four routes capability arrives by, all resolving to
   the same Callable, all compilable.
+- **docs/projects.md** + `lua/project.lua` — the project as the domain's scope;
+  the widen axis lives here (a domain is a project with an executable model).
 - **BCALL** — the compile loop's remaining wiring (lifecycle in the swarm,
   verified conversions).
 - The gap above — the compile *trigger* and the cost *ledger* — is the piece
