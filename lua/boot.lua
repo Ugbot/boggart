@@ -1326,6 +1326,7 @@ end
 
 bog.llmstation = require("llmstation")
 bog.station = require("stationlink") -- ZMQ transport policy; dormant unless built
+bog.gestalt = require("gestalt") -- data plane for graph/SQL; dormant unless up
 -- Eval skips MCP so tests do not spawn subprocesses. Embedded (studio)
 -- skips it here too: connect/handshake block the thread, and the window
 -- stays hidden until boot returns. Studio starts the same load after the
@@ -1335,6 +1336,9 @@ if bog.mode ~= "eval" and bog.mode ~= "embedded" then
   -- Best-effort: if a local LLM Station is installed, expose its deterministic
   -- code-intelligence tools over MCP. Dormant (a no-op) when it is not.
   bog.try(bog.llmstation.autostart)
+  -- Best-effort: if a Gestalt daemon answers, expose graph/SQL/lineage tools so
+  -- deep data questions are computed, not guessed. A no-op when it is down.
+  bog.try(bog.gestalt.register)
 end
 
 -- The agent layer, in every mode: everything is a swarm, and a lone agent is a

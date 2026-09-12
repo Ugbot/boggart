@@ -4,7 +4,28 @@ return {
   description = "Decompose a goal into a dependency-aware plan persisted in the shared plans "
     .. "tables, dispatch sub-agents in waves (spawn/await), verify their results, and synthesize "
     .. "a single answer. Use for any goal big enough to split across agents.",
-  instructions = [[
+
+  -- before: read-only state. Read existing plans and the live fleet as CODE so
+  -- the model starts holding what is already planned or running (and does not
+  -- duplicate a plan or over-spawn). Both tools are no-arg reads; guarded so
+  -- before degrades to {} without the plans tables or a running fleet. No
+  -- short-circuit: making the plan is the model's judgment.
+  before = function()
+    local function read(name)
+      local ok, out = pcall(function() return bog.C(name)({}) end)
+      if ok and type(out) == "string" then return out end
+      return nil
+    end
+    return { set = { plans = read("plan_status"), fleet = read("fleet_status") } }
+  end,
+
+  instructions = function(ctx)
+    local plans = ctx and ctx.plans
+    local fleet = ctx and ctx.fleet
+    local head = ""
+    if plans and plans ~= "" then head = head .. "## Existing plans (plan_status)\n" .. plans .. "\n\n" end
+    if fleet and fleet ~= "" then head = head .. "## Live fleet (fleet_status)\n" .. fleet .. "\n\n" end
+    return head .. [[
 You are a planning agent. You turn a goal into a durable plan, dispatch it, and
 synthesize the results. The plan is SHARED STATE: rows in the `plans` and
 `plan_steps` tables that any agent can read via plan_status, so the supervisor
@@ -65,7 +86,8 @@ honest -- statuses, assignments, failures -- and close it out when you are done.
 Rules: plans are shared and visible -- keep labels crisp and never edit another
 agent's plan without saying so. Don't leave a plan half-written; if you stop
 early, mark it failed or superseded with a reason so supervision reads the truth.
-]],
+]]
+  end,
   tools = {
     "plan_new", "plan_step", "plan_wave", "plan_assign", "plan_report",
     "plan_finish", "plan_audit", "plan_status", "fleet_status", "swarm_report",

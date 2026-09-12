@@ -6,7 +6,47 @@ return {
   invocation = "model",
   fallback = "core",
   tools = { "read", "write", "edit", "bash", "list", "choose" },
-  instructions = [[
+
+  -- before: safe reads only. Pin the repo root, and gather the state that already
+  -- exists on disk -- CONTEXT.md and any prior repro note -- so the model starts
+  -- STEP 1 holding them instead of spending turns re-reading. NEVER runs a build
+  -- or test here (that is the action the model decides to take). Every external
+  -- call is guarded so before degrades to {} without a daemon or git present.
+  before = function()
+    local function sh(cmd)
+      local ok, out = pcall(function() return bog.C("bash")({ command = cmd }) end)
+      if ok and type(out) == "string" then return out end
+      return nil
+    end
+    local set = {}
+    local root = sh("git rev-parse --show-toplevel 2>/dev/null")
+    if root then root = root:gsub("%s+$", "") end
+    if root and root ~= "" and not root:find("^Tool error:") then set.root = root end
+    -- Fixed docs that carry prior context/repro, read only if present.
+    if sys.stat and sys.stat("CONTEXT.md") == "file" then
+      set.context = sh("cat CONTEXT.md 2>/dev/null")
+    end
+    if sys.stat and sys.stat(".scratch/repro.md") == "file" then
+      set.repro = sh("cat .scratch/repro.md 2>/dev/null")
+    end
+    return { set = set }
+  end,
+
+  -- verify: no arg-free code check fits here -- "is the bug fixed?" is the Step 1
+  -- loop, whose command the model chose at runtime. Keep it as a model-run nudge.
+  verify = { tool = "bash", nudge = "re-run the Step 1 reproduce loop on the "
+    .. "original scenario and confirm it now passes (was red, now green); remove "
+    .. "all [DEBUG-...] instrumentation before finishing." },
+
+  instructions = function(ctx)
+    local root = ctx and ctx.root
+    local context = ctx and ctx.context
+    local repro = ctx and ctx.repro
+    local head = ""
+    if root then head = head .. "Repo root: `" .. root .. "`.\n" end
+    if context then head = head .. "\n## CONTEXT.md (already read)\n" .. context .. "\n" end
+    if repro then head = head .. "\n## .scratch/repro.md (prior repro, already read)\n" .. repro .. "\n" end
+    return head .. [[
 # Diagnosing Bugs
 
 Skip phases only when explicitly justified. Redact secrets (`<REDACTED>`) in any
@@ -51,5 +91,6 @@ that as the finding.
 - All `[DEBUG-…]` instrumentation removed
 - Throwaway harnesses deleted or clearly marked
 - State the winning hypothesis in the summary
-]],
+]]
+  end,
 }

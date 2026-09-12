@@ -140,11 +140,15 @@ function M.validate(s)
   -- to the skill's instructions, so verification is a first-class part of a
   -- skill rather than prose each one hand-writes. String = the tool name;
   -- { tool = <name>, nudge? = <custom text> } to override the wording.
-  if s.verify ~= nil then
+  -- A verify FUNCTION is a code check of the skill's own output (docs/callables.md);
+  -- it wires as a finally component in as_callable and needs no tool name.
+  if type(s.verify) == "function" then
+    -- nothing to validate: the function is the check
+  elseif s.verify ~= nil then
     local v = s.verify
     local vtool = (type(v) == "string" and v) or (type(v) == "table" and v.tool)
     if type(vtool) ~= "string" or vtool == "" then
-      return "'verify' must be a tool name (string) or { tool = <name>, nudge? = <text> }"
+      return "'verify' must be a function, a tool name (string), or { tool = <name>, nudge? = <text> }"
     end
     if type(v) == "table" and v.nudge ~= nil and type(v.nudge) ~= "string" then
       return "verify.nudge must be a string"

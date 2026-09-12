@@ -6,7 +6,11 @@ return {
     .. "Use when a plan or decision needs stress-testing.",
   invocation = "model",
   tools = { "read", "list", "bash", "choose", "spawn", "await" },
-  instructions = [[
+  -- No before/verify: this is a pure judgment interview -- the frontier of
+  -- questions is computed from the user's answers turn by turn, so there is no
+  -- deterministic slice to read up front or check in code.
+  instructions = function()
+    return [[
 # Grilling
 
 Map the topic as a **design tree**: every decision branches into the decisions
@@ -32,5 +36,6 @@ Questions that depend on still-open answers belong to a later round.
 Done when the frontier is empty: every branch visited, nothing silently assumed.
 Do NOT act on the plan until the user confirms shared understanding. Summarize
 the settled tree briefly (file under `.scratch/` if long).
-]],
+]]
+  end,
 }
