@@ -17,6 +17,22 @@ src/embedded.c
 src/vendor/lua/src/*.o
 src/vendor/sqlite/sqlite3.o
 
+# runtime store: a nested .boggart/ is boggart's own SQLite state, not source.
+# Committing one (e.g. from running boggart inside a subdir) drags a binary DB
+# and its WAL/SHM sidecars into the tree.
+**/.boggart/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# macOS + editor noise
+.DS_Store
+*.swp
+*.log
+
 # stray run artifacts
 error.txt
 # llm-station MCP runtime stores (tracker / skills-live), written under the repo
