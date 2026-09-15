@@ -449,13 +449,34 @@ local function handle_command(line)
       io.write(string.format("  model  %s\n", auth.model() or "(unset)"))
       io.write(string.format("  wire   %s\n", auth.wire() or "anthropic (default)"))
       io.write("environment overrides anything stored here.\n")
-      io.write("  /auth key <k> | /auth url <u> | /auth model <m> | /auth wire <openai|anthropic|responses> | /auth clear [what]\n")
+      io.write("  /auth key <k> | /auth key <provider> <k> | /auth url <u> | /auth model <m> | /auth wire <openai|anthropic|responses> | /auth clear [what]\n")
     elseif what == "clear" then
       if val ~= "" and MAP[val] then auth.clear(MAP[val]); io.write("cleared ", val, "\n")
       else auth.clear(); io.write("cleared all stored credentials\n") end
       bog.api.forget_auth()
     elseif what == "wire" and val ~= "" and val ~= "openai" and val ~= "anthropic" and val ~= "responses" then
       io.write("usage: /auth wire <openai|anthropic|responses>\n")
+    elseif what == "key" then
+      -- `/auth key <k>` stores for the CURRENT endpoint; `/auth key <provider> <k>`
+      -- stores for a named provider you are not pointed at. The slot is derived
+      -- from the endpoint, so a bare key on Anthropic used to overwrite the
+      -- Anthropic key when you meant DeepSeek. Name the provider to avoid that.
+      local first, rest2 = val:match("^(%S+)%s+(.+)$")
+      local provs = (bog.api.providers and bog.api.providers()) or {}
+      if first and rest2 and provs[first] then
+        local slot = provs[first].key_slot or first
+        auth.set("api_key", rest2, slot)
+        bog.api.forget_auth()
+        io.write("stored key for ", first, "\n")
+      elseif val == "" then
+        io.write("usage: /auth key <k>   (current endpoint)  |  /auth key <provider> <k>\n")
+      else
+        auth.set("api_key", val)
+        bog.api.forget_auth()
+        io.write("stored key for the current endpoint (",
+          auth.base_url() or "Anthropic default", ")\n")
+        io.write("  for another provider: /auth key <provider> <key>\n")
+      end
     elseif MAP[what] then
       if val == "" then io.write("usage: /auth ", what, " <value>\n")
       else
@@ -463,7 +484,7 @@ local function handle_command(line)
         -- Headers are cached after the first request, so a credential set
         -- mid-session would otherwise not take effect until restart.
         bog.api.forget_auth()
-        io.write("stored ", what, " = ", what == "key" and select(1, auth.masked()) or val, "\n")
+        io.write("stored ", what, " = ", val, "\n")
         if what == "model" then bog.set_model(val) end
       end
     else

@@ -1207,7 +1207,11 @@ M.PROVIDER_DEFAULTS = {
   deepseek = {
     label = "DeepSeek",
     base_url = "https://api.deepseek.com/anthropic",
-    models = { "deepseek-v4-flash", "deepseek-v4-pro" },
+    -- The API ids, not marketing names. `boggart models refresh deepseek` (or
+    -- the REPL) pulls the live list from catalog_url once a key is stored, so
+    -- these are only the seed until then.
+    models = { "deepseek-chat", "deepseek-reasoner" },
+    catalog_url = "https://api.deepseek.com/models",
     key_hint = "sk-...",
   },
   ["local"] = {
