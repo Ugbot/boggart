@@ -135,6 +135,8 @@
     "glm-5.3":       { "provider": "zai", "label": "GLM-5.3",       "context": 200000, "tools": true },
     "glm-5.3-flash": { "provider": "zai", "label": "GLM-5.3 Flash", "context": 200000, "tools": true },
 
+    "deepseek-flash":    { "provider": "deepseek", "label": "DeepSeek Flash",    "context": 1000000, "max_output": 384000, "tools": true, "vision": true, "effort": true },
+    "deepseek-v4-pro":   { "provider": "deepseek", "label": "DeepSeek V4 Pro",   "context": 1000000, "max_output": 384000, "tools": true, "effort": true },
     "deepseek-chat":     { "provider": "deepseek", "label": "DeepSeek Chat",     "context": 128000, "tools": true },
     "deepseek-reasoner": { "provider": "deepseek", "label": "DeepSeek Reasoner", "context": 128000, "tools": true, "effort": true },
 
