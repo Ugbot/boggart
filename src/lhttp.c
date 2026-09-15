@@ -20,6 +20,9 @@
 #include <curl/curl.h>
 #include <string.h>
 #include <stdlib.h>
+#ifndef _WIN32
+#include <sys/socket.h>
+#endif
 
 #include "uv.h"
 
@@ -423,6 +426,26 @@ static size_t write_async(char *ptr, size_t size, size_t nmemb, void *ud) {
   return n;
 }
 
+/* Raise SO_SNDBUF on each curl socket so a large request body is written in one
+ * pass. libcurl calls this after socket() and before connect(). Best-effort:
+ * the kernel clamps to kern.ipc.maxsockbuf, and a failure just leaves the
+ * default. Not compiled on Windows, where the stall has not been observed and
+ * the socket option differs. */
+#ifndef _WIN32
+static int sockopt_cb(void *clientp, curl_socket_t curlfd, curlsocktype purpose) {
+  (void) clientp;
+  if (purpose == CURLSOCKTYPE_IPCXN) {
+    int sz = 8 * 1024 * 1024;   /* under macOS kern.ipc.maxsockbuf (8MB) */
+    setsockopt(curlfd, SOL_SOCKET, SO_SNDBUF, &sz, sizeof(sz));
+  }
+  return CURL_SOCKOPT_OK;
+}
+#else
+static int sockopt_cb(void *c, curl_socket_t f, curlsocktype p) {
+  (void) c; (void) f; (void) p; return CURL_SOCKOPT_OK;
+}
+#endif
+
 static int l_http_begin(lua_State *L) {
   luaL_checktype(L, 1, LUA_TTABLE);
   hctx *ctx = get_ctx(L, 1); /* this loop's curl_multi, created on first use */
@@ -487,6 +510,13 @@ static int l_http_begin(lua_State *L) {
 
   curl_easy_setopt(r->easy, CURLOPT_WRITEFUNCTION, write_async);
   curl_easy_setopt(r->easy, CURLOPT_WRITEDATA, r);
+  // Async upload of a body larger than the socket send buffer (macOS default
+  // 128KB) stalls: once the buffer fills, curl hands the overflow to the TLS
+  // layer and polls the socket readable-only, so the queued ciphertext never
+  // flushes and the peer waits forever for the rest of the request. Agent
+  // requests routinely exceed 128KB (tools + system + history), so enlarge the
+  // send buffer to fit them in one write. See sockopt_cb.
+  curl_easy_setopt(r->easy, CURLOPT_SOCKOPTFUNCTION, sockopt_cb);
   curl_easy_setopt(r->easy, CURLOPT_NOSIGNAL, 1L);
   curl_easy_setopt(r->easy, CURLOPT_ACCEPT_ENCODING, "");
   curl_easy_setopt(r->easy, CURLOPT_PRIVATE, r);
