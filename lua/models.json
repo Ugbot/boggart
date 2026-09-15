@@ -64,7 +64,8 @@
       "label": "DeepSeek",
       "url": "https://api.deepseek.com/anthropic",
       "wire": "anthropic", "auth": "x-api-key",
-      "key_slot": "deepseek", "env": "DEEPSEEK_API_KEY"
+      "key_slot": "deepseek", "env": "DEEPSEEK_API_KEY",
+      "catalog_url": "https://api.deepseek.com/models"
     },
     "moonshot": {
       "label": "Moonshot (Kimi)",
@@ -134,8 +135,8 @@
     "glm-5.3":       { "provider": "zai", "label": "GLM-5.3",       "context": 200000, "tools": true },
     "glm-5.3-flash": { "provider": "zai", "label": "GLM-5.3 Flash", "context": 200000, "tools": true },
 
-    "deepseek-v4-pro":   { "provider": "deepseek", "label": "DeepSeek V4 Pro",   "context": 200000, "tools": true, "effort": true },
-    "deepseek-v4-flash": { "provider": "deepseek", "label": "DeepSeek V4 Flash", "context": 200000, "tools": true, "effort": true },
+    "deepseek-chat":     { "provider": "deepseek", "label": "DeepSeek Chat",     "context": 128000, "tools": true },
+    "deepseek-reasoner": { "provider": "deepseek", "label": "DeepSeek Reasoner", "context": 128000, "tools": true, "effort": true },
 
     "kimi-k2.6":  { "provider": "moonshot", "label": "Kimi K2.6",  "context": 256000, "tools": true },
     "minimax-m2.7": { "provider": "minimax", "label": "MiniMax M2.7", "context": 200000, "tools": true },

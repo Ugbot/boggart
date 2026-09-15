@@ -440,9 +440,12 @@ if(BOGGART_STATION)
 endif()
 
 # ---- generated embedded Lua ------------------------------------------------
-# Bakes lua/**/*.lua into a C lookup table. Regenerated whenever any Lua
-# source changes; written to the build dir to keep the source tree clean.
+# Bakes lua/**/*.lua AND lua/**/*.json into a C lookup table. Regenerated
+# whenever any embedded source changes; written to the build dir to keep the
+# source tree clean. The .json files (models.json) must be in DEPENDS too, or
+# editing the catalog seed silently does not re-bake.
 file(GLOB_RECURSE LUA_MODULES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/lua/*.lua)
+file(GLOB_RECURSE EMBED_DATA CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/lua/*.json)
 set(EMBEDDED_C ${CMAKE_CURRENT_BINARY_DIR}/embedded.c)
 
 add_custom_command(
@@ -451,7 +454,7 @@ add_custom_command(
           -DLUA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/lua
           -DOUT=${EMBEDDED_C}
           -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/bake_embedded.cmake
-  DEPENDS ${LUA_MODULES} ${CMAKE_CURRENT_SOURCE_DIR}/tools/bake_embedded.cmake
+  DEPENDS ${LUA_MODULES} ${EMBED_DATA} ${CMAKE_CURRENT_SOURCE_DIR}/tools/bake_embedded.cmake
   COMMENT "Baking lua/ into embedded.c"
   VERBATIM)
 

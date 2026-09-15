@@ -457,17 +457,22 @@ local function handle_command(line)
     elseif what == "wire" and val ~= "" and val ~= "openai" and val ~= "anthropic" and val ~= "responses" then
       io.write("usage: /auth wire <openai|anthropic|responses>\n")
     elseif what == "key" then
-      -- `/auth key <k>` stores for the CURRENT endpoint; `/auth key <provider> <k>`
-      -- stores for a named provider you are not pointed at. The slot is derived
-      -- from the endpoint, so a bare key on Anthropic used to overwrite the
-      -- Anthropic key when you meant DeepSeek. Name the provider to avoid that.
-      local first, rest2 = val:match("^(%S+)%s+(.+)$")
+      -- `/auth key <k>` stores for the CURRENT endpoint; naming a provider stores
+      -- for one you are not pointed at. The provider may be EITHER token, since
+      -- the hint has read both ways: `/auth key deepseek <k>` and `/auth key <k>
+      -- deepseek` both work. Without a named provider the slot is the current
+      -- endpoint, so a bare DeepSeek key on Anthropic lands in the wrong slot.
       local provs = (bog.api.providers and bog.api.providers()) or {}
-      if first and rest2 and provs[first] then
-        local slot = provs[first].key_slot or first
-        auth.set("api_key", rest2, slot)
+      local a, b = val:match("^(%S+)%s+(%S+)%s*$")
+      local prov, key
+      if a and b then
+        if provs[a] then prov, key = a, b
+        elseif provs[b] then prov, key = b, a end
+      end
+      if prov then
+        auth.set("api_key", key, provs[prov].key_slot or prov)
         bog.api.forget_auth()
-        io.write("stored key for ", first, "\n")
+        io.write("stored key for ", prov, "\n")
       elseif val == "" then
         io.write("usage: /auth key <k>   (current endpoint)  |  /auth key <provider> <k>\n")
       else
