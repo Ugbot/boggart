@@ -166,6 +166,9 @@ function AgentView:push(role, text, extra)
 end
 
 function AgentView:stream(chunk)
+  -- The answer has started, so a reasoning model's live thinking is done: tuck
+  -- it away collapsed rather than leaving it open above the reply.
+  self:collapse_open_thinking()
   local last = self.entries[#self.entries]
   if last and last.role == "assistant" and last.open then
     last.text = last.text .. chunk
@@ -176,7 +179,32 @@ function AgentView:stream(chunk)
   core.redraw = true
 end
 
+-- Live extended-thinking. Reasoning models (deepseek-flash, o-series, qwen3,
+-- extended-thinking Claude) stream a reasoning phase before the answer. Without
+-- this the panel sits silent at "streaming" for the whole phase, which reads as
+-- stuck. Show it live and open; stream() collapses it when the answer begins.
+function AgentView:stream_thinking(chunk)
+  local last = self.entries[#self.entries]
+  if last and last.role == "thinking" and last.open then
+    last.text = last.text .. chunk
+  else
+    self.entries[#self.entries + 1] =
+      { role = "thinking", text = chunk, open = true, collapsed = false }
+  end
+  self.scroll_to_end = true
+  core.redraw = true
+end
+
+function AgentView:collapse_open_thinking()
+  local last = self.entries[#self.entries]
+  if last and last.role == "thinking" and last.open then
+    last.open = nil
+    last.collapsed = true
+  end
+end
+
 function AgentView:close_stream()
+  self:collapse_open_thinking()
   local last = self.entries[#self.entries]
   if last then last.open = nil end
 end
@@ -349,6 +377,9 @@ function AgentView:submit(text)
         async = true,
         system = extra.system,
         checkpoint = extra.checkpoint,
+        -- Stream a reasoning model's thinking live, so the panel shows progress
+        -- during the reasoning phase instead of sitting silent at "streaming".
+        on_think = function(chunk) self:stream_thinking(chunk) end,
 
         -- Chat-only withholds the schemas rather than only refusing the calls.
         -- Denying a tool the model can see invites it to keep trying; a model
