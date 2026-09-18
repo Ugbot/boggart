@@ -90,6 +90,14 @@ function keymap.on_key_pressed(k)
     end
   else
     local stroke = key_to_stroke(k)
+    -- A raw-key view (the embedded terminal) gets the stroke BEFORE global
+    -- commands, so plain Ctrl-W reaches the shell instead of closing the pane.
+    -- It returns false for the app-reserved chords (Ctrl-Alt-*), which then
+    -- fall through to the command dispatch below like any other key.
+    local av = require("core").active_view
+    if av and av.raw_keys and av.on_key_pressed and av:on_key_pressed(stroke) then
+      return true
+    end
     local commands = keymap.map[stroke]
     if commands then
       for _, cmd in ipairs(commands) do
