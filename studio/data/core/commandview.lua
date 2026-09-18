@@ -80,8 +80,10 @@ end
 
 
 function CommandView:move_suggestion_idx(dir)
-  local n = self.suggestion_idx + dir
-  self.suggestion_idx = common.clamp(n, 1, #self.suggestions)
+  local n = #self.suggestions
+  if n > 0 then
+    self.suggestion_idx = ((self.suggestion_idx - 1 + dir) % n) + 1
+  end
   self:complete()
   self.last_change_id = self.doc:get_change_id()
 end
@@ -257,6 +259,46 @@ end
 function CommandView:draw()
   CommandView.super.draw(self)
   core.root_view:defer_draw(draw_suggestions_box, self)
+end
+
+
+-- Which suggestion row (if any) a screen point falls in, using the same
+-- per-row geometry draw_suggestions_box uses to draw it.
+local function suggestion_row_at(self, x, y)
+  local n = #self.suggestions
+  if n == 0 then return nil end
+  local dh = style.divider_size
+  local h = math.ceil(self.suggestions_height)
+  local rx, ry, rw = self.position.x, self.position.y - h - dh, self.size.x
+  if x < rx or x >= rx + rw or y < ry or y >= ry + h then return nil end
+  local lh = self:get_suggestion_line_height()
+  for i = 1, n do
+    local row_y = self.position.y - i * lh - dh
+    if y >= row_y and y < row_y + lh then return i end
+  end
+  return nil
+end
+
+
+-- The suggestion popup is drawn above CommandView's own screen rect (see
+-- draw_suggestions_box), overlapping whatever pane sits above it in the
+-- layout. RootView's own click routing only knows about node rects, so
+-- without this wrap a click on a suggestion falls through to that pane
+-- instead. Same pattern as shell/shortcuts.lua's RootView wrap.
+local RootView = require "core.rootview"
+local root_on_mouse_pressed = RootView.on_mouse_pressed
+function RootView:on_mouse_pressed(button, x, y, clicks)
+  local cv = core.command_view
+  if cv then
+    local i = suggestion_row_at(cv, x, y)
+    if i then
+      cv.suggestion_idx = i
+      cv:complete()   -- put the clicked suggestion into the text, as the keyboard
+      cv:submit()     -- path does, so callbacks that read text (save-as, rename,
+      return true     -- bookmarks) get the choice, not the typed fragment
+    end
+  end
+  return root_on_mouse_pressed(self, button, x, y, clicks)
 end
 
 

@@ -19,6 +19,19 @@ MenuBar.menus = {
 local GAP = 10  -- px around each title
 local WS_SEP = "  \u{00b7}  "  -- the "  ·  " divider drawn between workspace tabs
 
+-- keymap.get_binding returns the raw internal stroke ("ctrl+shift+p"), which
+-- is also its hashtable key -- fine for lookups, not for a menu row. This
+-- formats it for display only ("Ctrl+Shift+P").
+local MODIFIER_LABEL = { ctrl = "Ctrl", shift = "Shift", alt = "Alt", altgr = "AltGr", cmd = "Cmd" }
+local function pretty_stroke(stroke)
+  if not stroke then return stroke end
+  local parts = {}
+  for tok in stroke:gmatch("[^+]+") do
+    parts[#parts + 1] = MODIFIER_LABEL[tok] or (#tok == 1 and tok:upper() or tok)
+  end
+  return table.concat(parts, "+")
+end
+
 function MenuBar:new()
   MenuBar.super.new(self)
   self.hovered = nil
@@ -100,7 +113,7 @@ function MenuBar:dropdown_rect()
   local w = MIN_W
   for _, r in ipairs(rows) do
     if not r.sep then
-      local key = keymap.get_binding(r[2]) or ""
+      local key = pretty_stroke(keymap.get_binding(r[2])) or ""
       local extra = r.state and 40 or 0
       w = math.max(w, font:get_width(r[1]) + font:get_width(key) + 60 + extra)
     end
@@ -259,7 +272,7 @@ function MenuBar:draw_dropdown()
       local ty = cy + ROW_PAD
       renderer.draw_text(font, r[1], x + 12, ty, style.text)
       local rx = x + w - 12
-      local key = keymap.get_binding(r[2])
+      local key = pretty_stroke(keymap.get_binding(r[2]))
       if key then
         rx = rx - font:get_width(key)
         renderer.draw_text(font, key, rx, ty, style.dim)

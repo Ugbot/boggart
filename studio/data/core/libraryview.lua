@@ -764,15 +764,20 @@ function LibraryView:draw()
   renderer.draw_rect(x0, sy, 1, sh, border)
   renderer.draw_rect(x0 + full - 1, sy, 1, sh, border)
   local shown, scol = self.query, style.text
-  if shown == "" and not self.searching then
+  local placeholder = shown == "" and not self.searching
+  if placeholder then
     shown = (self.section == "memory")
       and "type to search memory, enter to run it (FTS5)"
       or  "type to filter"
     scol = style.dim
-  elseif self.searching then
-    shown = shown .. "|"
   end
   common.draw_text(font, scol, shown, "left", x0 + pad / 2, sy, full - pad, sh)
+  -- Caret as a drawn bar, not a "|" spliced into the text (see sidebarview.lua).
+  if self.searching then
+    local cx = x0 + pad / 2 + (placeholder and 0 or font:get_width(shown))
+    renderer.draw_rect(cx, sy + (sh - lh) / 2 + 2, math.max(1, SCALE), lh - 4,
+      style.caret or style.text)
+  end
   add({ x = x0, y = sy, w = full, h = sh }, "search", function()
     self.searching = true
   end)
