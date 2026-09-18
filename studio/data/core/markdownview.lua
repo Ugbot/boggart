@@ -36,7 +36,9 @@ end
 
 function MarkdownView:get_name()
   local n = (self.doc and self.doc:get_name() or "markdown"):match("[^/\\]*$")
-  return n .. (self.doc and self.doc:is_dirty() and "*" or "") .. "  (preview)"
+  -- Say how to edit: a rendered preview with no visible way back to the source
+  -- reads as "this file is not editable". Right-click carries the same action.
+  return n .. (self.doc and self.doc:is_dirty() and "*" or "") .. "  (preview \u{2014} right-click to edit)"
 end
 
 function MarkdownView:try_close(do_close) do_close() end
@@ -140,6 +142,28 @@ function MarkdownView:draw()
   end
   core.pop_clip_rect()
   self:draw_scrollbar()
+  self:draw_edit_button()
+end
+
+-- A visible "Edit" affordance, pinned top-right of the preview. A rendered
+-- markdown file with no button reads as "not editable"; this is the obvious way
+-- to the source (the right-click item and ctrl+shift+e do the same thing).
+function MarkdownView:draw_edit_button()
+  local font = style.font
+  local label = "Edit"
+  local padx, pady = style.padding.x, math.floor(style.padding.y / 2)
+  local tw = font:get_width(label)
+  local bw = tw + padx * 2
+  local bh = font:get_height() + pady * 2
+  local bx = self.position.x + self.size.x - bw - style.padding.x
+  local by = self.position.y + math.floor(style.padding.y / 2)
+  local hover = self._edit_hover
+  renderer.draw_rect(bx, by, bw, bh, hover and style.accent or style.background2)
+  renderer.draw_rect(bx, by, bw, bh, style.divider) -- 1px frame via overdraw below
+  renderer.draw_rect(bx + 1, by + 1, bw - 2, bh - 2, hover and style.accent or style.background2)
+  common.draw_text(font, hover and style.background or style.accent, label, "left",
+    bx + padx, by + pady, tw, font:get_height())
+  self._edit_btn = { x = bx, y = by, w = bw, h = bh }
 end
 
 function MarkdownView:open_link(url)
@@ -159,9 +183,17 @@ function MarkdownView:open_link(url)
   end
 end
 
+local function in_rect(r, x, y)
+  return r and x >= r.x and x < r.x + r.w and y >= r.y and y < r.y + r.h
+end
+
 function MarkdownView:on_mouse_moved(x, y, dx, dy)
   MarkdownView.super.on_mouse_moved(self, x, y, dx, dy)
   self.cursor = "arrow"
+  local was = self._edit_hover
+  self._edit_hover = in_rect(self._edit_btn, x, y)
+  if self._edit_hover ~= was then core.redraw = true end
+  if self._edit_hover then self.cursor = "hand" end
   for _, h in ipairs(self.hits) do
     if x >= h.x and x < h.x + h.w and y >= h.y and y < h.y + h.h then
       self.cursor = "hand"; break
@@ -171,6 +203,9 @@ end
 
 function MarkdownView:on_mouse_pressed(button, x, y, clicks)
   if MarkdownView.super.on_mouse_pressed(self, button, x, y, clicks) then return true end
+  if button == "left" and in_rect(self._edit_btn, x, y) then
+    command.perform("markdown:toggle-source"); return true
+  end
   for _, h in ipairs(self.hits) do
     if x >= h.x and x < h.x + h.w and y >= h.y and y < h.y + h.h then
       self:open_link(h.url); return true

@@ -38,6 +38,20 @@ contextmenu.add(DocView, function(dv, x, y)
   return items
 end)
 
+-- Markdown preview: the obvious way to reach the source. The toggle shortcut
+-- is easy to miss (and shares a key with agent:explain-selection), so the way
+-- to edit lives here where right-clicking finds it.
+local ok_md, MarkdownView = pcall(require, "core.markdownview")
+if ok_md and MarkdownView then
+  contextmenu.add(MarkdownView, function()
+    return {
+      { label = "Edit source", command = "markdown:toggle-source" },
+      { heading = "" },
+      { label = "Copy", command = "doc:copy" },
+    }
+  end)
+end
+
 -- Chat: session verbs.
 contextmenu.add(AgentView, function()
   return {
