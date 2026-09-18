@@ -38,6 +38,10 @@ local mention = require "mention"
 local take = require "take"
 local keymap = require "core.keymap"
 local vimmode = require "vimmode"
+-- The shared modal-editing grammar (docs/vim-unify.md P2): the composer's own
+-- adapter over {lines, cy, cx, edit_mode} lives below (search "Vim adapter"),
+-- so normal/visual-mode keys run the SAME engine the cTUI composer uses.
+local vim = require "vim"
 
 local AgentView = View:extend()
 
@@ -102,13 +106,18 @@ function AgentView:new()
 
   -- vimmode.mode() can flip live (command palette, keybinding, the cTUI) while
   -- this view is open. Only "off" needs a reaction here: it must never leave a
-  -- user stuck in normal mode with modal editing turned off. Registered once
-  -- per class, resolving the live view at call time, same as the hook above.
+  -- user stuck in normal/visual/vline mode with modal editing turned off.
+  -- Registered once per class, resolving the live view at call time, same as
+  -- the hook above. Field access only (no method/adapter lookups) -- this
+  -- closure is created before the adapter section below is defined, and a
+  -- forward local reference from here would resolve to a global, not it.
   if bog and bog.events and not AgentView._vimmode_hook then
     AgentView._vimmode_hook = true
     pcall(bog.events.on, "vimmode:changed", function(_, data)
       local v = core.studio and core.studio.view
-      if v and data and data.mode == "off" and v.edit_mode == "normal" then
+      if v and data and data.mode == "off" and v.edit_mode ~= "insert" then
+        v.sel_anchor = nil
+        if v._va then v._va._vs = nil end -- drop any pending command/selection
         v:set_edit_mode("insert")
       end
     end)
@@ -607,6 +616,8 @@ function AgentView:send()
   local t = self:input_text():gsub("^%s+", ""):gsub("%s+$", "")
   if t == "" then return end
   self:set_input("")
+  self.sel_anchor = nil
+  if self._va then self._va._vs = nil end -- drop any pending vim command/selection
   self:set_edit_mode("insert")   -- sending is composing; land ready to type again
   complete.dismiss(self)
   local p = take.parse(t)
@@ -1090,49 +1101,250 @@ function AgentView:clamp_caret()
   end
 end
 
+-- ---------------------------------------------------------------------------
+-- Vim adapter (docs/vim-unify.md P2): presents this composer's own
+-- {lines, cy, cx, edit_mode} buffer to the shared modal grammar in lua/vim.lua,
+-- so normal/visual-mode keys run the SAME engine the cTUI composer drives
+-- (lua/tui/vim.lua is the sibling adapter over the same shape, codepoint- not
+-- byte-indexed). One adapter per view, created lazily and cached on self._va
+-- so the grammar's own pending-command state (attached to the adapter as
+-- a._vs -- counts, a half-typed operator, the "/"/":" prompt) persists across
+-- keystrokes. Byte-indexed columns throughout, matching prev_char/next_char
+-- above; a snapshot undo stack (self._undo/._redo), since the draft is short
+-- text, not a document; the unnamed register mirrored to the system
+-- clipboard, matching studio/data/core/vim.lua's DocView engine.
+local Adapter = {}
+Adapter.__index = Adapter
+
+local function get_adapter(view)
+  view._va = view._va or setmetatable({ buf = view }, Adapter)
+  return view._va
+end
+
+-- reading
+function Adapter:line_count() return #self.buf.lines end
+function Adapter:get_line(y) return self.buf.lines[y] or "" end
+function Adapter:line_len(y) return #(self.buf.lines[y] or "") end
+function Adapter:first_nonblank(y)
+  local line = self.buf.lines[y] or ""
+  for i = 1, #line do
+    local b = line:byte(i)
+    if b ~= 32 and b ~= 9 then return i end
+  end
+  return 1
+end
+function Adapter:get_char(y, x)
+  local buf, line = self.buf, self.buf.lines[y] or ""
+  if x < 1 or x > #line then return "" end
+  return line:sub(x, buf:next_char(line, x) - 1)
+end
+function Adapter:next_pos(y, x)
+  local buf, line = self.buf, self.buf.lines[y] or ""
+  if x <= #line then return y, buf:next_char(line, x) end
+  if y < #buf.lines then return y + 1, 1 end
+  return nil
+end
+function Adapter:prev_pos(y, x)
+  local buf = self.buf
+  if x > 1 then return y, buf:prev_char(buf.lines[y] or "", x) end
+  if y > 1 then return y - 1, #(buf.lines[y - 1] or "") + 1 end
+  return nil
+end
+function Adapter:get_text(l1, c1, l2, c2)
+  local buf = self.buf
+  if l1 == l2 then return (buf.lines[l1] or ""):sub(c1, c2 - 1) end
+  local parts = { (buf.lines[l1] or ""):sub(c1) }
+  for i = l1 + 1, l2 - 1 do parts[#parts + 1] = buf.lines[i] or "" end
+  parts[#parts + 1] = (buf.lines[l2] or ""):sub(1, c2 - 1)
+  return table.concat(parts, "\n")
+end
+
+-- cursor and mode -- proxies onto the fields draw() and the mouse code
+-- already read directly, so a visual selection paints and copies with no
+-- more plumbing than a normal-mode caret move needed.
+function Adapter:get_cursor() return self.buf.cy, self.buf.cx end
+function Adapter:set_cursor(y, x) self.buf.cy, self.buf.cx = y, x end
+function Adapter:clamp_caret() self.buf:clamp_caret() end
+function Adapter:mode() return self.buf.edit_mode end
+function Adapter:set_mode(m) self.buf:set_edit_mode(m) end
+-- self.sel_anchor is the field draw()'s selection highlight and
+-- composer_selection()/delete_composer_selection() already read; the cursor
+-- itself is tracked by get_cursor/set_cursor above, so only the anchor half
+-- of the pair needs setting here.
+function Adapter:set_selection(ay, ax) self.buf.sel_anchor = { cy = ay, cx = ax } end
+function Adapter:clear_selection() self.buf.sel_anchor = nil end
+
+-- mutation (all ranges half-open [start, end), per the interface)
+function Adapter:delete_range(l1, c1, l2, c2)
+  local buf = self.buf
+  if l1 == l2 then
+    local line = buf.lines[l1] or ""
+    local n = #line
+    c1 = math.max(1, math.min(c1, n + 1))
+    c2 = math.max(c1, math.min(c2, n + 1))
+    buf.lines[l1] = line:sub(1, c1 - 1) .. line:sub(c2)
+  else
+    local head = (buf.lines[l1] or ""):sub(1, c1 - 1)
+    local tail = (buf.lines[l2] or ""):sub(c2)
+    buf.lines[l1] = head .. tail
+    for i = l2, l1 + 1, -1 do table.remove(buf.lines, i) end
+  end
+end
+-- Beyond the base interface: returns the position right after the inserted
+-- text (lua/vim.lua's do_paste wants it), so the core can place the paste
+-- cursor without measuring an arbitrary string in byte-column units itself.
+function Adapter:insert_at(y, x, text)
+  local buf = self.buf
+  local line = buf.lines[y] or ""
+  local n = #line
+  local ic = math.max(1, math.min(x, n + 1))
+  local before, tail = line:sub(1, ic - 1), line:sub(ic)
+  local parts = {}
+  for ln in (text .. "\n"):gmatch("(.-)\n") do parts[#parts + 1] = ln end
+  if #parts == 1 then
+    buf.lines[y] = before .. parts[1] .. tail
+    return y, ic + #parts[1]
+  end
+  buf.lines[y] = before .. parts[1]
+  for i = 2, #parts - 1 do table.insert(buf.lines, y + i - 1, parts[i]) end
+  table.insert(buf.lines, y + #parts - 1, parts[#parts] .. tail)
+  return y + #parts - 1, #parts[#parts] + 1
+end
+-- Replace whole lines [y1, y2] (inclusive) with `list`, the linewise
+-- primitive; y2 < y1 inserts `list` before y1 without removing anything.
+-- Never leaves the buffer with zero lines.
+function Adapter:set_lines(y1, y2, list)
+  local buf = self.buf
+  for i = math.min(y2, #buf.lines), y1, -1 do table.remove(buf.lines, i) end
+  for i = #list, 1, -1 do table.insert(buf.lines, y1, list[i]) end
+  if #buf.lines == 0 then buf.lines[1] = "" end
+end
+
+-- undo/redo -- a bounded snapshot stack, the same shape lua/tui/vim.lua
+-- uses: the draft is short-lived text, not a document, so this is simpler
+-- than a real undo tree and good enough.
+local COMPOSER_UNDO_MAX = 100
+local function composer_snapshot(buf)
+  local lines = {}
+  for i, l in ipairs(buf.lines) do lines[i] = l end
+  return { lines = lines, cy = buf.cy, cx = buf.cx }
+end
+local function composer_restore(buf, snap)
+  buf.lines, buf.cy, buf.cx = snap.lines, snap.cy, snap.cx
+  buf.edit_mode = "normal"
+  buf:clamp_caret()
+end
+function Adapter:begin_undo()
+  local buf = self.buf
+  buf._undo = buf._undo or {}
+  buf._undo[#buf._undo + 1] = composer_snapshot(buf)
+  if #buf._undo > COMPOSER_UNDO_MAX then table.remove(buf._undo, 1) end
+  buf._redo = nil -- a new change invalidates the redo stack
+end
+function Adapter:end_undo() end
+function Adapter:undo()
+  local buf, stack = self.buf, self.buf._undo
+  if not stack or #stack == 0 then return end
+  local snap = table.remove(stack)
+  buf._redo = buf._redo or {}
+  buf._redo[#buf._redo + 1] = composer_snapshot(buf)
+  composer_restore(buf, snap)
+end
+function Adapter:redo()
+  local buf, stack = self.buf, self.buf._redo
+  if not stack or #stack == 0 then return end
+  local snap = table.remove(stack)
+  buf._undo = buf._undo or {}
+  buf._undo[#buf._undo + 1] = composer_snapshot(buf)
+  composer_restore(buf, snap)
+end
+
+-- registers -- only the unnamed one (docs/vim-unify.md section 2), mirrored
+-- to the system clipboard so a yank in the composer is pasteable elsewhere
+-- too, and a system copy is pasteable back with "p".
+function Adapter:get_register()
+  local r = self.buf._reg
+  if r and r.text ~= "" then return r.text, r.linewise end
+  local ok, clip = pcall(system.get_clipboard)
+  return (ok and clip or ""), false
+end
+function Adapter:set_register(_, text, linewise)
+  self.buf._reg = { text = text, linewise = linewise }
+  pcall(system.set_clipboard, text)
+end
+
+-- The glue this file calls: wraps `view` in its (persistent, cached) adapter
+-- and drives lua/vim.lua. Also echoes a live ":"/"/"/"?" prompt to the status
+-- line -- vs.prompt.text otherwise lives entirely off to the side, per
+-- lua/vim.lua's own comment, and a composer (unlike the cTUI's command row
+-- or DocView's CommandView) has no line of its own to show it typing into.
+local function vim_key(view, ev)
+  local handled, action = vim.key(get_adapter(view), ev)
+  local vs = get_adapter(view)._vs
+  if vs and vs.prompt and core.status_view and core.status_view.show_message then
+    local glyph = ({ ex = ":", fwd = "/", bwd = "?" })[vs.prompt.kind] or ":"
+    core.status_view:show_message(glyph, style.accent, glyph .. vs.prompt.text)
+  end
+  return handled, action
+end
+
 -- Switch the composer's modal context. Kept separate from set_mode (approval)
 -- on purpose: they share the word "mode" but nothing else, and folding them
 -- would let a normal-mode toggle rewrite the approval policy.
 -- The modal spine (shell/modal.lua) asks every focused view whether it is a
--- text input right now. The composer's insert mode is a text field that owns
--- every key; its normal mode is a viewport over the transcript, so the spine's
--- j/k/gg/G fire there just as on any read-only surface.
+-- text input right now. Only insert mode is a text field that owns every
+-- key; normal, visual and vline are all a viewport/grammar the spine's own
+-- j/k/gg/G can drive, same as DocView's is_text_input (studio/data/core/
+-- vim.lua) already treats visual mode.
 function AgentView:is_text_input()
-  return self.edit_mode ~= "normal"
+  return self.edit_mode == "insert"
 end
 
 function AgentView:set_edit_mode(m)
-  if m ~= "insert" and m ~= "normal" then return end
+  if m ~= "insert" and m ~= "normal" and m ~= "visual" and m ~= "vline" then return end
   -- The one gate: with vim mode off there is no modal state to enter, so a
-  -- stray "normal" request (a leftover keybinding, a race with the live
+  -- stray non-insert request (a leftover keybinding, a race with the live
   -- toggle) is a no-op rather than trapping a plain-insert user.
-  if m == "normal" and not vimmode.enabled() then return end
+  if m ~= "insert" and not vimmode.enabled() then return end
   if self.edit_mode == m then return end
   self.edit_mode = m
   -- A one-line affordance in the status bar, the same place the leader menu
   -- announces itself. The border colour (draw()) carries it while you look at
   -- the panel; this carries it at the moment of the switch.
   if core.status_view and core.status_view.show_message then
-    if m == "normal" then
+    if m == "insert" then
+      core.status_view:show_message("i", style.dim, "insert -- esc for normal mode")
+    elseif m == "normal" then
       core.status_view:show_message("N", style.accent,
         "normal -- j/k scroll, gg/G ends, i/a/o/c or : to edit")
-    else
-      core.status_view:show_message("i", style.dim, "insert -- esc for normal mode")
+    else -- visual / vline
+      core.status_view:show_message("V", style.accent,
+        "visual -- y/d/c act on the selection, esc cancels")
     end
   end
   core.redraw = true
 end
 
 function AgentView:on_text_input(text)
-  -- Normal mode: the composer is a viewport, not a field. A keystroke that means
-  -- "start writing" (i/a/o/c, or : for a command) drops back to insert; the
-  -- spine's motions (j/k/gg/G) are claimed before they reach here, and anything
-  -- else is swallowed rather than typed into the draft.
-  if self.edit_mode == "normal" then
-    if text:match("^[iaoc:]$") then self:set_edit_mode("insert")
-    elseif text == "{" then self:jump_user(-1)
-    elseif text == "}" then self:jump_user(1)
+  -- "{"/"}" jump between transcript turns when normal mode is otherwise idle
+  -- (the composer's own feature, nothing to do with the buffer). With a vim
+  -- command mid-flight (a pending operator/count/find/g), they are its real
+  -- paragraph motion instead -- e.g. "d}" -- so only claim them here first.
+  if self.edit_mode == "normal" and (text == "{" or text == "}") then
+    local vs = get_adapter(self)._vs
+    local pending = vs and (vs.op or vs.opcount or vs.await or vs.find or vs.g or vs.count)
+    if not pending then
+      self:jump_user(text == "{" and -1 or 1)
+      return
     end
+  end
+  -- The shared grammar claims every other key in normal/visual/vline mode
+  -- (motions, operators, text objects, search, i/a/o/c/v/V, :/ / ?); a plain
+  -- char in insert mode -- or with vim mode off, which never leaves insert --
+  -- is never claimed, so this only ever falls through to plain typing below.
+  if vimmode.enabled() and vim_key(self, { type = "key", key = "char", char = text }) then
+    core.redraw = true
+    complete.refresh(self)
     return
   end
   -- Typing over a selection replaces it, which is what every text field does
@@ -1166,7 +1378,7 @@ function AgentView:on_key_pressed(key)
     if key == "escape" then
       choose.decide(rec, { cancel = true }); core.redraw = true; return true
     end
-    if #key == 1 and (self.edit_mode == "normal" or self:input_text() == "") then
+    if #key == 1 and (self.edit_mode ~= "insert" or self:input_text() == "") then
       local i = choose.index_for_key(rec, key)
       if i then
         choose.decide(rec, { index = i }); core.redraw = true; return true
@@ -1243,13 +1455,30 @@ function AgentView:on_key_pressed(key)
     core.redraw = true
     return true
 
-  elseif key == "escape" and (self.sel or self.sel_anchor) then
+  elseif key == "escape" and (self.sel or self.sel_anchor)
+      and self.edit_mode ~= "visual" and self.edit_mode ~= "vline" then
+    -- Visual/vline's own selection is vim's to clear (below), via the same
+    -- Escape that also has to drop it back to normal mode -- clearing
+    -- self.sel_anchor here and leaving edit_mode at "visual" would strand
+    -- the composer in a mode whose grammar assumes an anchor that is gone.
     self:clear_selection()
     self.sel_anchor = nil
     return true
   end
 
   if key == "return" then
+    -- A live ":"/"/"/"?" prompt claims Enter first (runs the ex command or
+    -- jumps to the search hit); an idle composer -- the common case, and
+    -- always the case with vim mode off -- falls through to send(), so
+    -- Enter still sends in every mode.
+    if vimmode.enabled() then
+      local handled, action = vim_key(self, { type = "key", key = "enter" })
+      if handled then
+        core.redraw = true
+        if action == "submit" then self:send() end
+        return true
+      end
+    end
     self:send()
     return true
 
@@ -1394,11 +1623,14 @@ function AgentView:on_key_pressed(key)
     -- A turn in flight is what Escape cancels first (the system hint promises
     -- "esc cancels"). With nothing to interrupt -- the pending gate and any
     -- selection were handled above, and we are not busy -- Escape is the
-    -- neovim "leave insert" gesture, but only when vim mode is on: with it
-    -- off the composer is plain insert throughout, and Escape has nothing
-    -- else to do here.
+    -- neovim "leave insert" gesture (or, mid-command, "cancel the pending
+    -- operator/count", or, in visual/vline, "drop the selection"), but only
+    -- when vim mode is on: with it off the composer is plain insert
+    -- throughout, and Escape has nothing else to do here.
     if self.busy then self:cancel()
-    elseif vimmode.enabled() then self:set_edit_mode("normal") end
+    elseif vimmode.enabled() then
+      if vim_key(self, { type = "key", key = "escape" }) then core.redraw = true end
+    end
     return true
   end
 end
@@ -2673,11 +2905,11 @@ function AgentView:draw()
   local bx, bw = x - pad / 2, w + pad
   renderer.draw_rect(bx, iy + vpad, bw, composer_h - vpad * 2, style.background2)
   -- A border rather than a fill change, so focus is visible without the box
-  -- appearing to change size. Normal mode borrows the warn colour, the same
-  -- signal the approval bar uses, so "the composer is not taking text right now"
-  -- reads at a glance without a label.
+  -- appearing to change size. Any non-insert mode (normal, visual, vline)
+  -- borrows the warn colour, the same signal the approval bar uses, so "the
+  -- composer is not taking text right now" reads at a glance without a label.
   local border = focused
-    and (self.edit_mode == "normal" and (style.warn or style.accent) or style.accent)
+    and (self.edit_mode ~= "insert" and (style.warn or style.accent) or style.accent)
     or style.divider
   renderer.draw_rect(bx, iy + vpad, bw, 1, border)
   renderer.draw_rect(bx, iy + composer_h - vpad - 1, bw, 1, border)
@@ -2741,14 +2973,15 @@ function AgentView:draw()
 
     local shown = slice
     -- Caret as a drawn bar, not a "|" spliced into the text (which reflowed the
-    -- line as it moved). A thin blinking bar in insert mode; a solid block over
-    -- the char in normal mode, the vim convention. Blink is gated on the timer so
-    -- it pulses, and reset-on-move (update) keeps it solid while you type.
+    -- line as it moved). A thin blinking bar in insert mode; a solid block
+    -- otherwise (normal, visual, vline), the vim convention. Blink is gated
+    -- on the timer so it pulses, and reset-on-move (update) keeps it solid
+    -- while you type.
     local caret_col, caret_block
     if vr == caret_vr and i == self.cy and composing and focused then
       local off = math.max(0, self.cx - byte0)
       caret_col = cols_of(slice:sub(1, off))
-      caret_block = (self.edit_mode == "normal")
+      caret_block = (self.edit_mode ~= "insert")
     end
     -- Normal-mode block caret goes BEHIND the text so the char on it stays
     -- readable (the insert bar sits between chars and draws on top, below).
