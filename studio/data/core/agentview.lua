@@ -40,6 +40,11 @@ local keymap = require "core.keymap"
 
 local AgentView = View:extend()
 
+-- Caret blink, matched to the editor (docview.lua) so the composer caret looks
+-- and behaves like the one in a document: a drawn bar that blinks, not a "|"
+-- character wedged into the text (which reflowed the line as it moved).
+local blink_period = 0.8
+
 local ROLE = {
   user      = { prefix = "› ", color = "accent" },
   assistant = { prefix = "",   color = "text" },
@@ -109,6 +114,8 @@ function AgentView:new()
   -- Input state: a line array plus a caret, so this behaves like a text field
   -- rather than a string you can only backspace through.
   self.lines, self.cy, self.cx = { "" }, 1, 1
+  self.blink_timer, self.blink_last = 0, nil   -- caret blink, reset on move
+  self.last_cx, self.last_cy = 1, 1
 
   -- Announce an async chooser. With this set the `choose` tool parks the turn
   -- here (like the approval gate) and waits for a decision, instead of degrading
@@ -830,6 +837,23 @@ function AgentView:update()
     self.init_size = false
   end
   self:tick()
+  -- Caret blink, the same real-elapsed-time advance DocView uses (the idle loop
+  -- wakes about once per half-period, so a fixed 1/fps step would blink far too
+  -- slowly). Reset the moment the caret moves, so it is solid while you type.
+  if self.cx ~= self.last_cx or self.cy ~= self.last_cy then
+    self.blink_timer, self.last_cx, self.last_cy = 0, self.cx, self.cy
+  end
+  if core.active_view == self then
+    local half = blink_period / 2
+    local now = system.get_time()
+    local dt = self.blink_last and (now - self.blink_last) or (1 / config.fps)
+    self.blink_last = now
+    local prev = self.blink_timer
+    self.blink_timer = (self.blink_timer + dt) % blink_period
+    if (self.blink_timer > half) ~= (prev > half) then core.redraw = true end
+  else
+    self.blink_last = nil
+  end
   -- One place that retires the progress state, rather than a clear beside
   -- every path that can end a turn -- there are several, and the one I missed
   -- left the widget's start time and the tool it was running set after the
@@ -2692,12 +2716,20 @@ function AgentView:draw()
     end
 
     local shown = slice
-    -- No text caret in normal mode: nothing you type lands here, so a caret
-    -- would promise an insertion point that is not listening.
-    if vr == caret_vr and i == self.cy and composing and focused
-       and self.edit_mode ~= "normal" then
-      local off = self.cx - byte0
-      shown = slice:sub(1, off) .. "|" .. slice:sub(off + 1)
+    -- Caret as a drawn bar, not a "|" spliced into the text (which reflowed the
+    -- line as it moved). A thin blinking bar in insert mode; a solid block over
+    -- the char in normal mode, the vim convention. Blink is gated on the timer so
+    -- it pulses, and reset-on-move (update) keeps it solid while you type.
+    local caret_col, caret_block
+    if vr == caret_vr and i == self.cy and composing and focused then
+      local off = math.max(0, self.cx - byte0)
+      caret_col = cols_of(slice:sub(1, off))
+      caret_block = (self.edit_mode == "normal")
+    end
+    -- Normal-mode block caret goes BEHIND the text so the char on it stays
+    -- readable (the insert bar sits between chars and draws on top, below).
+    if caret_col and caret_block then
+      renderer.draw_rect(x + caret_col * charw, ty, charw, lh, style.caret or style.accent)
     end
     if vr == top_row and empty_composer and composing then
       -- "Reply to boggart..." is right mid-conversation and wrong on an empty
@@ -2715,6 +2747,11 @@ function AgentView:draw()
     else
       common.draw_text(font, (not composing) and style.dim or style.text,
         shown, "left", x, ty, w, lh)
+    end
+    -- The insert-mode bar sits on top of the text, between glyphs, and blinks.
+    if caret_col and not caret_block and self.blink_timer < blink_period / 2 then
+      renderer.draw_rect(x + caret_col * charw, ty, math.max(1, style.caret_width or 2),
+        lh, style.caret or style.text)
     end
     ty = ty + lh
   end
