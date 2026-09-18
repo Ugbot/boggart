@@ -194,6 +194,87 @@ function Node:get_node_for_view(view)
 end
 
 
+-- All unlocked leaves under self, in tree order -- the cycle order for
+-- root:next-pane / root:previous-pane (studio/data/plugins/panes.lua).
+function Node:get_leaves(t)
+  t = t or {}
+  if self.type == "leaf" then
+    if not self.locked then table.insert(t, self) end
+  else
+    self.a:get_leaves(t)
+    self.b:get_leaves(t)
+  end
+  return t
+end
+
+
+-- The unlocked leaf adjacent to self in a screen direction, or nil past the
+-- edge. The same probe root:switch-to-* does inline in commands/root.lua,
+-- pulled out so pane focus (panes.lua) does not re-derive it.
+function Node:get_node_in_direction(root, dir)
+  local x, y
+  if dir == "left" or dir == "right" then
+    y = self.position.y + self.size.y / 2
+    x = self.position.x + (dir == "left" and -1 or self.size.x + style.divider_size)
+  else
+    x = self.position.x + self.size.x / 2
+    y = self.position.y + (dir == "up" and -1 or self.size.y + style.divider_size)
+  end
+  local node = root:get_child_overlapping_point(x, y)
+  if node ~= self and not node:get_locked_size() then return node end
+end
+
+
+-- The highest ancestor of self before crossing into a docked panel -- the top
+-- of the pane-split tree that zoom and balance treat as the whole content
+-- area. Climbs past nested user splits and stops the moment a sibling turns
+-- out to be a locked dock (menubar, rail).
+function Node:get_content_root(root)
+  local top = self
+  local parent = top:get_parent_node(root)
+  while parent do
+    local sibling = (parent.a == top) and parent.b or parent.a
+    if sibling.type == "leaf" and sibling.locked then break end
+    top = parent
+    parent = top:get_parent_node(root)
+  end
+  return top
+end
+
+
+-- Reset every divider in this subtree to 0.5 -- root:balance-panes.
+function Node:balance()
+  if self.type ~= "leaf" then
+    self.divider = 0.5
+    self.a:balance()
+    self.b:balance()
+  end
+end
+
+
+-- Toggle full-screen: self (normally a get_content_root() node) collapses to
+-- just the active leaf's tabs; a second call restores the subtree the first
+-- call stashed. A no-op when self is already a single leaf -- nothing to zoom.
+function Node:toggle_zoom()
+  if self.zoomed then
+    local saved = self.zoomed
+    local active = self.active_view
+    self:consume(saved)
+    core.set_active_view(active)
+    return
+  end
+  local leaf = self:get_node_for_view(core.active_view)
+  if not leaf or leaf == self then return end
+  local saved = Node()
+  saved:consume(self)
+  local fresh = Node()
+  fresh.views = leaf.views
+  fresh.active_view = leaf.active_view
+  fresh.zoomed = saved
+  self:consume(fresh)
+end
+
+
 -- The main area: the first leaf that is not a docked panel.
 --
 -- Docked panels -- the chat list, the file tree -- are locked nodes, so "not
@@ -529,6 +610,21 @@ end
 
 function RootView:get_active_node()
   return self.root_node:get_node_for_view(core.active_view)
+end
+
+
+-- Open `view` in a new split of the active pane, in direction dir (left/right/
+-- up/down). The thin primitive later phases (a terminal in a split, an agent
+-- routing a result into a pane) build on, rather than each re-opening the doc.
+function RootView:open_view_in(dir, view)
+  local node = self:get_active_node()
+  if not node or (node.get_locked_size and node:get_locked_size()) then
+    node = self.root_node:get_node_for_view(core.last_active_view) or node
+  end
+  if not node then return end
+  node:split(dir, view)
+  core.set_active_view(view)
+  return view
 end
 
 
