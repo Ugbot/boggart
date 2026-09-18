@@ -28,6 +28,7 @@ local gate = require("tui.gate")
 local take = require("take")
 local perm = require("perm")
 local uv = require("uv")
+local vimmode = require("vimmode")
 
 -- Frame budget for the scheduler-driven paint. should_stop fires once per
 -- scheduler step -- i.e. once per stream chunk, dozens of times a second -- so
@@ -246,12 +247,15 @@ local function status_runs(st)
   local mode = (st.mode or perm.state().mode or "smart")
   runs[#runs + 1] = { text = "\u{00B7} " .. mode .. " ", fg = C.text, bg = bg }
   -- The vim layer's own mode chip (docs/tui-vim.md), beside the approval mode
-  -- above but never confused with it: this one is always NORMAL/INSERT, and
-  -- only appears at all when the composer's vim layer is on.
+  -- above but never confused with it: this one is always one of
+  -- NORMAL/INSERT/VISUAL/V-LINE, and only appears at all when the composer's
+  -- vim layer is on.
   if st.box and st.box.vim then
-    local is_normal = st.box.edit_mode == "normal"
-    local vm = is_normal and "NORMAL" or "INSERT"
-    runs[#runs + 1] = { text = "\u{00B7} " .. vm .. " ", fg = is_normal and C.amber or C.text,
+    local em = st.box.edit_mode
+    local vm = (em == "normal" and "NORMAL") or (em == "visual" and "VISUAL")
+      or (em == "vline" and "V-LINE") or "INSERT"
+    local amber = em == "normal" or em == "visual" or em == "vline"
+    runs[#runs + 1] = { text = "\u{00B7} " .. vm .. " ", fg = amber and C.amber or C.text,
       bg = bg, attr = { bold = true } }
   end
   if st.help then runs[#runs + 1] = { text = "\u{00B7} ? ", fg = C.amber, bg = bg } end
@@ -383,10 +387,12 @@ local function draw(st)
   end
   local cx = math.min(math.max(0, cursor_col or 0), w - 1)
   local cy = math.min(input_y + (cursor_row or 1) - 1, h - 1)
-  -- A thin bar caret is not cheap in a cell grid, so vim's normal mode is
-  -- carried by colour instead (amber vs the usual accent), same rule as the
-  -- status chip above.
-  local caret_bg = (st.box and st.box.vim and st.box.edit_mode == "normal") and C.amber or C.cursor
+  -- A thin bar caret is not cheap in a cell grid, so vim's normal/visual modes
+  -- are carried by colour instead (amber vs the usual accent), same rule as
+  -- the status chip above.
+  local vim_em = st.box and st.box.vim and st.box.edit_mode
+  local vim_amber = vim_em == "normal" or vim_em == "visual" or vim_em == "vline"
+  local caret_bg = vim_amber and C.amber or C.cursor
   tc.set(cx, cy, 32, nil, caret_bg, nil)
 
   if st.help then
@@ -680,15 +686,15 @@ local function slash(st, line)
     voice_command(st, line:match("^/%S+%s*(.*)$"))
     return
   end
-  -- /vim toggles the modal composer layer (docs/tui-vim.md). Always lands in
-  -- insert mode on either edge, so flipping it never strands the caret in
-  -- normal mode with nobody knowing why typing stopped working.
+  -- /vim cycles the shared vim-mode setting (lua/vimmode.lua, also read by the
+  -- studio): off -> on -> mandatory -> off, locked once mandatory (a no-op
+  -- there, by design -- see vimmode.cycle). "on" always lands in insert;
+  -- "mandatory" starts in normal, per vimmode.starts_normal().
   if cmd == "vim" then
-    st.box.vim = not st.box.vim
-    st.box.edit_mode = "insert" -- Esc always clears any stale pending state
-    st.entries[#st.entries + 1] = { role = "system", text = st.box.vim
-      and "vim mode ON \u{2014} Esc for normal, i/a/I/A/o/O back to insert"
-      or  "vim mode OFF" }
+    local mode = vimmode.cycle()
+    st.box.vim = vimmode.enabled()
+    st.box.edit_mode = (st.box.vim and vimmode.starts_normal()) and "normal" or "insert"
+    st.entries[#st.entries + 1] = { role = "system", text = "vim mode: " .. mode }
     st.dirty = true
     return
   end
@@ -922,10 +928,14 @@ function M.run()
   bog.choice_ui = true   -- an async chooser is live: the `choose` tool parks here
 
   local hist_file = (bog.userdir or "") .. "/history"
+  -- The shared vim-mode setting (docs/tui-vim.md section 7): "off" leaves the
+  -- composer plain, "on" is modal starting in insert, "mandatory" starts in
+  -- normal. Honoured on launch so a mode set from the studio carries over.
   local st = { coord = coord, entries = {}, activity = {},
-               box = Input.new{ history_file = hist_file },
+               box = Input.new{ history_file = hist_file, vim = vimmode.enabled() },
                scroll = 0, total = 0, running = false, wake = uv.new_timer(),
                mouse = false }
+  if st.box.vim and vimmode.starts_normal() then st.box.edit_mode = "normal" end
   -- Mouse tracking is off by default so terminal text selection works; opt into
   -- wheel scrolling with BOGGART_TUI_MOUSE=1 or the /mouse command.
   if os.getenv("BOGGART_TUI_MOUSE") then st.mouse = true; pcall(function() tc.mouse(true) end) end

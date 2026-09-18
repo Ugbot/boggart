@@ -126,11 +126,14 @@ function Input:_sync_from_lines()
   self._menu = nil -- a line may have been split/joined (o/O); any menu offset is stale
 end
 
--- Keep cx on a boundary inside the current line. Normal mode never sits past
--- the last character (vim's rule); insert mode may sit one past it (append).
+-- Keep cx on a boundary inside the current line. Normal and visual/vline modes
+-- never sit past the last character (vim's rule); insert mode may sit one past
+-- it (append).
 function Input:clamp_caret()
   local n = ulen(self.lines[self.cy] or "")
-  local maxcx = (self.edit_mode == "normal") and math.max(1, n) or (n + 1)
+  local em = self.edit_mode
+  local tight = em == "normal" or em == "visual" or em == "vline"
+  local maxcx = tight and math.max(1, n) or (n + 1)
   self.cx = math.max(1, math.min(self.cx, maxcx))
 end
 
@@ -368,13 +371,26 @@ function Input:key(ev)
     if k == "tab" or k == "enter" then self:_pick_menu(); return nil end
   end
 
-  -- The vim layer only ever claims Esc and, in normal mode, plain char keys --
-  -- Enter reaches the dispatch below untouched, so it always sends (see
-  -- docs/tui-vim.md section 7: "Enter must never break").
+  -- The vim layer only ever claims Esc, Ctrl-R and, in normal/visual/vline
+  -- mode, plain char keys -- Enter reaches the dispatch below untouched UNLESS
+  -- a ":"/"/"/"?" prompt is live, in which case the vim layer claims that
+  -- Enter too and may ask for "submit" (":w" etc), handled exactly like a real
+  -- Enter below. Otherwise Enter always sends (see docs/tui-vim.md section 7:
+  -- "Enter must never break").
   if self.vim then
     self:_sync_lines()
-    if require("tui.vim").key(self, ev) then
+    local handled, action = require("tui.vim").key(self, ev)
+    if handled then
       self:_sync_from_lines()
+      if action == "submit" then
+        local value = self.line
+        self:_save_hist(value)
+        self.line, self.cursor = "", 0
+        self:_reset_history()
+        self._menu = nil
+        require("tui.vim").after_submit(self)   -- back to the starting mode
+        return "submit", value
+      end
       return nil
     end
   end
@@ -411,6 +427,7 @@ function Input:key(ev)
     self.line, self.cursor = "", 0
     self:_reset_history()
     self._menu = nil
+    if self.vim then require("tui.vim").after_submit(self) end
     return "submit", value
   elseif k == "ctrl" then
     return self:_ctrl(ev.char)
@@ -575,7 +592,19 @@ function Input:search_runs(width)
   return out
 end
 
+-- The vim layer's ":" / "/" / "?" command line (docs/tui-vim.md section 5-6):
+-- a single row, same rendering family as search_runs/menu_runs above. The
+-- prompt text lives off to the side (buf._vs.prompt), never in self.line, so
+-- this is the only place it is ever shown.
+function Input:vprompt_runs(width)
+  local p = self._vs and self._vs.prompt
+  if not p then return {} end
+  local prefix = (p.kind == "ex") and ":" or (p.kind == "bwd") and "?" or "/"
+  return { { { text = prefix .. p.text, fg = MENU_FG } } }
+end
+
 function Input:overlay_runs(width)
+  if self._vs and self._vs.prompt then return self:vprompt_runs(width) end
   if self._search then return self:search_runs(width) end
   if self._menu then return self:menu_runs(width) end
   return {}
