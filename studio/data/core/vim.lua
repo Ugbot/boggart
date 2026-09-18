@@ -24,10 +24,21 @@ local translate = require "core.doc.translate"
 local search = require "core.doc.search"
 local DocView = require "core.docview"
 local style = require "core.style"
+local vimmode = require "vimmode"
 
 local M = {}
 
-M.enabled = config.vim_mode == true
+-- One setting for every surface (lua/vimmode.lua): the DocView editor is modal
+-- when vim is on or mandatory, plain when off. config.vim_mode is gone; the
+-- event keeps M.enabled live when the mode is toggled from anywhere (the studio
+-- command, the cTUI, :set vim).
+M.enabled = vimmode.enabled()
+if bog and bog.events and not M._vimmode_hook then
+  M._vimmode_hook = true
+  pcall(bog.events.on, "vimmode:changed", function(_, data)
+    M.enabled = (data and data.mode or vimmode.mode()) ~= "off"
+  end)
+end
 M.register = { text = "", linewise = false } -- the unnamed register
 M.registers = {}                             -- named registers, keyed by a-z
 M.active_reg = nil                           -- register selected for this command
@@ -1437,8 +1448,8 @@ function M.run_ex(dv, str)
   elseif cmd == "noh" or cmd == "nohlsearch" then
     M.search_text = nil
   elseif cmd == "set" then
-    if p.arg == "vim" then M.enabled = true; config.vim_mode = true
-    elseif p.arg == "novim" then M.enabled = false; config.vim_mode = false end
+    if p.arg == "vim" then vimmode.set("on")
+    elseif p.arg == "novim" then vimmode.set("off") end
   else
     core.error("not an editor command: %s", cmd)
   end
@@ -1665,8 +1676,8 @@ command.add("core.docview", {
   ["doc:cursors-at-all-matches"] = function()
     local dv = core.active_view
     if not M.enabled then
+      vimmode.set("on")
       M.enabled = true
-      config.vim_mode = true
       vstate(dv).mode = "normal"
       core.log("multi-cursor uses the vim engine; vim mode enabled")
     end
@@ -1679,8 +1690,8 @@ command.add("core.docview", {
 -- on at runtime without a restart.
 command.add(nil, {
   ["vim:toggle"] = function()
-    M.enabled = not M.enabled
-    config.vim_mode = M.enabled
+    vimmode.set(vimmode.enabled() and "off" or "on")
+    M.enabled = vimmode.enabled()
     if M.enabled and getmetatable(core.active_view) == DocView then
       vstate(core.active_view).mode = "normal"
     end

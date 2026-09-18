@@ -23,8 +23,8 @@ config.markdown_preview = true
 -- horizontally. Off by default; `doc:toggle-line-wrapping` (or :set on a view)
 -- turns it on per DocView.
 config.line_wrap = false
--- neovim-style modal editing (studio/data/core/vim.lua). Off by default; the
--- module always loads so `vim:toggle` / `:set vim` can turn it on at runtime.
-config.vim_mode = false
+-- Modal editing is now one setting for every surface: lua/vimmode.lua
+-- (off/on/mandatory), read by the TUI, the composer, and the DocView editor.
+-- config.vim_mode is retired; vim:toggle and :set vim go through vimmode.
 
 return config

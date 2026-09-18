@@ -75,7 +75,7 @@ M.tree = {
     { "Ghost text", "ghost-text:toggle",
       state = function() return config.ghost_text end },
     { "Vim mode", "vim:toggle",
-      state = function() return config.vim_mode end },
+      state = function() return require("vimmode").enabled() end },
     M.SEP,
     { "Fold at caret", "fold:toggle" },
     { "Fold all",   "fold:fold-all" },
