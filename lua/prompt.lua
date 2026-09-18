@@ -234,6 +234,32 @@ function M.project_instructions()
   return nil
 end
 
+-- Current-project framing. A project is the unit of context (lua/project.lua):
+-- it scopes memory, skills, and where work happens (its first root anchors bash
+-- and relative paths). The agent needs to KNOW which project it is in and that
+-- it acts within it, or "am I working in my project?" is left to guess. Only for
+-- a NAMED project: `global` is loose chat, today's behaviour, no framing needed.
+-- Not cached (no cache_control) so a mid-session /project switch takes effect the
+-- next turn rather than waiting out the head's TTL.
+function M.project_frame()
+  local ok, proj = pcall(require, "project")
+  if not ok or not proj then return nil end
+  local name = proj.current()
+  if proj.is_global(name) then return nil end
+  local p = proj.get(name) or {}
+  local title = (type(p.label) == "string" and p.label ~= "" and p.label) or name
+  local lines = { "# Current project: " .. title .. " (`" .. name .. "`)" }
+  if type(p.roots) == "table" and #p.roots > 0 then
+    lines[#lines + 1] = "Its work lives under: " .. table.concat(p.roots, ", ")
+  end
+  lines[#lines + 1] =
+    "You are working IN this project. Its memory, skills, and search are scoped "
+    .. "to it, and bash and relative paths anchor to its root, so your files, "
+    .. "decisions, and saved memory belong to it. Stay within it unless the user "
+    .. "names another project or an absolute path outside it."
+  return table.concat(lines, "\n")
+end
+
 -- The default agent's prompt. Same builder as a swarm actor's: the lone agent is
 -- an agent whose fanout is capped, carrying whatever skills the session has.
 function M.system()
@@ -296,6 +322,8 @@ function M.agent_system(rec)
     blocks[#blocks + 1] = { type = "text", text = "# Skills\n" .. rec.instructions }
   end
   blocks[#blocks + 1] = { type = "text", text = M.shell_note() }
+  local frame = M.project_frame()
+  if frame then blocks[#blocks + 1] = { type = "text", text = frame } end
   local proj = M.project_instructions()
   if proj then blocks[#blocks + 1] = { type = "text", text = proj } end
   blocks[#blocks + 1] = { type = "text",
