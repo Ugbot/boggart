@@ -71,6 +71,24 @@ command.add(unlocked, {
 -- Directional focus already exists as root:switch-to-{dir} in commands/root.lua;
 -- do not duplicate it. The keymap below points Ctrl-Alt-arrows at those.
 
+-- Move the active pane: swap its contents with the neighbour in a direction and
+-- follow the view, so a pane can be rearranged without closing and re-opening.
+-- A swap (not the nvim move-to-edge restructure) keeps the tree shape stable,
+-- which is the safe, well-defined operation over the existing Node tree.
+for _, dir in ipairs { "left", "right", "up", "down" } do
+  command.add(unlocked, {
+    ["root:move-pane-" .. dir] = function()
+      local node = active_node()
+      local target = node:get_node_in_direction(root(), dir)
+      if not target or target == node or target:get_locked_size() then return end
+      node.views, target.views = target.views, node.views
+      node.active_view, target.active_view = target.active_view, node.active_view
+      core.set_active_view(target.active_view)   -- follow the moved view
+      core.redraw = true
+    end,
+  })
+end
+
 
 -- Keymap. lite's engine (core/keymap.lua) binds a single stroke straight to a
 -- command list -- there is no native multi-key sequence. The one prefix this

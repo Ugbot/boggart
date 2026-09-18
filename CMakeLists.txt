@@ -713,6 +713,11 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
   if(NOT WIN32)
     target_link_libraries(boggart-studio PRIVATE mbedtls mbedx509 mbedcrypto)
   endif()
+  # forkpty/openpty for the embedded terminal (studio/src/api/pty.c) live in
+  # libutil on Linux (glibc < 2.34); on macOS they are in libSystem already.
+  if(UNIX AND NOT APPLE)
+    target_link_libraries(boggart-studio PRIVATE util)
+  endif()
   # Three spellings, because SDL3 arrives three ways: our own static build sets
   # BOGGART_SDL_TARGET, a system SDL3Config.cmake gives the SDL3::SDL3 target,
   # and pkg-config gives bare library names and directories. Installed SDL3
