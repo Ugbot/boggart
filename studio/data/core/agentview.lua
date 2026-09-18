@@ -37,6 +37,7 @@ local complete = require "core.agentcomplete"
 local mention = require "mention"
 local take = require "take"
 local keymap = require "core.keymap"
+local vimmode = require "vimmode"
 
 local AgentView = View:extend()
 
@@ -98,6 +99,20 @@ function AgentView:new()
     pcall(bog.events.on, "file:write", relay)
     pcall(bog.events.on, "file:edit", relay)
   end
+
+  -- vimmode.mode() can flip live (command palette, keybinding, the cTUI) while
+  -- this view is open. Only "off" needs a reaction here: it must never leave a
+  -- user stuck in normal mode with modal editing turned off. Registered once
+  -- per class, resolving the live view at call time, same as the hook above.
+  if bog and bog.events and not AgentView._vimmode_hook then
+    AgentView._vimmode_hook = true
+    pcall(bog.events.on, "vimmode:changed", function(_, data)
+      local v = core.studio and core.studio.view
+      if v and data and data.mode == "off" and v.edit_mode == "normal" then
+        v:set_edit_mode("insert")
+      end
+    end)
+  end
   self.pending = nil           -- { name, input, diff, path, decision }
   self.history, self.hpos = {}, 0
   self.docked = false
@@ -106,10 +121,14 @@ function AgentView:new()
 
   -- The composer's modal context, in the neovim sense -- distinct from
   -- self.mode above, which is the approval policy. "insert" is a text field
-  -- (every key types, current behaviour); "normal" turns the whole panel into a
-  -- viewport the shell's spine can browse with j/k/gg/G. Escape leaves insert,
-  -- and i/a/o/c/: (or a click, or the send key) return to it.
-  self.edit_mode = "insert"
+  -- (every key types); "normal" turns the whole panel into a viewport the
+  -- shell's spine can browse with j/k/gg/G. Escape leaves insert, and
+  -- i/a/o/c/: (or a click, or the send key) return to it.
+  --
+  -- Gated on the shared lua/vimmode.lua setting: "off" is plain insert-only
+  -- (the Zed-shaped default, no modal state reachable at all), "on" still
+  -- opens in insert, and "mandatory" is the one mode that opens in normal.
+  self.edit_mode = vimmode.starts_normal() and "normal" or "insert"
 
   -- Input state: a line array plus a caret, so this behaves like a text field
   -- rather than a string you can only backspace through.
@@ -1084,6 +1103,10 @@ end
 
 function AgentView:set_edit_mode(m)
   if m ~= "insert" and m ~= "normal" then return end
+  -- The one gate: with vim mode off there is no modal state to enter, so a
+  -- stray "normal" request (a leftover keybinding, a race with the live
+  -- toggle) is a no-op rather than trapping a plain-insert user.
+  if m == "normal" and not vimmode.enabled() then return end
   if self.edit_mode == m then return end
   self.edit_mode = m
   -- A one-line affordance in the status bar, the same place the leader menu
@@ -1370,11 +1393,12 @@ function AgentView:on_key_pressed(key)
   elseif key == "escape" then
     -- A turn in flight is what Escape cancels first (the system hint promises
     -- "esc cancels"). With nothing to interrupt -- the pending gate and any
-    -- selection were handled above, and we are not busy -- Escape is instead the
-    -- neovim "leave insert" gesture: drop into normal mode so the spine's
-    -- motions can browse the transcript.
+    -- selection were handled above, and we are not busy -- Escape is the
+    -- neovim "leave insert" gesture, but only when vim mode is on: with it
+    -- off the composer is plain insert throughout, and Escape has nothing
+    -- else to do here.
     if self.busy then self:cancel()
-    else self:set_edit_mode("normal") end
+    elseif vimmode.enabled() then self:set_edit_mode("normal") end
     return true
   end
 end
