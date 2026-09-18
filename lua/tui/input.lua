@@ -594,25 +594,28 @@ end
 
 -- The vim layer's ":" / "/" / "?" command line (docs/tui-vim.md section 5-6):
 -- a single row, same rendering family as search_runs/menu_runs above. The
--- prompt text lives off to the side (buf._vs.prompt), never in self.line, so
--- this is the only place it is ever shown.
+-- prompt text lives off to the side (on the vim adapter's pending state,
+-- self._va._vs.prompt -- see tui/vim.lua), never in self.line, so this is the
+-- only place it is ever shown.
 function Input:vprompt_runs(width)
-  local p = self._vs and self._vs.prompt
+  local vs = self._va and self._va._vs
+  local p = vs and vs.prompt
   if not p then return {} end
   local prefix = (p.kind == "ex") and ":" or (p.kind == "bwd") and "?" or "/"
   return { { { text = prefix .. p.text, fg = MENU_FG } } }
 end
 
 function Input:overlay_runs(width)
-  if self._vs and self._vs.prompt then return self:vprompt_runs(width) end
+  if self._va and self._va._vs and self._va._vs.prompt then return self:vprompt_runs(width) end
   if self._search then return self:search_runs(width) end
   if self._menu then return self:menu_runs(width) end
   return {}
 end
 
--- UTF-8-safe codepoint helpers, exported so tui/vim.lua can class characters
--- (word/blank/punct) the same way the composer itself does, instead of a
--- second copy of this arithmetic.
+-- UTF-8-safe codepoint helpers. cp_at/ulen are exported so tui/vim.lua's
+-- buffer adapter (docs/vim-unify.md) can walk the same {lines,cy,cx} shape
+-- without a second copy of this arithmetic; is_word backs this file's own
+-- Alt-b/Alt-f word motions.
 M.is_word = is_word
 M.cp_at = cp_at
 M.ulen = ulen
