@@ -67,6 +67,10 @@ function M.new(opts)
     line = "", cursor = 0, history = hist, prompt = opts.prompt or PROMPT,
     _hpos = nil, _draft = nil, kill = "", stash = nil,
     _menu = nil, _search = nil, _hist_file = opts.history_file,
+    -- vim layer (docs/tui-vim.md): off by default. edit_mode/lines/cy/cx are
+    -- the buffer the tui.vim engine drives; kept in sync with line/cursor (the
+    -- source of truth for everything else) only while vim is on, see :key.
+    vim = opts.vim == true, edit_mode = "insert", lines = { "" }, cy = 1, cx = 1,
   }, Input)
 end
 
@@ -94,6 +98,41 @@ function Input:_set(text)
   self.line = text or ""; self.cursor = ulen(self.line); self._menu = nil
 end
 function Input:paste(text) self:_insert(text or "") end
+
+-- The vim engine's buffer view: {lines, cy, cx}, rebuilt from line/cursor (the
+-- real source of truth) at the top of every key event, and flattened back after
+-- the engine mutates it. A cheap O(n) split -- the composer is short -- so the
+-- line-array model tui-vim.md asks for costs nothing on the hot path when vim
+-- is off, and every other method here (history, kill ring, completion, voice's
+-- replace_span) keeps working on line/cursor untouched.
+function Input:_sync_lines()
+  local lines = {}
+  for ln in (self.line .. "\n"):gmatch("([^\n]*)\n") do lines[#lines + 1] = ln end
+  if #lines == 0 then lines[1] = "" end
+  self.lines = lines
+  local cursor, consumed = self.cursor, 0
+  for i, ln in ipairs(lines) do
+    local n = ulen(ln)
+    if cursor <= consumed + n then self.cy, self.cx = i, (cursor - consumed) + 1; return end
+    consumed = consumed + n + 1 -- +1 for the newline joining this line to the next
+  end
+  self.cy, self.cx = #lines, ulen(lines[#lines]) + 1
+end
+function Input:_sync_from_lines()
+  self.line = table.concat(self.lines, "\n")
+  local total = 0
+  for i = 1, self.cy - 1 do total = total + ulen(self.lines[i] or "") + 1 end
+  self.cursor = total + (self.cx - 1)
+  self._menu = nil -- a line may have been split/joined (o/O); any menu offset is stale
+end
+
+-- Keep cx on a boundary inside the current line. Normal mode never sits past
+-- the last character (vim's rule); insert mode may sit one past it (append).
+function Input:clamp_caret()
+  local n = ulen(self.lines[self.cy] or "")
+  local maxcx = (self.edit_mode == "normal") and math.max(1, n) or (n + 1)
+  self.cx = math.max(1, math.min(self.cx, maxcx))
+end
 
 -- Replace the codepoint span [start, start+len) with `str`, leaving the cursor
 -- at the end of the inserted text; returns the codepoint length of `str`. This
@@ -329,6 +368,17 @@ function Input:key(ev)
     if k == "tab" or k == "enter" then self:_pick_menu(); return nil end
   end
 
+  -- The vim layer only ever claims Esc and, in normal mode, plain char keys --
+  -- Enter reaches the dispatch below untouched, so it always sends (see
+  -- docs/tui-vim.md section 7: "Enter must never break").
+  if self.vim then
+    self:_sync_lines()
+    if require("tui.vim").key(self, ev) then
+      self:_sync_from_lines()
+      return nil
+    end
+  end
+
   local k = ev.key
   if k == "char" then
     if ev.alt then
@@ -530,5 +580,12 @@ function Input:overlay_runs(width)
   if self._menu then return self:menu_runs(width) end
   return {}
 end
+
+-- UTF-8-safe codepoint helpers, exported so tui/vim.lua can class characters
+-- (word/blank/punct) the same way the composer itself does, instead of a
+-- second copy of this arithmetic.
+M.is_word = is_word
+M.cp_at = cp_at
+M.ulen = ulen
 
 return M

@@ -29,6 +29,7 @@ M.KEYS = {
   { "/cost",        "token spend" },
   { "/copy",        "copy last reply" },
   { "/mode",        "approval mode" },
+  { "/vim",         "toggle the modal composer" },
 }
 
 function M.too_small(w, h)

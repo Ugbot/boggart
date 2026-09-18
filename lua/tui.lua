@@ -245,6 +245,15 @@ local function status_runs(st)
   runs[#runs + 1] = { text = string.format("\u{00B7} %d agent%s ", agents, agents == 1 and "" or "s"), fg = C.dim, bg = bg }
   local mode = (st.mode or perm.state().mode or "smart")
   runs[#runs + 1] = { text = "\u{00B7} " .. mode .. " ", fg = C.text, bg = bg }
+  -- The vim layer's own mode chip (docs/tui-vim.md), beside the approval mode
+  -- above but never confused with it: this one is always NORMAL/INSERT, and
+  -- only appears at all when the composer's vim layer is on.
+  if st.box and st.box.vim then
+    local is_normal = st.box.edit_mode == "normal"
+    local vm = is_normal and "NORMAL" or "INSERT"
+    runs[#runs + 1] = { text = "\u{00B7} " .. vm .. " ", fg = is_normal and C.amber or C.text,
+      bg = bg, attr = { bold = true } }
+  end
   if st.help then runs[#runs + 1] = { text = "\u{00B7} ? ", fg = C.amber, bg = bg } end
   if st.eof_arm then runs[#runs + 1] = { text = "\u{00B7} Ctrl-D again to quit ", fg = C.amber, bg = bg } end
   if st.voice and st.voice.active then
@@ -374,7 +383,11 @@ local function draw(st)
   end
   local cx = math.min(math.max(0, cursor_col or 0), w - 1)
   local cy = math.min(input_y + (cursor_row or 1) - 1, h - 1)
-  tc.set(cx, cy, 32, nil, C.cursor, nil)
+  -- A thin bar caret is not cheap in a cell grid, so vim's normal mode is
+  -- carried by colour instead (amber vs the usual accent), same rule as the
+  -- status chip above.
+  local caret_bg = (st.box and st.box.vim and st.box.edit_mode == "normal") and C.amber or C.cursor
+  tc.set(cx, cy, 32, nil, caret_bg, nil)
 
   if st.help then
     local hr = help.runs(w)
@@ -665,6 +678,18 @@ local function slash(st, line)
   -- /voice [toggle|start|stop|status|download] -- dictation, same as Ctrl-V.
   if cmd == "voice" then
     voice_command(st, line:match("^/%S+%s*(.*)$"))
+    return
+  end
+  -- /vim toggles the modal composer layer (docs/tui-vim.md). Always lands in
+  -- insert mode on either edge, so flipping it never strands the caret in
+  -- normal mode with nobody knowing why typing stopped working.
+  if cmd == "vim" then
+    st.box.vim = not st.box.vim
+    st.box.edit_mode = "insert" -- Esc always clears any stale pending state
+    st.entries[#st.entries + 1] = { role = "system", text = st.box.vim
+      and "vim mode ON \u{2014} Esc for normal, i/a/I/A/o/O back to insert"
+      or  "vim mode OFF" }
+    st.dirty = true
     return
   end
   if not bog.handle_command then
