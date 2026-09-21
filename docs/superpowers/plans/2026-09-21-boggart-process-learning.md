@@ -418,6 +418,8 @@ assert(old_run.version == "v1"); assert(new_run.version == "v2")
 
 **Implementation:** Persist start/terminal step receipts and workflow/dependency pins. Resume at explicit durable step boundaries; replay prior pure control flow using recorded results only where supported, never serialize arbitrary Lua stacks. Non-resumable workflows state that limitation. Reconcile uncertain effects by operation ID before retry. Cache only declared eligible capabilities with input, code, dependency and freshness keys. Bound retries, cancellation and compensation; compensation itself is an observable effect.
 
+**Accounting during recovery:** Standard SQLite quota ledgers remain supported during recovery: persist a ledger identity and host-bound subjects, require a matching ledger from current authority, and retain original reservation references before effects. An effect reconciliation does not imply original accounting settlement; unresolved original charges remain held and visible. Admit and account for bounded reconciliation queries separately. Cached results preserve artifacts and historical usage while reporting zero new provider usage.
+
 **Interface:** runstore.resume(run_id) -> resumable_state|nil,error; runstore.reconcile(invocation_id) -> known_outcome|uncertain; cache.lookup(descriptor,args,dependency_manifest,freshness).
 
 **Acceptance criteria:**

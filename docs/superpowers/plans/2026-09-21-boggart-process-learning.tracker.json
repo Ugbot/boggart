@@ -228,7 +228,8 @@
           ],
           "test": "runstore",
           "example": "assert(fake_remote.message_count == 1)",
-          "status": "in_progress"
+          "status": "in_progress",
+          "accounting_contract": "Standard SQLite quota ledgers remain supported during recovery: persist a ledger identity and host-bound subjects, require a matching ledger from current authority, and retain original reservation references before effects. An effect reconciliation does not imply original accounting settlement; unresolved original charges remain held and visible. Admit and account for bounded reconciliation queries separately. Cached results preserve artifacts and historical usage while reporting zero new provider usage."
         }
       ]
     },
