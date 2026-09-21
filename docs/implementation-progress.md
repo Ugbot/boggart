@@ -16,6 +16,7 @@ status authority.
 | BRAIN-17 | Immutable exact-version capabilities, structured outcomes, conservative effect uncertainty, and bounded usage reconciliation | Full rebuilt-binary Lua suite 60/60; capability 73, invoke 87, quota 54 and luatool 42 checks; deterministic native code-search fixture; CTest capability repeated twice; independent review approved | `d1e6c1a` |
 | BRAIN-15 | Failed reload restores worker/module bindings and event registrations; session listing uses the actual store API and exposes errors | Rebuilt-binary lifecycle 114 checks, sessions 39 checks, real HTTP control 33 checks; independent review approved | `1470254` |
 | BRAIN-41 | Injected concrete values, functions and composable providers; exact capability pins, revision-aware caches, provenance and restrictive authority | Rebuilt-binary context 78, capability 73, invoke 87, events 128, policy 36 and quota 54 checks; CTest context repeated twice; independent review approved | `6407221` |
+| BRAIN-42 | Source-backed versioned Lua workflows with dependency pins, nested steps, cancellation and local Slack fixture | Native full62/62 before review fixes; final covering workflow65/context80/capability73/invoke87/luatool42/events128 pass; CTest workflow and context each repeated twice; independent re-review approved | `6a3588c` |
 
 Build: `cmake --build build --target boggart -j 6` with `CCACHE_DIR` and
 `CCACHE_TEMPDIR` pointing inside `build/ccache`, because the default cache
@@ -24,8 +25,8 @@ directory is outside the workspace sandbox. Tests ran through `./boggart
 model requests or real messaging workflows were used.
 
 The existing user changes to judge/TypeSafe, models and completion were
-preserved outside these commits. BRAIN-17 and BRAIN-41 are complete; BRAIN-42 is implementing versioned Lua
-workflow execution next. Local control authentication and unattended-default hardening
+preserved outside these commits. BRAIN-17, BRAIN-41 and BRAIN-42 are complete; BRAIN-18 is implementing durable
+process evidence next. Local control authentication and unattended-default hardening
 remain open as BRAIN-16.
 
 The broader 57-suite run passed 53 suites on its first pass. MCP and control
@@ -61,3 +62,13 @@ leak raw provider errors, and short resolution loops cannot evade the enclosing
 instruction budget. Counter charging is conservative, not exact VM instruction
 measurement. Context emits metadata/provenance; redacted evaluated-value persistence
 remains BRAIN-18. This ticket did not rerun the full platform/release matrix.
+
+BRAIN-42 has a real source-backed Slack-shaped fixture using only local capabilities;
+the two inputs take different branches while retaining the same Lua source hash.
+Trusted host closures are explicitly distinguished from portable source. Review
+repairs preserve uncertain provider outcomes through optional, failure and cached
+paths; source packages reject unversioned effects; and provider provenance uses
+separate occurrence-scoped namespaces. Abrupt provider exits retain explicit
+incomplete-effect evidence. Persistence, durable restart/resume, historical imports
+and promotion evaluation remain separate open tasks, not implied by live coroutine
+suspension or an in-process verifier.

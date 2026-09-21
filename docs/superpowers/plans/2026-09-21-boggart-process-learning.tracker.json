@@ -210,7 +210,7 @@
           ],
           "test": "workflow",
           "example": "assert(old_run.version == \"v1\"); assert(new_run.version == \"v2\")",
-          "status": "in_progress"
+          "status": "done"
         },
         {
           "id": "recovery",
@@ -250,7 +250,8 @@
             "workflow"
           ],
           "test": "evidence",
-          "example": "assert(roundtrip.payload.args.text == \"quoted \\\"value\\\"\\nnext line\")"
+          "example": "assert(roundtrip.payload.args.text == \"quoted \\\"value\\\"\\nnext line\")",
+          "status": "in_progress"
         },
         {
           "id": "imports",

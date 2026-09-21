@@ -399,8 +399,8 @@ assert(ctx:resolve("character", {id="fixture"}) .name == "Fixture Character")
 
 **Acceptance criteria:**
 
-- [ ] A Slack-shaped fixture gathers, checks, branches, optionally calls a model and reports; a different input follows the other branch using the same Lua version.
-- [ ] Activating v2 during a suspended v1 run leaves that run and its resolved dependencies pinned; new runs select v2; cancellation preserves a terminal state.
+- [x] A Slack-shaped fixture gathers, checks, branches, optionally calls a model and reports; a different input follows the other branch using the same Lua version.
+- [x] Activating v2 during a suspended v1 run leaves that run and its resolved dependencies pinned; new runs select v2; cancellation preserves a terminal state.
 
 **Test scenario:**
 
