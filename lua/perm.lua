@@ -428,80 +428,26 @@ end
 -- yield loop returns. Used by the cTUI; AgentView keeps its own hook so it can
 -- push a diff entry at the decision point.
 function M.wrap_run(run, st, hooks)
-  hooks = hooks or {}
-  st = st or M.state()
-  run = run or function(name, input) return bog.tools.run(name, input) end
-  -- Audit a decision to the record envelope (telemetry) at the moment it is
-  -- made. Only for GATED tools -- auditing every read would be noise. Stamped
-  -- with the running agent + its run so a fan-out's decisions group.
-  local function audit(name, policy, decision)
-    if not (M.GATED[name] and bog and bog.telemetry) then return end
-    local aid = bog.sched and bog.sched.current and bog.sched.current()
-    local rec = aid and bog.thread and bog.thread.live_recs and bog.thread.live_recs[aid]
-    pcall(bog.telemetry.decision,
-      { run_id = (rec and rec.run_id) or aid, agent_id = aid },
-      { tool = name, policy = policy, decision = decision })
+  hooks=hooks or {}; st=st or M.state()
+  local invoke=require("invoke")
+  local function approve(name,input,why)
+    if not hooks.on_ask then return false end
+    local rec=M.request(name,input) or {tool=name,input=input}
+    rec.why=why
+    hooks.on_ask(rec)
+    while rec.decision==nil do coroutine.yield("approve") end
+    if hooks.on_done then hooks.on_done(rec) end
+    return rec.decision=="approve"
   end
-  return function(name, input)
-    input = input or {}
-    -- Input-aware from here: rules and guards get to see the actual call, not
-    -- just its tool name. With no rules configured this returns exactly what
-    -- policy_for returned before, so the default install is unchanged.
-    local policy, why = M.decide(name, input, st)
-
-    -- A veto hook. `events` could watch a tool call but never stop one, so
-    -- every "block this" story (a repo that forbids force-push, a project that
-    -- will not have its lockfile edited) had nowhere to live. A handler that
-    -- returns a table with deny=true -- or the string "deny" -- refuses the
-    -- call and its reason is what the model is told. Observers that return
-    -- nothing keep working untouched.
-    if bog and bog.events and bog.events.ask then
-      local okv, res = pcall(bog.events.ask, "tool:before",
-        { tool = name, input = input, policy = policy, why = why })
-      if okv and res ~= nil then
-        local denied = (res == "deny") or (type(res) == "table" and res.deny)
-        if denied then
-          policy = "deny"
-          why = (type(res) == "table" and res.reason) or why or "a hook refused it"
-        end
-      end
+  local context=invoke.context({state=st,approve=hooks.on_ask and approve or nil},hooks.context)
+  return function(name,input)
+    local options
+    if run and run~=require("tools").run then options={runner=run} end
+    local result=invoke.string(context,name,input,options)
+    if hooks.on_deny and type(result)=="string" and result:find("^Tool error: %[permission_error%]") then
+      hooks.on_deny(name,input)
     end
-
-    local audited = false
-    local function A(dec) if not audited then audited = true; audit(name, policy, dec) end end
-    if policy == "deny" then
-      A("deny")
-      if hooks.on_deny then hooks.on_deny(name, input) end
-      return "Tool error: [permission_error] the user's settings do not "
-        .. "permit the " .. name .. " tool"
-        .. (why and (" -- " .. why) or "") .. ". Do not retry it; say what you "
-        .. "would have done and ask."
-    end
-    if policy == "ask" then
-      if hooks.on_ask then
-        -- Interactive: park the coroutine until a front end resolves the record.
-        local rec = M.request(name, input)
-        if rec then
-          rec.why = why   -- "outside the workspace", "the same call 3 times running"
-          hooks.on_ask(rec)
-          while rec.decision == nil do coroutine.yield("approve") end
-          if hooks.on_done then hooks.on_done(rec) end
-          if rec.decision == "reject" then
-            A("deny")
-            return "Tool error: [permission_error] the user rejected this "
-              .. name .. " call. Do not retry it; ask what to do instead."
-          end
-        end
-      elseif M.headless_decision(name, st) == "deny" then
-        A("deny")
-        -- No approver attached: resolve by policy rather than run unattended.
-        return "Tool error: [permission_error] the " .. name .. " tool is gated "
-          .. "and no approver is attached (headless). Do not retry it; say what "
-          .. "you would have done."
-      end
-    end
-    A("allow") -- every gated call is audited exactly once, on its outcome
-    return run(name, input)
+    return result
   end
 end
 

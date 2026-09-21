@@ -216,38 +216,12 @@ end
 -- ---------------------------------------------------------------------------
 -- The capability surface for generated tools
 --
--- boggart's sandbox is not a Lua sandbox: it is the C/Lua boundary. Capability
--- primitives live in C, where the policy lives with them -- sys.rmtree refuses
--- "/" and uses lstat so it cannot be walked out of the overlay directory,
--- proc.run bounds output and enforces a timeout, db goes through the store.
--- Lua's job is to *compose* those, not to reimplement them.
---
--- That boundary only means something if composition cannot step around it, and
--- until now it could: a tool body compiled with a bare load() inherited _G, so
--- io.open, os.remove and -- since libuv was vendored -- uv.spawn and
--- uv.fs_unlink all sat next to the guarded sys.* calls, with no policy on any
--- of them. Every guard in C was one `require("uv")` away from irrelevant.
---
--- So a generated body gets this table as its _ENV instead of _G. Note what is
--- deliberately absent: io, the destructive half of os, package/require/load,
--- debug, and raw uv/http/swarm/mcp. Those are harness infrastructure, not
--- vocabulary for a tool.
---
--- This is emphatically NOT a security boundary against the agent itself -- the
--- agent can edit lua/tools.lua and reload, which is the entire point of the
--- project. It is a capability boundary, and it does three jobs:
--- accidental damage stays contained; bounds, limits and tracing can be enforced
--- once in C because there is no second route; and the model can see exactly
--- what it has to compose with. It also becomes a real security boundary the day
--- project-scoped tools are loaded out of a repository someone else wrote.
--- getenv is useful (HOME, PATH, EDITOR) but it is also a one-line
--- route to a credential, and "read the key and call the API directly" is a
--- plausible thing for a model to write while composing a tool. Names that look
--- like secrets are refused.
---
--- Not airtight, and not pretended to be: a tool can still call sys.exec("env").
--- The distinction being drawn is between a casual one-liner and a deliberate
--- shell-out -- the same distinction the whole capability boundary draws.
+-- Generated Lua composes mediated capabilities through invoke. It receives no
+-- raw filesystem, database, module loader, or mutable host standard-library
+-- tables. Installed trusted Lua/native modules remain privileged: this is an
+-- application capability boundary, not an OS sandbox. See docs/invocation.md.
+-- Environment lookup excludes common credential variable names; shell access
+-- is separately admitted through the sys.exec/bash permission alias.
 local SECRETISH = { "KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH" }
 local function safe_getenv(name)
   if type(name) ~= "string" then return nil end
@@ -264,49 +238,137 @@ local SAFE_OS = { time = os.time, date = os.date, clock = os.clock,
 -- Sandboxed coroutines inherit the caller's active debug hook. Native
 -- coroutine.create does not do this, which otherwise lets generated code move
 -- a runaway loop into a child coroutine and escape both inner and outer limits.
+local hook_controls=setmetatable({}, {__mode="k"})
 local SAFE_COROUTINE = {}
 for k, v in pairs(coroutine) do SAFE_COROUTINE[k] = v end
 SAFE_COROUTINE.create = function(fn)
   local co = coroutine.create(fn)
+  require("invoke").inherit(co)
   local hook, mask, count = debug.gethook()
   if hook then debug.sethook(co, hook, mask, count) end
   return co
 end
+local coroutine_hooks=setmetatable({}, {__mode="k"})
+local function operate_coroutine(operation,co,...)
+  if type(co)~="thread" then return coroutine[operation](co,...) end
+  local old,old_mask,old_count=debug.gethook(co)
+  local current,mask,count=debug.gethook()
+  local previous=old and coroutine_hooks[old]
+  -- Do not reset or re-wrap a hook already containing this resumer. In
+  -- particular, a normal yield/resume loop keeps one flat hook plan.
+  if current and current~=old and not (previous and previous.members[current]) then
+    local entries,members={},{}
+    if previous then
+      for _,entry in ipairs(previous.entries) do entries[#entries+1]=entry; members[entry.fn]=true end
+    elseif old then
+      entries[1]={fn=old,mask=old_mask or "",count=old_count or 0,ticks=0}; members[old]=true
+    end
+    entries[#entries+1]={fn=current,mask=mask or "",count=count or 0,ticks=0}; members[current]=true
+    local quantum,both_mask=0,""
+    for _,entry in ipairs(entries) do
+      if entry.count>0 then
+        if quantum==0 then quantum=entry.count
+        else local a,b=quantum,entry.count; while b~=0 do a,b=b,a%b end; quantum=a end
+      end
+      for _,event in ipairs({"c","r","l"}) do
+        if entry.mask:find(event,1,true) and not both_mask:find(event,1,true) then both_mask=both_mask..event end
+      end
+    end
+    local function charge(entry,event,line)
+      local ok,err=pcall(entry.fn,event,line)
+      if not ok then
+        local control=hook_controls[entry.fn]
+        if control then control.failure=err end
+        error(err,0)
+      end
+    end
+    local function combined(event,line)
+      for _,entry in ipairs(entries) do
+        if event=="count" then
+          entry.ticks=entry.ticks+quantum
+          if entry.count>0 and entry.ticks>=entry.count then
+            entry.ticks=entry.ticks-entry.count; charge(entry,event,line)
+          end
+        else
+          local code=event=="line" and "l" or event=="return" and "r" or "c"
+          if entry.mask:find(code,1,true) then charge(entry,event,line) end
+        end
+      end
+    end
+    -- Only an actual rebind resets Lua's hidden remaining-count value. Charge
+    -- one quantum per affected identity on that transition; plan counters are
+    -- reused, never reset. Ordinary repeated resumes perform no rebind.
+    for _,entry in ipairs(entries) do if entry.count>0 then charge(entry,"count") end end
+    coroutine_hooks[combined]={entries=entries,members=members}
+    debug.sethook(co,combined,both_mask,quantum)
+  end
+  return require("invoke")[operation](co,...)
+end
+SAFE_COROUTINE.resume=function(co,...) return operate_coroutine("resume",co,...) end
+SAFE_COROUTINE.close=function(co) return operate_coroutine("close",co) end
 SAFE_COROUTINE.wrap = function(fn)
   local co = SAFE_COROUTINE.create(fn)
   return function(...)
-    local packed = table.pack(coroutine.resume(co, ...))
+    local packed = table.pack(SAFE_COROUTINE.resume(co, ...))
     if not packed[1] then error(packed[2], 2) end
     return table.unpack(packed, 2, packed.n)
   end
 end
 
+-- Every effectful compatibility primitive is admitted as its own capability.
+-- This is an application boundary; trusted installed Lua/native code is privileged.
+local primitive_runners = { ["sys.read"]=util.read_file, ["sys.write"]=util.write_file }
+local primitive_effects={read="read",write="write",listdir="read",stat="read",glob="read",cwd="pure",home="pure",tmpdir="pure",pid="pure",re_find="pure",re_gsub="pure",width="pure",wtake="pure"}
+local function canonical(path)
+  assert(type(path)=="string", "path required")
+  local uv=require("uv")
+  local resolved=uv.fs_realpath(path)
+  if resolved then return resolved end
+  local parent,base=path:match("^(.*)/([^/]+)$")
+  parent=parent or "."; base=base or path
+  assert(base~=".." and base~="." and base~="", "invalid path")
+  return assert(uv.fs_realpath(parent), "canonical parent unavailable") .. "/" .. base
+end
+local function clone(t)
+  local out = {}; for k,v in pairs(t) do out[k]=v end; return out
+end
 local function tool_env()
+  local safe_sys = {}
+  for _, name in ipairs({"read", "write", "listdir", "stat", "mkdir_p", "exec", "shell", "rmtree", "chmod", "glob", "cwd", "home", "tmpdir", "pid", "re_find", "re_gsub", "width", "wtake"}) do
+    local id = "sys." .. name
+    if type(sys[name]) == "function" or primitive_runners[id] then
+      primitive_runners[id] = primitive_runners[id] or sys[name]
+      safe_sys[name] = function(...)
+        local result, err = require("invoke").call(nil, id, {values=table.pack(...)})
+        if err then error("Tool error: [" .. err.code .. "] " .. err.message, 0) end
+        return table.unpack(result,1,result.n)
+      end
+    end
+  end
+  local function unavailable(name)
+    return setmetatable({}, {__index=function() error(name .. " unavailable in generated tools; use a registered capability",2) end,
+      __metatable=false})
+  end
   local env = {
-    -- capabilities (C-backed, policy included)
-    sys = sys, db = db, json = json, gold = gold,
-    -- data: a JSON key/value store under ~/.boggart/data (see lua/data.lua). The
-    -- channel for sharing state across the sandbox boundary -- a skill's
-    -- instructions data.put() the rules once, a provided checker tool data.get()s
-    -- them, so writer and enforcer never drift.
-    data = require("data"),
-    -- composition: call any other registered tool, built-in or generated (§7)
-    tools = { call = function(n, a) return M.run(n, a) end,
-              names = function() return M.names() end },
-    -- Telling a human something, and announcing your own events. `on` is
-    -- deliberately absent: registration goes through the on_event tool so that
-    -- every handler is listed in one place with a description attached.
-    events = { notify = events.notify, emit = events.emit, list = events.list },
-    -- pure Lua stdlib
-    string = string, table = table, math = math, utf8 = utf8, os = SAFE_OS,
-    ipairs = ipairs, pairs = pairs, next = next, select = select,
-    tonumber = tonumber, tostring = tostring, type = type,
-    pcall = pcall, xpcall = xpcall, error = error, assert = assert,
-    rawget = rawget, rawset = rawset, rawequal = rawequal, rawlen = rawlen,
-    setmetatable = setmetatable, getmetatable = getmetatable,
-    coroutine = SAFE_COROUTINE, -- children inherit the active execution budget
+    sys=safe_sys, db=unavailable("db"), gold={re=clone(require("gold.re")),fs={read=safe_sys.read,write=safe_sys.write,glob=safe_sys.glob}}, data=unavailable("data"),
+    json=clone(json),
+    tools={call=function(n,a) return M.run(n,a) end, names=function()
+      local result,err=require("invoke").call(nil,"registry.names",{})
+      if err then error("Tool error: ["..err.code.."] "..err.message,0) end
+      return result
+    end},
+    events={notify=events.notify},
+    string=clone(string), table=clone(table), math=clone(math), utf8=clone(utf8), os=clone(SAFE_OS),
+    ipairs=ipairs, pairs=pairs, next=next, select=select,
+    tonumber=tonumber, tostring=tostring, type=type,
+    pcall=pcall, xpcall=xpcall, error=error, assert=assert,
+    rawget=rawget, rawset=rawset, rawequal=rawequal, rawlen=rawlen,
+    setmetatable=setmetatable,
+    -- String metatables expose the process-wide string library; never return them.
+    getmetatable=function(v) if type(v)=="table" then return getmetatable(v) end end,
+    coroutine=clone(SAFE_COROUTINE),
   }
-  env._G = env
+  env._G=env
   return env
 end
 M.tool_env = tool_env
@@ -893,6 +955,8 @@ local function with_count_hook(limit_hook, every, fn, ...)
       call_previous(event, line)
     end
   end
+  local control={}
+  hook_controls[combined]=control
   debug.sethook(combined, mask, quantum)
   local function run()
     -- sethook() resets Lua's hidden remaining-count value. Charge one parent
@@ -904,6 +968,8 @@ local function with_count_hook(limit_hook, every, fn, ...)
     return fn(table.unpack(args, 1, args.n))
   end
   local packed = table.pack(pcall(run))
+  if control.failure~=nil then packed=table.pack(false,control.failure) end
+  hook_controls[combined]=nil
   debug.sethook(previous, previous_mask, previous_count)
   if outer_failure ~= nil then
     error({ marker = OUTER_HOOK_ERROR, error = outer_failure }, 0)
@@ -957,7 +1023,7 @@ function M.record_provenance(name, def)
   })
 end
 
-function M.run(name, input)
+local function raw_run(name, input)
   local d = M.registry[name]
   if not d then
     -- No tool:before for a tool that does not exist: nothing is about to run,
@@ -965,7 +1031,6 @@ function M.run(name, input)
     -- complain. Past this line the pair is guaranteed.
     return M.err(M.ERR.not_found, "unknown tool: %s", tostring(name))
   end
-  events.emit("tool:before", { name = name, input = input })
 
   -- Built-ins are harness code and trusted; skipping the hook keeps read/edit
   -- on their fast path. Only model-authored bodies carry a `body` string.
@@ -992,12 +1057,16 @@ function M.run(name, input)
   else
     local ok, r = pcall(d.run, input or {})
     if not ok then
-      if type(r) == "table" and r.marker == OUTER_HOOK_ERROR then error(r.error, 0) end
+      if type(r) == "table" and r.marker == OUTER_HOOK_ERROR then error(r, 0) end
       return M.err(M.ERR.runtime, tostring(r))
     end
     res = r
   end
 
+  return res
+end
+
+local function format_result(res)
   -- A tool returning 50,000 lines has defeated the purpose (paper §14): spill
   -- to a file and hand back a head plus the path, exactly as bash and read do.
   if type(res) ~= "string" then res = tostring(res) end
@@ -1017,12 +1086,37 @@ function M.run(name, input)
   end
   -- The size of the result, never the result: a tool that legitimately returns
   -- a megabyte would otherwise put it on the bus for every subscriber.
-  if events.any("tool:after") then
-    events.emit("tool:after", { name = name, bytes = #res,
-                                error = res:sub(1, 11) == "Tool error:" })
-  end
   return res
 end
+
+-- Descriptor metadata belongs to trusted registration, never to generated args.
+local effects = {read="read", list="read", write="write", edit="write", bash="write",
+  lua="pure", tools="read"}
+local function descriptor(name)
+  if name=="registry.names" then return {id=name,version="1",effect="read",legacy_name="tools",_entry=M,_runner=M.names} end
+  if primitive_runners[name] then
+    local method=name:sub(5)
+    local legacy=({read="read",write="write",listdir="list",stat="read",glob="list",mkdir_p="write",exec="bash",shell="bash",rmtree="write",chmod="write"})[method]
+    return {id=name,version="1",effect=primitive_effects[method] or "write",_runner=primitive_runners[name],
+      legacy_name=legacy or name,
+      legacy_args=function(a) return {path=a.values[1],command=a.values[1]} end,
+      resources=function(a) return {path=canonical(a.values[1])} end}
+  end
+  local d=M.registry[name]; if not d then return nil end
+  return {_entry=d,_runner=d.run,_body=d.body,_resources=d.resources,id=name,version=d.version or "1",effect=d.effect or effects[name] or (d.body and "pure" or "unknown"),
+    resources=d.resources or function(a)
+      return {path=canonical(a.path)}
+    end}
+end
+require("invoke").bind(M,descriptor,function(name,args)
+  if name=="registry.names" then return M.names() end
+  if primitive_runners[name] then
+    return table.pack(primitive_runners[name](table.unpack(args.values,1,args.values.n)))
+  end
+  return raw_run(name,args)
+end,format_result)
+function M.run(name,input) return require("invoke").string(nil,name,input,{registry=M}) end
+M.call=M.run
 
 -- Populate the registry (called fresh on every load/reload).
 M.registry = {}
@@ -1082,10 +1176,9 @@ M.register("list", {
 })
 
 -- The Lua-native answer to `python3 -c '...'`: run a snippet in-process and get
--- its result, without shelling out. Prefer this for ad-hoc file/text work --
--- the runtime IS Lua, so it is faster, dependency-free, and every capability is
--- already here: `gold.re` (real POSIX regex), `gold.fs` (read/write/glob/find/
--- walk), `gold.str`/`gold.tbl`, `sys`, `json`. Runs in the same capable-but-
+-- its result, without shelling out. The compatibility facade includes
+-- `gold.re`, mediated `gold.fs.read/write/glob`, `sys`, and `json`.
+-- Runs in the same capable-but-
 -- isolated sandbox generated tools use (it cannot clobber harness globals) and
 -- is bounded by an instruction budget so a runaway loop cannot wedge the turn.
 local function tool_lua(a)
@@ -1138,8 +1231,8 @@ M.register("lua", {
   description = "Run a Lua snippet in-process and return its value (or printed output). "
     .. "PREFER THIS over shelling out to python/awk/sed for ad-hoc file and text "
     .. "work -- the runtime is Lua-native and self-contained. In scope: gold.re "
-    .. "(real regex: match/gmatch/all/gsub/find/test), gold.fs (read/write/glob/"
-    .. "find/walk), gold.str, gold.tbl, gold.json, sys, json. Give an expression "
+    .. "(real regex: match/gmatch/all/gsub/find/test), mediated gold.fs.read/write/glob, "
+    .. "mediated sys, json and copied Lua libraries. Give an expression "
     .. "or a statement block; a returned value or print() output becomes the result.",
   input_schema = {
     type = "object",
@@ -1204,7 +1297,8 @@ M.register("tools", {
 M.register("define_tool", {
   description = "Create a new tool at runtime by writing its Lua. The body receives a table `args` "
     .. "and must `return` a string. It runs against a capability environment: sys (exec/listdir/stat/"
-    .. "mkdir_p/rmtree/home/shell), db, json, gold, tools.call(name, args) to invoke another tool, "
+    .. "mkdir_p/rmtree/home/shell), json, gold.re, gold.fs.read/write/glob, "
+    .. "tools.call(name, args) to invoke another tool under inherited policy, "
     .. "events.notify(msg, level) to say something a human should see, "
     .. "and the pure Lua stdlib. Raw io/os/require/uv are deliberately absent -- compose the "
     .. "capabilities instead. This is how you grow your own vocabulary for a codebase.",

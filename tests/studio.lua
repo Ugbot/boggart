@@ -497,6 +497,26 @@ if loaded then
   ok(said == "hello there",
     "fallback: streamed text landed in the transcript (got '" .. said .. "')")
 
+  -- Studio's custom run_tool must inherit the same nested-call denial as CLI.
+  local saved_mode,saved_policy=v.mode,v.tool_policy
+  v.mode,v.tool_policy="auto",{write="deny"}
+  local marker=bog.userdir.."/studio-invoke-marker"
+  bog.tools.register_body("_studio_nested","",{},
+    'return tools.call("write",{path=args.path,content="escaped"})')
+  local surface_result
+  bog.api.run_on=function(_,_,_,opts)
+    surface_result=opts.run_tool("_studio_nested",{path=marker})
+    return true
+  end
+  v.entries,v.busy,v.co,v.turn_id={},false,nil,nil
+  v:submit("nested denial fixture")
+  for _=1,50 do if not v.busy then break end; v:tick() end
+  bog.api.run_on=saved_run_on
+  v.mode,v.tool_policy=saved_mode,saved_policy
+  ok(type(surface_result)=="string" and surface_result:find("permission_error",1,true),
+    "Studio custom runner denies nested write")
+  ok(sys.stat(marker)==nil,"Studio nested denial leaves no marker")
+
   -- ---- completion, slash commands, shared permission modes ----------------
   -- The cTUI's Tab/`@`/`/` work through bog.complete and bog.handle_command.
   -- The studio composer has to use the same engines so a skill or a file

@@ -386,9 +386,12 @@ go through a file the user can see, which the agent may write with `write`.
 **Isolation**: each handler runs in its own coroutine. Throwing affects neither
 the emitter nor the other handlers (it is reported through `notify`, and five
 failures unsubscribe it); yielding — `sys.exec` under the swarm scheduler —
-gets the handler dropped rather than allowed to suspend the agent's turn. A
-handler that loops forever still wedges the agent: bounding that needs a debug
-hook, and `tools.lua` already uses the one hook slot for generated tool bodies.
+gets the handler dropped rather than allowed to suspend the agent's turn. Each
+`emit` and `ask` callback has a five-million-Lua-instruction ceiling composed
+with the caller's enclosing hook. A local limit trip is reported as a handler
+failure and later `emit` handlers continue; an exhausted enclosing budget
+propagates to the caller. This is an instruction limit, not a wall-clock or
+native-call timeout, so handlers still must not block.
 Emitting with nothing subscribed costs one comparison, so the hot events
 (`turn:text`) are free when nobody is listening.
 

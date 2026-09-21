@@ -134,7 +134,8 @@ M.EVENTS = {
   ["turn:text"]        = "{ session, text }  one streamed assistant text delta (hot: fires per SSE chunk)",
   ["turn:end"]         = "{ session, stop }  stop = end_turn/max_tokens/refusal/...",
   ["turn:error"]       = "{ session, message, kind }  kind is set for typed api errors (api.ERR.*)",
-  ["tool:before"]      = "{ name, input }  input is the LIVE argument table -- read it, do not edit it",
+  ["tool:before"]      = "{ name, input, invocation_id }  observation; input is an isolated copy",
+  ["tool:authorize"]   = "{ name, input, invocation_id }  return deny to veto; distinct from observation",
   ["tool:after"]       = "{ name, error, bytes }  error = the tool returned a 'Tool error:' result",
   ["tool:refused"]     = "{ name, reason }  a permission gate refused the call; it never ran",
   ["context:compacted"] = "{ session, before, after }  chars of transcript before, chars of summary",
@@ -205,6 +206,7 @@ end
 
 local function invoke(h, name, data)
   local co = coroutine.create(h.fn)
+  require("invoke").inherit(co)
   local hook_control = handler_hook(co)
   h.calls = h.calls + 1
   local ok, err = coroutine.resume(co, name, data)
@@ -350,7 +352,7 @@ end
 -- an answer has to come back on the stack. The same rule as emit still applies:
 -- a handler must not block or yield. One that errors is reported and skipped,
 -- never allowed to take down the call it was asked about.
-function M.ask(name, data)
+function M.ask(name, data, opts)
   local hs = state.count > 0 and (cache[name] or resolve(name)) or nil
   local n = hs and #hs or 0
   if n == 0 then return nil end
@@ -373,6 +375,10 @@ function M.ask(name, data)
       if hook_control.handler_failure ~= nil then
         report(h, hook_control.handler_failure)
         ok, res = true, nil
+        if opts and opts.fail_closed then
+          state.depth=state.depth-1
+          return {deny=true,reason="authorization handler exceeded its budget"}
+        end
       end
       if not ok then
         if type(res) == "table" and res.boggart_outer_hook then
@@ -380,9 +386,15 @@ function M.ask(name, data)
           error(res.error, 0)
         end
         report(h, res)
+        if opts and opts.fail_closed then
+          state.depth=state.depth-1
+          return {deny=true,reason="authorization handler failed"}
+        end
       elseif res ~= nil then
-        answer = res
-        break
+        if not (opts and opts.fail_closed) or res=="deny" or type(res)=="table" and res.deny then
+          answer = res
+          break
+        end
       end
     end
   end

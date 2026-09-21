@@ -156,7 +156,7 @@ eq(perm.stricter(nil, "allow"), "allow", "stricter tolerates a missing side")
 -- {deny=true} refuses it, and its reason reaches the model.
 local seen = nil
 -- handlers are called fn(event_name, data), the same as every other subscriber
-local handle = bog.events.on("tool:before", function(_, ev)
+local handle = bog.events.on("tool:authorize", function(_, ev)
   seen = ev
   if ev.tool == "bash" and tostring(ev.input.command):find("push %-%-force") then
     return { deny = true, reason = "this repo forbids force-push" }

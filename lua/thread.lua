@@ -47,7 +47,16 @@ end
 -- An agent with no skills gets the whole registry, which is what keeps the
 -- default REPL behaving exactly as before: skills narrow, they never widen.
 function M.agent_opts(rec)
+  local invoke=require("invoke")
+  local st={}
+  for k,v in pairs(require("perm").state()) do st[k]=v end
+  st.agent_rules=rec.perms
+  local context=invoke.context({state=st,
+    allow=rec.allow and next(rec.allow) and rec.allow or nil,
+    approve=bog.approve and function(name,input) return bog.approve(name,input,rec.id)==true end or nil},
+    rec.invocation_context)
   return {
+    invocation_context=context,
     -- Telemetry lineage: the whole fan-out shares run_id so KPIs group; run_on
     -- stamps every record with these.
     run_id = rec.run_id or rec.id,
@@ -58,44 +67,7 @@ function M.agent_opts(rec)
       return bog.tools.schemas_for(rec.allow)
     end,
     run_tool = function(name, input)
-      if rec.allow and next(rec.allow) ~= nil and not bog.tools.allowed(rec.allow, name) then
-        return "Tool error: tool '" .. name .. "' is not permitted for this agent"
-      end
-      -- Approval gate for spawned sub-agents. The studio/cTUI set bog.approve so
-      -- children honour the coordinator's permission mode. When it is unset
-      -- (headless/CLI/swarm -- the workhorse), fall back to perm's headless
-      -- policy instead of running write/edit/bash unattended, which is exactly
-      -- what these agents used to do. May run under the scheduler.
-      if bog.approve then
-        local ok, why = bog.approve(name, input, rec.id)
-        if ok == false then
-          return "Tool error: [permission_error] " .. (why or "rejected by approval gate")
-        end
-      elseif bog.perm and bog.perm.headless_decision(name) == "deny" then
-        return "Tool error: [permission_error] the " .. name .. " tool is gated for "
-          .. "this agent and no approver is attached. Do not retry it."
-      end
-      -- Per-agent permission profile. The skill allowlist above answers "may
-      -- this agent use this TOOL"; this answers "may it make THIS CALL" -- a
-      -- read-only reviewer, a child that may run `git *` but not `sudo`. It can
-      -- only ever NARROW what the run already permits (perm.decide takes the
-      -- stricter of the two), so a spawn cannot hand a child more authority
-      -- than the coordinator has. That direction is the whole point.
-      if rec.perms and bog.perm and bog.perm.decide then
-        local st = bog.perm.state()
-        local scoped = {
-          mode = st.mode, tool_policy = st.tool_policy, rules = st.rules,
-          guards = st.guards, recent = rec._recent, agent_rules = rec.perms,
-        }
-        local verdict, why = bog.perm.decide(name, input, scoped)
-        rec._recent = scoped.recent
-        if verdict == "deny" then
-          return "Tool error: [permission_error] this agent's profile does not permit "
-            .. "that " .. name .. " call" .. (why and (" -- " .. why) or "")
-            .. ". Do not retry it; report what you would have done."
-        end
-      end
-      return bog.tools.run(name, input)
+      return invoke.string(context,name,input)
     end,
     on_tool = bog.log_tool,
     -- Durable checkpoint: persist this agent's transcript to its thread row
@@ -199,6 +171,7 @@ function M.new_agent(p)
   end
 
   local rec = {
+    invocation_context = require("invoke").current(),
     id = id, parent_id = p.parent_id, spec_name = p.agent, skills = skills,
     allow = allow, instructions = instructions, sys_override = spec.system,
     -- Telemetry: a child's run_id is its parent's (the coordinator) so a 1-level

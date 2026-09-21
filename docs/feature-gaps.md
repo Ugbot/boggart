@@ -175,7 +175,7 @@ honest proxy for cost: Lua is a session, C is a project.
 | # | Gap | Who has it | Lands in | Size |
 |---|---|---|---|---|
 | ~~1~~ | ~~Permission policy engine~~ — **shipped** (glob rules, deny > ask > allow, agent narrowing; `lua/perm.lua`) | OpenCode, Codex, CC, dsh, Qwen | Lua | done |
-| ~~2~~ | ~~Deny-capable hooks~~ — **shipped** (`events.ask`, `tool:before` veto) | Claude Code, dsh, OpenCode | Lua | done |
+| ~~2~~ | ~~Deny-capable hooks~~ — **shipped** (`events.ask`, `tool:authorize` veto) | Claude Code, dsh, OpenCode | Lua | done |
 | ~~3~~ | ~~Loop / external-dir / secret guards~~ — **shipped** (doom-loop, outside-workspace, credential files) | OpenCode | Lua | done |
 | ~~4~~ | ~~Per-sub-agent permission profiles~~ — **shipped** (`spawn{perms=…}`, narrow-only) | Qwen (fork-profiles) | Lua | done |
 | ~~5~~ | ~~Structured returns + budgets~~ — **shipped** (`spawn{schema=…, budget=…}`, enforced by the exit contract) | Devin, Qwen | Lua | done |

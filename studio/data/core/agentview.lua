@@ -456,40 +456,6 @@ function AgentView:submit(text)
              and core.studio.is_swarm_tool(name) then
             core.studio.ensure_engine()
           end
-          local policy = self:policy_for(name)
-          if policy == "deny" then
-            self:push("system", "blocked: " .. name)
-            return "Tool error: [permission_error] the user's settings do not "
-              .. "permit the " .. name .. " tool. Do not retry it; say what you "
-              .. "would have done and ask."
-          end
-          if policy == "ask" then
-            local rec = self:request_approval(name, input)
-            if rec then
-              -- Show the full diff at the DECISION point, not after. You should
-              -- be able to read exactly what a write/edit will do before saying
-              -- yes -- the core Cursor review loop. It used to be pushed only
-              -- once approved, so you approved on the one-line summary and saw
-              -- the change too late to stop it.
-              if rec.diff and rec.path then
-                self:push("diff", "", { diff = rec.diff, path = rec.path })
-              end
-              self.pending = rec
-              self.status = "waiting for approval"
-              -- Park on the scheduler until the decision lands, rather than
-              -- re-yielding every frame (the scheduler owns the wait now via the
-              -- "block" kind, keyed on rec.decision -- see lua/sched.lua).
-              while rec.decision == nil do coroutine.yield("block", rec) end
-              self.pending = nil
-              if rec.decision == "reject" then
-                self:push("system", "rejected: " .. name)
-                -- A tool error rather than a raised one: the model should see
-                -- a refusal it can respond to, not a crashed turn.
-                return "Tool error: [permission_error] the user rejected this "
-                  .. name .. " call. Do not retry it; ask what to do instead."
-              end
-            end
-          end
           -- What the file said before the tool touched it, so the marks can be
           -- a real diff rather than a guess. Captured here and not from `rec`
           -- because `rec` only exists when the call was gated: an approved-by-
@@ -501,7 +467,16 @@ function AgentView:submit(text)
           -- rather than vanishing into the harness's catch. The harness treats a
           -- returned "Tool error: ..." string exactly as it would a raise, so
           -- catching here changes nothing the model sees.
-          local ok, out = pcall(bog.tools.run, name, input)
+          local gated = perm.wrap_run(bog.tools.run, self, {
+            context=extra.invocation_context,
+            on_ask=function(rec)
+              if rec.diff and rec.path then self:push("diff", "", {diff=rec.diff,path=rec.path}) end
+              self.pending=rec; self.status="waiting for approval"
+            end,
+            on_done=function() self.pending=nil end,
+            on_deny=function(n) self:push("system", "blocked: " .. n) end,
+          })
+          local ok, out = pcall(gated, name, input)
           if not ok then out = "Tool error: " .. tostring(out) end
           if self.live_tool then
             self.live_tool.output = type(out) == "string" and out or tostring(out)

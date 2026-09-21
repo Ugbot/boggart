@@ -242,35 +242,30 @@ be written in Lua nor handed to an external station?"** That list is short.
 
 ### What is genuinely structural (survives the reframe)
 
-1. **The sandbox — but it is already most of the way there, and of the
-   stronger kind.** The instinct is to reach for an OS jail as Codex does, and
-   to call the whole thing unsolved. That undersells what boggart already has.
-   Its sandbox **is not a Lua sandbox — it is the C/Lua boundary** (`tools.lua`
-   is explicit about this). A `define_tool` body is compiled against `tool_env()`
-   as its `_ENV`, and `io`, the destructive half of `os`, `package`/`require`/
-   `load`, `debug`, and raw `uv`/`http`/`swarm`/`mcp` are all *deliberately
-   absent*. The only way to touch the world is a C-backed capability (`sys`,
-   `db`) with its **policy co-located in C**: `sys.rmtree` refuses `/` and uses
-   `lstat` so it cannot be walked out of the overlay, `proc.run` bounds output
-   and enforces a timeout, `db` goes through the store, even `getenv` refuses
-   secret-ish names. There is no second route, so limits and tracing are
-   enforced once.
+1. **Generated Lua admission and OS containment are separate boundaries.**
+   Boggart now mediates the capabilities exposed to generated Lua; OS-level
+   containment remains separate work.
+   A `define_tool` body is compiled against `tool_env()` as its `_ENV`, and
+   `io`, `package`/`require`/`load`, `debug`, and raw
+   `uv`/`http`/`swarm`/`mcp` are all *deliberately absent*. Generated code does
+   not receive raw `sys`, `db`, `data`, or the tool registry. It receives
+   mediated `sys.<name>` functions, `gold.re`, mediated
+   `gold.fs.read/write/glob`, and admitted `tools.call`/`tools.names` facades.
+   Each effectful or registry facade crosses the common invocation gate, where
+   inherited permission, policy, approval and call-quota restrictions are
+   intersected before trusted host dispatch. Nested calls, fallbacks, child
+   agents, CLI and Studio use the same gate.
 
-   This is the **capability-positive** model, and it is *stronger* than an OS
-   deny-list: a tool can only do what it was handed, where seccomp enumerates
-   what to forbid and leaks by omission. So the "harder sandbox" framing is
-   backwards — for pure-Lua and C-capability composition, the boundary already
-   contains the agent's own generated code.
+   These facades limit which host operations generated code can request. They
+   do not establish memory isolation, constrain all native execution, or
+   replace an OS sandbox. Each admitted native capability still needs its own
+   documented bounds and trust requirements.
 
-   What remains is exactly **one residual hole**: `sys.exec` (and MCP stdio
-   servers) spawn a real subprocess, and *that child* leaves the boundary into
-   native land. OS enforcement — **Landlock + seccomp** on Linux, **Seatbelt**
-   on macOS — therefore applies to **precisely one tier, the shell-out /
-   subprocess tier, and nowhere else**; the in-VM tiers need nothing added. That
-   is a far smaller, sharper piece of C work than a general jail, and the swarm's
-   per-agent allowlist is already the *policy* layer waiting for it. Until it
-   lands, only shelling out is "safe because the operator is trusted" — and that
-   is the assumption untrusted inbound work (see §4) erodes.
+   Admitted `sys.exec`/shell calls and MCP stdio servers spawn processes outside
+   the Lua boundary. Their admission is governed and host runners apply their
+   own timeout, but there is no OS sandbox around the child. Trusted installed
+   Lua/native modules also remain privileged. The common gate is application
+   admission, not OS containment.
 
 2. **Two pieces that stay C / front-end work no matter how mutable the Lua is:**
    - **Image / multimodal ingestion.** `api.lua` can be taught to *send* image

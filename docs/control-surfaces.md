@@ -121,15 +121,17 @@ observer and useless for a gate. `events.ask(name, data)` dispatches the same
 handlers and returns the **first non-nil answer**, so a hook can refuse:
 
 ```lua
-bog.events.on("tool:before", function(_, ev)
+bog.events.on("tool:authorize", function(_, ev)
   if ev.tool == "bash" and ev.input.command:match("push %-%-force") then
     return { deny = true, reason = "this repo forbids force-push" }
   end
 end)
 ```
 
-The reason reaches the model in the `permission_error`. Existing handlers return
-nothing and are unaffected. This is Claude Code's `PreToolUse` exit-2 idea, in
+The invocation gate calls this channel with `fail_closed=true`: every veto
+is considered, and a throwing or over-budget authorizer refuses admission.
+The reason reaches the model in the `permission_error`. Observation handlers
+remain on `tool:before`; existing veto handlers must move to `tool:authorize`. This is Claude Code's `PreToolUse` exit-2 idea, in
 the language the harness is written in.
 
 Both `emit` observers and `ask` gates have a five-million-Lua-instruction

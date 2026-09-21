@@ -26,9 +26,7 @@ end
 
 -- Wrap bog.tools.run so a gated call parks on st.pending until y/n/a.
 function M.run_tool(st)
-  return perm.wrap_run(function(name, input)
-    return bog.tools.run(name, input)
-  end, st, {
+  return perm.wrap_run(nil, st, {
     on_ask = function(rec)
       st.pending = rec
       st.dirty = true

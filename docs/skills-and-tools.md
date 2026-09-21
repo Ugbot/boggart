@@ -9,8 +9,9 @@ The three patterns that make a skill trustworthy, in one line each:
 
 1. **Verify** — a skill with a checkable outcome names the tool that checks it
    (`verify`), and boggart makes the agent run it before finishing.
-2. **Single source** — the rules live in ONE place (a Lua module, or `data.put`
-   once); the instructions and the checker both read them, so they never drift.
+2. **Single source** — the rules live in ONE place (a trusted Lua module, or a
+   registered data capability); the instructions and checker both read them,
+   so they never drift.
 3. **Compose** — `instructions` may be a function that pulls in only the bits it
    needs, rather than one monolith.
 
@@ -29,9 +30,11 @@ The three patterns that make a skill trustworthy, in one line each:
     required = { "path" },
   },
   body = [=[                     -- runs SANDBOXED: no require/load/io/package
-    -- receives `args`; MUST return a string. Globals: sys, json, gold, db,
-    -- data (data.put/get), tools (tools.call/names), events, os (time/getenv),
-    -- string/table/math/utf8. Signal failure by returning "Tool error: [kind] …".
+    -- receives `args`; MUST return a string. Facades: mediated sys functions,
+    -- gold.re, gold.fs.read/write/glob, json, tools.call/names, events.notify,
+    -- safe os time/getenv, and copied string/table/math/utf8 libraries.
+    -- db, data, other gold facets and the raw registry are unavailable.
+    -- Signal failure by returning "Tool error: [kind] …".
     if type(args.path) ~= "string" then return "Tool error: [invalid] need 'path'" end
     local text = gold.fs.read(args.path)
     if not text then return "Tool error: [not_found] " .. args.path end
@@ -104,7 +107,8 @@ Callable outcome before `finally` cleanup runs. See `docs/callables.md`.
   it provides or grants. Pure-capability skills (read files, send mail) omit it.
 - **single source**: no rule hardcoded in two places. If a checker enforces a
   number/list the instructions also state, both read it from one module or
-  `data.get`, not two literals. (See `~/.boggart/lua/style.lua` for the reference.)
+  registered capability, not two literals. Trusted installed skill code may use
+  host modules directly; generated bodies must cross the invocation gate.
 - **provides**: bodies obey the tool template (sandboxed, absolute paths,
   "Tool error:" on failure).
 
