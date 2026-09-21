@@ -850,18 +850,18 @@ assert(timeline.conflicts[1].source_refs ~= nil); assert(cleanup.changed_facts =
 
 #### BRAIN-35 — Expose named runs, buttons and scheduled execution
 
-**Dependencies:** BRAIN-31, BRAIN-43
+**Dependencies:** BRAIN-16, BRAIN-31, BRAIN-43
 
 **Files:** Extend lua/triggers.lua, lua/control.lua and studio/data/core/workflows.lua; create tests/workflow_triggers.lua.
 
-**Implementation:** Route explicit workflow names, UI buttons and cron-equivalent schedules through the same version/policy/context binding path. Persist schedule identity, timezone, missed-run behavior, concurrency limit and deduplication key. Support pause/cancel, dry-run preview and visible last/next run. A schedule is not additional authorization; policy changes affect future admissions.
+**Implementation:** Route explicit workflow names, UI buttons and cron-equivalent schedules through the same version/policy/context binding path. Persist schedule identity, timezone, missed-run behavior, concurrency limit and deduplication key. Support pause/cancel, dry-run preview and visible last/next run. A schedule is not additional authorization; policy changes affect future admissions. Preserve narrowed control-client authority across queued prompts, webhooks and scheduled triggers using host-owned bindings; recheck current policy and revocation before each effect. Request payloads cannot manufacture authority. Scoped deferred routes that BRAIN-16 initially refuses must become supported through this binding, with denied-write and post-enqueue revocation regressions.
 
 **Interface:** triggers.bind({workflow,context_provider,schedule,timezone,overlap,misfire,policy_scope}); all trigger kinds call workflow.start with an auditable origin.
 
 **Acceptance criteria:**
 
 - [ ] Button, named call and timer select the same pinned version and policy; overlapping/restarted schedulers do not duplicate one occurrence.
-- [ ] DST changes, missed runs, paused schedules and revoked permissions follow explicit tested behavior and show a clear status.
+- [ ] DST changes, missed runs, paused schedules and revoked permissions follow explicit tested behavior and show a clear status; scoped queued prompts/webhooks/triggers preserve narrowed authority and refuse denied writes or post-enqueue revocation.
 
 **Test scenario:**
 
