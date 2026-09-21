@@ -98,9 +98,30 @@ eq((perm.decide("bash", { command = "sudo x" }, d)), "deny", "a rule denies")
 eq((perm.decide("read", { path = "README.md" }, { mode = "smart", tool_policy = {} })), "allow",
    "with no rules, read follows the mode enum")
 
--- an explicit runtime "always allow" beats everything else
+-- An explicit runtime grant can relax a default, never inherited restrictions.
 eq((perm.decide("bash", { command = "sudo x" }, { mode = "smart", tool_policy = { bash = "allow" } })),
    "allow", "an explicit tool_policy entry wins")
+eq(perm.policy_for("bash", {mode="chat",tool_policy={bash="allow"}}), "deny",
+   "mode-only chat policy survives explicit allow")
+for _, st in ipairs({
+  {mode="chat",tool_policy={bash="allow"}},
+  {mode="auto",tool_policy={bash="allow"},agent_rules={bash="deny"}},
+  {mode="auto",tool_policy={bash="allow"},rules={bash="deny"}},
+}) do
+  eq(perm.decide("bash",{command="echo safe"},st), "deny", "explicit allow cannot widen a restriction")
+end
+eq(perm.decide("read",{path="/home/x/.ssh/id_rsa"},{mode="auto",tool_policy={read="allow"}}),
+   "deny", "explicit allow cannot bypass credential guard")
+eq(perm.decide("read",{path="a.lua"},{mode="auto",tool_policy={read="typo"}}),
+   "deny", "unknown tool policy fails closed")
+local restricted = {mode="auto", guards=false, tool_policy={read="allow"},
+  policy_scopes={{id="project",revision=1,capabilities={allow={"read"}},approval=true}},
+  capabilities={read={id="read",version="1",effect="read"}}}
+eq(perm.decide("read",{path="a.lua"},restricted), "ask", "generic policy composes through legacy decision")
+restricted.capabilities = {}
+eq(perm.decide("read",{path="a.lua"},restricted), "deny", "unregistered capability is denied under generic policy")
+restricted.policy_scopes[1].limits = {tokens=-1}
+eq(perm.decide("read",{path="a.lua"},restricted), "deny", "invalid generic scopes fail closed")
 
 -- a rule cannot un-deny a credential file
 eq((perm.decide("read", { path = "/home/x/.ssh/id_rsa" },

@@ -55,10 +55,12 @@ end
 -- st may carry approve_all and tool_policy[name] = "allow"|"ask"|"deny".
 function M.policy_for(name, st)
   st = st or M.state()
-  local explicit = st.tool_policy and st.tool_policy[name]
-  if explicit then return explicit end
   local mode = st.mode or "smart"
   if mode == "chat" then return "deny" end
+  local explicit = st.tool_policy and st.tool_policy[name]
+  if explicit then
+    return (explicit == "allow" or explicit == "ask") and explicit or "deny"
+  end
   if mode == "auto" or st.approve_all then return "allow" end
   if mode == "manual" then return "ask" end
   return M.GATED[name] and "ask" or "allow"
@@ -371,17 +373,20 @@ end
 -- have a tool name but no input yet.
 function M.decide(name, input, st)
   st = st or M.state()
+  if st.mode == "chat" then return "deny", "chat mode does not permit tools" end
   local explicit = st.tool_policy and st.tool_policy[name]
-  if explicit then return explicit, "you set this tool to " .. explicit end
+  if explicit and explicit ~= "allow" and explicit ~= "ask" and explicit ~= "deny" then
+    return "deny", "invalid tool policy"
+  end
 
   local rule = M.rule_for(name, input, st.rules or M.rules)
   local guard, why = M.guard(name, input, st)
   -- A rule is an explicit statement about THIS call and outranks a guard's
   -- default -- except that a rule can never soften a deny into an allow when
   -- the guard found credentials, which is the one case worth being rude about.
-  local verdict = rule
-  if guard and (not rule or (guard == "deny" and why == "that file holds credentials")) then
-    verdict = stricter(rule, guard)
+  local verdict = stricter(rule, explicit)
+  if guard and (not verdict or guard == "deny") then
+    verdict = stricter(verdict, guard)
   end
   if not verdict then
     verdict = M.policy_for(name, st)
@@ -391,7 +396,18 @@ function M.decide(name, input, st)
   -- an agent narrows what it inherited, never widens it
   local agent = st.agent_rules and M.rule_for(name, input, st.agent_rules)
   if agent then verdict = stricter(verdict, agent) end
-  if st.mode == "chat" then verdict = "deny" end
+  -- Generic scopes are additional restrictions, never an alternate allow
+  -- path. Descriptor/resource evaluators come from the trusted host registry.
+  if st.policy ~= nil or st.policy_scopes ~= nil then
+    local policy = require "policy"
+    local compiled, err = st.policy
+    if compiled == nil then compiled, err = policy.compile(st.policy_scopes) end
+    if not compiled then return "deny", "invalid policy scopes: " .. tostring(err) end
+    local descriptor = st.capabilities and st.capabilities[name]
+    local decision = policy.decide(compiled, descriptor, input, st.policy_usage)
+    verdict = stricter(verdict, decision.verdict)
+    if #decision.reasons > 0 then why = table.concat(decision.reasons, "; ") end
+  end
   return verdict, why
 end
 
