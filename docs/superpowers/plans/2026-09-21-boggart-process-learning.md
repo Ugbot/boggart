@@ -668,8 +668,8 @@ assert(rank(correct_structure) < rank(similar_words_wrong_effect))
 
 **Acceptance criteria:**
 
-- [ ] Candidates from both source-backed workflows and initially source-free native tool sequences execute correctly on distinct inputs without copying prior recipients, filenames or private context constants.
-- [ ] Stable checks become Lua while ambiguous response interpretation remains an explicit model step; every emitted step links to source evidence or is labelled synthesized.
+- [x] Candidates from both source-backed workflows and initially source-free native tool sequences execute correctly on distinct inputs without copying prior recipients, filenames or private context constants.
+- [x] Stable checks become Lua while ambiguous response interpretation remains an explicit model step; every emitted step links to source evidence or is labelled synthesized.
 
 **Test scenario:**
 
@@ -683,7 +683,7 @@ assert(not candidate.source:find("historical-secret", 1, true))
 
 **Dependencies:** BRAIN-27, BRAIN-12
 
-**Files:** Create lua/mining/jobs.lua and tests/mining_jobs.lua; integrate existing trigger/supervisor modules.
+**Files:** Create lua/mining/jobs.lua, tests/mining_jobs.lua and docs/mining-jobs.md; integrate existing trigger/supervisor modules and register mining_jobs in CMakeLists.txt.
 
 **Implementation:** Support manually scoped corpus/range/objective jobs and bounded incremental background mining with the same engine. Persist cursor, input snapshot, job version and candidate provenance. Apply resource/LLM budgets, cancellation and scheduling priority so mining cannot starve interactive execution. Deduplicate overlapping work; interrupted jobs resume. Default background behavior is configurable independently from candidate activation.
 

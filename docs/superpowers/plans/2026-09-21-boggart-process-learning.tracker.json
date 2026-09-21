@@ -434,12 +434,14 @@
           ],
           "test": "mining_compile",
           "example": "assert(not candidate.source:find(\"historical-secret\", 1, true))",
-          "status": "in_progress"
+          "status": "done",
+          "commit": "e3e5035",
+          "verification": "Final94 checks twice macOS/Linux; three actual recorded integrations; bound-output no-dispatch regression; independent review approved."
         },
         {
           "id": "mining_jobs",
           "title": "Run mining in background and directed modes",
-          "files": "Create lua/mining/jobs.lua and tests/mining_jobs.lua; integrate existing trigger/supervisor modules.",
+          "files": "Create lua/mining/jobs.lua, tests/mining_jobs.lua and docs/mining-jobs.md; integrate existing trigger/supervisor modules and register mining_jobs in CMakeLists.txt.",
           "work": "Support manually scoped corpus/range/objective jobs and bounded incremental background mining with the same engine. Persist cursor, input snapshot, job version and candidate provenance. Apply resource/LLM budgets, cancellation and scheduling priority so mining cannot starve interactive execution. Deduplicate overlapping work; interrupted jobs resume. Default background behavior is configurable independently from candidate activation.",
           "api": "mining.start({scope,range,objective,mode,budget}) -> job_id; mining.status/cancel(job_id); mining.tick(cursor,budget).",
           "ac": [
@@ -451,7 +453,8 @@
             "quota"
           ],
           "test": "mining_jobs",
-          "example": "assert(background_candidate.source_hash == directed_candidate.source_hash)"
+          "example": "assert(background_candidate.source_hash == directed_candidate.source_hash)",
+          "status": "in_progress"
         }
       ],
       "status": "in_progress"
