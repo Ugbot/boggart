@@ -27,7 +27,7 @@ status authority.
 
 | BRAIN-23 | Durable AIbyWire MCP delegation with retained SQLite claims, input-bound reconnect, backend-owned retries and privacy-aware receipts | Backend92 tests; Lua23 checks; native/Linux five affected suites each twice; actual MCP1.30 typed/restart/privacy/lost-ack/readonly checks; independent re-review approved | Boggart `3fc1412`; AIbyWire `4e8127e` |
 | BRAIN-24 | Scoped Gestalt memory, current authority, stable IDs, tombstones and durable recovery | Memory54; five suites twice on native/Linux; fresh25ES tests; actual client/daemon restart, deletion, retention and outage; independent review approved | `dcf1e8d` + isolated Gestalt `f741ea7` |
-| BRAIN-25 | Lua5.5 ASTs with exact provenance, lexical normalization and conservative unknowns | Final95checks twice native/Linux; affected workflow/worker; realworker parser;154module corpus plus3bounded refusals; independent review approved | `c0f2e8f` |
+| BRAIN-25 | Lua 5.5 ASTs with exact provenance, lexical normalization and conservative unknowns | 95 final checks twice on native/Linux; affected workflow/worker suites; real worker parser; 154-module corpus plus 3 bounded refusals; independent review approved | `c0f2e8f` |
 
 Build: `cmake --build build --target boggart -j 6` with `CCACHE_DIR` and
 `CCACHE_TEMPDIR` pointing inside `build/ccache`, because the default cache
@@ -243,7 +243,18 @@ worker exactly-once delivery remain unqualified. Tests used synthetic workers
 and temporary profiles, with no paid models or real external messages.
 
 
-BRAIN-24 completes the integration workstream BRAIN-5. The repaired Gestalt daemon is built from an isolated sibling worktree; the original installed binary remains unchanged and does not qualify restart recovery. Recovery refuses above65,536 total DocStore records or duplicate ES identities. Actual search supports whole-document BM25 and scalar relationships, with advanced graph/vector modes explicitly unavailable. Two current-authority gaps found in review now have regressions. Existing dependency/header and duplicate-link warnings are disclosed; platform/release qualification remains BRAIN-39. BRAIN-25 Lua AST indexing is next and in progress.
+BRAIN-24 completes the integration workstream BRAIN-5. The repaired Gestalt daemon is built from an isolated sibling worktree; the original installed binary remains unchanged and does not qualify restart recovery. Recovery refuses above 65,536 total DocStore records or duplicate ES identities. Actual search supports whole-document BM25 and scalar relationships, with advanced graph/vector modes explicitly unavailable. Two current-authority gaps found in review now have regressions. Existing dependency/header and duplicate-link warnings are disclosed; platform/release qualification remains BRAIN-39. BRAIN-25 Lua AST indexing is next and in progress.
 
 
-BRAIN-25 pins unmodified tree-sitterv0.26.6 and tree-sitter-luav0.5.0 with MIT/Unicode licenses and verified archive/file hashes. Native syntax validation never executes source; Lua owns lexical normalization and indexing. Input/work/tree limits are explicit; upstream allocation failure can abort the process, so this is not hard OS memory isolation. Three large repository modules were explicitly refused by resource bounds. Original vendor whitespace and existing compiler/link warnings are retained. BRAIN-26 process and fragment recognition is in progress.
+BRAIN-25 pins unmodified tree-sitter v0.26.6 and tree-sitter-lua v0.5.0 with MIT/Unicode licenses and verified archive/file hashes. Native syntax validation never executes source; Lua owns lexical normalization and indexing. Input/work/tree limits are explicit; upstream allocation failure can abort the process, so this is not hard OS memory isolation. Three large repository modules were explicitly refused by resource bounds. Original vendor whitespace and existing compiler/link warnings are retained. BRAIN-26 process and fragment recognition is in progress.
+
+BRAIN-26 remains in progress. Recognition now compares explicit dataflow,
+identified branch outcomes and context dependencies, following an independent
+review finding. The corrected 48-check suite passed twice on macOS and Linux;
+actual recorded Lua workflow and producer-binding fixtures also passed. Re-review
+found that cached children could conceal unsupported nested context dependencies.
+The worker added a failing regression and reports 49 checks passing after the
+focused fix. That final correction still requires parent re-embedding, covering
+platform qualification and re-review before acceptance or ticket closure.
+
+BRAIN-26 is complete in `8c4717d`. The final cached-dependency correction passed fresh native/Linux builds and the 49-check suite twice on both platforms, plus both recorded Lua integration fixtures. Independent review approved spec compliance and quality. BRAIN-27 parameterized Lua candidate compilation is now in progress.

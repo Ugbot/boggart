@@ -402,7 +402,7 @@
         {
           "id": "recognition",
           "title": "Retrieve and align workflow and fragment candidates",
-          "files": "Create lua/mining/recognize.lua, lua/mining/align.lua and tests/mining_recognition.lua.",
+          "files": "Create lua/mining/recognize.lua, lua/mining/align.lua and tests/mining_recognition.lua. Document the host retrieval/loading and uncertainty contracts in docs/mining-recognition.md; register the mining_recognition suite in CMakeLists.txt.",
           "work": "Retrieve scoped candidates using Gestalt semantics plus AST/capability/effect features; then align observed sequences/dataflow, loop occurrences, branch outcomes and context dependencies. Separate whole workflows and reusable fragments. Avoid matching on task description alone. Return evidence, coverage, ambiguity and unsupported dynamic regions; require binding/applicability checks before execution. Use a labelled positive/negative fixture corpus including similar wording with different effects.",
           "api": "recognize.find(request,context,scope) -> ranked_candidates; align.compare(traces,ast_indexes) -> {common_regions,variants,bindings,evidence,unknowns}.",
           "ac": [
@@ -415,7 +415,9 @@
           ],
           "test": "mining_recognition",
           "example": "assert(rank(correct_structure) < rank(similar_words_wrong_effect))",
-          "status": "in_progress"
+          "status": "done",
+          "commit": "8c4717d",
+          "verification": "49 checks, twice on native macOS and Linux; actual recorded flow and binding fixtures; independent review approved."
         },
         {
           "id": "compile",
@@ -431,7 +433,8 @@
             "recognition"
           ],
           "test": "mining_compile",
-          "example": "assert(not candidate.source:find(\"historical-secret\", 1, true))"
+          "example": "assert(not candidate.source:find(\"historical-secret\", 1, true))",
+          "status": "in_progress"
         },
         {
           "id": "mining_jobs",

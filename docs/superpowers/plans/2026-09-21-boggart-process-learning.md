@@ -637,7 +637,7 @@ assert(features_a.structure_hash == features_renamed.structure_hash)
 
 **Dependencies:** BRAIN-24, BRAIN-25
 
-**Files:** Create lua/mining/recognize.lua, lua/mining/align.lua and tests/mining_recognition.lua.
+**Files:** Create lua/mining/recognize.lua, lua/mining/align.lua and tests/mining_recognition.lua. Document the host retrieval/loading and uncertainty contracts in docs/mining-recognition.md; register the mining_recognition suite in CMakeLists.txt.
 
 **Implementation:** Retrieve scoped candidates using Gestalt semantics plus AST/capability/effect features; then align observed sequences/dataflow, loop occurrences, branch outcomes and context dependencies. Separate whole workflows and reusable fragments. Avoid matching on task description alone. Return evidence, coverage, ambiguity and unsupported dynamic regions; require binding/applicability checks before execution. Use a labelled positive/negative fixture corpus including similar wording with different effects.
 
@@ -645,8 +645,8 @@ assert(features_a.structure_hash == features_renamed.structure_hash)
 
 **Acceptance criteria:**
 
-- [ ] Equivalent processes with different wording/values group together; near-identical descriptions with incompatible effects remain separate.
-- [ ] Branches/fragments across several traces preserve output-to-input bindings and explicitly mark unobserved paths instead of assuming them.
+- [x] Equivalent processes with different wording/values group together; near-identical descriptions with incompatible effects remain separate.
+- [x] Branches/fragments across several traces preserve output-to-input bindings and explicitly mark unobserved paths instead of assuming them.
 
 **Test scenario:**
 
