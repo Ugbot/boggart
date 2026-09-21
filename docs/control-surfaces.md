@@ -132,6 +132,13 @@ The reason reaches the model in the `permission_error`. Existing handlers return
 nothing and are unaffected. This is Claude Code's `PreToolUse` exit-2 idea, in
 the language the harness is written in.
 
+Both `emit` observers and `ask` gates have a five-million-Lua-instruction
+callback ceiling. An ordinary callback error or local ceiling trip is reported
+without stopping later observers; an exhausted enclosing execution budget
+propagates instead of being swallowed by event isolation. The limit is not a
+wall-clock or native-call timeout, so handlers must remain non-blocking and
+must not yield.
+
 ### 3.3 The inbound control plane — C transport + Lua routes
 
 **C (`src/lserve.c`, ~600 lines).** `uv_tcp` listener on the existing loop,

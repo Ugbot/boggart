@@ -44,6 +44,13 @@ Body rules: absolute paths (a bare/`~` path lands in the process cwd); small,
 composable output (don't dump — write files and summarize); `return "Tool error:
 [kind] message"` on failure so the caller can branch.
 
+Sandboxed bodies have instruction and memory budgets. Nested tool calls share
+the active count-hook authority instead of replacing it, and coroutines created
+through the sandbox inherit that hook. The instruction counter measures Lua
+execution only: native or blocking host calls need their own timeout. Trusted
+built-ins and code enabled by `/trust full` execute at the host boundary without
+the generated-body budget.
+
 ---
 
 ## Skill template (`define_skill` / a `lua/skills/<name>.lua` file)
@@ -83,6 +90,11 @@ return {
 }
 ```
 
+A string `verify` is still an instruction for the model to run the named tool.
+For builtin Lua skills, a function-valued `verify` is a lifecycle verifier: only
+`true` passes; false/nil/string returns and thrown errors fail the structured
+Callable outcome before `finally` cleanup runs. See `docs/callables.md`.
+
 ### Conformance checklist
 
 - **description**: what **and when** (an agent picks a skill by this line).
@@ -97,3 +109,26 @@ return {
   "Tool error:" on failure).
 
 `skills.lint(name)` reports where a skill misses this checklist.
+
+## Event handlers (`on_event` / `events.on`)
+
+`on_event` compiles a session-only handler in the same capability environment
+as a generated tool. `events.on` is also the Lua API used by trusted runtime
+code and by visible user files under `~/.boggart/lua/events/`. Each callback has
+a five-million-instruction ceiling. `emit` runs callbacks in isolated
+coroutines, reports a throwing, yielding, or exhausted handler, and continues
+to later handlers. `ask` applies the same instruction ceiling and returns the
+first non-nil answer. A handler is removed after five failures.
+
+Handler hooks compose with any enclosing Lua count hook and restore it on exit.
+Exhausting the handler's own allowance is isolated as a
+handler failure; exhausting the enclosing allowance propagates to the caller,
+even if callback code catches the immediate hook exception. The ceiling counts
+Lua instructions rather than elapsed time, so handlers must not block, yield,
+or call native work without that operation's own timeout.
+
+Runtime registrations survive a successful reload. User event files are
+re-read, replacing the prior file-sourced registrations. If reload fails,
+boggart restores the previous module table, module cache, and event-registration
+state; arbitrary external side effects performed while loading a module cannot
+be rolled back.

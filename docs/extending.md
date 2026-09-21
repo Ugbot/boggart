@@ -74,7 +74,9 @@ the code path (docs/callables.md).
   frontmatter) into a skill file — once — after which it is an ordinary skill.
 - A skill resolves to a Callable GameObject: `bog.skills.as_callable(name)`.
   Its `before` can answer without the model (`{ done = ... }`); its `finally`
-  and `verify` run guaranteed; its `components` attach deterministic slices.
+  cleanup runs guaranteed. A function-valued `verify` runs after the body and
+  before cleanup, and can fail the invocation; its `components` attach
+  deterministic slices.
 - The three trust patterns: **verify** (name or code the checkable outcome),
   **single source** (rules in one place both prose and checker read), **compose**
   (instructions may be a function pulling in only what it needs).

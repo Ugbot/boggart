@@ -11,10 +11,11 @@ model call is just one primitive among them.
 
 The design reads three ways at once; each names a real property.
 
-**Try / catch / finally.** An invocation has a deterministic setup that can
-answer without the model (`before`), a body, and a teardown that always runs
-(`finally`). The `finally` is where verification and cleanup live, guaranteed,
-not "the model remembered to."
+**Try / verify / finally.** An invocation has deterministic setup that can
+answer without the model (`before`), a body, a verification phase, and cleanup
+that always runs (`finally`). Verification can fail the invocation. Cleanup is
+separate, runs even after body or verification failure, and cannot turn either
+failure back into success.
 
 **Unity GameObjects.** A Callable is an entity; behaviors attach as components;
 boggart is the engine calling their lifecycle hooks. You extend a skill by
@@ -47,15 +48,25 @@ so you can see which skills have paid down their model cost.
 
 ## The primitives
 
-    callable.new{ name=, before=, run=, finally= }   -- an entity
+    callable.new{ name=, before=, run=, verify=, finally= } -- an entity
     node:attach(component)                            -- AddComponent
     node:get(name)  node:send(msg, ...)               -- GetComponent / SendMessage
-    node(args)                                        -- invoke the lifecycle
+    node:result(args)                                  -- structured outcome
+    node:invoke(args)  node(args)                      -- compatibility invocation
 
 Lifecycle per invocation: every component's `before` (attach order) → the first
-`run` → every `finally` (reverse order, always). A `before` returning
-`{ done = value }` short-circuits the whole invocation; `{ set = {...} }` threads
-facts into the ctx.
+`run` → each verifier (attach order, stopping at the first failure) → every
+`finally` (reverse order, always). A `before` returning `{ done = value }`
+short-circuits the body but still proceeds through verification and cleanup;
+`{ set = {...} }` threads facts into the ctx.
+
+`result` (also exposed as `invoke_result`) returns
+`{ status, value, error, verification, cleanup_error }`, with status `success`
+or `failed` and `verification.ok` when a verifier ran. On success, `invoke`
+and call syntax keep the existing API and return `value`. On failure they raise;
+when cleanup also failed, the raised message includes both the primary and
+cleanup errors. Use `result` when a caller must inspect failure without catching
+an exception.
 
 ## The special forms
 
@@ -81,11 +92,12 @@ returns truthy to stop; `max` is the runaway backstop.
 A verifier is code that checks a result is real, not a model opinion. `verify`
 runs a node and asserts a code check over its output, raising with a reason on
 failure so an enclosing `retry`/`catch`/`loop` can react. A skill carrying a
-`verify` FUNCTION gets it wired as a `finally` component automatically — its own
-output is checked before it returns. (A `verify` STRING stays the model-run tool,
-for skills that have not moved that check into code yet.) `retry` is the
-contract: run, verify with code, repair, again — the retry decision is code, so
-a flaky tool is re-driven without a model turn deciding to.
+`verify` FUNCTION gets a verifier component automatically: it runs after the
+body and before finalizers. Returning anything other than `true`, or throwing,
+produces a failed outcome. A `verify` STRING remains a model-run tool for skills
+that have not moved that check into code yet. `retry` is the contract: run,
+verify with code, repair, again — the retry decision is code, so a flaky tool is
+re-driven without a model turn deciding to.
 
 ### The interpreter seam
 
@@ -119,7 +131,7 @@ Not every step should move. The rule that keeps a conversion safe:
 - **`before` short-circuits with `{ done }` only when the answer is complete
   and free** — an empty diff, no merge in progress, a CLEAR report. Otherwise
   it `{ set }`s facts and lets the model do the judgment.
-- **`verify` / `finally` checks should not need a runtime-chosen argument.** A
+- **`verify` checks should not need a runtime-chosen argument.** A
   check over the whole tree (conflict markers, leftover worktrees) runs as code
   cleanly. A check over "the file the model just wrote" needs the path the model
   chose, so it stays the model-run `verify` STRING until the skill threads its
@@ -167,10 +179,24 @@ zero-model-turn win lands in the swarm, and it is tracked, not done.
 Code that runs instead of the model runs with authority and no human mid-step,
 so trust is the BTEAM tier question (docs/team.md): a builtin skill's
 `before`/`run`/`finally` are trusted like `provides.run` today; an imported or
-crew skill's code runs in the capability sandbox until blessed; and every tool
-call a component makes still passes `perm.wrap_run`. "More code, fewer model
-calls" is never "fewer safety checks" — the gate is at the tool boundary, and
-code steps cross it exactly as model steps do.
+crew skill's code runs in the capability sandbox until blessed. Front-end calls
+use permission gates, but the audit found nested raw-dispatch paths that do not
+yet share one enforcement boundary. BRAIN-13 tracks that repair; a trusted
+component's direct call is not proof of a sandboxed effect.
+
+Generated tool bodies and model-authored skill bodies in sandboxed trust mode
+have instruction and memory limits. Nested bounded calls compose their count
+hooks with the enclosing hook and restore it on every exit; sandbox-created
+coroutines inherit the active hook. These are Lua execution limits, not a
+wall-clock sandbox. A blocking native call executes outside the instruction
+counter and must use the host operation's own timeout (for example,
+`proc.run`/`bash`). Built-in functions and user overlay event files are trusted
+host code. `/trust full` also gives model-authored skill code full host authority
+and no generated-body budget.
+
+Context providers and a general workflow runtime are still future integration
+work. The shipped surface here is Callable lifecycle/composition plus direct
+skill and tool invocation; do not treat those planned runtimes as available.
 
 ## Worked example: code_review's setup as code
 
@@ -197,5 +223,5 @@ review axes.
 4. `model` wired to the real turn — close the interpreter seam so a skill can be
    an arbitrary mix of code and scoped model steps.
 
-Steps 1–3 shipped as `lua/callable.lua` with 29 tests; step 4 is the wiring into
-the agent turn.
+Steps 1–3 and the structured verifier/finalizer lifecycle are shipped in
+`lua/callable.lua`; step 4 is the wiring into the agent turn.

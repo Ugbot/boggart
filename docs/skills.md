@@ -103,6 +103,10 @@ overlay file → embedded → database (a file/builtin of the same name shadows 
   tools. A body that fails to compile is skipped + logged — it never breaks a spawn.
 - **`define_skill`** authors skills (each `body` compile-checked before it persists);
   **`import_skill`** compiles markdown (including its `## Tools`).
+- **unit invocation** (`skills.invoke`, `bog.C`, or Callable composition) runs
+  `before`, the body, function-valued `verify`, then `finally`. Verification is
+  a failure-producing phase; cleanup remains guaranteed and its error is retained
+  separately. Ambient `resolve` does not execute lifecycle hooks.
 
 ## `provides` vs `define_tool`
 
@@ -110,4 +114,8 @@ Two authoring surfaces, one sandbox. Use **`define_tool`** for a standalone, sco
 (session/project/global), provenance-tracked helper stored under `~/.boggart/lua/tools/`. Use a
 skill's **`provides`** for tools *inseparable from a way of working* — they travel with the
 skill. Both compile through `build_def`/`run_bounded`, so there is exactly one sandbox and one
-budget for all model-authored Lua.
+budget for all model-authored Lua. Nested generated calls preserve and advance
+the enclosing instruction hook, and sandbox-created coroutines inherit it.
+Instruction budgets do not stop blocking native calls; those rely on the host
+operation's wall-clock timeout. Trusted built-ins and `/trust full` code remain
+outside this generated-body budget.
