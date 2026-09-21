@@ -1,0 +1,664 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-21",
+  "project": "BRAIN",
+  "root": "BRAIN-1",
+  "plan": "docs/superpowers/plans/2026-09-21-boggart-process-learning.md",
+  "status": "planned",
+  "keys": {
+    "root": "BRAIN-1",
+    "trust": "BRAIN-2",
+    "runtime": "BRAIN-3",
+    "evidence_group": "BRAIN-4",
+    "integrations": "BRAIN-5",
+    "mining": "BRAIN-6",
+    "learning": "BRAIN-7",
+    "product": "BRAIN-8",
+    "extensions": "BRAIN-9",
+    "release": "BRAIN-10",
+    "policy": "BRAIN-11",
+    "quota": "BRAIN-12",
+    "gate": "BRAIN-13",
+    "composition": "BRAIN-14",
+    "reload": "BRAIN-15",
+    "service": "BRAIN-16",
+    "capability": "BRAIN-17",
+    "evidence": "BRAIN-18",
+    "imports": "BRAIN-19",
+    "retention": "BRAIN-20",
+    "station": "BRAIN-21",
+    "forge": "BRAIN-22",
+    "aibywire": "BRAIN-23",
+    "gestalt": "BRAIN-24",
+    "ast": "BRAIN-25",
+    "recognition": "BRAIN-26",
+    "compile": "BRAIN-27",
+    "mining_jobs": "BRAIN-28",
+    "evaluation": "BRAIN-29",
+    "promotion": "BRAIN-30",
+    "routing": "BRAIN-31",
+    "drift": "BRAIN-32",
+    "slack": "BRAIN-33",
+    "novel": "BRAIN-34",
+    "triggers": "BRAIN-35",
+    "ui": "BRAIN-36",
+    "packages": "BRAIN-37",
+    "native": "BRAIN-38",
+    "qualification": "BRAIN-39",
+    "migration": "BRAIN-40",
+    "context": "BRAIN-41",
+    "workflow": "BRAIN-42",
+    "recovery": "BRAIN-43"
+  },
+  "groups": [
+    {
+      "id": "trust",
+      "title": "Restore composition guarantees and define policy",
+      "goal": "Nested execution, verification, budgets and reload must remain trustworthy before automatic reuse amplifies them.",
+      "tasks": [
+        {
+          "id": "policy",
+          "title": "Implement restrictive policy composition",
+          "files": "Create lua/policy.lua and tests/policy.lua; integrate lua/perm.lua; update CMakeLists.txt and docs/policy.md.",
+          "work": "Define immutable policy scopes with IDs and revisions. Intersect capability/resource allow constraints, union denies, retain every applicable quota, take minimum hard ceilings, and let approval requirements accumulate. A child override can narrow but never widen an ancestor. Unknown capability/resource evaluators deny. Preserve legacy modes through an explicit adapter; no early explicit-allow return may bypass chat or agent restrictions.",
+          "api": "policy.compile(scopes) -> compiled|nil,error; policy.decide(compiled, descriptor, args, usage) -> {verdict, reasons, obligations, policy_revision}. Host descriptors derive canonical resource attributes; caller-supplied resource labels confer no authority.",
+          "ac": [
+            "Parent deny defeats child/tool allow; chat restrictions and agent restrictions survive explicit overrides and scope reordering.",
+            "Unknown evaluators and malformed limits fail closed; disjoint resource allows produce no access; policy inputs cannot be mutated through a compiled result."
+          ],
+          "deps": [],
+          "test": "policy",
+          "example": "assert(policy.decide(policy.compile({parent_deny, child_allow}), write_cap, args, {}).verdict == \"deny\")"
+        },
+        {
+          "id": "quota",
+          "title": "Reserve shared quotas atomically in SQLite",
+          "files": "Create lua/quota.lua and tests/quota.lua; use src/ldb.c existing connection API; add tests to CMakeLists.txt.",
+          "work": "Persist buckets keyed by policy scope, rule ID, subject and time window, not run ID. Enforce all applicable buckets in one BEGIN IMMEDIATE transaction with rollback on any failure. Reserve count and bounded estimated usage before dispatch; reconcile actual usage after completion. Fixed windows first, explicit reset semantics, injectable clock for tests. A failed or uncertain call consumes its attempt count; release only unused cost reservation with durable reconciliation. No coroutine yield inside a transaction. SQLite lock contention must return retryable refusal, never execute unmetered.",
+          "api": "quota.open(conn, clock) -> ledger; ledger:reserve(compiled, invocation_id, estimate) -> reservation|nil,error; ledger:settle(reservation_id, actual, outcome) -> receipt|nil,error. Reservation IDs are idempotent.",
+          "ac": [
+            "Two independent database connections competing for the last shared token permit exactly one invocation; restart retains quota consumption.",
+            "Failure in one bucket changes none of the others; repeated settle does not double charge; backward clock changes cannot replenish a bucket."
+          ],
+          "deps": [
+            "policy"
+          ],
+          "test": "quota",
+          "example": "assert(granted_by_connection_a + granted_by_connection_b == 1)"
+        },
+        {
+          "id": "gate",
+          "title": "Route nested and surface calls through one invocation gate",
+          "files": "Create lua/invoke.lua and tests/invoke.lua; modify lua/tools.lua, lua/perm.lua, lua/thread.lua and studio/data/core/agentview.lua.",
+          "work": "Make invocation gating common to CLI, Studio, spawned agents, tools.call, fallback and capability adapters. Carry run policy in coroutine-local invocation context with protected cleanup; nested calls derive narrower context. Separate trusted host raw dispatch from policy-enforced public dispatch. Audit tool_env raw sys/db/require exposure: generated/mined code receives only mediated effects, while trusted installed modules are explicitly privileged. Emit before/after once, including denial and runner errors. Do not label in-process native code sandboxed.",
+          "api": "invoke.call(exec_context, capability_id, args, options) -> result|nil,structured_error. Internal raw runners are not exported to generated workflow environments.",
+          "ac": [
+            "Reproduced denied nested write cannot execute through tools.call, fallback, child agents or either UI/CLI surface; no side-effect marker is created.",
+            "Exactly one start/terminal pair per attempted invocation; coroutine context is restored after error and unrelated concurrent runs never borrow permissions."
+          ],
+          "deps": [
+            "policy",
+            "quota"
+          ],
+          "test": "invoke",
+          "example": "assert(not fake_files[\"forbidden.txt\"]); assert(terminal_events_for(call_id) == 1)"
+        },
+        {
+          "id": "composition",
+          "title": "Repair verifier propagation and nested execution limits",
+          "files": "Modify lua/callable.lua, lua/skills.lua, lua/tools.lua and lua/events.lua; extend tests/callable.lua, tests/skills.lua, tests/luatool.lua and tests/events.lua.",
+          "work": "Propagate false/throwing verification into failed outcomes while preserving cleanup execution and both primary/cleanup error details. Save/restore debug hooks across nested tools, enforce enclosing and child budgets, and bound event handler execution. Distinguish cleanup hooks from verifiers. Relate lifecycle changes to BCALL-1; do not silently close that existing ticket.",
+          "api": "Callable result preserves {status, value, error, verification, cleanup_error}; existing successful return compatibility is retained through adapters.",
+          "ac": [
+            "A false or throwing skill verifier never reports success or becomes eligible training success; finalizers still run once.",
+            "The outer instruction limit survives an inner call; runaway event handlers terminate without removing the surrounding execution budget."
+          ],
+          "deps": [],
+          "test": "callable|skills|luatool|events",
+          "example": "assert(outcome.status == \"failed\"); assert(outcome.verification.passed == false)"
+        },
+        {
+          "id": "reload",
+          "title": "Make reload rollback and session discovery reliable",
+          "files": "Modify lua/boot.lua and lua/control.lua; extend tests/lifecycle.lua, tests/sessions.lua and tests/control.lua.",
+          "work": "Stage reload state and registrations, reconcile workers/worker aliasing, and restore module bindings plus callback registrations when wiring fails. Correct /sessions store API call; expose actual store failures rather than returning an empty result. Preserve current user edits in boot.lua.",
+          "api": "Reload either publishes one complete generation or leaves the previous generation usable; sessions command returns stored sessions or a visible error.",
+          "ac": [
+            "An injected wiring failure preserves bog.worker identity, previous registrations and subsequent execution without duplicate handlers.",
+            "A populated store appears in /sessions; a simulated store error is distinguishable from zero sessions."
+          ],
+          "deps": [],
+          "test": "lifecycle|sessions",
+          "example": "assert(bog.worker == prior_worker); assert(#listed_sessions == 1)"
+        },
+        {
+          "id": "service",
+          "title": "Harden local control access and unattended authorization",
+          "files": "Modify lua/control.lua, src/lserve.c and tests/control.lua; document local access and headless profiles in docs/policy.md.",
+          "work": "Authenticate local control mutations by default, support explicit trusted local profiles, validate Host/Origin for browser-accessible routes and scope tokens to capabilities. Resolve ask in unattended mode through an explicit profile; missing approval must not silently become allow. Check canonical paths, symlink traversal, shell/raw sys escape routes and shared environment mutation at the actual effect boundary. Distinguish application policy from OS containment. Bound generated execution memory/native calls using supported host controls or isolated workers; unknown/unbounded native execution is not admitted as restricted code.",
+          "api": "Control requests become authenticated invocation contexts; policy profiles explicitly choose deny/queue for unattended approval. Document trusted host, restricted Lua and isolated worker boundaries.",
+          "ac": [
+            "Unauthenticated or wrong-origin control mutations fail; explicit configured clients still work and tokens never appear in evidence.",
+            "A headless ask without a configured decision cannot execute; symlink/path and shared-environment attack fixtures cannot bypass the mediated capability boundary."
+          ],
+          "deps": [
+            "gate"
+          ],
+          "test": "control|invoke|sandbox",
+          "example": "assert(headless_ask.executed == false); assert(unauthenticated.status == 401)"
+        }
+      ]
+    },
+    {
+      "id": "runtime",
+      "title": "Ship a local always-Lua workflow runtime",
+      "goal": "Ordinary Lua controls every step, including delegation; injected values and functions remain practical and expressive.",
+      "tasks": [
+        {
+          "id": "capability",
+          "title": "Define versioned capabilities and structured invocation outcomes",
+          "files": "Create lua/capability.lua, tests/capability.lua and docs/capabilities.md; adapt lua/tools.lua.",
+          "work": "Register capability identity/version, input/output validation, effect class, resource extraction, usage estimator, execution target and cancellation/reconciliation support. Reuse AIbyWire ToolSchema concepts and map existing Boggart/Station names rather than rename their registries. Distinguish pure, read, write and unknown effects. Missing effect metadata is unknown and receives conservative policy. Preserve structured data instead of forcing stringification.",
+          "api": "capability.register(descriptor, runner); capability.resolve(id, version) -> descriptor|nil,error. Outcome status is succeeded/failed/cancelled/uncertain with result or artifact references, usage and execution receipt.",
+          "ac": [
+            "Legacy tools register through an adapter without losing arguments or structured results; incompatible descriptor versions reject before dispatch.",
+            "Effectful timeout reports uncertain when execution cannot be disproved, rather than declaring failed and authorizing blind retry."
+          ],
+          "deps": [
+            "gate"
+          ],
+          "test": "capability",
+          "example": "assert(timeout_outcome.status == \"uncertain\")"
+        },
+        {
+          "id": "context",
+          "title": "Implement injected context values and providers",
+          "files": "Create lua/context.lua and tests/context.lua; document contracts in docs/workflows.md.",
+          "work": "Accept concrete context, Lua provider functions and composable provider objects. Resolve explicit injection before workflow defaults; do not silently serialize closures. A provider may call mediated capabilities through ctx. Make cache lifetime explicit (none/step/run), record evaluated value provenance and source revisions, and treat missing context as a typed result/error. Reject accidental cycles. Credentials remain opaque handles. Context is flexible; a mandatory fixed input schema is not the only supported modelling form.",
+          "api": "context.new(injected, defaults, exec_context) -> resolver; resolver:resolve(key, request) -> value,provenance|nil,error. Provider function signature is function(ctx, request); provider object is {resolve=function, cache=...}.",
+          "ac": [
+            "The same workflow works with a concrete character record and a provider function; injection wins over defaults and missing values are explicit.",
+            "Provider calls are traced and policy-gated; run caching does not leak across runs; cyclic providers fail with the resolution path."
+          ],
+          "deps": [
+            "capability"
+          ],
+          "test": "context",
+          "example": "assert(ctx:resolve(\"character\", {id=\"fixture\"}) .name == \"Fixture Character\")"
+        },
+        {
+          "id": "workflow",
+          "title": "Execute versioned Lua workflows with pinned run state",
+          "files": "Create lua/workflow.lua, tests/workflow.lua and examples/workflows/slack_followup.lua; update CMakeLists.txt.",
+          "work": "Register immutable workflow source versions plus content hashes; choose an active version only at run start. Run normal Lua functions and explicit ctx:step/ctx:call boundaries without imposing a DAG language. Support nested workflows, cancellation, structured errors and context injection. Step IDs combine stable source site with occurrence path for loops/branches. Provider and capability versions form a run dependency manifest. Ordinary Lua computation remains available inside a step.",
+          "api": "workflow.register({id,version,run,defaults,verify,metadata}); workflow.start(id, {context,policy,version}) -> run_handle; ctx:step(site_id, fn); ctx:call(capability_id,args,options); ctx:resolve(key,request).",
+          "ac": [
+            "A Slack-shaped fixture gathers, checks, branches, optionally calls a model and reports; a different input follows the other branch using the same Lua version.",
+            "Activating v2 during a suspended v1 run leaves that run and its resolved dependencies pinned; new runs select v2; cancellation preserves a terminal state."
+          ],
+          "deps": [
+            "context",
+            "composition",
+            "reload"
+          ],
+          "test": "workflow",
+          "example": "assert(old_run.version == \"v1\"); assert(new_run.version == \"v2\")"
+        },
+        {
+          "id": "recovery",
+          "title": "Separate fresh runs, resumption and cached-result reuse",
+          "files": "Create lua/runstore.lua and tests/runstore.lua; integrate lua/workflow.lua and existing store module.",
+          "work": "Persist start/terminal step receipts and workflow/dependency pins. Resume at explicit durable step boundaries; replay prior pure control flow using recorded results only where supported, never serialize arbitrary Lua stacks. Non-resumable workflows state that limitation. Reconcile uncertain effects by operation ID before retry. Cache only declared eligible capabilities with input, code, dependency and freshness keys. Bound retries, cancellation and compensation; compensation itself is an observable effect.",
+          "api": "runstore.resume(run_id) -> resumable_state|nil,error; runstore.reconcile(invocation_id) -> known_outcome|uncertain; cache.lookup(descriptor,args,dependency_manifest,freshness).",
+          "ac": [
+            "A crash after remote write acknowledgement loss does not duplicate the effect on resume; unsupported continuation returns a clear non-resumable state.",
+            "Changing source revision, provider revision or expired freshness invalidates a cached read; writes are never served from a generic result cache."
+          ],
+          "deps": [
+            "workflow",
+            "evidence"
+          ],
+          "test": "runstore",
+          "example": "assert(fake_remote.message_count == 1)"
+        }
+      ]
+    },
+    {
+      "id": "evidence_group",
+      "title": "Capture and import complete process evidence",
+      "goal": "Make all learning claims traceable to observed steps, calls, context and verified outcomes.",
+      "tasks": [
+        {
+          "id": "evidence",
+          "title": "Persist correlated step and invocation evidence",
+          "files": "Create lua/evidence.lua and tests/evidence.lua; integrate lua/trace.lua, lua/sessionlog.lua, lua/invoke.lua and lua/workflow.lua.",
+          "work": "Use an append-only versioned event schema and durable artifact references. Record run/step/parent/attempt/correlation IDs, code/version, capability inputs/results, context resolutions, branch observations, timing, usage, policy decision and verifier result. Redact before persistence, not merely display. Preserve full mining-relevant values or explicit truncation/redaction/artifact markers; existing 180-character live previews are not source evidence. Survive interleaved runs and record incomplete starts after crash.",
+          "api": "evidence.append(event) -> event_id|nil,error; evidence.read_run(run_id) -> ordered_events. Schema v1 includes schema_version, event_id, origin, provenance, run_id, step_id, parent_id, attempt_id, kind, timestamp, payload/artifact_refs.",
+          "ac": [
+            "Quoted strings, newlines and nested results round-trip; interleaved workflows reconstruct their own parent/dataflow chains.",
+            "Every invocation has an observed terminal or explicit incomplete state after restart; secrets are absent from records and artifacts under a credential fixture."
+          ],
+          "deps": [
+            "workflow"
+          ],
+          "test": "evidence",
+          "example": "assert(roundtrip.payload.args.text == \"quoted \\\"value\\\"\\nnext line\")"
+        },
+        {
+          "id": "imports",
+          "title": "Import historical Boggart, Claude and OpenAI logs",
+          "files": "Create lua/imports/{init,boggart,claude,openai}.lua and tests/imports.lua; add sanitized fixtures under tests/fixtures/process_logs/.",
+          "work": "Discover format variants from explicitly selected local exports/log paths. Implement versioned adapters with source hash, byte/event offsets, original timestamps, tool-call IDs, session links and import confidence. Import available messages, tool results and context without inventing absent arguments, branches or private reasoning. Incremental checkpoints and dedup keys survive reimport; malformed records quarantine individually. Require selected roots and redaction rules; do not sweep unrelated home directories.",
+          "api": "imports.ingest({source,format,scope,redaction}) -> {added,duplicates,quarantined,checkpoint}; normalized records distinguish observed, inferred and missing fields.",
+          "ac": [
+            "Repeat and overlapping import add no duplicate logical events; interrupted import resumes without loss; malformed entries retain diagnostic provenance.",
+            "Claude/OpenAI fixtures correlate tool requests/results and available surrounding context; absent outputs remain marked missing and cannot qualify as verified successes."
+          ],
+          "deps": [
+            "evidence"
+          ],
+          "test": "imports",
+          "example": "assert(second_import.added == 0); assert(missing_result.provenance == \"missing\")"
+        },
+        {
+          "id": "retention",
+          "title": "Add evidence retention, export and deletion controls",
+          "files": "Create lua/evidence_retention.lua and tests/evidence_retention.lua; document docs/evidence.md.",
+          "work": "Separate source evidence, derived indexes, reusable code and credentials. Add retention by scope, encrypted-store deployment guidance where supported, redacted export and deletion tombstones that propagate to Gestalt indexing. Code remains inspectable while deleted examples lose their private payload; mark evaluation lineage invalid where evidence is required. Surface trace capture failures and apply configured stop/degraded policy before effects.",
+          "api": "evidence_retention.delete_scope(scope) -> deletion_manifest; export_run(run_id,profile) -> artifact; retention sweep returns counts and unresolved external deletions.",
+          "ac": [
+            "Deleting a project removes its payloads and derived retrieval entries after reconciliation without deleting unrelated scopes.",
+            "A replay/export cannot recover redacted credentials; missing evidence or storage failure is visible and excluded from promotion qualification."
+          ],
+          "deps": [
+            "imports"
+          ],
+          "test": "evidence_retention",
+          "example": "assert(search_deleted_scope.total == 0)"
+        }
+      ]
+    },
+    {
+      "id": "integrations",
+      "title": "Reuse Station, AIbyWire and Gestalt through bounded adapters",
+      "goal": "Boggart owns Lua decisions; specialist systems own their existing computational capabilities and delegated execution.",
+      "tasks": [
+        {
+          "id": "station",
+          "title": "Adapt Station capabilities over existing ZMQ and MCP",
+          "files": "Modify lua/stationlink.lua, lua/llmstation.lua and tests/station.lua; create lua/adapters/station.lua.",
+          "work": "Map Station tools to capability descriptors and correlated outcomes. Preserve existing BSTAT work. Negotiate protocol/capability versions, cancellation and structured errors. Carry run/call IDs and narrowed policy where supported; treat remote enforcement as a separately verified capability. Fallback may switch transport only when the original request is known not executed; uncertain effectful requests require reconciliation.",
+          "api": "Station adapter provides descriptor discovery and invoke/status/cancel where the server supports them; unsupported operations return explicit unsupported.",
+          "ac": [
+            "Equivalent fixture requests via ZMQ and MCP preserve values and correlation; a missing native transport produces the documented supported fallback.",
+            "A lost reply to a write does not trigger a duplicate MCP request; unsupported cancellation is represented accurately."
+          ],
+          "deps": [
+            "capability",
+            "evidence"
+          ],
+          "test": "station",
+          "example": "assert(fake_station.write_count == 1)"
+        },
+        {
+          "id": "forge",
+          "title": "Repair Station capture and faithful parameter binding",
+          "files": "Sibling ~/llm-station/src/forge/{ActionCapture.cpp,Forger.cpp,ForgeExecutor.cpp,ForgeTypes.h}, src/ralph/RalphExecutionActions.cpp and relevant forge tests; read its AGENTS.md and project_map.md before edits.",
+          "work": "Use a JSON encoder, preserve results/artifact refs, populate fixed/template arguments and result bindings, and bind current task inputs in template-first execution. Unknown or unavailable precondition checks are ineligible. Expose repaired evidence/templates for Lua compilation; do not make Station a competing top-level learning owner. Run sibling tests in its own change set.",
+          "api": "Versioned ActionTrace/ActionTemplate exchange preserves typed bindings and evidence provenance; Boggart adapter imports it into normalized evidence and candidate Lua generation.",
+          "ac": [
+            "A trace containing quotes/newlines and nested results produces a faithful template that executes with distinct held-out parameter values.",
+            "Missing checker and unknown precondition cannot pass eligibility; Ralph supplies current arguments instead of historical literals."
+          ],
+          "deps": [
+            "station",
+            "imports"
+          ],
+          "test": "Station forge and Ralph suites (select exact commands from repository instructions)",
+          "example": "assert(replayed_target == held_out_target); assert(unknown_precondition_eligible == false)"
+        },
+        {
+          "id": "aibywire",
+          "title": "Delegate durable jobs to AIbyWire with one retry owner",
+          "files": "Create lua/adapters/aibywire.lua and tests/aibywire.lua; use ~/aibywire/taskengine/tools/schema.py, dag/model.py and durable/runtime.py contracts; sibling changes isolated.",
+          "work": "Implement capability discovery plus submit/status/cancel/reconnect and durable execution receipts through available ZMQ/MCP endpoints. Boggart Lua remains logical control flow; AIbyWire owns retries within its delegated job. Persist remote operation ID before waiting. Validate atomic claim/idempotency behavior instead of relying on the known Python read-then-write check. Document per-backend differences; unsupported claims stay disabled.",
+          "api": "Delegated job receipt includes backend, remote_run_id, operation_id, state, result/artifacts and policy/usage acknowledgement.",
+          "ac": [
+            "Client restart reconnects to the same job and concurrent duplicate submission creates one claimed effect under the chosen backend.",
+            "Timeout/cancel races yield succeeded/cancelled/uncertain accurately; Boggart does not independently retry a job while AIbyWire owns its retry loop."
+          ],
+          "deps": [
+            "station",
+            "recovery"
+          ],
+          "test": "aibywire",
+          "example": "assert(resumed.remote_run_id == original.remote_run_id)"
+        },
+        {
+          "id": "gestalt",
+          "title": "Index scoped memory and process evidence in Gestalt",
+          "files": "Extend lua/gestalt.lua; create lua/memory.lua, lua/adapters/gestalt.lua and tests/memory.lua.",
+          "work": "Build a memory port for scoped text/structured/graph retrieval using existing Gestalt HTTP CQRS support and advertised advanced search. Index source spans, code versions, AST features, steps, dependencies and context references with stable IDs and tombstones. Preserve local storage as authoritative; indexing is retryable. Offer a small local lookup fallback and explicit advanced-search unavailable state. No fabricated Gestalt endpoint or assumed cross-tenant isolation.",
+          "api": "memory.search(query,{scope,filters,limit}) -> {hits,provenance,backend,coverage}; memory.sync(cursor) -> checkpoint. Hits carry source IDs/spans, permission scope and revisions.",
+          "ac": [
+            "Scoped character/process queries return provenance and revisions; forbidden projects cannot enter candidate retrieval even through similarity search.",
+            "Gestalt outage leaves local Lua execution usable; resumed indexing is idempotent and propagates deletion tombstones."
+          ],
+          "deps": [
+            "imports",
+            "retention"
+          ],
+          "test": "memory",
+          "example": "assert(hit.scope == requested_scope); assert(hit.source_ref ~= nil)"
+        }
+      ]
+    },
+    {
+      "id": "mining",
+      "title": "Recognize recurring processes and compile Lua candidates",
+      "goal": "Combine context retrieval with structural evidence; similarity proposes matches, execution evidence establishes reusable behavior.",
+      "tasks": [
+        {
+          "id": "ast",
+          "title": "Parse and index Lua structure with source provenance",
+          "files": "Create lua/mining/ast.lua and tests/mining_ast.lua; add a parser dependency decision to docs/adr/lua-ast.md.",
+          "work": "Evaluate available maintained Lua-version-compatible parsers against actual language syntax and embedding constraints before selecting one. Produce normalized AST features, source spans, call sites and conservative def-use relationships; preserve original source as executable truth. Treat dynamic dispatch/closures/metatables as unknown when not statically resolvable. Do not infer deterministic semantics from function names. Pin parser version and license in the decision.",
+          "api": "ast.index(source,version) -> {nodes,sites,features,unknowns,source_hash}|nil,parse_error.",
+          "ac": [
+            "Loops, branches, closures and dynamically chosen calls retain correct source spans; parse errors never create eligible executable candidates.",
+            "Alpha-renamed local variables yield comparable structural features while changed branch predicates remain distinguishable."
+          ],
+          "deps": [
+            "workflow"
+          ],
+          "test": "mining_ast",
+          "example": "assert(features_a.structure_hash == features_renamed.structure_hash)"
+        },
+        {
+          "id": "recognition",
+          "title": "Retrieve and align workflow and fragment candidates",
+          "files": "Create lua/mining/recognize.lua, lua/mining/align.lua and tests/mining_recognition.lua.",
+          "work": "Retrieve scoped candidates using Gestalt semantics plus AST/capability/effect features; then align observed sequences/dataflow, loop occurrences, branch outcomes and context dependencies. Separate whole workflows and reusable fragments. Avoid matching on task description alone. Return evidence, coverage, ambiguity and unsupported dynamic regions; require binding/applicability checks before execution. Use a labelled positive/negative fixture corpus including similar wording with different effects.",
+          "api": "recognize.find(request,context,scope) -> ranked_candidates; align.compare(traces,ast_indexes) -> {common_regions,variants,bindings,evidence,unknowns}.",
+          "ac": [
+            "Equivalent processes with different wording/values group together; near-identical descriptions with incompatible effects remain separate.",
+            "Branches/fragments across several traces preserve output-to-input bindings and explicitly mark unobserved paths instead of assuming them."
+          ],
+          "deps": [
+            "gestalt",
+            "ast"
+          ],
+          "test": "mining_recognition",
+          "example": "assert(rank(correct_structure) < rank(similar_words_wrong_effect))"
+        },
+        {
+          "id": "compile",
+          "title": "Generate parameterized Lua with residual model steps",
+          "files": "Create lua/mining/compile.lua, tests/mining_compile.lua and examples/workflows/compiled_followup.lua.",
+          "work": "Compile observed stable regions into ordinary Lua ctx:step/ctx:call code with injected parameters/providers, clear guards and source mappings. Retain explicit model calls for unresolved decisions. Reject missing required evidence, unsafe literal secrets and unsupported transformations. No mandatory new workflow DSL and no arbitrary Lua-to-DAG translation. Compilation can invoke an LLM through the same policy/evidence contracts; generated code stays a candidate until evaluated.",
+          "api": "compile.candidate(alignment,options) -> {source,source_hash,manifest,source_map,required_context,verifiers,unknowns}|nil,error.",
+          "ac": [
+            "A candidate executes correctly on distinct inputs without copying prior recipients, filenames or private context constants.",
+            "Stable checks become Lua while ambiguous response interpretation remains an explicit model step; every emitted step links to source evidence or is labelled synthesized."
+          ],
+          "deps": [
+            "recognition"
+          ],
+          "test": "mining_compile",
+          "example": "assert(not candidate.source:find(\"historical-secret\", 1, true))"
+        },
+        {
+          "id": "mining_jobs",
+          "title": "Run mining in background and directed modes",
+          "files": "Create lua/mining/jobs.lua and tests/mining_jobs.lua; integrate existing trigger/supervisor modules.",
+          "work": "Support manually scoped corpus/range/objective jobs and bounded incremental background mining with the same engine. Persist cursor, input snapshot, job version and candidate provenance. Apply resource/LLM budgets, cancellation and scheduling priority so mining cannot starve interactive execution. Deduplicate overlapping work; interrupted jobs resume. Default background behavior is configurable independently from candidate activation.",
+          "api": "mining.start({scope,range,objective,mode,budget}) -> job_id; mining.status/cancel(job_id); mining.tick(cursor,budget).",
+          "ac": [
+            "Directed and background jobs over the same evidence yield equivalent candidate provenance; overlap does not duplicate active candidates.",
+            "Cancellation and restart preserve progress; foreground work retains its configured quota and latency budget under mining load."
+          ],
+          "deps": [
+            "compile",
+            "quota"
+          ],
+          "test": "mining_jobs",
+          "example": "assert(background_candidate.source_hash == directed_candidate.source_hash)"
+        }
+      ]
+    },
+    {
+      "id": "learning",
+      "title": "Evaluate, promote and route learned versions",
+      "goal": "Automatic learning remains reversible and evidence-driven; users can change automation behavior.",
+      "tasks": [
+        {
+          "id": "evaluation",
+          "title": "Evaluate candidates against held-out outcomes and costs",
+          "files": "Create lua/learning/evaluate.lua, tests/learning_evaluate.lua and tests/fixtures/process_bench/.",
+          "work": "Separate training/validation/held-out examples by originating task/session and variant to prevent leakage. Run effect mocks or isolated test adapters for replay; distinguish recorded-result evaluation from fresh real-input evaluation. Independent verifiers check output/task invariants, not just model self-ratings. Account for discovery, imports, mining/model synthesis, evaluation, failed runs, fallback and repairs as well as execution. Add false-success and wrong-applicability measurements.",
+          "api": "evaluate.run(candidate,dataset,policy) -> {outcomes,coverage,costs,regressions,eligibility,evidence_refs}. Promotion decisions consume this report, not a pass-looking transcript.",
+          "ac": [
+            "A wrong-recipient candidate and a verifier-failure candidate are rejected even if their report text looks plausible.",
+            "Held-out inputs are absent from synthesis; baseline and candidate costs include amortized learning costs and demonstrate where break-even occurs."
+          ],
+          "deps": [
+            "compile",
+            "recovery",
+            "composition"
+          ],
+          "test": "learning_evaluate",
+          "example": "assert(report.eligibility == false); assert(report.regressions.wrong_recipient == 1)"
+        },
+        {
+          "id": "promotion",
+          "title": "Promote automatically with pins, rollback and user controls",
+          "files": "Create lua/learning/registry.lua, lua/learning/promote.lua and tests/learning_promote.lua.",
+          "work": "Store candidate/evaluated/active/disabled/quarantined versions and atomic active pointers. Default automatic activation only after configured evidence gates pass; expose review-required and off modes at project/workflow scope. Deny promotion on missing evidence, failed verifiers, resource-policy mismatch or unsupported preconditions. Keep run pins, rollback, reason/evidence ledger and staged rollout options. Initial gate proposal: all declared invariants pass and no known effect-safety regression; statistical thresholds remain explicit configuration measured by evaluation.",
+          "api": "registry.activate(id,version,report,mode) -> activation_record|nil,reason; registry.rollback(id,target); registry.resolve(id,run_context) -> pinned_version.",
+          "ac": [
+            "Passing candidates activate automatically in auto mode; review mode queues them and off mode leaves active pointer unchanged.",
+            "Activation and rollback do not alter in-flight versions; concurrent promotions use compare-and-swap or transaction conflict detection and leave an auditable winner."
+          ],
+          "deps": [
+            "evaluation",
+            "mining_jobs"
+          ],
+          "test": "learning_promote",
+          "example": "assert(inflight.version == \"v1\"); assert(registry.resolve(id,new_context).version == \"v2\")"
+        },
+        {
+          "id": "routing",
+          "title": "Recognize ordinary requests and bind current context",
+          "files": "Create lua/learning/route.lua and tests/learning_route.lua; integrate lua/skillrouter.lua and lua/route.lua.",
+          "work": "Separate candidate retrieval, concrete context binding, applicability evaluation and execution. Prefer eligible learned workflow/fragments on normal requests; reject ambiguous/wrong-scope/stale matches and use an explicit model planning Lua step. Bound retrieval/judgment cost so recognition cannot cost more than it saves unnoticed. Never substitute historical arguments for missing current inputs. Log selected/rejected alternatives and reasons.",
+          "api": "route.select(request,context,policy) -> {workflow,version,binding,evidence}|{fallback,reason}; invocation always enters workflow.start.",
+          "ac": [
+            "A paraphrased known task uses its workflow with current recipients; a subtly different task fails applicability and falls back visibly.",
+            "Missing context cannot trigger historical side effects; policy denial remains denial even when a candidate has high similarity."
+          ],
+          "deps": [
+            "promotion",
+            "recognition"
+          ],
+          "test": "learning_route",
+          "example": "assert(selected.binding.recipient == current_recipient)"
+        },
+        {
+          "id": "drift",
+          "title": "Detect regressions and quarantine degraded procedures",
+          "files": "Create lua/learning/monitor.lua and tests/learning_monitor.lua.",
+          "work": "Track outcomes by workflow/capability/provider version and task variant. Detect verifier failures, cost regressions, stale applicability and unknown outcomes; automatically suspend unsafe candidate activation and quarantine active versions according to policy. Preserve failed examples for targeted remining, without treating failure as a successful exemplar. Compare canary and baseline cohorts with minimum sample/confidence controls.",
+          "api": "monitor.observe(run_outcome) -> actions; monitor.explain(workflow_id) -> evidence-backed health state.",
+          "ac": [
+            "A changed tool schema or repeated verification failure prevents further automatic selection of the affected version and preserves rollback.",
+            "One noisy latency observation does not cause unbounded promotion/rollback oscillation; thresholds, sample counts and evidence are inspectable."
+          ],
+          "deps": [
+            "routing"
+          ],
+          "test": "learning_monitor",
+          "example": "assert(registry.status(broken_version) == \"quarantined\")"
+        }
+      ]
+    },
+    {
+      "id": "product",
+      "title": "Deliver user-visible workflows, triggers and learning controls",
+      "goal": "Make cheaper repeatable work usable without prompting, and make its behavior inspectable.",
+      "tasks": [
+        {
+          "id": "slack",
+          "title": "Deliver the Slack follow-up workflow with fixture-first validation",
+          "files": "Create examples/workflows/slack_followup.lua, tests/workflow_slack.lua and docs/examples/slack-followup.md.",
+          "work": "Implement gather, compare expected list, interpret ambiguous replies with bounded model calls, compute missing responders, send through a capability, track progress and generate report. Inject channel/list/time window/provider/policy. Recheck response state immediately before sending, use run-recipient-campaign operation IDs, reconcile uncertain sends and record opt-outs. All development tests use fakes; enabling real sends requires the user's actual workflow configuration/authorization.",
+          "api": "Workflow context supplies response source, expected participants, reporting target, current time and model capability; outputs report artifact, progress record and effect receipts.",
+          "ac": [
+            "Late replies and duplicate triggers do not produce duplicate or obsolete reminders; ignored/ambiguous replies follow declared policy.",
+            "Two distinct cohorts and periods produce independently checked reports, with measured model-call reduction against the baseline."
+          ],
+          "deps": [
+            "routing",
+            "recovery"
+          ],
+          "test": "workflow_slack",
+          "example": "assert(reminder_count(\"late_responder\") == 0); assert(reminder_count(\"missing_person\") == 1)"
+        },
+        {
+          "id": "novel",
+          "title": "Deliver novel context, timeline and text-maintenance workflows",
+          "files": "Create examples/workflows/novel_{character,timeline,cleanup,wordcount}.lua and tests/workflow_novel.lua.",
+          "work": "Use synthetic novel fixtures to retrieve detailed character evidence, assemble timeline constraints, propose cleanup diffs and compute word count under an explicit documented counting rule. Inject novel/corpus/revision and provider functions. Preserve provenance and distinguish inconsistent statements from missing facts. Default creative/canon changes to proposed artifacts; canon authority semantics were not settled in the interview. Cleaning must not silently rewrite narrative facts.",
+          "api": "Each workflow returns evidence-backed artifacts; cleanup returns diff plus checks; timeline returns ordered/partial constraints and conflicts, not invented dates.",
+          "ac": [
+            "Same character name in different novels stays scoped; contradictions and unavailable evidence are shown rather than merged into fabricated facts.",
+            "Cleanup preserves fixture facts and supports diff review; word counts follow the declared Unicode/apostrophe/hyphen convention with edge fixtures."
+          ],
+          "deps": [
+            "routing",
+            "gestalt"
+          ],
+          "test": "workflow_novel",
+          "example": "assert(timeline.conflicts[1].source_refs ~= nil); assert(cleanup.changed_facts == 0)"
+        },
+        {
+          "id": "triggers",
+          "title": "Expose named runs, buttons and scheduled execution",
+          "files": "Extend lua/triggers.lua, lua/control.lua and studio/data/core/workflows.lua; create tests/workflow_triggers.lua.",
+          "work": "Route explicit workflow names, UI buttons and cron-equivalent schedules through the same version/policy/context binding path. Persist schedule identity, timezone, missed-run behavior, concurrency limit and deduplication key. Support pause/cancel, dry-run preview and visible last/next run. A schedule is not additional authorization; policy changes affect future admissions.",
+          "api": "triggers.bind({workflow,context_provider,schedule,timezone,overlap,misfire,policy_scope}); all trigger kinds call workflow.start with an auditable origin.",
+          "ac": [
+            "Button, named call and timer select the same pinned version and policy; overlapping/restarted schedulers do not duplicate one occurrence.",
+            "DST changes, missed runs, paused schedules and revoked permissions follow explicit tested behavior and show a clear status."
+          ],
+          "deps": [
+            "routing",
+            "recovery"
+          ],
+          "test": "workflow_triggers",
+          "example": "assert(runs_for_occurrence(schedule_id, occurrence_id) == 1)"
+        },
+        {
+          "id": "ui",
+          "title": "Show workflow code, evidence, savings and automation controls",
+          "files": "Create studio/data/core/workflows.lua; integrate studio/data/core/agentview.lua and existing Studio panels; extend lua/control.lua and tests/control.lua; document docs/workflow-ui.md.",
+          "work": "Present source/AST navigation, run steps, context provenance, delegated job state, applicability reasons, cost breakdown, candidate comparison, active version and rollback. Expose auto/review/off mining and promotion controls separately. Show actual savings with learning cost and uncertainty; never count failed or unverified outcomes as saved work. Build on existing Studio review surfaces in BSTUD.",
+          "api": "Read models use registry/evidence/evaluation APIs; UI actions call existing policy-enforced service methods rather than raw tools.",
+          "ac": [
+            "A user can inspect why a workflow ran, locate the Lua source step, compare versions, disable it and roll back without editing SQLite.",
+            "CLI and Studio show consistent status/costs for an uncertain remote effect and an amortized-negative candidate; UI interaction tests cover core controls."
+          ],
+          "deps": [
+            "drift",
+            "triggers",
+            "slack",
+            "novel"
+          ],
+          "test": "Studio workflow interaction suite and CLI workflow inspection tests",
+          "example": "assert(displayed_total_cost == evaluation.total_cost)"
+        }
+      ]
+    },
+    {
+      "id": "extensions",
+      "title": "Package Lua modules and isolate native extensions",
+      "goal": "Make capability packs modular without weakening the always-Lua execution or policy model.",
+      "tasks": [
+        {
+          "id": "packages",
+          "title": "Version and load Lua workflow/capability packs",
+          "files": "Create lua/extensions/loader.lua, tests/extensions.lua and docs/extensions.md; extend existing callable/skill loading hooks.",
+          "work": "Define manifests for package ID/version, host API range, Lua modules, workflows, capability requirements, context providers and source hashes. Resolve dependency versions and namespace collisions; reject cycles/incompatible APIs. Stage registrations before atomic activation, retain old versions while runs reference them, and support removal/deactivation. Reuse skills/callables where compatible; BCALL and BTEAM remain related work, not replaced.",
+          "api": "extensions.install(path) -> package_version; extensions.activate(id,version); extensions.disable(id); manifest format version is explicit.",
+          "ac": [
+            "A pack installs, upgrades and rolls back while an old workflow run completes on its pinned dependency set.",
+            "Conflicting names, dependency cycles and unsupported host versions reject without partially registered tools or leaked event handlers."
+          ],
+          "deps": [
+            "promotion",
+            "reload"
+          ],
+          "test": "extensions",
+          "example": "assert(old_run.dependencies.pack_version == \"1.0.0\")"
+        },
+        {
+          "id": "native",
+          "title": "Define a versioned native ABI and out-of-process extension host",
+          "files": "Create include/boggart_extension.h, src/lextension.c, lua/extensions/native.lua, native test fixtures and docs/native-extensions.md; update CMakeLists.txt.",
+          "work": "First choose one measured native use case. Specify a narrow C ABI with version/size negotiation, ownership, buffer/error rules, thread affinity, cancellation and lifecycle. Prefer out-of-process hosting for untrusted/crash-prone or blocking plugins; only explicitly trusted plugins may run in process. DLL/.so/.dylib naming and loader behavior are platform-specific. Lua remains the caller/orchestrator. Pin libraries for active runs; do not unload executing code.",
+          "api": "Versioned host function table and plugin descriptor exchange opaque handles and length-delimited bytes; no C++ STL types or Lua ABI exposure across the stable boundary.",
+          "ac": [
+            "Small fixture plugins load and execute on macOS/Linux/Windows with ABI mismatch and allocation ownership tests; platform claims only after actual runs.",
+            "A crashing/blocking isolated plugin does not terminate or stall Boggart; policy applies before dispatch and in-process plugin trust is visibly declared."
+          ],
+          "deps": [
+            "packages",
+            "aibywire"
+          ],
+          "test": "Native ABI fixture matrix plus extensions Lua suite",
+          "example": "assert(abi_mismatch_rejected_before_init == true)"
+        }
+      ]
+    },
+    {
+      "id": "release",
+      "title": "Prove the learning product and ship incrementally",
+      "goal": "Validate outcomes and migration, not merely the existence of modules or generated code.",
+      "tasks": [
+        {
+          "id": "qualification",
+          "title": "Run end-to-end product, failure and cost qualification",
+          "files": "Create tools/process_bench.lua, tests/process_e2e.lua and docs/process-benchmark.md; extend CI configuration using repository conventions.",
+          "work": "Run Slack and novel fixtures plus held-out variants through observe→mine→evaluate→promote→recognize→execute→rollback. Include policy bypass probes, concurrency quotas, missing context, transport uncertainty, provider drift, import corruption and restart. Fresh native build plus registered Lua tests and relevant Studio/platform checks. Pin fixture seeds and versions; report cost per independently verified outcome, model calls, wrong applicability, false success, human corrections and amortization.",
+          "api": "Benchmark produces machine-readable run manifest and report artifact with exact executable/source revision, configuration and per-case evidence IDs.",
+          "ac": [
+            "The full cycle succeeds on held-out inputs with no known false-success or duplicate-effect failures; failures remain visible rather than removed from denominators.",
+            "Published report includes baseline, candidate, learning cost, break-even curve and limitations; fresh build and required platform checks are recorded with actual logs."
+          ],
+          "deps": [
+            "ui",
+            "packages",
+            "service"
+          ],
+          "test": "process_e2e plus targeted suites and platform matrix",
+          "example": "assert(verified_candidate_outcomes == expected_outcomes); assert(duplicate_effects == 0)"
+        },
+        {
+          "id": "migration",
+          "title": "Document upgrades, operating limits and launch gates",
+          "files": "Update README.md, docs/workflows.md, docs/policy.md, docs/extensions.md and release notes; add store migration tests.",
+          "work": "Provide local-only quickstart, fixture demo, optional Station/AIbyWire/Gestalt setup, evidence/import controls, policy recipes, rollback and recovery playbooks. Migrate existing tools/skills/session data additively with backups and schema versions; no automatic historical-data upload. Publish capability/platform support matrix and explicit unresolved limits. Keep the native/plugin expansion optional to the first usable release.",
+          "api": "Versioned store migrations are rerunnable; downgrade limitations and backup restoration steps are documented and exercised.",
+          "ac": [
+            "A clean local install runs the demonstration without any sibling daemon or model account; optional services enable only advertised features.",
+            "Upgrade from a representative pre-learning store preserves sessions/skills and can restore a backup; documentation matches executable commands and actual support."
+          ],
+          "deps": [
+            "qualification"
+          ],
+          "test": "Store migration fixtures and clean-install walkthrough",
+          "example": "assert(after_upgrade.session_count == before_upgrade.session_count)"
+        }
+      ]
+    }
+  ]
+}

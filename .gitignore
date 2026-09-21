@@ -46,3 +46,6 @@ dist/
 boggart-*.tar.gz
 boggart-*.zip
 sdl2.zip
+
+# Local implementation briefs, scratch reports, build/test logs and baselines.
+.superpowers/

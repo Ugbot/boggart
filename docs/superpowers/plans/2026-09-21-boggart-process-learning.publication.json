@@ -1,0 +1,632 @@
+{
+  "project": "BRAIN",
+  "root": "BRAIN-1",
+  "date": "2026-09-21",
+  "verification": "Tracker readback exactly matches task titles, parents, open status, acceptance text, unrun results and dependency edges in the plan manifest.",
+  "tasks": 43,
+  "stories": 9,
+  "implementation_tasks": 33,
+  "acceptance_criteria": 66,
+  "dependency_edges": 54,
+  "ready": [
+    "BRAIN-11",
+    "BRAIN-14",
+    "BRAIN-15"
+  ],
+  "criteria": [
+    {
+      "task": "BRAIN-11",
+      "criterion_id": 359,
+      "text": "Parent deny defeats child/tool allow; chat restrictions and agent restrictions survive explicit overrides and scope reordering.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-11",
+      "criterion_id": 360,
+      "text": "Unknown evaluators and malformed limits fail closed; disjoint resource allows produce no access; policy inputs cannot be mutated through a compiled result.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-12",
+      "criterion_id": 361,
+      "text": "Two independent database connections competing for the last shared token permit exactly one invocation; restart retains quota consumption.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-12",
+      "criterion_id": 362,
+      "text": "Failure in one bucket changes none of the others; repeated settle does not double charge; backward clock changes cannot replenish a bucket.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-13",
+      "criterion_id": 363,
+      "text": "Reproduced denied nested write cannot execute through tools.call, fallback, child agents or either UI/CLI surface; no side-effect marker is created.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-13",
+      "criterion_id": 364,
+      "text": "Exactly one start/terminal pair per attempted invocation; coroutine context is restored after error and unrelated concurrent runs never borrow permissions.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-14",
+      "criterion_id": 365,
+      "text": "A false or throwing skill verifier never reports success or becomes eligible training success; finalizers still run once.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-14",
+      "criterion_id": 366,
+      "text": "The outer instruction limit survives an inner call; runaway event handlers terminate without removing the surrounding execution budget.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-15",
+      "criterion_id": 367,
+      "text": "An injected wiring failure preserves bog.worker identity, previous registrations and subsequent execution without duplicate handlers.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-15",
+      "criterion_id": 368,
+      "text": "A populated store appears in /sessions; a simulated store error is distinguishable from zero sessions.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-16",
+      "criterion_id": 369,
+      "text": "Unauthenticated or wrong-origin control mutations fail; explicit configured clients still work and tokens never appear in evidence.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-16",
+      "criterion_id": 370,
+      "text": "A headless ask without a configured decision cannot execute; symlink/path and shared-environment attack fixtures cannot bypass the mediated capability boundary.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-17",
+      "criterion_id": 371,
+      "text": "Legacy tools register through an adapter without losing arguments or structured results; incompatible descriptor versions reject before dispatch.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-17",
+      "criterion_id": 372,
+      "text": "Effectful timeout reports uncertain when execution cannot be disproved, rather than declaring failed and authorizing blind retry.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-18",
+      "criterion_id": 379,
+      "text": "Quoted strings, newlines and nested results round-trip; interleaved workflows reconstruct their own parent/dataflow chains.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-18",
+      "criterion_id": 380,
+      "text": "Every invocation has an observed terminal or explicit incomplete state after restart; secrets are absent from records and artifacts under a credential fixture.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-19",
+      "criterion_id": 381,
+      "text": "Repeat and overlapping import add no duplicate logical events; interrupted import resumes without loss; malformed entries retain diagnostic provenance.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-19",
+      "criterion_id": 382,
+      "text": "Claude/OpenAI fixtures correlate tool requests/results and available surrounding context; absent outputs remain marked missing and cannot qualify as verified successes.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-20",
+      "criterion_id": 383,
+      "text": "Deleting a project removes its payloads and derived retrieval entries after reconciliation without deleting unrelated scopes.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-20",
+      "criterion_id": 384,
+      "text": "A replay/export cannot recover redacted credentials; missing evidence or storage failure is visible and excluded from promotion qualification.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-21",
+      "criterion_id": 386,
+      "text": "Equivalent fixture requests via ZMQ and MCP preserve values and correlation; a missing native transport produces the documented supported fallback.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-21",
+      "criterion_id": 387,
+      "text": "A lost reply to a write does not trigger a duplicate MCP request; unsupported cancellation is represented accurately.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-22",
+      "criterion_id": 388,
+      "text": "A trace containing quotes/newlines and nested results produces a faithful template that executes with distinct held-out parameter values.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-22",
+      "criterion_id": 389,
+      "text": "Missing checker and unknown precondition cannot pass eligibility; Ralph supplies current arguments instead of historical literals.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-23",
+      "criterion_id": 390,
+      "text": "Client restart reconnects to the same job and concurrent duplicate submission creates one claimed effect under the chosen backend.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-23",
+      "criterion_id": 391,
+      "text": "Timeout/cancel races yield succeeded/cancelled/uncertain accurately; Boggart does not independently retry a job while AIbyWire owns its retry loop.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-24",
+      "criterion_id": 392,
+      "text": "Scoped character/process queries return provenance and revisions; forbidden projects cannot enter candidate retrieval even through similarity search.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-24",
+      "criterion_id": 393,
+      "text": "Gestalt outage leaves local Lua execution usable; resumed indexing is idempotent and propagates deletion tombstones.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-25",
+      "criterion_id": 394,
+      "text": "Loops, branches, closures and dynamically chosen calls retain correct source spans; parse errors never create eligible executable candidates.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-25",
+      "criterion_id": 395,
+      "text": "Alpha-renamed local variables yield comparable structural features while changed branch predicates remain distinguishable.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-26",
+      "criterion_id": 396,
+      "text": "Equivalent processes with different wording/values group together; near-identical descriptions with incompatible effects remain separate.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-26",
+      "criterion_id": 397,
+      "text": "Branches/fragments across several traces preserve output-to-input bindings and explicitly mark unobserved paths instead of assuming them.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-27",
+      "criterion_id": 398,
+      "text": "A candidate executes correctly on distinct inputs without copying prior recipients, filenames or private context constants.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-27",
+      "criterion_id": 399,
+      "text": "Stable checks become Lua while ambiguous response interpretation remains an explicit model step; every emitted step links to source evidence or is labelled synthesized.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-28",
+      "criterion_id": 400,
+      "text": "Directed and background jobs over the same evidence yield equivalent candidate provenance; overlap does not duplicate active candidates.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-28",
+      "criterion_id": 401,
+      "text": "Cancellation and restart preserve progress; foreground work retains its configured quota and latency budget under mining load.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-29",
+      "criterion_id": 402,
+      "text": "A wrong-recipient candidate and a verifier-failure candidate are rejected even if their report text looks plausible.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-29",
+      "criterion_id": 403,
+      "text": "Held-out inputs are absent from synthesis; baseline and candidate costs include amortized learning costs and demonstrate where break-even occurs.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-30",
+      "criterion_id": 404,
+      "text": "Passing candidates activate automatically in auto mode; review mode queues them and off mode leaves active pointer unchanged.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-30",
+      "criterion_id": 405,
+      "text": "Activation and rollback do not alter in-flight versions; concurrent promotions use compare-and-swap or transaction conflict detection and leave an auditable winner.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-31",
+      "criterion_id": 406,
+      "text": "A paraphrased known task uses its workflow with current recipients; a subtly different task fails applicability and falls back visibly.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-31",
+      "criterion_id": 407,
+      "text": "Missing context cannot trigger historical side effects; policy denial remains denial even when a candidate has high similarity.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-32",
+      "criterion_id": 408,
+      "text": "A changed tool schema or repeated verification failure prevents further automatic selection of the affected version and preserves rollback.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-32",
+      "criterion_id": 409,
+      "text": "One noisy latency observation does not cause unbounded promotion/rollback oscillation; thresholds, sample counts and evidence are inspectable.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-33",
+      "criterion_id": 410,
+      "text": "Late replies and duplicate triggers do not produce duplicate or obsolete reminders; ignored/ambiguous replies follow declared policy.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-33",
+      "criterion_id": 411,
+      "text": "Two distinct cohorts and periods produce independently checked reports, with measured model-call reduction against the baseline.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-34",
+      "criterion_id": 412,
+      "text": "Same character name in different novels stays scoped; contradictions and unavailable evidence are shown rather than merged into fabricated facts.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-34",
+      "criterion_id": 413,
+      "text": "Cleanup preserves fixture facts and supports diff review; word counts follow the declared Unicode/apostrophe/hyphen convention with edge fixtures.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-35",
+      "criterion_id": 414,
+      "text": "Button, named call and timer select the same pinned version and policy; overlapping/restarted schedulers do not duplicate one occurrence.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-35",
+      "criterion_id": 415,
+      "text": "DST changes, missed runs, paused schedules and revoked permissions follow explicit tested behavior and show a clear status.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-36",
+      "criterion_id": 416,
+      "text": "A user can inspect why a workflow ran, locate the Lua source step, compare versions, disable it and roll back without editing SQLite.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-36",
+      "criterion_id": 417,
+      "text": "CLI and Studio show consistent status/costs for an uncertain remote effect and an amortized-negative candidate; UI interaction tests cover core controls.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-37",
+      "criterion_id": 418,
+      "text": "A pack installs, upgrades and rolls back while an old workflow run completes on its pinned dependency set.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-37",
+      "criterion_id": 419,
+      "text": "Conflicting names, dependency cycles and unsupported host versions reject without partially registered tools or leaked event handlers.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-38",
+      "criterion_id": 420,
+      "text": "Small fixture plugins load and execute on macOS/Linux/Windows with ABI mismatch and allocation ownership tests; platform claims only after actual runs.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-38",
+      "criterion_id": 421,
+      "text": "A crashing/blocking isolated plugin does not terminate or stall Boggart; policy applies before dispatch and in-process plugin trust is visibly declared.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-39",
+      "criterion_id": 422,
+      "text": "The full cycle succeeds on held-out inputs with no known false-success or duplicate-effect failures; failures remain visible rather than removed from denominators.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-39",
+      "criterion_id": 423,
+      "text": "Published report includes baseline, candidate, learning cost, break-even curve and limitations; fresh build and required platform checks are recorded with actual logs.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-40",
+      "criterion_id": 424,
+      "text": "A clean local install runs the demonstration without any sibling daemon or model account; optional services enable only advertised features.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-40",
+      "criterion_id": 425,
+      "text": "Upgrade from a representative pre-learning store preserves sessions/skills and can restore a backup; documentation matches executable commands and actual support.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-41",
+      "criterion_id": 373,
+      "text": "The same workflow works with a concrete character record and a provider function; injection wins over defaults and missing values are explicit.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-41",
+      "criterion_id": 374,
+      "text": "Provider calls are traced and policy-gated; run caching does not leak across runs; cyclic providers fail with the resolution path.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-42",
+      "criterion_id": 375,
+      "text": "A Slack-shaped fixture gathers, checks, branches, optionally calls a model and reports; a different input follows the other branch using the same Lua version.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-42",
+      "criterion_id": 376,
+      "text": "Activating v2 during a suspended v1 run leaves that run and its resolved dependencies pinned; new runs select v2; cancellation preserves a terminal state.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-43",
+      "criterion_id": 377,
+      "text": "A crash after remote write acknowledgement loss does not duplicate the effect on resume; unsupported continuation returns a clear non-resumable state.",
+      "result": null
+    },
+    {
+      "task": "BRAIN-43",
+      "criterion_id": 378,
+      "text": "Changing source revision, provider revision or expired freshness invalidates a cached read; writes are never served from a generic result cache.",
+      "result": null
+    }
+  ],
+  "dependencies": [
+    {
+      "task": "BRAIN-12",
+      "depends_on": "BRAIN-11"
+    },
+    {
+      "task": "BRAIN-13",
+      "depends_on": "BRAIN-11"
+    },
+    {
+      "task": "BRAIN-13",
+      "depends_on": "BRAIN-12"
+    },
+    {
+      "task": "BRAIN-16",
+      "depends_on": "BRAIN-13"
+    },
+    {
+      "task": "BRAIN-17",
+      "depends_on": "BRAIN-13"
+    },
+    {
+      "task": "BRAIN-18",
+      "depends_on": "BRAIN-42"
+    },
+    {
+      "task": "BRAIN-19",
+      "depends_on": "BRAIN-18"
+    },
+    {
+      "task": "BRAIN-20",
+      "depends_on": "BRAIN-19"
+    },
+    {
+      "task": "BRAIN-21",
+      "depends_on": "BRAIN-17"
+    },
+    {
+      "task": "BRAIN-21",
+      "depends_on": "BRAIN-18"
+    },
+    {
+      "task": "BRAIN-22",
+      "depends_on": "BRAIN-19"
+    },
+    {
+      "task": "BRAIN-22",
+      "depends_on": "BRAIN-21"
+    },
+    {
+      "task": "BRAIN-23",
+      "depends_on": "BRAIN-21"
+    },
+    {
+      "task": "BRAIN-23",
+      "depends_on": "BRAIN-43"
+    },
+    {
+      "task": "BRAIN-24",
+      "depends_on": "BRAIN-19"
+    },
+    {
+      "task": "BRAIN-24",
+      "depends_on": "BRAIN-20"
+    },
+    {
+      "task": "BRAIN-25",
+      "depends_on": "BRAIN-42"
+    },
+    {
+      "task": "BRAIN-26",
+      "depends_on": "BRAIN-24"
+    },
+    {
+      "task": "BRAIN-26",
+      "depends_on": "BRAIN-25"
+    },
+    {
+      "task": "BRAIN-27",
+      "depends_on": "BRAIN-26"
+    },
+    {
+      "task": "BRAIN-28",
+      "depends_on": "BRAIN-12"
+    },
+    {
+      "task": "BRAIN-28",
+      "depends_on": "BRAIN-27"
+    },
+    {
+      "task": "BRAIN-29",
+      "depends_on": "BRAIN-14"
+    },
+    {
+      "task": "BRAIN-29",
+      "depends_on": "BRAIN-27"
+    },
+    {
+      "task": "BRAIN-29",
+      "depends_on": "BRAIN-43"
+    },
+    {
+      "task": "BRAIN-30",
+      "depends_on": "BRAIN-28"
+    },
+    {
+      "task": "BRAIN-30",
+      "depends_on": "BRAIN-29"
+    },
+    {
+      "task": "BRAIN-31",
+      "depends_on": "BRAIN-26"
+    },
+    {
+      "task": "BRAIN-31",
+      "depends_on": "BRAIN-30"
+    },
+    {
+      "task": "BRAIN-32",
+      "depends_on": "BRAIN-31"
+    },
+    {
+      "task": "BRAIN-33",
+      "depends_on": "BRAIN-31"
+    },
+    {
+      "task": "BRAIN-33",
+      "depends_on": "BRAIN-43"
+    },
+    {
+      "task": "BRAIN-34",
+      "depends_on": "BRAIN-24"
+    },
+    {
+      "task": "BRAIN-34",
+      "depends_on": "BRAIN-31"
+    },
+    {
+      "task": "BRAIN-35",
+      "depends_on": "BRAIN-31"
+    },
+    {
+      "task": "BRAIN-35",
+      "depends_on": "BRAIN-43"
+    },
+    {
+      "task": "BRAIN-36",
+      "depends_on": "BRAIN-32"
+    },
+    {
+      "task": "BRAIN-36",
+      "depends_on": "BRAIN-33"
+    },
+    {
+      "task": "BRAIN-36",
+      "depends_on": "BRAIN-34"
+    },
+    {
+      "task": "BRAIN-36",
+      "depends_on": "BRAIN-35"
+    },
+    {
+      "task": "BRAIN-37",
+      "depends_on": "BRAIN-15"
+    },
+    {
+      "task": "BRAIN-37",
+      "depends_on": "BRAIN-30"
+    },
+    {
+      "task": "BRAIN-38",
+      "depends_on": "BRAIN-23"
+    },
+    {
+      "task": "BRAIN-38",
+      "depends_on": "BRAIN-37"
+    },
+    {
+      "task": "BRAIN-39",
+      "depends_on": "BRAIN-16"
+    },
+    {
+      "task": "BRAIN-39",
+      "depends_on": "BRAIN-36"
+    },
+    {
+      "task": "BRAIN-39",
+      "depends_on": "BRAIN-37"
+    },
+    {
+      "task": "BRAIN-40",
+      "depends_on": "BRAIN-39"
+    },
+    {
+      "task": "BRAIN-41",
+      "depends_on": "BRAIN-17"
+    },
+    {
+      "task": "BRAIN-42",
+      "depends_on": "BRAIN-14"
+    },
+    {
+      "task": "BRAIN-42",
+      "depends_on": "BRAIN-15"
+    },
+    {
+      "task": "BRAIN-42",
+      "depends_on": "BRAIN-41"
+    },
+    {
+      "task": "BRAIN-43",
+      "depends_on": "BRAIN-18"
+    },
+    {
+      "task": "BRAIN-43",
+      "depends_on": "BRAIN-42"
+    }
+  ]
+}
