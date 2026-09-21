@@ -18,6 +18,8 @@ status authority.
 | BRAIN-41 | Injected concrete values, functions and composable providers; exact capability pins, revision-aware caches, provenance and restrictive authority | Rebuilt-binary context 78, capability 73, invoke 87, events 128, policy 36 and quota 54 checks; CTest context repeated twice; independent review approved | `6407221` |
 | BRAIN-42 | Source-backed versioned Lua workflows with dependency pins, nested steps, cancellation and local Slack fixture | Native full62/62 before review fixes; final covering workflow65/context80/capability73/invoke87/luatool42/events128 pass; CTest workflow and context each repeated twice; independent re-review approved | `6a3588c` |
 | BRAIN-18 | Durable correlated invocation/workflow/context evidence, bounded redaction and explicit incomplete coverage | Final native full63/63; evidence132 checks; CTest evidence/workflow/context/invoke each repeated twice; independent re-review approved | `cf3bda3` |
+| BRAIN-43 | Opted-in durable Lua replay, operation reconciliation, ownership fencing and explicit result cache under current authority | Final native full64/64; runstore77/capability74; CTest runstore/capability/invoke each twice; real subprocess recovery with quotas; independent re-review approved | `3201e56` |
+
 
 Build: `cmake --build build --target boggart -j 6` with `CCACHE_DIR` and
 `CCACHE_TEMPDIR` pointing inside `build/ccache`, because the default cache
@@ -26,8 +28,8 @@ directory is outside the workspace sandbox. Tests ran through `./boggart
 model requests or real messaging workflows were used.
 
 The existing user changes to judge/TypeSafe, models and completion were
-preserved outside these commits. BRAIN-17, BRAIN-41, BRAIN-42 and BRAIN-18 are complete; BRAIN-43 is implementing
-durable recovery and eligible cached-result reuse next. Local control authentication and unattended-default hardening
+preserved outside these commits. The local runtime workstream BRAIN-3 is complete, including BRAIN-43 recovery.
+BRAIN-19 is implementing historical Boggart, Claude and OpenAI log imports next. Local control authentication and unattended-default hardening
 remain open as BRAIN-16.
 
 The broader 57-suite run passed 53 suites on its first pass. MCP and control
@@ -61,8 +63,8 @@ proved that adjacent 64-bit request integers stay distinct, stale suspended-prov
 results cannot repopulate an invalidated cache, benign instrumentation does not
 leak raw provider errors, and short resolution loops cannot evade the enclosing
 instruction budget. Counter charging is conservative, not exact VM instruction
-measurement. Context emits metadata/provenance; redacted evaluated-value persistence
-remains BRAIN-18. This ticket did not rerun the full platform/release matrix.
+measurement. Context emits metadata/provenance; BRAIN-18 subsequently added separate redacted
+evaluated-value persistence. This ticket did not rerun the full platform/release matrix.
 
 BRAIN-42 has a real source-backed Slack-shaped fixture using only local capabilities;
 the two inputs take different branches while retaining the same Lua source hash.
@@ -70,9 +72,9 @@ Trusted host closures are explicitly distinguished from portable source. Review
 repairs preserve uncertain provider outcomes through optional, failure and cached
 paths; source packages reject unversioned effects; and provider provenance uses
 separate occurrence-scoped namespaces. Abrupt provider exits retain explicit
-incomplete-effect evidence. Persistence, durable restart/resume, historical imports
-and promotion evaluation remain separate open tasks, not implied by live coroutine
-suspension or an in-process verifier.
+incomplete-effect evidence. Persistence and supported durable restart/resume were subsequently implemented
+by BRAIN-18 and BRAIN-43. Historical imports and promotion evaluation remain open;
+normal live coroutine suspension and an in-process verifier do not imply them.
 
 
 BRAIN-18 final integration passed all 63 registered Lua suites. The evidence suite
@@ -85,3 +87,17 @@ by default; capture failure refuses new effects and terminal-write failure remai
 visible. Secret capacity exhaustion is sticky and operationally significant; see
 [the evidence recovery limits](evidence.md). Capture does not provide crash resume,
 historical imports or proof that every arbitrary Lua branch was observed.
+
+
+BRAIN-43 final native verification passed all 64 registered Lua suites after review
+repairs. Recovery reconstructs explicitly opted-in deterministic source, validates
+exact per-workflow dependency bindings, and fences previous owners. A two-process
+fixture reopens the standard SQLite quota ledger, reconciles a lost acknowledgement
+by its original operation ID, and continues ordinary loop/branch code with one
+remote write. Original pending reservations remain held and visible; effect
+reconciliation does not claim accounting settlement. Cached bounded reads record
+zero new provider usage while retaining historical usage and artifact references.
+Review repaired per-workflow pin substitution and nil-vararg formatting gaps;
+a separate regression also fixed explicit false capability arguments becoming
+empty tables. See [durable recovery](runstore.md) for supported value semantics,
+source restrictions, attempt limits, cancellation and accounting boundaries.

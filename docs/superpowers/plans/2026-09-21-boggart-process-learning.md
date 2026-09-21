@@ -424,8 +424,8 @@ assert(old_run.version == "v1"); assert(new_run.version == "v2")
 
 **Acceptance criteria:**
 
-- [ ] A crash after remote write acknowledgement loss does not duplicate the effect on resume; unsupported continuation returns a clear non-resumable state.
-- [ ] Changing source revision, provider revision or expired freshness invalidates a cached read; writes are never served from a generic result cache.
+- [x] A crash after remote write acknowledgement loss does not duplicate the effect on resume; unsupported continuation returns a clear non-resumable state.
+- [x] Changing source revision, provider revision or expired freshness invalidates a cached read; writes are never served from a generic result cache.
 
 **Test scenario:**
 

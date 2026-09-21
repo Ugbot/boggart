@@ -228,10 +228,11 @@
           ],
           "test": "runstore",
           "example": "assert(fake_remote.message_count == 1)",
-          "status": "in_progress",
+          "status": "done",
           "accounting_contract": "Standard SQLite quota ledgers remain supported during recovery: persist a ledger identity and host-bound subjects, require a matching ledger from current authority, and retain original reservation references before effects. An effect reconciliation does not imply original accounting settlement; unresolved original charges remain held and visible. Admit and account for bounded reconciliation queries separately. Cached results preserve artifacts and historical usage while reporting zero new provider usage."
         }
-      ]
+      ],
+      "status": "done"
     },
     {
       "id": "evidence_group",
@@ -270,7 +271,8 @@
           ],
           "test": "imports",
           "example": "assert(second_import.added == 0); assert(missing_result.provenance == \"missing\")",
-          "format_evidence": "**Format evidence (21 September 2026):** Bounded structure-only sampling of local logs confirmed Claude message text/tool_use/tool_result records with parent/session identifiers, and Codex response_item function_call/function_call_output plus custom_tool_call/custom_tool_call_output records. Codex event_msg.item_completed may provide an alternate representation of the same action. Synthetic fixtures must cover these variants and avoid duplicate operation/cost counting; unknown records retain explicit coverage gaps. No private transcript contents were copied into the repository, and this sampling is not exhaustive format qualification. Exclude private/raw/encrypted reasoning from required context; available conversation text and tool observations suffice."
+          "format_evidence": "**Format evidence (21 September 2026):** Bounded structure-only sampling of local logs confirmed Claude message text/tool_use/tool_result records with parent/session identifiers, and Codex response_item function_call/function_call_output plus custom_tool_call/custom_tool_call_output records. Codex event_msg.item_completed may provide an alternate representation of the same action. Synthetic fixtures must cover these variants and avoid duplicate operation/cost counting; unknown records retain explicit coverage gaps. No private transcript contents were copied into the repository, and this sampling is not exhaustive format qualification. Exclude private/raw/encrypted reasoning from required context; available conversation text and tool observations suffice.",
+          "status": "in_progress"
         },
         {
           "id": "retention",
