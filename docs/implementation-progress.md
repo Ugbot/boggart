@@ -27,6 +27,7 @@ status authority.
 
 | BRAIN-23 | Durable AIbyWire MCP delegation with retained SQLite claims, input-bound reconnect, backend-owned retries and privacy-aware receipts | Backend92 tests; Lua23 checks; native/Linux five affected suites each twice; actual MCP1.30 typed/restart/privacy/lost-ack/readonly checks; independent re-review approved | Boggart `3fc1412`; AIbyWire `4e8127e` |
 | BRAIN-24 | Scoped Gestalt memory, current authority, stable IDs, tombstones and durable recovery | Memory54; five suites twice on native/Linux; fresh25ES tests; actual client/daemon restart, deletion, retention and outage; independent review approved | `dcf1e8d` + isolated Gestalt `f741ea7` |
+| BRAIN-25 | Lua5.5 ASTs with exact provenance, lexical normalization and conservative unknowns | Final95checks twice native/Linux; affected workflow/worker; realworker parser;154module corpus plus3bounded refusals; independent review approved | `c0f2e8f` |
 
 Build: `cmake --build build --target boggart -j 6` with `CCACHE_DIR` and
 `CCACHE_TEMPDIR` pointing inside `build/ccache`, because the default cache
@@ -243,3 +244,6 @@ and temporary profiles, with no paid models or real external messages.
 
 
 BRAIN-24 completes the integration workstream BRAIN-5. The repaired Gestalt daemon is built from an isolated sibling worktree; the original installed binary remains unchanged and does not qualify restart recovery. Recovery refuses above65,536 total DocStore records or duplicate ES identities. Actual search supports whole-document BM25 and scalar relationships, with advanced graph/vector modes explicitly unavailable. Two current-authority gaps found in review now have regressions. Existing dependency/header and duplicate-link warnings are disclosed; platform/release qualification remains BRAIN-39. BRAIN-25 Lua AST indexing is next and in progress.
+
+
+BRAIN-25 pins unmodified tree-sitterv0.26.6 and tree-sitter-luav0.5.0 with MIT/Unicode licenses and verified archive/file hashes. Native syntax validation never executes source; Lua owns lexical normalization and indexing. Input/work/tree limits are explicit; upstream allocation failure can abort the process, so this is not hard OS memory isolation. Three large repository modules were explicitly refused by resource bounds. Original vendor whitespace and existing compiler/link warnings are retained. BRAIN-26 process and fragment recognition is in progress.

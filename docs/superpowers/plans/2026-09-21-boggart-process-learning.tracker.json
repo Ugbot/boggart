@@ -385,7 +385,7 @@
         {
           "id": "ast",
           "title": "Parse and index Lua structure with source provenance",
-          "files": "Create lua/mining/ast.lua and tests/mining_ast.lua; add a parser dependency decision to docs/adr/lua-ast.md.",
+          "files": "Create lua/mining/ast.lua and tests/mining_ast.lua; add a parser dependency decision to docs/adr/lua-ast.md. Qualify and pin a maintained Lua 5.5-compatible tree-sitter grammar/runtime in src/vendor/tree-sitter-lua and src/vendor/tree-sitter with upstream licenses. Add bounded native syntax/tree bridge src/lmining_parser.c; register in CLI and embedded worker/Studio hosts (src/boggart.c, src/bogembed.c) and CMake. Native parsing never executes source; Lua owns normalization, scope/def-use analysis and indexing. Preserve unrelated user edits in shared host/build files.",
           "work": "Evaluate available maintained Lua-version-compatible parsers against actual language syntax and embedding constraints before selecting one. Produce normalized AST features, source spans, call sites and conservative def-use relationships; preserve original source as executable truth. Treat dynamic dispatch/closures/metatables as unknown when not statically resolvable. Do not infer deterministic semantics from function names. Pin parser version and license in the decision.",
           "api": "ast.index(source,version) -> {nodes,sites,features,unknowns,source_hash}|nil,parse_error.",
           "ac": [
@@ -397,7 +397,7 @@
           ],
           "test": "mining_ast",
           "example": "assert(features_a.structure_hash == features_renamed.structure_hash)",
-          "status": "in_progress"
+          "status": "done"
         },
         {
           "id": "recognition",
@@ -414,7 +414,8 @@
             "ast"
           ],
           "test": "mining_recognition",
-          "example": "assert(rank(correct_structure) < rank(similar_words_wrong_effect))"
+          "example": "assert(rank(correct_structure) < rank(similar_words_wrong_effect))",
+          "status": "in_progress"
         },
         {
           "id": "compile",

@@ -614,7 +614,7 @@ Combine context retrieval with structural evidence; similarity proposes matches,
 
 **Dependencies:** BRAIN-42
 
-**Files:** Create lua/mining/ast.lua and tests/mining_ast.lua; add a parser dependency decision to docs/adr/lua-ast.md.
+**Files:** Create lua/mining/ast.lua and tests/mining_ast.lua; add a parser dependency decision to docs/adr/lua-ast.md. Qualify and pin a maintained Lua 5.5-compatible tree-sitter grammar/runtime in src/vendor/tree-sitter-lua and src/vendor/tree-sitter with upstream licenses. Add bounded native syntax/tree bridge src/lmining_parser.c; register in CLI and embedded worker/Studio hosts (src/boggart.c, src/bogembed.c) and CMake. Native parsing never executes source; Lua owns normalization, scope/def-use analysis and indexing. Preserve unrelated user edits in shared host/build files.
 
 **Implementation:** Evaluate available maintained Lua-version-compatible parsers against actual language syntax and embedding constraints before selecting one. Produce normalized AST features, source spans, call sites and conservative def-use relationships; preserve original source as executable truth. Treat dynamic dispatch/closures/metatables as unknown when not statically resolvable. Do not infer deterministic semantics from function names. Pin parser version and license in the decision.
 
@@ -622,8 +622,8 @@ Combine context retrieval with structural evidence; similarity proposes matches,
 
 **Acceptance criteria:**
 
-- [ ] Loops, branches, closures and dynamically chosen calls retain correct source spans; parse errors never create eligible executable candidates.
-- [ ] Alpha-renamed local variables yield comparable structural features while changed branch predicates remain distinguishable.
+- [x] Loops, branches, closures and dynamically chosen calls retain correct source spans; parse errors never create eligible executable candidates.
+- [x] Alpha-renamed local variables yield comparable structural features while changed branch predicates remain distinguishable.
 
 **Test scenario:**
 
