@@ -483,6 +483,8 @@ assert(second_import.added == 0); assert(missing_result.provenance == "missing")
 
 **Verification:** Planned suite: `imports`. Add a failing fixture for the scenario, implement the contract, then rebuild and run the registered suite using the protocol above; run affected existing suites. Native, sibling and Studio commands must come from the applicable repository build recipes. Attach actual test references/results before closure.
 
+**Format evidence (21 September 2026):** Bounded structure-only sampling of local logs confirmed Claude message text/tool_use/tool_result records with parent/session identifiers, and Codex response_item function_call/function_call_output plus custom_tool_call/custom_tool_call_output records. Codex event_msg.item_completed may provide an alternate representation of the same action. Synthetic fixtures must cover these variants and avoid duplicate operation/cost counting; unknown records retain explicit coverage gaps. No private transcript contents were copied into the repository, and this sampling is not exhaustive format qualification. Exclude private/raw/encrypted reasoning from required context; available conversation text and tool observations suffice.
+
 #### BRAIN-20 — Add evidence retention, export and deletion controls
 
 **Dependencies:** BRAIN-19
