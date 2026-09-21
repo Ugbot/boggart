@@ -26,6 +26,7 @@ status authority.
 | BRAIN-22 | Faithful typed Station capture/bindings, bounded capture redaction, legacy export/import and terminal uncertain-state protection | Station forge203/catalog74/Ralph124/VerifyCode9; Boggart imports704, native/Linux repeated imports and actual current/redacted/legacy export bridges; independent re-review approved | Boggart `8b062dd`; Station `7e9e1b8f` |
 
 | BRAIN-23 | Durable AIbyWire MCP delegation with retained SQLite claims, input-bound reconnect, backend-owned retries and privacy-aware receipts | Backend92 tests; Lua23 checks; native/Linux five affected suites each twice; actual MCP1.30 typed/restart/privacy/lost-ack/readonly checks; independent re-review approved | Boggart `3fc1412`; AIbyWire `4e8127e` |
+| BRAIN-24 | Scoped Gestalt memory, current authority, stable IDs, tombstones and durable recovery | Memory54; five suites twice on native/Linux; fresh25ES tests; actual client/daemon restart, deletion, retention and outage; independent review approved | `dcf1e8d` + isolated Gestalt `f741ea7` |
 
 Build: `cmake --build build --target boggart -j 6` with `CCACHE_DIR` and
 `CCACHE_TEMPDIR` pointing inside `build/ccache`, because the default cache
@@ -239,3 +240,6 @@ check passed offline. Existing Pydantic/linker warning noise remains disclosed.
 Remote policy/usage ceilings, compensation, Rust/external backends and arbitrary
 worker exactly-once delivery remain unqualified. Tests used synthetic workers
 and temporary profiles, with no paid models or real external messages.
+
+
+BRAIN-24 completes the integration workstream BRAIN-5. The repaired Gestalt daemon is built from an isolated sibling worktree; the original installed binary remains unchanged and does not qualify restart recovery. Recovery refuses above65,536 total DocStore records or duplicate ES identities. Actual search supports whole-document BM25 and scalar relationships, with advanced graph/vector modes explicitly unavailable. Two current-authority gaps found in review now have regressions. Existing dependency/header and duplicate-link warnings are disclosed; platform/release qualification remains BRAIN-39. BRAIN-25 Lua AST indexing is next and in progress.

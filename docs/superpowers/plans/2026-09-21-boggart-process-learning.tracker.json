@@ -359,8 +359,8 @@
         {
           "id": "gestalt",
           "title": "Index scoped memory and process evidence in Gestalt",
-          "files": "Extend lua/gestalt.lua and the existing lua/memory.lua compatibly; create lua/adapters/gestalt.lua and tests/memory.lua. Preserve memory.list/index_text/remember/recall/forget/promote and their existing project scopes.",
-          "work": "Build a memory port for scoped text/structured/graph retrieval using existing Gestalt HTTP CQRS support and advertised advanced search. Index source spans, code versions, AST features, steps, dependencies and context references with stable IDs and tombstones. Preserve local storage as authoritative; indexing is retryable. Offer a small local lookup fallback and explicit advanced-search unavailable state. No fabricated Gestalt endpoint or assumed cross-tenant isolation.",
+          "files": "Extend lua/gestalt.lua and the existing lua/memory.lua compatibly; create lua/adapters/gestalt.lua and tests/memory.lua. Preserve memory.list/index_text/remember/recall/forget/promote and their existing project scopes. Add docs/memory.md and root CMake suite registration. Isolated Gestalt2 recovery repair (local prerequisite G2FEAT-1): src/compat/elasticsearch.cpp, src/compat/es_store.cpp, include/gestalt/compat/es_store.h if needed, include/gestalt/storage/doc_store.h, src/storage/doc_store.cpp, tests/test_es_compat.cpp, docs/API.md and PROJECT_MAP.md. Reuse existing durable recovery primitives; original checkout stays read-only. Rebuild scoped stable-ID projections from durable records with explicit bounded-capacity failure, never silent recent-ring truncation; commit document deletion before changing its projection and propagate direct/bulk HTTP deletion failures without false acknowledgements.",
+          "work": "Build a memory port for scoped text/structured/relationship retrieval, preserving existing Gestalt HTTP CQRS methods. Qualify the actual named-index ES-compatible search and stable-ID document PUT/DELETE surface: select a host-bound per-scope index before ranking, not memory.recall type filtering after ranking. Index source spans, code versions, AST features, steps, dependencies and context references with stable IDs and tombstones. Preserve local storage as authoritative; validate each hit against current local revision, scope and retention before use. Require explicit host export opt-in and current invocation authority. Keep indexing retryable through short local transactions and durable exclusive sync ownership; uncertain writes retain ownership, and recovery requires proof the former owner and every issued remote request are quiescent, never an expiring lease or stopped local PID alone. Offer a small local lookup fallback and explicit unavailable graph/vector/advanced modes where the actual port does not support them. No fabricated Gestalt endpoint or assumed cross-tenant isolation.",
           "api": "memory.search(query,{scope,filters,limit}) -> {hits,provenance,backend,coverage}; memory.sync(cursor) -> checkpoint. Hits carry source IDs/spans, permission scope and revisions.",
           "ac": [
             "Scoped character/process queries return provenance and revisions; forbidden projects cannot enter candidate retrieval even through similarity search.",
@@ -372,10 +372,10 @@
           ],
           "test": "memory",
           "example": "assert(hit.scope == requested_scope); assert(hit.source_ref ~= nil)",
-          "status": "in_progress"
+          "status": "done"
         }
       ],
-      "status": "in_progress"
+      "status": "done"
     },
     {
       "id": "mining",
@@ -396,7 +396,8 @@
             "workflow"
           ],
           "test": "mining_ast",
-          "example": "assert(features_a.structure_hash == features_renamed.structure_hash)"
+          "example": "assert(features_a.structure_hash == features_renamed.structure_hash)",
+          "status": "in_progress"
         },
         {
           "id": "recognition",
@@ -448,7 +449,8 @@
           "test": "mining_jobs",
           "example": "assert(background_candidate.source_hash == directed_candidate.source_hash)"
         }
-      ]
+      ],
+      "status": "in_progress"
     },
     {
       "id": "learning",
@@ -653,7 +655,7 @@
           "id": "qualification",
           "title": "Run end-to-end product, failure and cost qualification",
           "files": "Create tools/process_bench.lua, tests/process_e2e.lua and docs/process-benchmark.md; extend CI configuration using repository conventions.",
-          "work": "Run Slack and novel fixtures plus held-out variants through observe→mine→evaluate→promote→recognize→execute→rollback. Include policy bypass probes, concurrency quotas, missing context, transport uncertainty, provider drift, import corruption and restart. Fresh native build plus registered Lua tests and relevant Studio/platform checks. Pin fixture seeds and versions; report cost per independently verified outcome, model calls, wrong applicability, false success, human corrections and amortization. Repair and qualify native-worker hook preservation across trusted invocation, evidence and import transactions: a C cancellation hook reported as an external hook must not be called as a Lua function, silently cleared or incorrectly restored. Verify real worker cancellation remains effective; explicit refusal of unsupported restricted allocation is a separate contract and does not waive this integration check.",
+          "work": "Run Slack and novel fixtures plus held-out variants through observe\u2192mine\u2192evaluate\u2192promote\u2192recognize\u2192execute\u2192rollback. Include policy bypass probes, concurrency quotas, missing context, transport uncertainty, provider drift, import corruption and restart. Fresh native build plus registered Lua tests and relevant Studio/platform checks. Pin fixture seeds and versions; report cost per independently verified outcome, model calls, wrong applicability, false success, human corrections and amortization. Repair and qualify native-worker hook preservation across trusted invocation, evidence and import transactions: a C cancellation hook reported as an external hook must not be called as a Lua function, silently cleared or incorrectly restored. Verify real worker cancellation remains effective; explicit refusal of unsupported restricted allocation is a separate contract and does not waive this integration check.",
           "api": "Benchmark produces machine-readable run manifest and report artifact with exact executable/source revision, configuration and per-case evidence IDs.",
           "ac": [
             "The full cycle succeeds on held-out inputs with no known false-success or duplicate-effect failures; failures remain visible rather than removed from denominators.",

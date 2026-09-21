@@ -587,16 +587,16 @@ assert(resumed.remote_run_id == original.remote_run_id)
 
 **Dependencies:** BRAIN-19, BRAIN-20
 
-**Files:** Extend lua/gestalt.lua and the existing lua/memory.lua compatibly; create lua/adapters/gestalt.lua and tests/memory.lua. Preserve memory.list/index_text/remember/recall/forget/promote and their existing project scopes.
+**Files:** Extend lua/gestalt.lua and the existing lua/memory.lua compatibly; create lua/adapters/gestalt.lua and tests/memory.lua. Preserve memory.list/index_text/remember/recall/forget/promote and their existing project scopes. Add docs/memory.md and root CMake suite registration. Isolated Gestalt2 recovery repair (local prerequisite G2FEAT-1): src/compat/elasticsearch.cpp, src/compat/es_store.cpp, include/gestalt/compat/es_store.h if needed, include/gestalt/storage/doc_store.h, src/storage/doc_store.cpp, tests/test_es_compat.cpp, docs/API.md and PROJECT_MAP.md. Reuse existing durable recovery primitives; original checkout stays read-only. Rebuild scoped stable-ID projections from durable records with explicit bounded-capacity failure, never silent recent-ring truncation; commit document deletion before changing its projection and propagate direct/bulk HTTP deletion failures without false acknowledgements.
 
-**Implementation:** Build a memory port for scoped text/structured/graph retrieval using existing Gestalt HTTP CQRS support and advertised advanced search. Index source spans, code versions, AST features, steps, dependencies and context references with stable IDs and tombstones. Preserve local storage as authoritative; indexing is retryable. Offer a small local lookup fallback and explicit advanced-search unavailable state. No fabricated Gestalt endpoint or assumed cross-tenant isolation.
+**Implementation:** Build a memory port for scoped text/structured/relationship retrieval, preserving existing Gestalt HTTP CQRS methods. Qualify the actual named-index ES-compatible search and stable-ID document PUT/DELETE surface: select a host-bound per-scope index before ranking, not memory.recall type filtering after ranking. Index source spans, code versions, AST features, steps, dependencies and context references with stable IDs and tombstones. Preserve local storage as authoritative; validate each hit against current local revision, scope and retention before use. Require explicit host export opt-in and current invocation authority. Keep indexing retryable through short local transactions and durable exclusive sync ownership; uncertain writes retain ownership, and recovery requires proof the former owner and every issued remote request are quiescent, never an expiring lease or stopped local PID alone. Offer a small local lookup fallback and explicit unavailable graph/vector/advanced modes where the actual port does not support them. No fabricated Gestalt endpoint or assumed cross-tenant isolation.
 
 **Interface:** memory.search(query,{scope,filters,limit}) -> {hits,provenance,backend,coverage}; memory.sync(cursor) -> checkpoint. Hits carry source IDs/spans, permission scope and revisions.
 
 **Acceptance criteria:**
 
-- [ ] Scoped character/process queries return provenance and revisions; forbidden projects cannot enter candidate retrieval even through similarity search.
-- [ ] Gestalt outage leaves local Lua execution usable; resumed indexing is idempotent and propagates deletion tombstones.
+- [x] Scoped character/process queries return provenance and revisions; forbidden projects cannot enter candidate retrieval even through similarity search.
+- [x] Gestalt outage leaves local Lua execution usable; resumed indexing is idempotent and propagates deletion tombstones.
 
 **Test scenario:**
 
