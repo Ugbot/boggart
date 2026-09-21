@@ -30,7 +30,7 @@ labels and source revision maps are rejected during construction. Omitted labels
 remain optional. Use a new resolver for every run, even when the same authority is reused.
 `run_id` is a correlation label, not a shared cache namespace.
 
-`resolver:resolve(key, request) -> value, provenance | nil, error` uses only
+`resolver:resolve(key, request) -> value, provenance | nil, error, provenance` uses only
 absent (`nil`) injected entries to fall through to defaults. False, zero, and
 empty strings are concrete values. An injected provider returning no value does
 not silently switch to the workflow default. Context keys are nonempty strings.
@@ -141,6 +141,11 @@ value with `cache_reason='source_changed'` and cannot populate the newer cache.
 
 ## Errors and observations
 
+Failure returns retain the existing `nil,error` pair and add a third, copied
+metadata-only provenance record when a resolution was started. This preserves
+observed invocation/dependency outcomes even when the provider returns nil or
+throws; invalid keys rejected before resolution have no third record.
+
 Missing context returns `context_missing`; invalid keys/provider configuration
 return `context_invalid`; a cycle returns `context_cycle` with the full resolution
 `path` such as `{'a','b','a'}`. Stacks are coroutine-local, so independent suspended
@@ -182,3 +187,138 @@ closures, raw credential handles, and raw error messages are excluded. Host-owne
 keys/revision/run labels must themselves be nonsecret. BRAIN-18 owns redacted
 value/artifact persistence and durable evidence correlation; this module does
 not implement a competing store or claim that evaluated values have been saved.
+
+## Versioned workflow runtime
+
+`workflow` runs ordinary Lua functions with conditions, helpers, loops and explicit
+boundaries. Registration, activation and run handles are trusted host APIs.
+
+```lua
+local workflow = require('workflow')
+workflow.register {
+  id='follow_up', version='1', source=source_bytes,
+  capabilities={['fixture.slack.replies']='1', ['fixture.model.report']='1',
+                ['fixture.report.record']='1'},
+}
+local handle = assert(workflow.start('follow_up', {
+  context={expected_people={'Ada','Ben'}, query={replies={'Ada'}}},
+  authority=host_invocation_authority,
+}))
+local outcome = handle:snapshot()
+```
+
+Source-backed registration accepts exact Lua **text bytes**, optionally with
+`source_hash` checked against SHA-256. `workflow.hash(bytes)` returns lowercase
+SHA-256 hex. The text returns a function or `{run, defaults, verify}`; it is
+instantiated freshly inside each run's restricted generated-code environment and
+instruction budget. It reuses `tools.tool_env()` for ordinary Lua and safe coroutine
+helpers, but rejects unversioned `tools.call/names`, `sys.*`, `gold.fs.*`,
+`events.notify` and `os.getenv` routes. All effectful workflow-source operations
+must use declared exact `ctx:call` capability adapters. Rejection stays a failed
+run even if source catches it. This prevents a suspended source run from observing
+a replacement in the mutable legacy-tool registry. Its lexical helper functions and upvalues belong to that source execution.
+Source cannot access `require`, raw databases, host capability registration or
+raw effect dispatch. Ordinary local computation remains available. Source text
+cannot also supply host `run`, `defaults` or `verify` fields. Syntax is checked at
+registration; source initialization and returned contract are checked at execution.
+
+The alternate `register {id,version,run,defaults,verify,...}` path is explicitly
+`source_kind='trusted_host'`. It has **no source hash** and does not prove closure
+immutability: host closures can capture mutable state. Such closures/providers
+are not portable mined packages. A label, `tostring(function)`, adjacent file hash,
+or dumped bytecode is never presented as executable closure provenance. Concrete
+opaque context values and external data retain ordinary identity; pinning code
+does not freeze the external world. Host provider functions remain trusted.
+
+Versions cannot be replaced. The first registered version becomes active;
+`workflow.activate(id, version)` atomically selects an existing version for future
+starts. `workflow.resolve(id, exact_version)` returns identity/manifest metadata.
+Registration and returned descriptor mutation cannot change saved source or pins.
+Descriptor and dependency-map metatables are rejected. An explicit `version` at
+start overrides active selection. All declared `capabilities={id=version}` and
+`workflows={id=version}` dependencies, recursively, must exist at start and remain
+pinned. There is no implicit latest resolution. Activation is a host mechanism;
+evaluation/promotion gates are owned by the later learning subsystem.
+
+Injected binding maps and provider object configuration are snapshotted at start;
+replacing their provider function/revision while suspended does not switch the
+run. Function upvalues and external data cannot be frozen by Lua; changing data
+behind the same pinned provider is allowed. Provider revisions in manifests are
+host labels, never fabricated content hashes. Source-defined defaults are tied to
+the source hash and instantiated with that source; their provider metadata is
+added as each nested source is initialized. `manifest.providers.injected` holds
+root injected providers; `manifest.providers.occurrences[path]` holds separate
+`injected` and `defaults` maps for each root/nested execution occurrence. Arbitrary
+context names never share a namespace with workflow identities. Host defaults are snapshotted at
+registration. Concrete opaque handles are neither serialized nor cloned.
+
+`start` executes immediately to completion or its first yield; `defer=true` leaves
+it created. `handle:resume(...)` continues a suspended run and returns a snapshot
+plus yielded values, if any. `handle:snapshot()` returns status, identity,
+dependency manifest, steps, context provenance, explicit invocation receipts,
+result and verification flag. States are created, running, suspended, succeeded,
+failed, uncertain or cancelled. Terminal handles never restart. No replay,
+automatic retry, disk persistence or crash resume is implied.
+
+Workflow context provides:
+
+- `ctx:step(site_id, fn)` runs ordinary Lua and preserves multiple return values.
+  IDs combine workflow/version, execution thread, nested source-site path and
+  occurrence number. Repeated loop sites and recursive/nested sites stay distinct.
+  Site IDs are explicit author-owned nonsecret labels, not AST-inferred positions.
+- `ctx:call(id,args,{required=false}?)` returns the complete capability outcome.
+  Required calls are the default; failed/cancelled required outcomes remain sticky
+  even when code ignores them. Uncertain calls always prevent successful completion.
+- `ctx:resolve(key,request,{required=false}?)` preserves the resolver's two returns,
+  including concrete false. Plain table requests receive the actual step ID in a
+  copy. Scalar, function and opaque requests pass through unchanged; step caching
+  may visibly bypass without a table step identity. Missing required context and
+  failed required provider capability provenance prevent lifecycle success. Both
+  current and cached dependency/capability provenance are inspected. Uncertainty
+  prevents success even for optional resolutions and nil/error/throwing providers;
+  the additive third return carries failure-path provenance.
+- `ctx:workflow(id,{context=bindings,site=label}?)` executes a declared exact nested
+  dependency under the same authority, budget and run. Omitted context inherits
+  the parent's pinned injected bindings; child defaults remain its own.
+- `ctx:yield(...)` suspends and receives values passed to the next resume.
+
+Thrown step errors, ignored required failures and rejected/throwing verifiers
+cannot become verified success. Exception prose is replaced by generic typed
+errors. A verifier is `verify(ctx,result) -> true`; successful execution without
+one has `verified=false`. This flag only records the local verifier result; it is
+not evidence of independent held-out evaluation or automatic promotion eligibility.
+Provider capability summaries preserve context's provenance; direct `ctx:call`
+records keep receipts, usage and artifacts separately from user result values.
+
+`handle:cancel()` makes cancellation terminal and stops subsequent handle resumes.
+It does not claim a dispatched external effect stopped. Suspended calls/resolutions
+retain incomplete records and `effects_incomplete=true`; no provider cancel,
+reconcile, retry, compensation or coroutine close handler is automatically called.
+Abrupt hook/runtime exits also mark pending call/resolution records incomplete;
+absence of returned provenance never proves an effect absent. A nominally successful
+run with unfinished child calls becomes uncertain. The host must reconcile
+external jobs and owns resource cleanup. Cancellation is
+cooperative while executing host code; a blocking native adapter cannot be
+preempted by Lua. Retain the handle until needed reconciliation is complete.
+
+The cumulative `instructions` ceiling defaults to `tools.LIMITS.instructions` and
+must be finite and positive. It uses the reviewed composing count-hook and safe
+coroutine helpers, preserves narrower invocation authority on resume, and remains
+sticky if source catches budget errors. Accounting uses 1,000-instruction quanta
+and conservative nested-hook charges, not exact VM counts or wall-clock deadlines.
+This is not native process containment. No wall-time duration is claimed.
+
+`workflow.current()` is a read-only host correlation seam returning current
+run/workflow/version/step and attempt (currently always 1) on the executing
+workflow coroutine. BRAIN-18 can capture it **at the invocation boundary before
+observer dispatch**, including trusted-host direct mediated `sys`/`tools` calls. Source packages must
+use version-pinned `ctx:call` instead. Event observers
+run in separate coroutines and cannot infer their emitter using `current()`.
+Arbitrary user-created child coroutines have no inherited correlation before
+entering an explicit step; evidence integration must propagate that association
+when supporting those direct calls. No competing persistence layer is introduced.
+
+The executable package [slack_followup.lua](../examples/workflows/slack_followup.lua)
+gathers fake replies, computes missing people locally, branches to an optional
+fake model, and records a fake report. `tests/workflow.lua` injects only local
+capabilities: it never sends a real Slack message or invokes a model account.

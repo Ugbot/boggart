@@ -187,3 +187,10 @@ for _,kind in ipairs({'provider','concrete','cached','missing'}) do
     'short '..kind..' resolutions cannot starve enclosing count budget')
 end
 print('context: '..passed..' checks passed')
+
+assert(cap.register({id='context.review.uncertain',version='1',effect='pure'},function()return nil,{status='uncertain'} end))
+r=new({x=function(ctx)ctx:call('context.review.uncertain',{});return nil,'private failure text' end},nil,{capabilities={['context.review.uncertain']='1'}})
+local absent,typed,provenance=r:resolve('x')
+check(absent==nil and typed.code=='context_provider_error' and provenance.capabilities[1].status=='uncertain','third failure return preserves observed invocation provenance')
+check(not require('json').encode(provenance):find('private failure text',1,true),'failure provenance stays redacted')
+print('context reviewed: '..passed..' checks passed')

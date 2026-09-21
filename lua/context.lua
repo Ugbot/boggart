@@ -116,7 +116,7 @@ function M.new(injected, defaults, authority, options)
       emit('after',p)
       local parent=frames[#frames]
       if parent then parent.dependencies[#parent.dependencies+1]=copy(p) end
-      if err then return nil,err end
+      if err then return nil,err,copy(p) end
       return value,copy(p)
     end
     return invoke.with_context(authority,function()
