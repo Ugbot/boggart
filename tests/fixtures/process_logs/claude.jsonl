@@ -1,0 +1,8 @@
+{"type":"user","sessionId":"synthetic-claude","uuid":"u1","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"Inspect synthetic data"}}
+{"type":"assistant","session_id":"synthetic-claude","uuid":"a1","parentUuid":"u1","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"Inspecting"},{"type":"tool_use","id":"call1","name":"read","input":{"path":"fixture.txt","password":"fixture-secret"}}]}}
+{"type":"user","sessionId":"synthetic-claude","uuid":"u2","sourceToolAssistantUUID":"a1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call1","content":"fixture output"}]}}
+{"type":"assistant","sessionId":"synthetic-claude","uuid":"a2","message":{"role":"assistant","content":[{"type":"tool_use","id":"call2","name":"read","input":{"path":"absent.txt"}}]}}
+{"type":"assistant","sessionId":"synthetic-claude","uuid":"a3","message":{"role":"assistant","content":[{"type":"thinking","thinking":"PRIVATE-REASONING-SENTINEL"}]}}
+{"type":"permission-mode","sessionId":"synthetic-claude","permissionMode":"never-authority"}
+not json
+{"type":"file-history-snapshot","snapshot":{"not":"imported"}}

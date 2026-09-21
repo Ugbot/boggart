@@ -1,0 +1,21 @@
+{"timestamp":"2026-01-01","type":"session_meta","payload":{"id":"synthetic-openai","cli_version":"fixture","base_instructions":"DO-NOT-EXECUTE"}}
+{"type":"response_item","payload":{"type":"message","id":"m1","role":"user","content":[{"type":"input_text","text":"Synthetic question"}]}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"m1","content":[{"type":"text","text":"Synthetic question"}]}}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"f1","name":"inspect","namespace":"fixture","arguments":"{\"password\":\"argument-secret\",\"path\":\"fixture\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"f1","output":"synthetic output"}}
+{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"c1","name":"patch","input":"fixture patch","status":"completed"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c1","output":"fixture result"}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"f2","name":"unanswered","arguments":"not JSON"}}
+{"type":"response_item","payload":{"type":"agent_message","id":"a1","author":"assistant","content":"Synthetic response"}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"a1","content":"Synthetic response"}}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"f1","command":"fixture command","aggregated_output":"synthetic output","exit_code":0,"status":"completed"}}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","id":"fc","changes":[],"status":"completed"}}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"SubAgentActivity","id":"sa","agent_thread_id":"child"}}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"Extension","id":"ex","kind":"fixture"}}}
+{"type":"turn_context","payload":{"turn_id":"t1","model":"synthetic","approval_policy":"DO-NOT-AUTHORIZE"}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}
+{"type":"response_item","payload":{"type":"reasoning","encrypted_content":"PRIVATE-REASONING-SENTINEL"}}
+{"type":"world_state","payload":{"state":{}}}
+{"type":"token_usage_record","payload":{"usage":{"tokens":999}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{}}}

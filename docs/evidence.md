@@ -162,3 +162,12 @@ send, model request or historical log ingestion is introduced.
 
 Regression suite: [tests/evidence.lua](../tests/evidence.lua), plus workflow,
 context, capability, invoke, quota, sessions, trace and luatool suites.
+
+Historical imports use the separate [imports API](imports.md). Its scope-owned
+observations are always imported, unverified, and outside `read_run` native
+lifecycle coverage. Source references, alternate observations and unresolved
+artifact/partial snapshots retain their limitations; historical tool outputs do
+not establish invocation admission, complete terminal capture or verified success.
+The importer uses the evidence redactor but writes its own atomic source/event/
+checkpoint tables. Imported observations are never passed through `append`, which
+continues to mean direct native capture.

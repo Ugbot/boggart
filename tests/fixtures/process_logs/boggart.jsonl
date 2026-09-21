@@ -1,0 +1,5 @@
+{"id":1,"kind":"entry","run_id":"synthetic-boggart","payload":"{\"role\":\"user\",\"content\":\"Synthetic entry\"}"}
+{"schema_version":1,"event_id":"native-e1","kind":"session.entry","run_id":"synthetic-boggart","origin":"native","payload":{"role":"user","content":"Synthetic entry"}}
+{"id":"synthetic-boggart","messages":"[{\"role\":\"user\",\"content\":\"Synthetic entry\"}]"}
+{"schema_version":1,"event_id":"native-e2","kind":"invocation.start","run_id":"synthetic-boggart","correlation_id":"native-call","payload":{"evidence_marker":"artifact","id":"unavailable-artifact"}}
+{"schema_version":1,"event_id":"native-e3","kind":"invocation.terminal","run_id":"synthetic-boggart","correlation_id":"native-call","payload":{"evidence_marker":"partial","value":{"status":"succeeded"}}}
