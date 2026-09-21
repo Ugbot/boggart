@@ -26,6 +26,7 @@ void boggart_http_shutdown(lua_State *L); /* src/lhttp.c: close raw uv handles b
 void boggart_station_shutdown(lua_State *L); /* src/lstation.c: same doctrine for the ZMQ polls */
 int luaopen_boggart_sys(lua_State *L);
 int luaopen_boggart_db(lua_State *L);
+int luaopen_boggart_mining_parser(lua_State *L);
 int luaopen_boggart_repo(lua_State *L); /* src/lrepo.c: semantic data API */
 int luaopen_boggart_swarm(lua_State *L);
 int luaopen_boggart_mcp(lua_State *L);
@@ -160,6 +161,7 @@ static void register_boggart(lua_State *L, int argc, char **argv) {
   lua_setglobal(L, "sys");
   luaL_requiref(L, "db", luaopen_boggart_db, 0);
   lua_setglobal(L, "db");
+  luaL_requiref(L, "mining_parser", luaopen_boggart_mining_parser, 0); lua_pop(L, 1);
   luaL_requiref(L, "repo", luaopen_boggart_repo, 0);
   lua_setglobal(L, "repo");
   luaL_requiref(L, "swarm", luaopen_boggart_swarm, 0);

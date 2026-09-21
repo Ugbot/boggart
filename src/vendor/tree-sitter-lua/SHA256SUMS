@@ -1,0 +1,9 @@
+9a32b02e4c917b1ce6b5e79d8ea81e25cefd7f27d89c7235f2afb262c06cf32e  src/vendor/tree-sitter-lua/LICENSE.md
+488317a19510e9390e26c000f21f6c3153e11cb22011f728735e2121e45ec5a1  src/vendor/tree-sitter-lua/grammar.js
+016172714e10e7b5a3b25433cfd2a9626c983c6ede228fcc8301537da516e462  src/vendor/tree-sitter-lua/src/grammar.json
+12ea1259c9e644754a13068eafd6160a9c5561c7a69e9cb9c8cd6c968b5e09fc  src/vendor/tree-sitter-lua/src/node-types.json
+933206d96a78f7785c13b2600182f1527dcd755c200b1271bb5bc4d8da4b17b3  src/vendor/tree-sitter-lua/src/parser.c
+35bbd630b5a7421d46d2e91185eeea09bf78565d44cb676b63ca20d0f1b54bbd  src/vendor/tree-sitter-lua/src/scanner.c
+b29c1c9fb7cc82f58c84b376df1297d6e2737a1d655fd356db0859e3c29c2fea  src/vendor/tree-sitter-lua/src/tree_sitter/alloc.h
+31e60a1bff6f715afacce03b5b70efe42b58371b4f9595dd4af52a577ff9608c  src/vendor/tree-sitter-lua/src/tree_sitter/array.h
+180b893c8734778fd32f372dfbc27bd6ad1cd2221f26150b31256ff6716320d2  src/vendor/tree-sitter-lua/src/tree_sitter/parser.h

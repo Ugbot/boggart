@@ -458,6 +458,18 @@ add_custom_command(
   COMMENT "Baking lua/ into embedded.c"
   VERBATIM)
 
+# Pinned syntax parsers for process mining. Lua owns indexing and normalization.
+add_library(mining_parser_vendor STATIC
+  ${VENDOR}/tree-sitter/lib/src/lib.c
+  ${VENDOR}/tree-sitter-lua/src/parser.c
+  ${VENDOR}/tree-sitter-lua/src/scanner.c)
+target_include_directories(mining_parser_vendor PUBLIC
+  ${VENDOR}/tree-sitter/lib/include)
+target_include_directories(mining_parser_vendor PRIVATE
+  ${VENDOR}/tree-sitter/lib/src
+  ${VENDOR}/tree-sitter-lua/src)
+target_link_libraries(mining_parser_vendor PRIVATE boggart_quiet)
+
 # ---- the executable --------------------------------------------------------
 # (An earlier plan had a hand-written src/sysproc_{posix,win32}.c platform
 # shim, wired in here by a glob. Vendoring libuv + luv replaced it: uv_spawn
@@ -469,6 +481,7 @@ add_executable(boggart
   src/lsys.c
   src/ldb.c
   src/lrepo.c
+  src/lmining_parser.c
   src/lswarm.c
   src/lmcp.c
   src/lgit.c
@@ -489,7 +502,7 @@ add_executable(boggart
 target_include_directories(boggart PRIVATE src)
 target_link_libraries(boggart PRIVATE
   boggart_warnings
-  lua_vendor sqlite_vendor cjson_vendor ltui_curses luv_lua uv_a
+  lua_vendor mining_parser_vendor sqlite_vendor cjson_vendor ltui_curses luv_lua uv_a
   isocline_vendor CURL::libcurl ${VOICE_LIBS} ${STATION_LIBS})
 target_compile_definitions(boggart PRIVATE ${VOICE_DEFS} ${STATION_DEFS})
 if(BOGGART_VOICE OR BOGGART_STATION)
@@ -683,6 +696,7 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
     src/lsys.c
     src/ldb.c
     src/lrepo.c
+    src/lmining_parser.c
     src/lswarm.c
     src/lmcp.c
     src/lgit.c
@@ -705,7 +719,7 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
   target_compile_definitions(boggart-studio PRIVATE BOGGART_STUDIO=1 ${VOICE_DEFS} ${STATION_DEFS})
   target_link_libraries(boggart-studio PRIVATE
     boggart_warnings
-    lua_vendor sqlite_vendor cjson_vendor luv_lua uv_a isocline_vendor
+    lua_vendor mining_parser_vendor sqlite_vendor cjson_vendor luv_lua uv_a isocline_vendor
     CURL::libcurl freetype ${VOICE_LIBS} ${STATION_LIBS})
   if(BOGGART_VOICE OR BOGGART_STATION)
     set_target_properties(boggart-studio PROPERTIES LINKER_LANGUAGE CXX)
@@ -835,7 +849,7 @@ endif()
 # rule itself under test -- it still resolves %LOCALAPPDATA%, that just now
 # points somewhere disposable.
 enable_testing()
-foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory)
+foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home}

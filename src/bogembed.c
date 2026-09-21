@@ -20,6 +20,7 @@
 int luaopen_boggart_http(lua_State *L);
 int luaopen_boggart_sys(lua_State *L);
 int luaopen_boggart_db(lua_State *L);
+int luaopen_boggart_mining_parser(lua_State *L);
 int luaopen_boggart_repo(lua_State *L);
 int luaopen_boggart_swarm(lua_State *L);
 int luaopen_boggart_mcp(lua_State *L);
@@ -80,6 +81,7 @@ void boggart_open_libs(lua_State *L) {
   luaL_requiref(L, "http", luaopen_boggart_http, 0);   lua_setglobal(L, "http");
   luaL_requiref(L, "sys", luaopen_boggart_sys, 0);     lua_setglobal(L, "sys");
   luaL_requiref(L, "db", luaopen_boggart_db, 0);       lua_setglobal(L, "db");
+  luaL_requiref(L, "mining_parser", luaopen_boggart_mining_parser, 0); lua_pop(L, 1);
   luaL_requiref(L, "repo", luaopen_boggart_repo, 0);   lua_setglobal(L, "repo");
   luaL_requiref(L, "swarm", luaopen_boggart_swarm, 0); lua_setglobal(L, "swarm");
   luaL_requiref(L, "mcp", luaopen_boggart_mcp, 0);     lua_setglobal(L, "mcp");
