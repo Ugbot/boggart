@@ -8,7 +8,7 @@
 
 **Tech stack:** Existing embedded Lua/C host, SQLite, existing ZMQ and MCP adapters, Gestalt client, and versioned source packages. Native libraries are an optional extension route, not a replacement execution language.
 
-**Status:** Approved direction from the design interview; implementation work remains open. This document specifies planned interfaces, not APIs already implemented. Existing audit results are baseline evidence, not acceptance results for new work.
+**Status:** Approved direction from the design interview; implementation is in progress. Completed foundations are recorded in [implementation progress](../../implementation-progress.md) and checked below. This document specifies planned interfaces, not APIs already implemented. Existing audit results are baseline evidence, not acceptance results for new work.
 
 ## 1. Settled requirements
 
@@ -211,8 +211,8 @@ Nested execution, verification, budgets and reload must remain trustworthy befor
 
 **Acceptance criteria:**
 
-- [ ] Parent deny defeats child/tool allow; chat restrictions and agent restrictions survive explicit overrides and scope reordering.
-- [ ] Unknown evaluators and malformed limits fail closed; disjoint resource allows produce no access; policy inputs cannot be mutated through a compiled result.
+- [x] Parent deny defeats child/tool allow; chat restrictions and agent restrictions survive explicit overrides and scope reordering.
+- [x] Unknown evaluators and malformed limits fail closed; disjoint resource allows produce no access; policy inputs cannot be mutated through a compiled result.
 
 **Test scenario:**
 
@@ -234,8 +234,8 @@ assert(policy.decide(policy.compile({parent_deny, child_allow}), write_cap, args
 
 **Acceptance criteria:**
 
-- [ ] Two independent database connections competing for the last shared token permit exactly one invocation; restart retains quota consumption.
-- [ ] Failure in one bucket changes none of the others; repeated settle does not double charge; backward clock changes cannot replenish a bucket.
+- [x] Two independent database connections competing for the last shared token permit exactly one invocation; restart retains quota consumption.
+- [x] Failure in one bucket changes none of the others; repeated settle does not double charge; backward clock changes cannot replenish a bucket.
 
 **Test scenario:**
 
@@ -280,8 +280,8 @@ assert(not fake_files["forbidden.txt"]); assert(terminal_events_for(call_id) == 
 
 **Acceptance criteria:**
 
-- [ ] A false or throwing skill verifier never reports success or becomes eligible training success; finalizers still run once.
-- [ ] The outer instruction limit survives an inner call; runaway event handlers terminate without removing the surrounding execution budget.
+- [x] A false or throwing skill verifier never reports success or becomes eligible training success; finalizers still run once.
+- [x] The outer instruction limit survives an inner call; runaway event handlers terminate without removing the surrounding execution budget.
 
 **Test scenario:**
 
@@ -303,8 +303,8 @@ assert(outcome.status == "failed"); assert(outcome.verification.passed == false)
 
 **Acceptance criteria:**
 
-- [ ] An injected wiring failure preserves bog.worker identity, previous registrations and subsequent execution without duplicate handlers.
-- [ ] A populated store appears in /sessions; a simulated store error is distinguishable from zero sessions.
+- [x] An injected wiring failure preserves bog.worker identity, previous registrations and subsequent execution without duplicate handlers.
+- [x] A populated store appears in /sessions; a simulated store error is distinguishable from zero sessions.
 
 **Test scenario:**
 
@@ -583,7 +583,7 @@ assert(resumed.remote_run_id == original.remote_run_id)
 
 **Dependencies:** BRAIN-19, BRAIN-20
 
-**Files:** Extend lua/gestalt.lua; create lua/memory.lua, lua/adapters/gestalt.lua and tests/memory.lua.
+**Files:** Extend lua/gestalt.lua and the existing lua/memory.lua compatibly; create lua/adapters/gestalt.lua and tests/memory.lua. Preserve memory.list/index_text/remember/recall/forget/promote and their existing project scopes.
 
 **Implementation:** Build a memory port for scoped text/structured/graph retrieval using existing Gestalt HTTP CQRS support and advertised advanced search. Index source spans, code versions, AST features, steps, dependencies and context references with stable IDs and tombstones. Preserve local storage as authoritative; indexing is retryable. Offer a small local lookup fallback and explicit advanced-search unavailable state. No fabricated Gestalt endpoint or assumed cross-tenant isolation.
 

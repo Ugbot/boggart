@@ -4,7 +4,7 @@
   "project": "BRAIN",
   "root": "BRAIN-1",
   "plan": "docs/superpowers/plans/2026-09-21-boggart-process-learning.md",
-  "status": "planned",
+  "status": "in_progress",
   "keys": {
     "root": "BRAIN-1",
     "trust": "BRAIN-2",
@@ -68,7 +68,8 @@
           ],
           "deps": [],
           "test": "policy",
-          "example": "assert(policy.decide(policy.compile({parent_deny, child_allow}), write_cap, args, {}).verdict == \"deny\")"
+          "example": "assert(policy.decide(policy.compile({parent_deny, child_allow}), write_cap, args, {}).verdict == \"deny\")",
+          "status": "done"
         },
         {
           "id": "quota",
@@ -84,7 +85,8 @@
             "policy"
           ],
           "test": "quota",
-          "example": "assert(granted_by_connection_a + granted_by_connection_b == 1)"
+          "example": "assert(granted_by_connection_a + granted_by_connection_b == 1)",
+          "status": "done"
         },
         {
           "id": "gate",
@@ -101,7 +103,8 @@
             "quota"
           ],
           "test": "invoke",
-          "example": "assert(not fake_files[\"forbidden.txt\"]); assert(terminal_events_for(call_id) == 1)"
+          "example": "assert(not fake_files[\"forbidden.txt\"]); assert(terminal_events_for(call_id) == 1)",
+          "status": "in_progress"
         },
         {
           "id": "composition",
@@ -115,7 +118,8 @@
           ],
           "deps": [],
           "test": "callable|skills|luatool|events",
-          "example": "assert(outcome.status == \"failed\"); assert(outcome.verification.passed == false)"
+          "example": "assert(outcome.status == \"failed\"); assert(outcome.verification.passed == false)",
+          "status": "done"
         },
         {
           "id": "reload",
@@ -129,7 +133,8 @@
           ],
           "deps": [],
           "test": "lifecycle|sessions",
-          "example": "assert(bog.worker == prior_worker); assert(#listed_sessions == 1)"
+          "example": "assert(bog.worker == prior_worker); assert(#listed_sessions == 1)",
+          "status": "done"
         },
         {
           "id": "service",
@@ -337,7 +342,7 @@
         {
           "id": "gestalt",
           "title": "Index scoped memory and process evidence in Gestalt",
-          "files": "Extend lua/gestalt.lua; create lua/memory.lua, lua/adapters/gestalt.lua and tests/memory.lua.",
+          "files": "Extend lua/gestalt.lua and the existing lua/memory.lua compatibly; create lua/adapters/gestalt.lua and tests/memory.lua. Preserve memory.list/index_text/remember/recall/forget/promote and their existing project scopes.",
           "work": "Build a memory port for scoped text/structured/graph retrieval using existing Gestalt HTTP CQRS support and advertised advanced search. Index source spans, code versions, AST features, steps, dependencies and context references with stable IDs and tombstones. Preserve local storage as authoritative; indexing is retryable. Offer a small local lookup fallback and explicit advanced-search unavailable state. No fabricated Gestalt endpoint or assumed cross-tenant isolation.",
           "api": "memory.search(query,{scope,filters,limit}) -> {hits,provenance,backend,coverage}; memory.sync(cursor) -> checkpoint. Hits carry source IDs/spans, permission scope and revisions.",
           "ac": [
