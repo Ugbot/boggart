@@ -566,7 +566,7 @@ assert(replayed_target == held_out_target); assert(unknown_precondition_eligible
 
 **Files:** Create lua/adapters/aibywire.lua and tests/aibywire.lua; use ~/aibywire/taskengine/tools/schema.py, dag/model.py and durable/runtime.py contracts; sibling changes isolated.
 
-**Implementation:** Implement capability discovery plus submit/status/cancel/reconnect and durable execution receipts through available ZMQ/MCP endpoints. Boggart Lua remains logical control flow; AIbyWire owns retries within its delegated job. Persist remote operation ID before waiting. Validate atomic claim/idempotency behavior instead of relying on the known Python read-then-write check. Document per-backend differences; unsupported claims stay disabled.
+**Implementation:** Implement capability discovery plus submit/status/cancel/reconnect and durable execution receipts through available ZMQ/MCP endpoints. Boggart Lua remains logical control flow; AIbyWire owns retries within its delegated job. Persist remote operation ID before waiting. Validate atomic claim/idempotency behavior instead of relying on the observed Python/Rust read-then-write checks. Document per-backend differences; unsupported claims stay disabled.
 
 **Interface:** Delegated job receipt includes backend, remote_run_id, operation_id, state, result/artifacts and policy/usage acknowledgement.
 
