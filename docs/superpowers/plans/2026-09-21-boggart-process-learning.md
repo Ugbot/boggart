@@ -681,18 +681,20 @@ assert(not candidate.source:find("historical-secret", 1, true))
 
 #### BRAIN-28 — Run mining in background and directed modes
 
+**Status:** Complete in `90c7dbd`; independent review approved. Final 67 mining checks and affected suites passed on macOS/Linux; independent restart, crash recovery, authority, source-registry, contract-identity and two-process cursor-race probes passed both platforms. Cancellation deadlines are not hard real-time guarantees; unsupported inherited quota combinations refuse admission.
+
 **Dependencies:** BRAIN-27, BRAIN-12
 
 **Files:** Create lua/mining/jobs.lua, tests/mining_jobs.lua and docs/mining-jobs.md; integrate existing trigger/supervisor modules and register mining_jobs in CMakeLists.txt.
 
-**Implementation:** Support manually scoped corpus/range/objective jobs and bounded incremental background mining with the same engine. Persist cursor, input snapshot, job version and candidate provenance. Apply resource/LLM budgets, cancellation and scheduling priority so mining cannot starve interactive execution. Deduplicate overlapping work; interrupted jobs resume. Default background behavior is configurable independently from candidate activation.
+**Implementation:** Support manually scoped corpus/range/objective jobs and bounded incremental background mining with the same engine. Persist cursor, input snapshot, job version and candidate provenance. Apply resource/LLM budgets, cancellation and scheduling priority so mining cannot starve interactive execution. Deduplicate overlapping work; interrupted jobs resume. Default background behavior is configurable independently from candidate activation. Enumerate nonadjacent recurring pairs as well as adjacent runs. Delegate pure analysis to workers and keep main-thread database transactions short; qualify actual responsiveness and worker lifetime bounds separately from stale-result fencing. Support both initial native-trace compilation and source-backed refinement through a host-owned, hash-matched source registry; revalidate its scope, revision and compiler options before reuse or admission. Preserve inherited invocation restrictions and refuse unsupported quota combinations instead of dropping them.
 
 **Interface:** mining.start({scope,range,objective,mode,budget}) -> job_id; mining.status/cancel(job_id); mining.tick(cursor,budget).
 
 **Acceptance criteria:**
 
-- [ ] Directed and background jobs over the same evidence yield equivalent candidate provenance; overlap does not duplicate active candidates.
-- [ ] Cancellation and restart preserve progress; foreground work retains its configured quota and latency budget under mining load.
+- [x] Directed and background jobs over the same evidence yield equivalent candidate provenance; overlap does not duplicate active candidates.
+- [x] Cancellation and restart preserve progress; foreground work retains its configured quota and latency budget under mining load.
 
 **Test scenario:**
 
@@ -707,6 +709,8 @@ assert(background_candidate.source_hash == directed_candidate.source_hash)
 Automatic learning remains reversible and evidence-driven; users can change automation behavior.
 
 #### BRAIN-29 — Evaluate candidates against held-out outcomes and costs
+
+**Status:** In progress.
 
 **Dependencies:** BRAIN-27, BRAIN-43, BRAIN-14
 

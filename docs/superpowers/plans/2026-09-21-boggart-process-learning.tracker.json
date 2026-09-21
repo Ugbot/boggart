@@ -442,7 +442,7 @@
           "id": "mining_jobs",
           "title": "Run mining in background and directed modes",
           "files": "Create lua/mining/jobs.lua, tests/mining_jobs.lua and docs/mining-jobs.md; integrate existing trigger/supervisor modules and register mining_jobs in CMakeLists.txt.",
-          "work": "Support manually scoped corpus/range/objective jobs and bounded incremental background mining with the same engine. Persist cursor, input snapshot, job version and candidate provenance. Apply resource/LLM budgets, cancellation and scheduling priority so mining cannot starve interactive execution. Deduplicate overlapping work; interrupted jobs resume. Default background behavior is configurable independently from candidate activation.",
+          "work": "Support manually scoped corpus/range/objective jobs and bounded incremental background mining with the same engine. Persist cursor, input snapshot, job version and candidate provenance. Apply resource/LLM budgets, cancellation and scheduling priority so mining cannot starve interactive execution. Deduplicate overlapping work; interrupted jobs resume. Default background behavior is configurable independently from candidate activation. Enumerate nonadjacent recurring pairs as well as adjacent runs. Delegate pure analysis to workers and keep main-thread database transactions short; qualify actual responsiveness and worker lifetime bounds separately from stale-result fencing. Support both initial native-trace compilation and source-backed refinement through a host-owned, hash-matched source registry; revalidate its scope, revision and compiler options before reuse or admission. Preserve inherited invocation restrictions and refuse unsupported quota combinations instead of dropping them.",
           "api": "mining.start({scope,range,objective,mode,budget}) -> job_id; mining.status/cancel(job_id); mining.tick(cursor,budget).",
           "ac": [
             "Directed and background jobs over the same evidence yield equivalent candidate provenance; overlap does not duplicate active candidates.",
@@ -454,10 +454,12 @@
           ],
           "test": "mining_jobs",
           "example": "assert(background_candidate.source_hash == directed_candidate.source_hash)",
-          "status": "in_progress"
+          "status": "done",
+          "commit": "90c7dbd",
+          "verification": "Final67 checks and affected suites twice macOS/Linux; independent restart/crash/authority/source/identity/two-process cursor-race probes; review approved."
         }
       ],
-      "status": "in_progress"
+      "status": "done"
     },
     {
       "id": "learning",
@@ -480,7 +482,8 @@
             "composition"
           ],
           "test": "learning_evaluate",
-          "example": "assert(report.eligibility == false); assert(report.regressions.wrong_recipient == 1)"
+          "example": "assert(report.eligibility == false); assert(report.regressions.wrong_recipient == 1)",
+          "status": "in_progress"
         },
         {
           "id": "promotion",
@@ -532,7 +535,8 @@
           "test": "learning_monitor",
           "example": "assert(registry.status(broken_version) == \"quarantined\")"
         }
-      ]
+      ],
+      "status": "in_progress"
     },
     {
       "id": "product",
