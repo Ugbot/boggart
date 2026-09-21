@@ -175,7 +175,7 @@ do
   eq(tools.run("_fb_logical2", { q = 9 }), "SECONDARY:9", "fallback: adapt remaps args")
 
   -- a present target that answers tool_not_found is treated as unavailable
-  tools.register("_fb_deadmcp", { description = "x", input_schema = { type = "object" },
+  tools.register("_fb_deadmcp", { effect = "read", description = "x", input_schema = { type = "object" },
     run = function() return "Tool error: [tool_not_found] server gone" end })
   tools.register_fallback("_fb_logical3", "d", { type = "object" }, { "_fb_deadmcp", "_fb_primary" })
   eq(tools.run("_fb_logical3", { x = 2 }), "PRIMARY:2",

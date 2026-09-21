@@ -26,8 +26,8 @@ local receipt, settle_error = ledger:settle(reservation.id, actual, outcome)
 dispatch. `calls` is the attempt metric: it always consumes one regardless of
 caller usage values. Every other quota metric needs an explicit finite,
 nonnegative estimate. Hard per-invocation ceilings in the compiled policy are
-also checked against estimates; the invocation gate owns longer-lived run
-ceilings. Values above 2^53−1 are refused to bound SQLite numeric accounting.
+also checked against estimates. Longer-lived run budgets need an explicit host
+policy or shared quota; a per-invocation limit is not a cumulative run budget. Values above 2^53−1 are refused to bound SQLite numeric accounting.
 Use integral units (tokens, monetary micro-units) when exact accounting matters.
 
 A reservation is `{id, status="reserved"|"settled", replayed, overrun, outcome?}`.
@@ -50,6 +50,10 @@ Actual usage above a reservation is charged and produces `overrun=true`. The
 ledger durably blocks **all new reservations** afterward, even in later windows
 or unrelated scopes. This conservative halt needs host investigation and an
 explicit administrative recovery/migration; there is no automatic reset API.
+Hard-limit-only policies are also reconciled against their reserved amounts,
+even when no shared bucket exists. The additive `quota_bounds` table records
+these ceilings for new reservations. Historical reservations without bound rows
+retain their earlier settlement semantics; no historical usage is invented.
 The gate must stop work on this receipt and enforce provider ceilings to avoid
 spending beyond reservations in the first place. Unsettled reservations remain
 charged across crashes; there is no timeout-based refund.

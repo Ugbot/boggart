@@ -23,8 +23,9 @@ end
 --
 -- `chain` is an ordered list; each entry is either a tool name (args passed
 -- through unchanged) or { tool = name, adapt = function(args) -> args } to remap
--- arguments when the fallback's schema differs. Fallback also triggers if a
--- present target answers with tool_not_found or an MCP "not connected" error.
+-- arguments when the fallback's schema differs. A typed tool_not_found can
+-- fall back only when the gate rules out uncertain effects. Connection-loss
+-- prose alone is never proof that dispatch did not execute.
 function M.register_fallback(name, description, input_schema, chain)
   M.register(name, {
     description = description,
@@ -37,16 +38,16 @@ function M.register_fallback(name, description, input_schema, chain)
         if target ~= name and M.registry[target] then
           tried[#tried + 1] = target
           local a = (type(c) == "table" and c.adapt) and c.adapt(args) or args
-          local res = M.run(target, a)
-          -- Keep falling back only when the target was effectively unavailable;
-          -- a real result (or a genuine tool error) is returned as-is.
-          if type(res) == "string"
-             and (res:find("^Tool error: %[tool_not_found%]")
-                  or res:find("is not connected", 1, true)) then
-            last = res
-          else
-            return res
+          local res,err,receipt = require("invoke").call(nil,target,a,{registry=M,legacy_string=true})
+          if err then
+            res = err.message:find("^Tool error:") and err.message
+              or ("Tool error: ["..err.code.."] "..err.message)
+            if receipt.status=="uncertain" then
+              return "Tool error: [uncertain] "..err.message
+            end
           end
+          if err and err.code=="tool_not_found" then last=res
+          else return res end
         end
       end
       return last or ("Tool error: [tool_not_found] no available implementation for '"
@@ -1117,6 +1118,11 @@ require("invoke").bind(M,descriptor,function(name,args)
 end,format_result)
 function M.run(name,input) return require("invoke").string(nil,name,input,{registry=M}) end
 M.call=M.run
+-- Explicit host adaptation stays scoped to this tools generation. Loading a
+-- candidate module never publishes capabilities into the live registry.
+function M.capability(name,version,metadata)
+  return require("capability").adapt(name,version,M,metadata)
+end
 
 -- Populate the registry (called fresh on every load/reload).
 M.registry = {}

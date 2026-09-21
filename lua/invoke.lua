@@ -82,9 +82,15 @@ function M.with_context(context, fn, ...)
   return table.unpack(result, 2, result.n)
 end
 -- Called by the trusted registry during module initialization/reload.
-function M.bind(owner, resolver, runner, format_result)
+function M.bind(owner, resolver, runner, format_result, execution_receipts)
   assert(not bindings[owner], "registry generation already bound")
-  bindings[owner]={resolve=resolver,dispatch=runner,format_result=format_result}
+  bindings[owner]={resolve=resolver,dispatch=runner,format_result=format_result,execution_receipts=execution_receipts}
+end
+-- Trusted host adapter construction only; absent from generated environments.
+function M.adapter(owner, name)
+  local binding=assert(bindings[owner], "unknown registry generation")
+  return function() return binding.resolve(name) end,
+    function(args, execution) return binding.dispatch(name,args,execution) end
 end
 local function failure(code, message) return {code=code, message=tostring(message), retryable=false} end
 local function chain(context)
@@ -107,6 +113,8 @@ function M.call(context, name, args, options)
   local revisions = {}
   local old, k = M.current(), key()
   local raised
+  local receipt={invocation_id=id,id=name,dispatched=false,status="failed",usage={}}
+  local execution_meta, dispatched_descriptor
   local entry_hook=debug.gethook()
   -- Explicit contexts cannot replace an active ancestor.
   local states
@@ -123,7 +131,18 @@ function M.call(context, name, args, options)
     local binding=bindings[options.registry or require("tools")]
     local descriptor = binding and binding.resolve(name)
     if not descriptor then return nil, failure('tool_not_found','unknown tool: '..tostring(name)) end
+    receipt.version=descriptor.version; receipt.target=descriptor.target; receipt.effect=descriptor.effect
+    dispatched_descriptor=descriptor
+    if descriptor.validate_input then
+      local valid,why=descriptor.validate_input(args)
+      if valid~=true then return nil,failure("input_validation",why) end
+    end
+    local adapter_estimate=descriptor.estimate and descriptor.estimate(copy(args)) or {}
+    adapter_estimate=copy(adapter_estimate); adapter_estimate.calls=1
     local asks, policies = {}, {}
+    if binding.execution_receipts and (descriptor.requires_approval or descriptor.effect=="unknown") then
+      asks[#asks+1]={mandatory=true,why="capability requires approval"}
+    end
     local approver
     for _,s in ipairs(states) do
       if s.approve then approver=s.approve end
@@ -153,7 +172,8 @@ function M.call(context, name, args, options)
       if verdict == 'deny' then return nil, failure('permission_error',why or 'permission denied') end
       if verdict == 'ask' then asks[#asks+1]={state=s.state,why=why,name=legacy_name} end
       if s.policy then
-        local estimate = s.estimate and s.estimate(name,args) or {}
+        local estimate = copy(adapter_estimate)
+        if s.estimate then for metric,amount in pairs(s.estimate(name,args)) do estimate[metric]=math.max(estimate[metric] or 0,amount) end end
         estimate.calls=1
         local decision = require('policy').decide(s.policy,descriptor,args,estimate)
         revisions[#revisions+1]=decision.policy_revision
@@ -211,7 +231,9 @@ function M.call(context, name, args, options)
       if latest.verdict=="deny" then return nil,failure("permission_error",table.concat(latest.reasons,"; ")) end
     end
     -- Reserve the entire inherited quota set in ONE ledger transaction.
-    local scopes, seen, ledger, estimate, accountant = {}, {}, nil, {}, nil
+    local scopes, seen, ledger, estimate, accountant = {}, {}, nil, copy(adapter_estimate), nil
+    local ceilings={}
+    local bounded=binding.execution_receipts and not options.runner and descriptor.bounded or {}
     local function equal(a,b)
       if type(a)~=type(b) then return false end
       if type(a)~="table" then return a==b end
@@ -221,13 +243,21 @@ function M.call(context, name, args, options)
     end
     for _,p in ipairs(policies) do
       local obligations=p.decision.obligations
-      -- Legacy tools have no provider-ceiling contract. A cost estimate alone
-      -- is not enforcement; BRAIN-17 adds bounded capability adapters.
-      for metric in pairs(obligations.limits) do
-        if metric~="calls" then return nil,failure("unsupported_limit","runner cannot enforce "..metric.." ceiling") end
+      local function require_bound(metric,limit)
+        if metric=="calls" then return true end
+        if not bounded[metric] then return nil,failure("unsupported_limit","runner cannot enforce "..metric.." ceiling") end
+        local amount=p.estimate[metric]
+        if type(amount)~="number" or amount<0 or amount~=amount or amount>9007199254740991 then
+          return nil,failure("invalid_estimate","bounded estimate required for "..metric)
+        end
+        ceilings[metric]=math.min(ceilings[metric] or math.huge,amount,limit or math.huge)
+        return true
+      end
+      for metric,limit in pairs(obligations.limits) do
+        local valid,why=require_bound(metric,limit); if valid~=true then return nil,why end
       end
       for _,quota in ipairs(obligations.quotas) do
-        if quota.metric~="calls" then return nil,failure("unsupported_limit","runner cannot enforce "..quota.metric.." reservation") end
+        local valid,why=require_bound(quota.metric); if valid~=true then return nil,why end
       end
       if #obligations.quotas>0 or next(obligations.limits) then
         if not p.state.ledger then return nil,failure('quota_unavailable','quota ledger required') end
@@ -243,6 +273,7 @@ function M.call(context, name, args, options)
         end
       end
     end
+    for metric,amount in pairs(ceilings) do estimate[metric]=amount end
     local current_descriptor=binding.resolve(name)
     if not current_descriptor then return nil,failure("capability_changed","capability removed during admission") end
     for _,field in ipairs({"id","version","effect","_entry","_runner","_body","_resources"}) do
@@ -259,7 +290,39 @@ function M.call(context, name, args, options)
       if receipt.replayed then return nil,failure('replayed','reservation already exists; recovery required') end
       reservations[1]={ledger=ledger,id=receipt.id,state=accountant}
     end
-    local value = (options.runner or binding.dispatch)(name,args)
+    -- Trusted bounded adapters must enforce every supplied ceiling at the
+    -- provider boundary; estimates are reservations, never enforcement alone.
+    receipt.dispatched=true
+    local value,metadata = (options.runner or binding.dispatch)(name,args,
+      {invocation_id=id,ceilings=copy(ceilings),target=descriptor.target})
+    if binding.execution_receipts then
+      execution_meta=metadata or {status="succeeded"}
+      receipt.usage=copy(execution_meta.usage or {})
+      receipt.artifacts=copy(execution_meta.artifacts)
+      receipt.execution=copy(execution_meta.receipt)
+      receipt.status=execution_meta.status
+      -- Retain authoritative usage before validating user output. A throwing
+      -- validator (including an enclosing debug hook) exits through this gate's
+      -- existing exception cleanup, which still settles the retained usage.
+      if receipt.status=="succeeded" and descriptor.validate_output then
+        local valid,why=descriptor.validate_output(value)
+        if valid~=true then
+          receipt.status="failed"; execution_meta.status="failed"
+          execution_meta.error=failure("output_validation",why)
+        end
+      end
+      for metric,ceiling in pairs(ceilings) do
+        local actual=receipt.usage[metric]
+        if receipt.status=="succeeded" and actual==nil then
+          return nil,failure("usage_missing","adapter omitted actual usage for "..metric)
+        end
+        if actual and actual>ceiling then return nil,failure("quota_overrun","adapter exceeded enforced ceiling for "..metric) end
+      end
+      if receipt.status~="succeeded" then
+        local e=execution_meta.error or {}
+        return nil,failure(e.code or receipt.status,e.message or receipt.status)
+      end
+    end
     if options.legacy_string then value=(binding.format_result or tostring)(value) end
     if type(value)=='string' and value:find('^Tool error:') then
       return nil,failure(value:match('^Tool error: %[(.-)%]') or 'runtime_error',value)
@@ -270,15 +333,29 @@ function M.call(context, name, args, options)
   -- interrupt context restoration, settlement or the terminal notification.
   local hook,mask,count = debug.gethook(); debug.sethook()
   if not ok then raised=result; err=failure('runtime_error',result); result=nil end
+  if err then
+    local effect=dispatched_descriptor and dispatched_descriptor.effect
+    local uncertain=receipt.dispatched and (effect=="write" or effect=="unknown")
+      and not (execution_meta and execution_meta.effect_disproven==true)
+    receipt.status=uncertain and "uncertain" or (execution_meta and execution_meta.status=="cancelled" and "cancelled" or "failed")
+    if execution_meta and execution_meta.status=="uncertain" then receipt.status="uncertain" end
+  else receipt.status="succeeded" end
   for _,r in ipairs(reservations) do
     local settled, receipt, se = pcall(function()
-      local actual=r.state.actual and r.state.actual(name,args,result,err) or {}
-      return r.ledger:settle(r.id,actual,err and 'failure' or 'success')
+      local actual=execution_meta and receipt.usage or (r.state.actual and r.state.actual(name,args,result,err) or {})
+      return r.ledger:settle(r.id,actual,receipt.status=="uncertain" and "uncertain" or (err and 'failure' or 'success'))
     end)
     if not settled or not receipt or receipt.overrun then
       blocked_ledgers[r.ledger]=true
       err=failure('quota_settlement',not settled and receipt or se and se.message or 'quota overrun'); result=nil
     end
+  end
+  if err and (err.code=="usage_missing" or err.code=="quota_overrun") then
+    for _,r in ipairs(reservations) do blocked_ledgers[r.ledger]=true end
+  end
+  if err and receipt.status=="succeeded" then
+    local effect=dispatched_descriptor and dispatched_descriptor.effect
+    receipt.status=receipt.dispatched and (effect=="write" or effect=="unknown") and "uncertain" or "failed"
   end
   if perm.GATED[name] and bog and bog.telemetry then
     local aid=bog.sched and bog.sched.current and bog.sched.current()
@@ -292,7 +369,7 @@ function M.call(context, name, args, options)
   active[k]=terminal
   if not err then debug.sethook(hook,mask,count) end
   local observed, observation_error = pcall(events.emit,'tool:after',
-    {name=name,invocation_id=id,policy_revisions=revisions,error=err~=nil,code=err and err.code,bytes=type(result)=='string' and #result or 0})
+    {name=name,invocation_id=id,policy_revisions=revisions,error=err~=nil,code=err and err.code,status=receipt.status,dispatched=receipt.dispatched,bytes=type(result)=='string' and #result or 0})
   debug.sethook()
   active[k]=old
   debug.sethook(hook,mask,count)
@@ -304,7 +381,7 @@ function M.call(context, name, args, options)
     end
   end
   if not observed then error(observation_error,0) end
-  return result,err
+  return result,err,receipt
 end
 function M.string(context,name,args,options)
   local legacy={}; for k,v in pairs(options or {}) do legacy[k]=v end

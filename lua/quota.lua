@@ -44,6 +44,7 @@ INSERT OR IGNORE INTO quota_meta VALUES(1,0,0);
 CREATE TABLE IF NOT EXISTS quota_rules (rule TEXT PRIMARY KEY, shape TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS quota_buckets (bucket TEXT PRIMARY KEY, used REAL NOT NULL CHECK(used>=0));
 CREATE TABLE IF NOT EXISTS quota_reservations (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, status TEXT NOT NULL, outcome TEXT NOT NULL, overrun INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS quota_bounds (reservation TEXT NOT NULL, metric TEXT NOT NULL, amount REAL NOT NULL, PRIMARY KEY(reservation,metric));
 CREATE TABLE IF NOT EXISTS quota_items (reservation TEXT NOT NULL, bucket TEXT NOT NULL, metric TEXT NOT NULL, amount REAL NOT NULL, PRIMARY KEY(reservation,bucket));
 ]]
 
@@ -112,7 +113,9 @@ function M.open(conn, clock, options)
           assert(finite(amount),'bounded estimate required for hard limit '..metric)
           if amount>ceiling then fail('limit','hard limit exceeded: '..metric) end
         end
-        return {entries=entries,fingerprint=pack(identity),now=now}
+        local bounds={}
+        for metric in pairs(state.limits) do bounds[metric]=metric=="calls" and 1 or estimate[metric] end
+        return {entries=entries,bounds=bounds,fingerprint=pack(identity),now=now}
       end)
       if not prepared then return nil,err end
       return transaction(function()
@@ -136,6 +139,9 @@ function M.open(conn, clock, options)
           run('UPDATE quota_buckets SET used=used+? WHERE bucket=?',{e.amount,e.bucket})
           run('INSERT INTO quota_items VALUES(?,?,?,?)',{invocation_id,e.bucket,e.metric,e.amount})
         end
+        for metric,amount in pairs(prepared.bounds) do
+          run('INSERT INTO quota_bounds VALUES(?,?,?)',{invocation_id,metric,amount})
+        end
         run('UPDATE quota_meta SET watermark=? WHERE id=1',{now})
         run("INSERT INTO quota_reservations VALUES(?,?,'reserved','',0)",{invocation_id,prepared.fingerprint})
         return receipt({id=invocation_id,status='reserved',outcome='',overrun=0})
@@ -153,6 +159,11 @@ function M.open(conn, clock, options)
         if not row then fail('unknown','unknown reservation') end
         if row.status=='settled' then return receipt(row,true) end
         local overrun=false
+        for _,bound in ipairs(query('SELECT * FROM quota_bounds WHERE reservation=?',{reservation_id})) do
+          local amount=bound.metric=='calls' and bound.amount or amounts[bound.metric]
+          if amount==nil and outcome=='success' then fail('invalid','actual usage required for '..bound.metric) end
+          if amount and amount>bound.amount then overrun=true end
+        end
         for _,item in ipairs(query('SELECT * FROM quota_items WHERE reservation=?',{reservation_id})) do
           local amount=item.metric=='calls' and item.amount or amounts[item.metric]
           if amount==nil then
