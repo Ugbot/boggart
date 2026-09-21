@@ -526,8 +526,8 @@ Boggart owns Lua decisions; specialist systems own their existing computational 
 
 **Acceptance criteria:**
 
-- [ ] Equivalent fixture requests via ZMQ and MCP preserve values and correlation; a missing native transport produces the documented supported fallback.
-- [ ] A lost reply to a write does not trigger a duplicate MCP request; unsupported cancellation is represented accurately.
+- [x] Equivalent fixture requests via ZMQ and MCP preserve values and correlation; a missing native transport produces the documented supported fallback.
+- [x] A lost reply to a write does not trigger a duplicate MCP request; unsupported cancellation is represented accurately.
 
 **Test scenario:**
 

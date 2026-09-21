@@ -318,7 +318,7 @@
           ],
           "test": "station",
           "example": "assert(fake_station.write_count == 1)",
-          "status": "in_progress"
+          "status": "done"
         },
         {
           "id": "forge",
@@ -335,7 +335,8 @@
             "imports"
           ],
           "test": "Station forge and Ralph suites (select exact commands from repository instructions)",
-          "example": "assert(replayed_target == held_out_target); assert(unknown_precondition_eligible == false)"
+          "example": "assert(replayed_target == held_out_target); assert(unknown_precondition_eligible == false)",
+          "status": "in_progress"
         },
         {
           "id": "aibywire",

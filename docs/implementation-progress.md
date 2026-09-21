@@ -22,6 +22,7 @@ status authority.
 | BRAIN-19 | Scoped Boggart/Claude/OpenAI JSONL imports, durable checkpoints/provenance, mirror dedup and explicit missing observations | Final native imports632/evidence132/sessions39/workflow65; CTest imports twice; independent re-review approved | `7b1ee37` |
 | BRAIN-20 | Scoped retention/deletion, redacted export, lineage invalidation, durable failure gaps and bounded recovery | Retention154 twice; final native and Linux seven affected suites each repeated twice; independent re-review approved | `e0a1900` |
 | BRAIN-16 | Authenticated local control, explicit unattended admission, canonical effect paths and bounded generated execution | Final native66/66 and Linux65/65; native17 and Linux8 affected suites each twice; independent re-review approved | `2b81ea4` |
+| BRAIN-21 | Station discovery, host-qualified capabilities and faithful ZMQ/MCP outcomes without unsafe retry | Final six affected suites each twice on native/Linux; real native MCP stdio and ZMQ ROUTER fixtures; independent re-review approved | `ce2e651` |
 
 Build: `cmake --build build --target boggart -j 6` with `CCACHE_DIR` and
 `CCACHE_TEMPDIR` pointing inside `build/ccache`, because the default cache
@@ -149,3 +150,27 @@ BRAIN-16's first intermediate shared-string guard implementation took about
 metadata proves the callee cannot expose identity, retaining the conservative
 scan when provenance is unknown. This measurement is a regression check, not a
 product-wide latency promise.
+
+
+BRAIN-21 preserves the existing default ZMQ/native-tier degradation policy and
+explicit MCP selection. Host-qualified versions snapshot schema/tool/transport
+identity; they do not pin a remote daemon's code. Generic remote cancellation,
+operation status, reconciliation, usage ceilings and policy enforcement remain
+explicitly unsupported. Both transports share a proven integer range of
+±999999999999999; larger values require strings permitted by the tool schema.
+Malformed MCP outcomes stay uncertain, including empty content where the JSON
+decoder cannot distinguish an empty object from an empty array; a valid empty
+text block succeeds. No opaque raw JSON response is added to evidence.
+
+The pre-review broad native run passed66/66. After the two MCP-boundary repairs,
+the final six affected suites each passed twice on macOS and Linux, including
+82 Station assertions and the actual native MCP client's stdio serialization.
+A separate macOS STATION=ON build from a clean tracked-source snapshot plus the
+final adapter files passed a local ROUTER fixture: discovery/schema, Unicode and
+exact integer strings, maximum accepted numeric input, two-phase acknowledgement,
+parameter immutability, invocation/operation correlation, pre-send refusal, lost
+write reply and late-reply isolation. It observed11 unique correlated frames and
+each intentional lost write exactly once. This is real native socket/client
+qualification against synthetic fixtures, not a claim about a live Station
+daemon's durable execution or remote writes. The fixture used temporary profiles
+and local pinned dependency sources; no paid models or real external messages.
