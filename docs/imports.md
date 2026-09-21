@@ -3,7 +3,7 @@
 `require('imports').ingest{source={path=...,root=...,session=...},format='claude',
 scope='project:example',redaction={literals={'known credential'}}}` imports one
 explicitly selected regular JSONL file beneath its realpath-resolved root. Formats
-are `claude`, `openai` (observed Codex rollout variants), and `boggart`. An empty
+are `claude`, `openai` (observed Codex rollout variants), `boggart`, and `station` (versioned forge exports). An empty
 literal list is an explicit policy choice; labelled credentials and bearer values
 are still redacted by the evidence sanitizer. Paths are opened directly, never
 passed to a shell. No discovery, directory sweep, upload, tool execution or model
@@ -137,3 +137,47 @@ native database. Use separate exports/scopes for unrelated sessions. Exported
 legacy `payload` and checkpoint `messages` may be JSON strings or decoded values.
 Synthetic examples and regression cases are in `tests/fixtures/process_logs` and
 `tests/imports.lua`; none were copied from private transcripts.
+
+
+## Station forge exports
+
+`format='station'` accepts `schema='station.forge'`, `schema_version=1` envelopes
+with `kind='ActionTrace'` or `kind='ActionTemplate'`. Station's existing
+`forge_manage` tool exposes `action='export'` with exactly one `trace_id` or
+`template_id`; save its successful structured data as a JSONL record. Select an
+export file per session; templates use the session `station-template:<template_id>`.
+A trace without a source session uses `station-trace:<trace_id>`. These derived
+names scope observations and never grant authority. Unknown schema versions,
+malformed containers and duplicate step/result orders are quarantined.
+
+Trace headers retain task/model metadata and count missing and orphan results.
+Requests/results correlate by a hash of trace ID, step order and tool name within
+the selected scope/session. Both identity and call correlation are explicitly
+inferred. A result with a different tool name cannot satisfy the request merely
+because its order matches. Legacy results with `step_order=-1` remain separate,
+positionally identified observations without call/operation IDs; repeated ambiguous
+results never satisfy an outstanding request. Legacy sequence-order provenance
+and observed output lengths are retained without inventing output content. Trace-level timestamps do not invent per-call timing.
+Missing outputs stay missing; truncated outputs carry partial provenance.
+Station source-redaction flags and redacted output states retain redacted
+provenance; import does not replace these gaps with complete-value claims. Artifact
+references remain observed data; importing does not fetch their content.
+
+Typed arguments, nested outputs and explicit producer/result JSON pointers remain
+searchable data. Imported templates are `historical.station.template` observations
+with `activation_eligible=false`, even if Station reports an active status. Lua
+compilation/evaluation/promotion must independently establish applicability and
+permission. Imports always declare unavailable native policy, usage, verifier,
+context-resolution, code-revision and redaction evidence; source metadata does
+not supply those guarantees.
+
+The current Lua JSON decoder does not distinguish empty arrays from empty
+objects. `representation.ambiguous_empty_container_paths` records every such
+location rather than inventing a type. JSON null becomes an
+`{import_value_type='json_null'}` value and is disambiguated from literal objects
+by `representation.null_paths`; paths use JSON Pointer escaping and zero-based
+array indices. Consumers must consult the paths when reconstructing values.
+`original_bytes_preserved=false` is explicit, and normal redaction may further
+remove data. These are observations suitable for analysis, not a byte-identical
+round-trip format. Changed content for the same trace/template identity retains
+an `observed_variant` through the normal import mechanism.

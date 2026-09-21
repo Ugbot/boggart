@@ -2,7 +2,7 @@
 local M={}
 local json,uv,evidence=require('json'),require('uv'),require('evidence')
 local hash=require('workflow').hash
-local adapters={boggart=require('imports.boggart'),claude=require('imports.claude'),openai=require('imports.openai')}
+local adapters={boggart=require('imports.boggart'),claude=require('imports.claude'),openai=require('imports.openai'),station=require('imports.station')}
 local configured
 local schema=[[
 CREATE TABLE IF NOT EXISTS import_events(id TEXT PRIMARY KEY,scope TEXT NOT NULL,session TEXT NOT NULL,body TEXT NOT NULL);
@@ -145,7 +145,10 @@ local function ingest(o)
               local lane=e.lane or (r.type=='response_item' and 'response' or r.type=='event_msg' and 'completed' or 'default')
               local countkey=signature..':'..lane
               cp.counts[countkey]=(cp.counts[countkey] or 0)+1
-              local key=e.external_id and identity(session_key,e.kind,e.external_id) or identity(session_key,signature,cp.counts[countkey])
+              local key=e.external_id and identity(session_key,e.kind,e.external_id)
+                or e.identity_key and identity(session_key,e.kind,e.identity_key)
+                or identity(session_key,signature,cp.counts[countkey])
+              e.identity_key=nil
               local value=e.value
               e.lane=nil
               local observed_id=e.external_id
@@ -158,7 +161,8 @@ local function ingest(o)
               e.identity_confidence=observed_id and 'observed_id' or 'inferred'
               e.source_event_id=observed_id
               e.field_provenance={timestamp=e.timestamp~=nil and 'observed' or 'missing',
-                call_id=e.call_id~=nil and 'observed' or 'missing',parent=e.parent~=nil and 'observed' or 'missing'}
+                call_id=e.call_id_provenance or (e.call_id~=nil and 'observed' or 'missing'),parent=e.parent~=nil and 'observed' or 'missing'}
+              e.call_id_provenance=nil
               e.id=key;e.session=session_key;e.scope=o.scope;e.origin='imported';e.format=o.format;e.adapter_version=adapter.version
               e.schema_version=1;e.verified=false;e.coverage='observations_only'
               e.output={provenance='missing'}

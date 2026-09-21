@@ -241,5 +241,134 @@ for _,table_name in ipairs({'import_events','import_sources','import_refs','impo
 end
 os.remove(review_file);os.remove(alias_file);os.remove(private_path)
 
+-- Station exports are observations/candidates, never executable authority.
+local station_file=tmp..'/station.jsonl'
+local function station_trace(id)
+  return {schema='station.forge',schema_version=1,kind='ActionTrace',payload={
+    trace_id=id,session_id='station-session',task_description='quoted "task"\nnext line',
+    captured_at=1700000000000,llm_model='synthetic',overall_success=true,
+    tool_calls={{step_order=0,tool='write',params={path='old\n"file"',count=3,literal='007'},result_args={}},
+      {step_order=1,tool='consume',params={id=7},result_args={id={step_order=0,json_pointer='/nested/id'}}}},
+    results={{step_order=0,tool='write',success=true,output={nested={id=7,flag=false,empty=json.null},password='station-label-secret'},
+      output_state='available',artifact_refs={{id='artifact-observed'}},original_bytes=90}},
+    missing_information={'policy','usage','verifier','context_resolution','code_revision','redaction'}}}
+end
+local station_options=options('station','station-scope',station_file);station_options.source.root=tmp
+write(station_file,json.encode(station_trace('trace-a'))..'\n'..json.encode(station_trace('trace-b'))..'\n')
+local station_batch=assert(imports.ingest(station_options))
+local station_rows=imports.read('station-scope')
+local station_requests,station_results,station_headers={},{},{}
+for _,e in ipairs(station_rows) do
+  check(e.verified==false and e.origin=='imported' and e.coverage=='observations_only','Station observations do not inherit success/authority')
+  if e.kind=='tool.request' then station_requests[#station_requests+1]=e
+  elseif e.kind=='tool.result' then station_results[#station_results+1]=e
+  elseif e.kind=='historical.station.trace' then station_headers[#station_headers+1]=e end
+end
+check(#station_requests==4 and #station_results==2 and #station_headers==2,'Station distinct traces retain every call/result and missing output')
+check(station_requests[1].value.path=='old\n"file"' and station_requests[1].value.count==3 and station_requests[1].value.literal=='007','Station argument types and escapes retained')
+check(station_requests[1].output.provenance=='observed' and station_requests[2].output.provenance=='missing','Station observed and missing results correlate')
+check(station_requests[1].field_provenance.call_id=='inferred' and station_requests[1].identity_confidence=='inferred','Station trace/step correlation is explicitly derived')
+check(station_requests[1].operation_id~=station_requests[3].operation_id,'separate traces never share operations')
+check(station_results[1].value.nested.id==7 and station_results[1].value.nested.flag==false,'Station nested result values retained')
+check(station_results[1].value.nested.empty.import_value_type=='json_null' and station_results[1].representation.null_paths[1]=='/nested/empty','Station JSON null has an explicit lossless tag and path')
+check(station_results[1].value.password.evidence_marker=='redacted','Station labelled credentials redacted')
+check(station_results[1].source_observation.artifact_refs[1].id=='artifact-observed','Station artifact references stay observations')
+check(#station_headers[1].source_observation.missing_information>=6,'Station missing policy/cost/verifier/context evidence explicit')
+check(assert(imports.ingest(station_options)).added==0,'Station reimport is idempotent')
+local truncated=station_trace('trace-truncated');truncated.payload.results[1].output_state='truncated'
+write(station_file,json.encode(truncated)..'\n','ab');assert(imports.ingest(station_options))
+local partial_result
+for _,e in ipairs(imports.read('station-scope')) do
+  if e.kind=='tool.result' and e.source_observation.trace_id=='trace-truncated' then partial_result=e end
+end
+check(partial_result.value_provenance=='partial' and partial_result.coverage_reason=='station_output_truncated','Station truncated result cannot claim complete output')
+-- Export gaps and JSON representation must not invent correlated results or types.
+local gaps_trace=station_trace('trace-gaps')
+gaps_trace.payload.results[1].tool='different-tool'
+gaps_trace.payload.results[1].output={values={json.null,{import_value_type='json_null'},{}},['a/b~c']=json.null}
+gaps_trace.payload.results[2]={step_order=1,tool='consume',success=false,output_state='unavailable',output='must-not-claim-output',artifact_refs={}}
+write(station_file,json.encode(gaps_trace)..'\n','ab');assert(imports.ingest(station_options))
+local gap_header,gap_request,gap_result,unavailable
+for _,e in ipairs(imports.read('station-scope')) do
+  if e.source_observation and e.source_observation.trace_id=='trace-gaps' then
+    if e.kind=='historical.station.trace' then gap_header=e
+    elseif e.kind=='tool.request' and e.name=='write' then gap_request=e
+    elseif e.kind=='tool.result' and e.name=='different-tool' then gap_result=e
+    elseif e.kind=='tool.result' and e.name=='consume' then unavailable=e end
+  end
+end
+check(gap_header.source_observation.missing_results==1 and gap_header.source_observation.orphan_results==1,'Station mismatched result name leaves explicit missing/orphan evidence')
+check(gap_request.output.provenance=='missing' and gap_result.source_observation.request_observed==false,'Station does not join results by step order alone')
+check(unavailable.value==nil and unavailable.output.provenance=='missing' and unavailable.reported_error==true,'Station unavailable result cannot invent output from incidental bytes')
+local null_paths=gap_result.representation.null_paths
+check(#null_paths==2 and null_paths[1]=='/a~1b~0c' and null_paths[2]=='/values/0','Station JSON pointers preserve escaping and zero-based array null positions')
+check(gap_result.value.values[2].import_value_type=='json_null','Station literal marker-shaped object remains ordinary observed data')
+check(gap_result.representation.ambiguous_empty_container_paths[1]=='/values/2','Station declares decoder empty-container ambiguity instead of inventing a JSON type')
+local ambiguous=station_trace('trace-ambiguous')
+ambiguous.payload.tool_calls[2].tool='write'
+ambiguous.payload.tool_calls[1].step_order_provenance='inferred_sequence'
+ambiguous.payload.tool_calls[2].step_order_provenance='inferred_sequence'
+ambiguous.payload.results={
+  {step_order=-1,tool='write',success=true,output='first observed',output_state='available',artifact_refs={},output_length=11,step_order_provenance='unavailable'},
+  {step_order=-1,tool='write',success=true,output='second observed',output_state='available',artifact_refs={},output_length=29,step_order_provenance='unavailable'}}
+write(station_file,json.encode(ambiguous)..'\n','ab')
+local ambiguous_batch=assert(imports.ingest(station_options))
+check(ambiguous_batch.quarantined==0 and ambiguous_batch.added==5,'Station ambiguous legacy callbacks retain all observations')
+local ambiguous_results={}
+for _,e in ipairs(imports.read('station-scope')) do
+  if e.source_observation and e.source_observation.trace_id=='trace-ambiguous' then
+    if e.kind=='historical.station.trace' then
+      check(e.source_observation.missing_results==2 and e.source_observation.orphan_results==2,'Station ambiguous result coverage stays explicit')
+    elseif e.kind=='tool.request' then
+      check(e.output.provenance=='missing','Station ambiguous callbacks cannot satisfy either request')
+      check(e.source_observation.step_order_provenance=='inferred_sequence','Station preserves inferred legacy call position provenance')
+    elseif e.kind=='tool.result' then
+      ambiguous_results[#ambiguous_results+1]=e
+      check(e.call_id==nil and e.operation_id==nil and e.field_provenance.call_id=='missing','Station ambiguous result cannot invent an operation')
+    end
+  end
+end
+check(#ambiguous_results==2 and ambiguous_results[1].id~=ambiguous_results[2].id,'Station repeated uncorrelated results have distinct inferred identities')
+check(ambiguous_results[1].source_observation.output_length==11 and ambiguous_results[2].source_observation.output_length==29 and ambiguous_results[1].source_observation.step_order_provenance=='unavailable','Station retains legacy observed output lengths without inferring correlation')
+local redacted_trace=station_trace('trace-redacted')
+redacted_trace.payload.tool_calls[1].evidence_redacted=true
+redacted_trace.payload.tool_calls[1].params.password='[REDACTED]'
+redacted_trace.payload.results[1].evidence_redacted=true
+redacted_trace.payload.results[1].output_state='redacted'
+redacted_trace.payload.results[1].output={message='[REDACTED]'}
+redacted_trace.payload.missing_information[#redacted_trace.payload.missing_information+1]='redacted'
+write(station_file,json.encode(redacted_trace)..'\n','ab')
+check(assert(imports.ingest(station_options)).quarantined==0,'Station redacted export is retained as incomplete evidence')
+local redacted_count=0
+for _,e in ipairs(imports.read('station-scope')) do
+  if e.source_observation and e.source_observation.trace_id=='trace-redacted' and e.name=='write' then
+    redacted_count=redacted_count+1
+    check(e.value_provenance=='redacted' and e.source_observation.evidence_redacted==true,'Station records source redaction without claiming complete values')
+    if e.kind=='tool.result' then check(e.output.provenance=='redacted','Station redacted result cannot be promoted to observed complete output') end
+  end
+end
+check(redacted_count==2,'Station redacted request and result are both retained')
+local template={schema='station.forge',schema_version=1,kind='ActionTemplate',payload={
+  template_id='template-a',version='1.0.0',name='write_synthetic',status='active',
+  params={{name='path',type='string',required=true}},steps={{order=0,tool_name='write',
+    fixed_args={count=3,literal='007'},template_args={path='{{path}}'},argument_types={path='string',count='number',literal='string'},
+    result_args={},source_trace_id='trace-a'}},preconditions={},effects={},missing_information={'policy','verifier'}}}
+local template_file=tmp..'/station-template.jsonl';write(template_file,json.encode(template)..'\n')
+local template_options=options('station','station-template-scope',template_file);template_options.source.root=tmp
+assert(imports.ingest(template_options));local imported_template=imports.read('station-template-scope')[1]
+check(imported_template.kind=='historical.station.template' and imported_template.value.steps[1].template_args.path=='{{path}}','Station template remains searchable candidate data')
+check(imported_template.verified==false and imported_template.activation_eligible==false,'Station active source status grants no activation')
+check(imported_template.value.steps[1].fixed_args.literal=='007','Station fixed strings are not reinterpreted as numbers')
+local unsupported=station_trace('unknown-version');unsupported.schema_version=99
+local malformed=station_trace('duplicate-order');malformed.payload.tool_calls[2].step_order=0
+local bad_array=station_trace('bad-array');bad_array.payload.results={unexpected='object'}
+write(station_file,json.encode(unsupported)..'\n'..json.encode(malformed)..'\n'..json.encode(bad_array)..'\n','ab')
+check(assert(imports.ingest(station_options)).quarantined==3,'Station unknown schema and ambiguous step order are quarantined')
+check(imports.tombstone('station-scope') and not imports.ingest(station_options),'Station tombstone blocks routine resurrection')
+for _,entry in ipairs(db:query("SELECT body FROM import_events WHERE scope='station-scope'")) do
+  check(not entry.body:find('station-label-secret',1,true),'Station durable snapshots omit labelled secrets')
+end
+os.remove(station_file);os.remove(template_file)
+
 db:close();os.remove(dbpath);os.remove(path);os.remove(copy);uv.fs_rmdir(tmp)
 print('imports: '..passed..' checks passed')
