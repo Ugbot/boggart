@@ -111,11 +111,17 @@ function M.new(injected, defaults, authority, options)
     serial=serial+1
     local p={schema_version=1,resolution_id=evidence.id("resolution"),key=key,run_id=run_id,
       parent_id=frames[#frames] and frames[#frames].id,cache='none',dependencies={},capabilities={}}
-    local workflow=package.loaded.workflow
-    local correlation=workflow and workflow.current() or {}
-    correlation=correlation or {};correlation.run_id=run_id or correlation.run_id
-    correlation.parent_id=p.parent_id or correlation.step_id;correlation.correlation_id=p.resolution_id
+    local correlation=invoke.correlation()
+    local owned=run_id and evidence.scope_for_run(run_id)
+    if correlation.scope and (options.scope and options.scope~=correlation.scope or owned and owned~=correlation.scope)
+      or owned and options.scope and owned~=options.scope then
+      return nil,failure('retention_scope_mismatch','Context scope conflicts with its ancestor or run')
+    end
+    correlation.run_id=run_id or correlation.run_id
+    correlation.scope=correlation.scope or owned or options.scope or require('project').current()
+    correlation.parent_id=p.parent_id or correlation.parent_id or correlation.step_id;correlation.correlation_id=p.resolution_id
     local span=evidence.begin("context",correlation,{key=key,request=request})
+    p.run_id=span.run_id
     local function finish(value,err)
       p.status=err and (err.code=='context_missing' and 'missing' or 'failed') or 'resolved'
       p.error_code=err and err.code; p.value_type=not err and type(value) or nil
@@ -127,7 +133,7 @@ function M.new(injected, defaults, authority, options)
       if err then return nil,err,copy(p) end
       return value,copy(p)
     end
-    return invoke.with_context(authority,function()
+    return invoke.with_correlation(span,function() return invoke.with_context(authority,function()
       -- sethook (including with_context cleanup) resets Lua's hidden remainder.
       -- As in tools.with_count_hook, conservatively charge one parent count
       -- quantum per resolution so repeated fast paths cannot starve its budget.
@@ -227,7 +233,7 @@ function M.new(injected, defaults, authority, options)
         value=nil
       end
       return finish(value,err)
-    end)
+    end) end)
   end
   return resolver
 end

@@ -20,7 +20,7 @@ CREATE INDEX IF NOT EXISTS import_alias_logical ON import_aliases(logical_id);
 ]]
 local function checked(v) assert(v~=nil and v~=false,'import_storage_failed');return v end
 local function db()
-  local d=configured or (bog and bog.db);assert(d,'import_database_required');checked(d:exec(schema));return d
+  local d=configured or (bog and bog.db);assert(d,'import_database_required');checked(d:exec(schema));require('evidence_retention').ensure(d);return d
 end
 function M.configure(o) assert(type(o)=='table' and o.db,'import_database_required');configured=o.db end
 local function canonical(v)

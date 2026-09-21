@@ -36,6 +36,32 @@ function M.current()
   active[co]=intersect(active[co],resumed[co])
   return active[co]
 end
+-- Trusted correlation snapshot, separate from opaque execution authority.
+-- A nested workflow owns its new run; an invocation in that run supplies the
+-- nearest parent span. Never return the mutable coroutine-local record itself.
+function M.correlation()
+  local workflow=package.loaded.workflow
+  local correlation=(workflow and workflow.current()) or {}
+  local parent=evidence_active[key()]
+  if parent and (not correlation.run_id or parent.run_id==correlation.run_id) then
+    correlation.run_id=parent.run_id;correlation.scope=parent.scope
+    correlation.parent_id=parent.invocation_id
+  else correlation.parent_id=correlation.parent_id or correlation.step_id end
+  return copy(correlation)
+end
+function M.with_correlation(correlation,fn,...)
+  local ancestor=M.correlation()
+  assert(not ancestor.scope or not correlation.scope or ancestor.scope==correlation.scope,'retention_scope_mismatch')
+  local k=key();local old=evidence_active[k]
+  evidence_active[k]={run_id=correlation.run_id or ancestor.run_id,scope=correlation.scope or ancestor.scope,
+    invocation_id=correlation.correlation_id or correlation.parent_id}
+  local result=table.pack(pcall(fn,...))
+  local hook,mask,count=debug.gethook();debug.sethook()
+  evidence_active[k]=old
+  debug.sethook(hook,mask,count)
+  if not result[1] then error(result[2],0) end
+  return table.unpack(result,2,result.n)
+end
 -- Context handles are opaque; children retain every ancestor restriction.
 function M.context(options, parent)
   options = options or {}
@@ -158,22 +184,23 @@ function M.call(context, name, args, options)
   local revisions = {}
   local old, k = M.current(), key()
   local raised
-  local workflow=package.loaded.workflow
-  local correlation=workflow and workflow.current() or {}
-  correlation=correlation or {}
-  local parent_evidence=evidence_active[k]
-  correlation.run_id=correlation.run_id or (parent_evidence and parent_evidence.run_id)
-  correlation.parent_id=parent_evidence and parent_evidence.invocation_id or correlation.step_id
+  local correlation=M.correlation()
+  if correlation.scope and options.scope and options.scope~=correlation.scope then
+    return nil,failure('retention_scope_mismatch','Nested invocation scope conflicts with its ancestor')
+  end
+  correlation.scope=correlation.scope or options.scope or require('project').current()
   correlation.correlation_id=id
   local span=evidence.begin("invocation",correlation,{name=name,args=args,operation_id=options.operation_id or id})
-  local prior_evidence=evidence_active[k];evidence_active[k]={run_id=span.run_id,invocation_id=id}
+  local prior_evidence=evidence_active[k];evidence_active[k]={run_id=span.run_id,scope=span.scope,invocation_id=id}
   local receipt={invocation_id=id,operation_id=options.operation_id or id,id=name,dispatched=false,status="failed",usage={}}
   local execution_meta, dispatched_descriptor
   local entry_hook=debug.gethook()
   -- Explicit contexts cannot replace an active ancestor.
   local states
   local ok, result, err = pcall(function()
-    if not span.event_id and span.error~="evidence_disabled" then return nil,failure("evidence_unavailable","Durable invocation start could not be recorded") end
+    local scope_ok=pcall(function()evidence.assert_scope(span.scope);evidence.assert_run(span.run_id)end)
+    if not scope_ok then return nil,failure('retention_scope_unavailable','Evidence scope is unavailable') end
+    if not span.event_id and span.error~="evidence_disabled" and evidence.status().failure_policy=='stop' then return nil,failure("evidence_unavailable","Durable invocation start could not be recorded") end
     local joined={}; contexts[joined]={parent=context,extra=old,state={mode="auto"}}
     active[k]=joined
     events.emit('tool:before', {name=name, input=copy(args), invocation_id=id})
@@ -358,7 +385,12 @@ function M.call(context, name, args, options)
     -- provider boundary; estimates are reservations, never enforcement alone.
     local admission_event,admission_error=evidence.append{run_id=span.run_id,step_id=span.step_id,parent_id=id,correlation_id=id,
       kind="invocation.admitted",payload={decision="allow",policy_revisions=revisions,descriptor={id=descriptor.id,version=descriptor.version,target=descriptor.target,effect=descriptor.effect},ceilings=ceilings}}
-    if not admission_event and admission_error~="evidence_disabled" then return nil,failure("evidence_unavailable","Durable admission could not be recorded") end
+    if not admission_event and admission_error~="evidence_disabled" and evidence.status().failure_policy=="stop" then return nil,failure("evidence_unavailable","Durable admission could not be recorded") end
+    local scope_live=pcall(function()evidence.assert_scope(span.scope);evidence.assert_run(span.run_id)end)
+    if not scope_live then return nil,failure('retention_scope_unavailable','Evidence scope is unavailable') end
+    if ((not admission_event and admission_error~='evidence_disabled') or (not span.event_id and span.error~='evidence_disabled')) and descriptor.effect~='pure' then
+      return nil,failure('evidence_unavailable','Degraded observation permits only pure computation')
+    end
     receipt.dispatched=true
     local value,metadata = (options.runner or binding.dispatch)(name,args,
       {invocation_id=id,operation_id=options.operation_id or id,ceilings=copy(ceilings),target=descriptor.target})

@@ -113,6 +113,9 @@ function M.start(id, options)
     end
   end
   local ok,why=pcall(pin,root);if not ok then return nil,why end
+  local inherited=invoke.correlation()
+  local scope=(inherited and inherited.scope) or options.scope or require('project').current()
+  if inherited.scope and options.scope and options.scope~=scope then return nil,err('retention_scope_mismatch') end
   local authority=invoke.context({policy=options.policy},options.authority)
   local injected=bindings(options.context)
   local source_revisions=copy(options.source_revisions)
@@ -135,7 +138,7 @@ function M.start(id, options)
       table.sort(sources,function(a,b)return a.id..'@'..a.version<b.id..'@'..b.version end)
       if not options.authority then error(err('current_authority_required'),0) end
       injected=rs.snapshot(injected)
-      local package={runtime=rs.runtime(),root=root.id,version=root.version,sources=sources,context=injected,source_revisions=source_revisions,
+      local package={scope=scope,runtime=rs.runtime(),root=root.id,version=root.version,sources=sources,context=injected,source_revisions=source_revisions,
         capabilities=manifest.capabilities,instructions=options.instructions or tools.LIMITS.instructions,restrictions=invoke.durable_restrictions(authority)}
       if recovery then
         for _,field in ipairs({'sources','capabilities'}) do
@@ -153,7 +156,10 @@ function M.start(id, options)
   local state={id=recovery and recovery.id or evidence.id('workflow-run'),workflow=identity(root),manifest=manifest,status='created',
     steps={},invocations={},resolutions={},verified=false}
   local capture_failures=evidence.status().failures
-  local run_span=evidence.begin("workflow",{run_id=state.id,correlation_id=state.id},{workflow=state.workflow,manifest=manifest,context=injected,source_revisions=source_revisions})
+  local run_span=evidence.begin("workflow",{run_id=state.id,scope=scope,parent_id=inherited.parent_id or inherited.step_id,correlation_id=state.id},{workflow=state.workflow,manifest=manifest,context=injected,source_revisions=source_revisions})
+  if not run_span.event_id and run_span.error~='evidence_disabled' and evidence.status().failure_policy=='stop' then return nil,err('evidence_unavailable') end
+  local scope_ok=pcall(function()evidence.assert_scope(scope);evidence.assert_run(state.id)end)
+  if not scope_ok then return nil,err('retention_scope_unavailable') end
   if run_package then
     local ok,value=pcall(require('runstore').open_run,state.id,run_package,authority,recovery)
     if not ok then return nil,type(value)=='table' and value or err('runstore_unavailable') end
@@ -176,7 +182,7 @@ function M.start(id, options)
   execute=function(d,values,path)
     if durable then values=require('runstore').snapshot(values) end
     local thread=coroutine.running();local previous=current[thread]
-    current[thread]={run_id=state.id,workflow_id=d.id,version=d.version,step_id=path,attempt=1}
+    current[thread]={run_id=state.id,scope=scope,workflow_id=d.id,version=d.version,step_id=path,attempt=1}
     local spec=d
     if d.source then
       local env=tools.tool_env()
@@ -232,12 +238,13 @@ function M.start(id, options)
     local durable_depth=0
     local function correlate()
       local f=frame()
-      current[coroutine.running()]={run_id=state.id,workflow_id=d.id,version=d.version,step_id=f.path,attempt=1,attempt_id="1"}
+      current[coroutine.running()]={run_id=state.id,scope=scope,workflow_id=d.id,version=d.version,step_id=f.path,attempt=1,attempt_id="1"}
       return M.current()
     end
     local function alive()
       if state.status~='running' then error(err('workflow_not_running'),0) end
       if cancelled then error(err('workflow_cancelled'),0) end
+      if not pcall(evidence.assert_run,state.id) then mark('failed',err('retention_scope_unavailable'));error(err('retention_scope_unavailable'),0) end
       if durable then durable:check() end
       if budget_failed then error(err('workflow_budget'),0) end
     end
@@ -299,7 +306,7 @@ function M.start(id, options)
       if durable then durable:boundary('step.start',{id=occurrence,site=site}) end
       local record={id=occurrence,site=site,parent_id=parent.path,status='running',workflow=identity(d)}
       state.steps[#state.steps+1]=record;frames[co]={path=occurrence,counts={}}
-      current[co]={run_id=state.id,workflow_id=d.id,version=d.version,step_id=occurrence,attempt=1}
+      current[co]={run_id=state.id,scope=scope,workflow_id=d.id,version=d.version,step_id=occurrence,attempt=1}
       local span=evidence.begin("step",{run_id=state.id,step_id=occurrence,parent_id=parent.path,correlation_id=occurrence},{site=site,workflow=identity(d)})
       durable_depth=durable_depth+1
       local packed=table.pack(pcall(fn,ctx))
@@ -367,10 +374,22 @@ function M.start(id, options)
     end
     local event,why=evidence.finish(run_span,{status=state.status,result=state.result,error=state.error,verified=state.verified,manifest=state.manifest,effects_incomplete=state.effects_incomplete})
     state.evidence={terminal_event_id=event,coverage=run_span.event_id and event and evidence.status().failures==capture_failures and "observed" or "incomplete",error=why or run_span.error}
+    if state.evidence.coverage~='observed' then state.verified=false end
   end
-  function handle:snapshot() return copy(state) end
+  function handle:snapshot()
+    if not pcall(function()evidence.assert_scope(scope);evidence.assert_run(state.id)end) then
+      return {id=state.id,status='failed',verified=false,error=err('retention_scope_unavailable')}
+    end
+    return copy(state)
+  end
   function handle:resume(...)
     if state.status~='created' and state.status~='suspended' then return self:snapshot() end
+    local allowed=pcall(evidence.assert_run,state.id)
+    if not allowed then
+      state.status='failed';state.error=err('retention_scope_unavailable');state.verified=false;state.result=nil
+      state.steps={};state.invocations={};state.resolutions={};current[co]=nil
+      return self:snapshot()
+    end
     state.status='running'
     local result=table.pack(safe.resume(co,...))
     if cancelled then current[co]=nil;return self:snapshot() end

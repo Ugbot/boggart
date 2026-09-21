@@ -19,10 +19,17 @@ end
 
 -- Append one transcript entry (a message) to a run's log. Order is the record
 -- id (monotonic). Returns the record result.
-function M.append(run_id, agent_id, role, content)
+function M.append(run_id, agent_id, role, content, scope)
   local evidence=require("evidence")
+  if scope==nil and bog and bog.db then
+    local tables=bog.db:query("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'")
+    if tables and #tables>0 then
+      local sessions=bog.db:query('SELECT project FROM sessions WHERE id=?',{run_id})
+      if sessions and sessions[1] then scope=sessions[1].project or 'global' end
+    end
+  end
   local payload=evidence.redact({role=role,content=content})
-  local event,why=evidence.append{run_id=run_id,kind="session.entry",payload=payload,provenance={observation="transcript_append",agent_id=agent_id}}
+  local event,why=evidence.append{run_id=run_id,scope=scope,kind="session.entry",payload=payload,provenance={observation="transcript_append",agent_id=agent_id}}
   if not event and why~="evidence_disabled" then return nil,why end
   return bog.store.record_append("entry", {
     run_id = run_id, agent_id = agent_id,
@@ -31,9 +38,9 @@ function M.append(run_id, agent_id, role, content)
 end
 
 -- Append a whole message array (e.g. when seeding a fork or snapshotting).
-function M.append_all(run_id, agent_id, messages)
+function M.append_all(run_id, agent_id, messages, scope)
   for _, m in ipairs(messages or {}) do
-    local ok,why=M.append(run_id, agent_id, m.role, m.content)
+    local ok,why=M.append(run_id, agent_id, m.role, m.content, scope)
     if not ok then return nil,why end
   end
   return #(messages or {})
@@ -44,6 +51,7 @@ end
 -- refused -- returns nil, reason. A run with no entries replays to {} (a fresh
 -- lane), which is valid.
 function M.replay(run_id)
+  if not pcall(require('evidence').assert_run,run_id) then return nil,'retention_scope_unavailable' end
   local rows = bog.store.records_for(run_id) or {}
   local msgs, last_id = {}, nil
   for _, r in ipairs(rows) do
@@ -73,7 +81,8 @@ end
 function M.fork(run_id, new_run_id)
   local msgs, err = M.replay(run_id)
   if not msgs then return nil, err end
-  return M.append_all(new_run_id, new_run_id, msgs)
+  local scope=require('evidence').scope_for_run(run_id)
+  return M.append_all(new_run_id, new_run_id, msgs,scope)
 end
 
 return M

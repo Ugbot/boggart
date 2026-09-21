@@ -29,7 +29,10 @@ outcome remains authoritative, while `receipt.evidence.coverage='incomplete'`
 and `error` expose the capture failure. `evidence.status()` reports enabled state,
 a process-local failure count, redaction saturation status, learned-secret count/bytes
 and conservative coverage. Failures also print a
-fixed stderr diagnostic containing no raw payload or database error. Disabled
+fixed stderr diagnostic containing no raw payload or database error. Payload-free
+per-run `evidence_gaps` persist known capture failures when storage permits; export
+and lineage consult them after restart, in addition to bidirectional lifecycle and
+terminal capture metadata checks. Disabled
 capture appears as `evidence_disabled` in receipts and permits normal execution.
 Workflow snapshots expose `state.evidence`; any capture failure during the run's
 lifetime conservatively makes its coverage incomplete, including failures from
@@ -171,3 +174,31 @@ not establish invocation admission, complete terminal capture or verified succes
 The importer uses the evidence redactor but writes its own atomic source/event/
 checkpoint tables. Imported observations are never passed through `append`, which
 continues to mean direct native capture.
+
+## Scope ownership, retention and exports
+
+`require('evidence_retention')` implements the trusted-host API described in
+[Evidence retention](evidence-retention.md). New host workflow starts and standalone
+invocations/context resolutions use an explicit `scope` or the current project;
+nested work inherits its parent's scope. This is data ownership, not a policy
+scope and not permission to execute. Direct `evidence.append` accepts `scope`;
+subsequent events inherit the run's durable owner. Transcript appends use their
+session's stored project. Unscoped historical events remain unscoped until an
+explicit host attestation; arbitrary payload text never establishes ownership.
+
+Deletion permanently fences the scope before removing owned evidence, artifacts,
+imports, resumable packages/steps, cache results, transcripts, journal copies and
+retrieval entries. An acknowledged external reconciliation is separate from local
+deletion. Native run/step/artifact IDs and payload-free tombstones survive. Code,
+credential slots and quota accounting have separate lifecycles. Deletion does not
+reset learned redaction secrets or restore exhausted redaction capacity.
+
+`failure_policy='stop'` is the default: failed workflow start capture refuses the
+start, and invocation start/admission capture failures refuse dispatch. With
+`failure_policy='degraded'`, only pure capability computation may continue after
+capture failure; every external effect (including reads) still requires capture.
+Scope deletion and unavailable scope storage are always fatal. Explicitly disabled
+capture retains its existing execution semantics, but still checks and records
+ownership to fence deleted scopes. Workflow verification is false when evidence
+coverage is incomplete. An export reports coverage and never claims that an
+observation artifact itself qualifies a workflow for promotion.

@@ -288,8 +288,8 @@ local function fts_index_session(id)
   local s = r[1]
   if not s then return end
   bog.db:run("DELETE FROM sessions_fts WHERE rowid=?", { id })
-  bog.db:run("INSERT INTO sessions_fts(rowid,title,body) VALUES(?,?,?)",
-    { id, s.title or "", sess_body(s.messages) })
+  bog.db:run("INSERT INTO sessions_fts(rowid,title,body) SELECT ?,?,? WHERE EXISTS (SELECT 1 FROM sessions WHERE id=?) AND NOT EXISTS (SELECT 1 FROM retention_session_ids WHERE id=?)",
+    { id, s.title or "", sess_body(s.messages),id,id })
 end
 
 -- One-time seed for sessions written before this index existed, guarded by a
@@ -301,8 +301,8 @@ local function backfill_sessions_fts(conn)
   conn:exec(SESSIONS_FTS)
   conn:run("DELETE FROM sessions_fts")
   for _, s in ipairs(conn:query("SELECT id,title,messages FROM sessions")) do
-    conn:run("INSERT INTO sessions_fts(rowid,title,body) VALUES(?,?,?)",
-      { s.id, s.title or "", sess_body(s.messages) })
+    conn:run("INSERT INTO sessions_fts(rowid,title,body) SELECT ?,?,? WHERE EXISTS (SELECT 1 FROM sessions WHERE id=?) AND NOT EXISTS (SELECT 1 FROM retention_session_ids WHERE id=?)",
+      { s.id, s.title or "", sess_body(s.messages),s.id,s.id })
   end
   conn:run("INSERT OR REPLACE INTO meta(key,value) VALUES('sessions_fts_backfilled','1')")
 end
@@ -492,6 +492,7 @@ function M.open()
     .. "ON memory(title, COALESCE(project,''))")
   bog.db:run("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",
     { tostring(M.SCHEMA_VERSION) })
+  require('evidence_retention').ensure(bog.db)
   -- Hand C the store so it can consult the credential-slot registry (the
   -- `providers` table) when a routed request names a slot. Without this the
   -- registry is simply absent and credentials resolve exactly as they did
@@ -630,9 +631,15 @@ end
 -- with it: deleting a project must not silently delete a year of chat.
 function M.project_absorb(name)
   if name == M.GLOBAL then return 0 end
-  local a = bog.db:run("UPDATE sessions SET project=NULL WHERE project=?", { name })
-  local b = bog.db:run("UPDATE memory   SET project=NULL WHERE project=?", { name })
-  return (a.changes or 0) + (b.changes or 0)
+  assert(bog.db:exec('BEGIN IMMEDIATE'))
+  local ok,moved=pcall(function()
+    local a = assert(bog.db:run("UPDATE sessions SET project=NULL WHERE project=?", { name }), 'retention_scope_transfer_requires_migration')
+    local b = assert(bog.db:run("UPDATE memory   SET project=NULL WHERE project=?", { name }), 'retention_scope_transfer_requires_migration')
+    assert(bog.db:exec('COMMIT'))
+    return (a.changes or 0) + (b.changes or 0)
+  end)
+  if not ok then bog.db:exec('ROLLBACK');error('retention_scope_transfer_requires_migration',0) end
+  return moved
 end
 
 -- ---- which projects a skill serves -----------------------------------------
@@ -938,16 +945,17 @@ end
 -- ---- sessions --------------------------------------------------------------
 function M.sess_create(title, model, project)
   local p = proj_or_global(project)
-  local r
+  local r,why
   if p then
-    r = bog.db:run(
-      "INSERT INTO sessions(title,model,created,updated,messages,project) VALUES(?,?,?,?, '[]',?)",
+    r,why = bog.db:run(
+      "INSERT INTO sessions(id,title,model,created,updated,messages,project) VALUES((SELECT COALESCE(MAX(id),0)+1 FROM (SELECT id FROM sessions UNION ALL SELECT id FROM retention_session_ids)),?,?,?,?, '[]',?)",
       { title or "", model or "", now(), now(), p })
   else
-    r = bog.db:run(
-      "INSERT INTO sessions(title,model,created,updated,messages,project) VALUES(?,?,?,?, '[]',NULL)",
+    r,why = bog.db:run(
+      "INSERT INTO sessions(id,title,model,created,updated,messages,project) VALUES((SELECT COALESCE(MAX(id),0)+1 FROM (SELECT id FROM sessions UNION ALL SELECT id FROM retention_session_ids)),?,?,?,?, '[]',NULL)",
       { title or "", model or "", now(), now() })
   end
+  assert(r,why or 'session_insert_failed')
   fts_index_session(r.rowid)
   return r.rowid
 end
@@ -1072,11 +1080,19 @@ end
 -- opts: { parent_id?, title?, model?, spec? (table), status? }
 function M.thread_create(opts)
   opts = opts or {}
-  local r = bog.db:run(
-    "INSERT INTO sessions(title,model,created,updated,messages,parent_id,status,subscriptions,spec) "
-    .. "VALUES(?,?,?,?, '[]', ?, ?, '[]', ?)",
-    { opts.title, opts.model, now(), now(), opts.parent_id,
-      opts.status or "running", opts.spec and json.encode(opts.spec) or nil })
+  local scope=opts.project or require('project').current()
+  if opts.parent_id then
+    local parent=assert(bog.db:query('SELECT project FROM sessions WHERE id=?',{opts.parent_id}))[1]
+    assert(parent,'retention_parent_unavailable')
+    local inherited=parent.project or M.GLOBAL
+    assert(not opts.project or opts.project==inherited,'retention_scope_mismatch')
+    scope=inherited
+  end
+  local r = assert(bog.db:run(
+    "INSERT INTO sessions(id,title,model,created,updated,messages,parent_id,status,subscriptions,spec,project) "
+    .. "VALUES((SELECT COALESCE(MAX(id),0)+1 FROM (SELECT id FROM sessions UNION ALL SELECT id FROM retention_session_ids)),?,?,?,?, '[]', NULLIF(?,0), ?, '[]', NULLIF(?,''),NULLIF(?, 'global'))",
+    { opts.title or '', opts.model or '', now(), now(), opts.parent_id or 0,
+      opts.status or "running", opts.spec and json.encode(opts.spec) or '',scope }))
   fts_index_session(r.rowid)
   return r.rowid
 end

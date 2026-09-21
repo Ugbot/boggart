@@ -13,7 +13,7 @@ local function connection()
 CREATE TABLE IF NOT EXISTS durable_runs (id TEXT PRIMARY KEY, body TEXT NOT NULL, status TEXT NOT NULL, owner TEXT NOT NULL, attempts INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS durable_steps (run_id TEXT NOT NULL, seq INTEGER NOT NULL, operation_id TEXT UNIQUE NOT NULL, request TEXT NOT NULL, outcome TEXT, invocation_id TEXT, PRIMARY KEY(run_id,seq));
 CREATE TABLE IF NOT EXISTS durable_cache (key TEXT PRIMARY KEY, expires REAL NOT NULL, body TEXT NOT NULL);
-]]));initialized[db]=true
+]]));require('evidence_retention').ensure(db);initialized[db]=true
   end
   return db
 end
@@ -68,6 +68,8 @@ function M.identity(d)
     source_revision=d.source_revision,effect=d.effect,target=d.target}
 end
 function M.open_run(id,package,authority,resume)
+  local db=connection()
+  require('evidence_retention').claim_run(db,id,package.scope)
   local _,body=M.snapshot(package)
   local owner=evidence.id('owner')
   if not resume then
@@ -79,6 +81,7 @@ function M.open_run(id,package,authority,resume)
   local session={id=id,cursor=0,rows=rows,authority=authority}
   function session:check()
     if self.fault then error(self.fault,0) end
+    require('evidence_retention').assert_run(connection(),id)
     local row=checked(connection():query('SELECT owner FROM durable_runs WHERE id=?',{id}))[1]
     if not row or row.owner~=owner then fail('run_ownership_lost') end
   end
@@ -174,6 +177,7 @@ function M.reconcile(operation_id,options)
   if not options or not options.authority then return nil,{code='current_authority_required'} end
   local rows=checked(connection():query('SELECT run_id,seq,request,outcome,invocation_id FROM durable_steps WHERE operation_id=?',{operation_id}))
   local row=rows[1];if not row then return nil,{code='operation_not_found'} end
+  require('evidence_retention').assert_run(connection(),row.run_id)
   local request=M.snapshot(decode(row.request))
   if request.kind~='call' then return nil,{code='reconciliation_unavailable'} end
   local package_row=checked(connection():query('SELECT body FROM durable_runs WHERE id=?',{row.run_id}))[1]
@@ -203,6 +207,7 @@ function M.resume(id,options)
   options=options or {}
   if not options.authority then return nil,{code='current_authority_required'} end
   local ok,result,why=pcall(function()
+    require('evidence_retention').assert_run(connection(),id)
     local row=checked(connection():query('SELECT body,status,attempts FROM durable_runs WHERE id=?',{id}))[1]
     if not row then return nil,{code='workflow_non_resumable'} end
     if row.attempts>=8 then return nil,{code='resume_limit'} end
@@ -226,7 +231,7 @@ function M.resume(id,options)
       if not workflow.resolve(d.id,d.version) then assert(workflow.register(d)) end
     end
     local authority=require('invoke').restrict_durable(options.authority,package.restrictions)
-    return workflow.start(package.root,{version=package.version,context=package.context,source_revisions=package.source_revisions,
+    return workflow.start(package.root,{version=package.version,scope=package.scope,context=package.context,source_revisions=package.source_revisions,
       authority=authority,instructions=math.min(options.instructions or package.instructions,package.instructions),
       _durable_resume={id=id,package=package}})
   end)
@@ -296,18 +301,29 @@ local function cache_key(descriptor,args,dependencies,freshness)
   return require('workflow').hash(body),d
 end
 M.cache={}
-function M.cache.store(descriptor,args,dependencies,freshness,outcome)
+local function owned_cache(key,options)
+  local current=require('invoke').correlation()
+  local explicit=options and options.scope
+  assert(not current.scope or not explicit or current.scope==explicit,'retention_scope_mismatch')
+  local scope=current.scope or explicit or require('project').current()
+  local db=connection();require('evidence_retention').assert_scope(db,scope)
+  return require('workflow').hash(encode({scope=scope,key=key})),scope,db
+end
+function M.cache.store(descriptor,args,dependencies,freshness,outcome,options)
   local key,why=cache_key(descriptor,args,dependencies,freshness)
   if not key then return nil,why end
   if outcome.status~='succeeded' or not outcome.receipt or not outcome.receipt.dispatched or outcome.receipt.id~=descriptor.id or outcome.receipt.version~=descriptor.version then return nil,'cache_outcome_invalid' end
   local _,body=M.snapshot(outcome)
-  checked(connection():run('INSERT OR REPLACE INTO durable_cache(key,expires,body) VALUES(?,?,?)',{key,os.time()+freshness.ttl,body}))
+  local scope,db;key,scope,db=owned_cache(key,options)
+  checked(db:run('INSERT OR IGNORE INTO retention_cache(key,scope) VALUES(?,?)',{key,scope}))
+  checked(db:run('INSERT OR REPLACE INTO durable_cache(key,expires,body) VALUES(?,?,?)',{key,os.time()+freshness.ttl,body}))
   return true
 end
 function M.cache.lookup(descriptor,args,dependencies,freshness,options)
   if not options or not options.authority then return nil,'current_authority_required' end
   local key,d=cache_key(descriptor,args,dependencies,freshness)
   if not key then return nil,d end
+  key=owned_cache(key,options)
   local row=checked(connection():query('SELECT expires,body FROM durable_cache WHERE key=?',{key}))[1]
   if not row or row.expires<=os.time() then return nil,'cache_miss' end
   local saved=M.snapshot(decode(row.body))
