@@ -86,13 +86,14 @@ end
 function M.autostart()
   -- Transport rule (docs/station-zmq.md): when the ZMQ client is built and a
   -- daemon answers, station traffic goes over ZMQ and the MCP mount is not
-  -- connected. MCP remains for unbuilt binaries, daemonless machines, and
-  -- testing the adapter (BOGGART_STATION_FORCE_MCP=1).
+  -- connected. Missing ZMQ degrades to native tools. MCP is selected only
+  -- explicitly (BOGGART_STATION_FORCE_MCP=1).
   local okz, stn = pcall(require, "stationlink")
-  if okz and stn and stn.active and stn.active() then
+  if os.getenv("BOGGART_STATION_FORCE_MCP") ~= "1" and okz and stn and stn.active and stn.active() then
     bog.log("llm-station: native ZMQ transport active; MCP mount not connected")
     return true
   end
+  if os.getenv("BOGGART_STATION_FORCE_MCP") ~= "1" then return false end
   if not M.available() then return false end
   if bog.mcphost and bog.mcphost.conns[M.SERVER] then return true end
 

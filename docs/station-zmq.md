@@ -282,3 +282,83 @@ under BSTUD, not here.
 - **P4 Studio as-you-type** — autocomplete provider, composer ghost text,
   menu entry.
 - **P5 Hardening & docs** — tests, exit-safety audit, doc updates, ledger row.
+
+## Capability adapter (BRAIN-21)
+
+Trusted host Lua can use `require("adapters.station").new{workspace=path}`.
+Call `:discover()` to read the current tool descriptions and schemas, then
+`:register(tool_name, {id="station.my_tool", version="host-qualified-1",
+effect="read", resources=host_resource_function})`. Invoke through
+`:invoke(context, id, version, arguments, {operation_id=stable_id})` to use the
+normal capability admission, quota and evidence boundary. Do not expose adapter
+construction or registration to generated Lua. Unclassified effects default to
+`unknown` and require approval; effect/resource qualification belongs to the
+host, not the remote description.
+
+Versions are explicit host-qualified identities, **not** negotiated Station
+capability versions. The immutable descriptor records the discovered schema,
+remote tool, selected transport and workspace. A host must qualify a new version
+when that contract changes; Station cannot pin the daemon implementation or prove
+that a restarted daemon runs the same code. ZMQ schemas are the daemon's actual
+`tool_schema` text (types and required fields), which omits enums/defaults that
+standalone MCP may advertise. MCP discovery retains its JSON schema; unsupported
+schema keywords fail registration instead of being silently removed.
+
+The adapter selects ZMQ by default. Missing/dead native transport reports
+`transport_unavailable` with `receipt.execution.fallback="native"`, meaning the
+existing local code-search tiers remain usable; it does not dispatch another
+capability automatically. `BOGGART_STATION_FORCE_MCP=1` selects MCP explicitly
+before constructing an adapter, using an already attached MCP connection.
+`llmstation.autostart()` also requires that setting to mount MCP. Neither path
+switches transport or retries an uncertain invocation.
+
+Both paths support string-keyed flat arguments containing strings and Lua
+integers in [-999999999999999, 999999999999999] (at most 15 decimal digits).
+The native MCP client reserializes numbers through cJSON using `%.15g`; larger
+integers can become exponent-form JSON, which Station treats as a floating
+number and formats differently from ZMQ. Pass larger values as explicit strings.
+Booleans, nested objects/arrays,
+fractional/nonfinite numbers, out-of-range integers and non-string keys are refused
+before transport dispatch. This conservative common subset avoids the native
+encoder's silent omissions and the MCP bridges' differing float formatting.
+The discovered schema is still validated by the capability layer. Workspace
+routing is injected into a copy, leaving caller arguments untouched.
+
+`stationlink.request(tool, args, options)` is the structured transport entry
+point; `stationlink.call()` retains its legacy value/protocol-map or nil/error
+shape. Outcomes retain protocol maps or MCP result objects and structured error
+codes. Local run/invocation/operation IDs are recorded in execution receipts;
+remote tool metadata (including a tool's own `run_id`) remains under `remote`.
+MCP execution receipts also retain `content_shape`, distinguishing null and
+malformed shapes even when JSON sentinel objects lose identity while copied.
+Raw JSON is not duplicated into receipts or malformed-response error messages;
+structured fields remain available to normal evidence redaction. Content must be
+a nonempty dense array of text blocks; malformed shapes remain uncertain.
+Because the JSON decoder cannot distinguish empty objects from empty arrays,
+both empty content forms are refused. Station's valid empty text block succeeds.
+The native request correlation is verified internally by `lstation.c` but is not
+exposed by its Lua API. Neither transport exposes a durable operation identity.
+The adapter therefore marks remote correlation unavailable and does not insert
+unsupported correlation/policy fields into tool arguments.
+
+`:features()` reports the MCP client's actually negotiated protocol version when
+available. ZMQ protocol negotiation, remote capability versions, generic tool
+cancellation, per-operation status, reconciliation and remote policy enforcement
+are unsupported. `:cancel()`, `:status()` and `:reconcile()` return explicit
+`unsupported` errors; daemon health `status` and chat-specific `chat_stop` do not
+provide these guarantees. Local admission remains enforced, but remote policy
+and usage ceilings are not claimed.
+
+A missing connection or native nil request handle proves pre-send refusal. A
+request exception, failed send, timeout, malformed reply or remote tool error
+does not prove that a write had no effects. Such outcomes remain uncertain and
+must be reconciled externally before another effectful attempt. Disposing a
+native handle is not cancellation of server work.
+
+`tests/station.lua` uses synthetic ZMQ/MCP responses, the real native msgpack
+codec and the existing local Python stdio MCP fixture. Actual native MCP wire
+traces verify numeric type/representation at the accepted boundaries and prove
+refused values generate no tools/call frames. No live writes, daemon, paid model
+or external MCP service is required. It
+covers discovery, parity, correlation, refusals, uncertain writes and explicit
+transport selection. The optional native socket qualification is separate.

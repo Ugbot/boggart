@@ -126,41 +126,68 @@ end
 --   opts.msg_type (default tool_exec), opts.workspace (route to another
 --   workspace through the same daemon, llm-station ADR-023; first use
 --   cold-builds that workspace daemon-side, so allow a generous timeout).
-function M.call(tool, params, opts)
-  opts = opts or {}
-  local conn, err = M.ensure()
-  if not conn then return nil, err end
-  if opts.workspace then
-    params = params or {}
-    params.workspace = tostring(opts.workspace)
+-- Native encoding is flat strings. cJSON uses %.15g in the MCP client:
+-- 16-digit integers may become exponent-form JSON and take Station's float
+-- conversion path. The common numeric range is therefore at most 15 digits.
+function M.validate_params(params)
+  if type(params) ~= "table" then return nil, "arguments must be an object" end
+  for k, v in pairs(params) do
+    if type(k) ~= "string" or (type(v) ~= "string" and
+      not (type(v) == "number" and math.type(v) == "integer" and v >= -999999999999999 and v <= 999999999999999)) then
+      return nil, "Station flat encoding supports only string keys and string/integer values in [-999999999999999, 999999999999999]"
+    end
   end
+  return true
+end
 
+-- Structured transport evidence. Never switches transport or equates a lost
+-- response / remote tool error with proof that effects did not happen.
+function M.request(tool, params, opts)
+  opts = opts or {}; params = params or {}
+  local receipt = {transport="zmq", remote_correlation="unavailable"}
+  local function fail(code, message, unsent)
+    receipt.dispatch = unsent and "not_sent" or "unknown"
+    return nil, {status=unsent and "failed" or "uncertain", effect_disproven=unsent == true,
+      error={code=code,message=tostring(message),retryable=false}, receipt=receipt}
+  end
+  local valid, why = M.validate_params(params)
+  if not valid then return fail("unsupported_encoding", why, true) end
+  local copied = {}; for k,v in pairs(params) do copied[k]=v end
+  if opts.workspace then copied.workspace = tostring(opts.workspace) end
+  local connected, conn, err = pcall(M.ensure, opts.workspace)
+  if not connected or not conn then
+    receipt.fallback="native"
+    return fail("transport_unavailable", connected and err or conn, true)
+  end
   local msg_type = opts.msg_type or "tool_exec"
-  local channel = opts.channel
-    or (QUERY_MSG[msg_type] and "query")
-    or (msg_type == "tool_exec" and tool and M.fast_tools[tool] and "query")
-    or "cmd"
-  local ok, p, why, ch = pcall(function()
-    local h = conn:request(channel, msg_type, tool, params or {},
-      opts.timeout_ms or M.CALL_TIMEOUT_MS)
-    return h:wait()
+  local channel = opts.channel or (QUERY_MSG[msg_type] and "query")
+    or (msg_type == "tool_exec" and M.fast_tools[tool] and "query") or "cmd"
+  local called, h, request_error = pcall(function()
+    return conn:request(channel,msg_type,tool,copied,opts.timeout_ms or M.CALL_TIMEOUT_MS)
   end)
-  if not ok then
-    mark_down(tostring(p))
-    return nil, "station call failed: " .. tostring(p)
+  if not called then mark_down(h); return fail("transport_error",h,false) end
+  -- Native request returns nil only before allocation/send (pending slots full).
+  if not h then return fail("request_refused",request_error,true) end
+  local waited,p,kind,ch = pcall(function() return h:wait() end)
+  if not waited or not p then
+    if not M.ping() then mark_down(waited and kind or p) end
+    return fail("reply_unavailable",waited and kind or p,false)
   end
-  if not p then
-    -- One ping distinguishes a slow tool from a dead daemon.
-    if not M.ping() then mark_down(why or "timeout") end
-    return nil, "station call failed: " .. tostring(why)
+  if type(p) ~= "table" or (msg_type == "tool_exec" and p.ok ~= "true" and p.ok ~= "false"
+    and not p.error and ch ~= "error") then
+    return fail("invalid_response", "missing Station tool outcome", false)
   end
-  if ch == "error" or p.error then
-    return nil, "station error: " .. tostring(p.error or "protocol error")
+  receipt.dispatch="replied"; receipt.remote=p; receipt.message_type=kind; receipt.channel=ch
+  if ch == "error" or p.error or p.ok == "false" then
+    return nil, {status="uncertain",error={code="remote_error",message=tostring(p.error or p.err or p.data or "failed"),retryable=false},receipt=receipt}
   end
-  if p.ok == "false" then
-    return nil, "station tool error: " .. tostring(p.err or "failed")
-  end
-  return p.data or "", p
+  return p.data or "", {status="succeeded",receipt=receipt}
+end
+
+function M.call(tool, params, opts)
+  local value, meta = M.request(tool,params,opts)
+  if meta.status ~= "succeeded" then return nil, "station call failed: " .. meta.error.message end
+  return value, meta.receipt.remote
 end
 
 -- As-you-type completion: query channel, short deadline, nil on any trouble.
