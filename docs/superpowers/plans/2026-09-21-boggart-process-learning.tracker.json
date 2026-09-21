@@ -227,7 +227,8 @@
             "evidence"
           ],
           "test": "runstore",
-          "example": "assert(fake_remote.message_count == 1)"
+          "example": "assert(fake_remote.message_count == 1)",
+          "status": "in_progress"
         }
       ]
     },
@@ -251,7 +252,7 @@
           ],
           "test": "evidence",
           "example": "assert(roundtrip.payload.args.text == \"quoted \\\"value\\\"\\nnext line\")",
-          "status": "in_progress"
+          "status": "done"
         },
         {
           "id": "imports",

@@ -449,8 +449,8 @@ Make all learning claims traceable to observed steps, calls, context and verifie
 
 **Acceptance criteria:**
 
-- [ ] Quoted strings, newlines and nested results round-trip; interleaved workflows reconstruct their own parent/dataflow chains.
-- [ ] Every invocation has an observed terminal or explicit incomplete state after restart; secrets are absent from records and artifacts under a credential fixture.
+- [x] Quoted strings, newlines and nested results round-trip; interleaved workflows reconstruct their own parent/dataflow chains.
+- [x] Every invocation has an observed terminal or explicit incomplete state after restart; secrets are absent from records and artifacts under a credential fixture.
 
 **Test scenario:**
 

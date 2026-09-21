@@ -17,6 +17,7 @@ status authority.
 | BRAIN-15 | Failed reload restores worker/module bindings and event registrations; session listing uses the actual store API and exposes errors | Rebuilt-binary lifecycle 114 checks, sessions 39 checks, real HTTP control 33 checks; independent review approved | `1470254` |
 | BRAIN-41 | Injected concrete values, functions and composable providers; exact capability pins, revision-aware caches, provenance and restrictive authority | Rebuilt-binary context 78, capability 73, invoke 87, events 128, policy 36 and quota 54 checks; CTest context repeated twice; independent review approved | `6407221` |
 | BRAIN-42 | Source-backed versioned Lua workflows with dependency pins, nested steps, cancellation and local Slack fixture | Native full62/62 before review fixes; final covering workflow65/context80/capability73/invoke87/luatool42/events128 pass; CTest workflow and context each repeated twice; independent re-review approved | `6a3588c` |
+| BRAIN-18 | Durable correlated invocation/workflow/context evidence, bounded redaction and explicit incomplete coverage | Final native full63/63; evidence132 checks; CTest evidence/workflow/context/invoke each repeated twice; independent re-review approved | `cf3bda3` |
 
 Build: `cmake --build build --target boggart -j 6` with `CCACHE_DIR` and
 `CCACHE_TEMPDIR` pointing inside `build/ccache`, because the default cache
@@ -25,8 +26,8 @@ directory is outside the workspace sandbox. Tests ran through `./boggart
 model requests or real messaging workflows were used.
 
 The existing user changes to judge/TypeSafe, models and completion were
-preserved outside these commits. BRAIN-17, BRAIN-41 and BRAIN-42 are complete; BRAIN-18 is implementing durable
-process evidence next. Local control authentication and unattended-default hardening
+preserved outside these commits. BRAIN-17, BRAIN-41, BRAIN-42 and BRAIN-18 are complete; BRAIN-43 is implementing
+durable recovery and eligible cached-result reuse next. Local control authentication and unattended-default hardening
 remain open as BRAIN-16.
 
 The broader 57-suite run passed 53 suites on its first pass. MCP and control
@@ -72,3 +73,15 @@ separate occurrence-scoped namespaces. Abrupt provider exits retain explicit
 incomplete-effect evidence. Persistence, durable restart/resume, historical imports
 and promotion evaluation remain separate open tasks, not implied by live coroutine
 suspension or an in-process verifier.
+
+
+BRAIN-18 final integration passed all 63 registered Lua suites. The evidence suite
+has 132 checks, including durable redaction of aliased credential tables, bounded
+secret tracking, explicit omitted-key markers and interleaved nested invocation
+correlation. A separate process-kill/restart fixture proved that committed starts
+without observed terminals remain explicitly incomplete. Independent review found
+and verified fixes for four gaps missed by the initial suite. Evidence is enabled
+by default; capture failure refuses new effects and terminal-write failure remains
+visible. Secret capacity exhaustion is sticky and operationally significant; see
+[the evidence recovery limits](evidence.md). Capture does not provide crash resume,
+historical imports or proof that every arbitrary Lua branch was observed.
