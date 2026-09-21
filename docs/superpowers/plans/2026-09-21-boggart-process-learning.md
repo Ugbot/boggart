@@ -249,7 +249,7 @@ assert(granted_by_connection_a + granted_by_connection_b == 1)
 
 **Dependencies:** BRAIN-11, BRAIN-12
 
-**Files:** Create lua/invoke.lua and tests/invoke.lua; modify lua/tools.lua, lua/perm.lua, lua/thread.lua and studio/data/core/agentview.lua.
+**Files:** Create lua/invoke.lua and tests/invoke.lua; modify lua/tools.lua, lua/perm.lua, lua/thread.lua, lua/events.lua, lua/tui/gate.lua and studio/data/core/agentview.lua; update related tests and invocation documentation.
 
 **Implementation:** Make invocation gating common to CLI, Studio, spawned agents, tools.call, fallback and capability adapters. Carry run policy in coroutine-local invocation context with protected cleanup; nested calls derive narrower context. Separate trusted host raw dispatch from policy-enforced public dispatch. Audit tool_env raw sys/db/require exposure: generated/mined code receives only mediated effects, while trusted installed modules are explicitly privileged. Emit before/after once, including denial and runner errors. Do not label in-process native code sandboxed.
 
@@ -257,8 +257,8 @@ assert(granted_by_connection_a + granted_by_connection_b == 1)
 
 **Acceptance criteria:**
 
-- [ ] Reproduced denied nested write cannot execute through tools.call, fallback, child agents or either UI/CLI surface; no side-effect marker is created.
-- [ ] Exactly one start/terminal pair per attempted invocation; coroutine context is restored after error and unrelated concurrent runs never borrow permissions.
+- [x] Reproduced denied nested write cannot execute through tools.call, fallback, child agents or either UI/CLI surface; no side-effect marker is created.
+- [x] Exactly one start/terminal pair per attempted invocation; coroutine context is restored after error and unrelated concurrent runs never borrow permissions.
 
 **Test scenario:**
 
@@ -286,7 +286,7 @@ assert(not fake_files["forbidden.txt"]); assert(terminal_events_for(call_id) == 
 **Test scenario:**
 
 ```lua
-assert(outcome.status == "failed"); assert(outcome.verification.passed == false)
+assert(outcome.status == "failed"); assert(outcome.verification.ok == false)
 ```
 
 **Verification:** Planned suite: `callable|skills|luatool|events`. Add a failing fixture for the scenario, implement the contract, then rebuild and run the registered suite using the protocol above; run affected existing suites. Native, sibling and Studio commands must come from the applicable repository build recipes. Attach actual test references/results before closure.

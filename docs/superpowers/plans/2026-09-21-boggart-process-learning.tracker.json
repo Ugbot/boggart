@@ -91,7 +91,7 @@
         {
           "id": "gate",
           "title": "Route nested and surface calls through one invocation gate",
-          "files": "Create lua/invoke.lua and tests/invoke.lua; modify lua/tools.lua, lua/perm.lua, lua/thread.lua and studio/data/core/agentview.lua.",
+          "files": "Create lua/invoke.lua and tests/invoke.lua; modify lua/tools.lua, lua/perm.lua, lua/thread.lua, lua/events.lua, lua/tui/gate.lua and studio/data/core/agentview.lua; update related tests and invocation documentation.",
           "work": "Make invocation gating common to CLI, Studio, spawned agents, tools.call, fallback and capability adapters. Carry run policy in coroutine-local invocation context with protected cleanup; nested calls derive narrower context. Separate trusted host raw dispatch from policy-enforced public dispatch. Audit tool_env raw sys/db/require exposure: generated/mined code receives only mediated effects, while trusted installed modules are explicitly privileged. Emit before/after once, including denial and runner errors. Do not label in-process native code sandboxed.",
           "api": "invoke.call(exec_context, capability_id, args, options) -> result|nil,structured_error. Internal raw runners are not exported to generated workflow environments.",
           "ac": [
@@ -104,7 +104,7 @@
           ],
           "test": "invoke",
           "example": "assert(not fake_files[\"forbidden.txt\"]); assert(terminal_events_for(call_id) == 1)",
-          "status": "in_progress"
+          "status": "done"
         },
         {
           "id": "composition",
@@ -118,7 +118,7 @@
           ],
           "deps": [],
           "test": "callable|skills|luatool|events",
-          "example": "assert(outcome.status == \"failed\"); assert(outcome.verification.passed == false)",
+          "example": "assert(outcome.status == \"failed\"); assert(outcome.verification.ok == false)",
           "status": "done"
         },
         {
@@ -173,7 +173,8 @@
             "gate"
           ],
           "test": "capability",
-          "example": "assert(timeout_outcome.status == \"uncertain\")"
+          "example": "assert(timeout_outcome.status == \"uncertain\")",
+          "status": "in_progress"
         },
         {
           "id": "context",
@@ -633,7 +634,7 @@
           "id": "qualification",
           "title": "Run end-to-end product, failure and cost qualification",
           "files": "Create tools/process_bench.lua, tests/process_e2e.lua and docs/process-benchmark.md; extend CI configuration using repository conventions.",
-          "work": "Run Slack and novel fixtures plus held-out variants through observe→mine→evaluate→promote→recognize→execute→rollback. Include policy bypass probes, concurrency quotas, missing context, transport uncertainty, provider drift, import corruption and restart. Fresh native build plus registered Lua tests and relevant Studio/platform checks. Pin fixture seeds and versions; report cost per independently verified outcome, model calls, wrong applicability, false success, human corrections and amortization.",
+          "work": "Run Slack and novel fixtures plus held-out variants through observe\u2192mine\u2192evaluate\u2192promote\u2192recognize\u2192execute\u2192rollback. Include policy bypass probes, concurrency quotas, missing context, transport uncertainty, provider drift, import corruption and restart. Fresh native build plus registered Lua tests and relevant Studio/platform checks. Pin fixture seeds and versions; report cost per independently verified outcome, model calls, wrong applicability, false success, human corrections and amortization.",
           "api": "Benchmark produces machine-readable run manifest and report artifact with exact executable/source revision, configuration and per-case evidence IDs.",
           "ac": [
             "The full cycle succeeds on held-out inputs with no known false-success or duplicate-effect failures; failures remain visible rather than removed from denominators.",
