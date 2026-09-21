@@ -24,7 +24,9 @@ local QUEUE = "supervisor.cmd"
 -- Execute one decoded command. MAIN THREAD ONLY (the pump guarantees it).
 local function exec(c)
   local id = c.id
-  if c.verb == "kill" then
+  if c.verb == "mining_cancel" then
+    require("mining.jobs").cancel(id)
+  elseif c.verb == "kill" then
     -- the operator kill: tells the parent first, so an await() unblocks
     if bog.thread and bog.thread.kill then bog.thread.kill(id)
     elseif bog.sched then bog.sched.kill(id) end
@@ -83,6 +85,7 @@ local function command(verb, fields)
 end
 
 -- The verbs surfaces call.
+function M.mining_cancel(id)       return command("mining_cancel", { id = id }) end
 function M.kill(id)               return command("kill", { id = id }) end
 function M.pause(id, on)          return command("pause", { id = id, on = on ~= false }) end
 function M.resume(id)             return command("resume", { id = id }) end
