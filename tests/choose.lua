@@ -160,5 +160,16 @@ local reply = choose.capture_after_turn({ messages = {
 }})
 ok(reply == "beta", "capture_after_turn: sync REPL returns chosen label")
 
+bog.choose_ask=function()return {index=1}end
+for _,code in ipairs({"return ('a'):match('a*a*b')","return setmetatable({}, {__gc=function()end})"}) do
+  local result=choose.run{options={{label="source",run={lua=code}}}}
+  ok(result:find("lua error",1,true),"choice source uses restricted native boundary")
+end
+local saved_limit=require('tools').LIMITS.memory_kb
+require('tools').LIMITS.memory_kb=512
+local result=choose.run{options={{label="source",run={lua="return string.rep('x',8*1024*1024)"}}}}
+ok(result:find("allocation budget",1,true),"choice source has allocator ceiling")
+require('tools').LIMITS.memory_kb=saved_limit
+
 io.write(string.format("choose: %d passed, %d failed\n", passed, failed))
 if failed > 0 then os.exit(1) end

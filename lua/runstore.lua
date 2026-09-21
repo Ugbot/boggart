@@ -242,8 +242,11 @@ end
 -- copied. Refuse raw identity/bytecode formatting originating in source; the
 -- checked env.string.format wrapper remains available for ordinary formatting.
 function M.source_hook(previous,mask,deny)
+  local tools=require("tools")
   return function(event,line)
-    if event=='call' or event=='tail call' then
+    local callee=tools.current_hook_target()
+    if (event=='call' or event=='tail call') and
+        (not callee or callee==string.format or callee==string.dump) then
       local target=false
       local level=2
       while true do
@@ -251,15 +254,15 @@ function M.source_hook(previous,mask,deny)
         if not info then break end
         if info.func==string.format or info.func==string.dump then target=true
         elseif target and info.what~='C' then
-          if info.source:sub(1,10)=='@workflow:' then deny() end
+          if string.sub(info.source,1,10)=='@workflow:' then deny() end
           break
         end
-        if info.source:sub(1,10)=='@workflow:' then break end
+        if string.sub(info.source,1,10)=='@workflow:' then break end
         level=level+1
       end
     end
     local code=event=='line' and 'l' or event=='return' and 'r' or 'c'
-    if previous and (event=='count' or mask:find(code,1,true)) then previous(event,line) end
+    if previous and (event=='count' or string.find(mask,code,1,true)) then previous(event,line) end
   end
 end
 -- Deterministic subset retains ordinary Lua computation and stable iteration.

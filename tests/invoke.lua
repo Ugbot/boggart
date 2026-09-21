@@ -231,8 +231,20 @@ tools.register_body('_saved_close','',{},[[
   if args.close then coroutine.close(saved); return close_result end
   local ok,value=coroutine.resume(saved); return value
 ]])
-check(invoke.string(broad,'_saved_close',{path=marker})=='ready','saved finalizer created broadly')
-check(denied(invoke.string(ctx,'_saved_close',{path=marker,close=true})) and sys.stat(marker)==nil,'close finalizer inherits current narrower permission')
+check(invoke.string(broad,'_saved_close',{path=marker}):find('metatables',1,true),'generated finalizer registration is refused before suspension')
+check(sys.stat(marker)==nil,'refused generated finalizer never produces effect')
+-- Trusted host finalizers remain supported and retain narrowed close authority.
+local trusted_close_result
+local trusted_finalizer=coroutine.create(function()
+  local cleanup <close> = setmetatable({}, {__close=function()
+    trusted_close_result=tools.call('write',{path=marker,content='escaped'})
+  end})
+  coroutine.yield('ready')
+end)
+invoke.inherit(trusted_finalizer,broad)
+check(invoke.resume(trusted_finalizer),'trusted finalizer suspended')
+invoke.with_context(ctx,function() check(invoke.close(trusted_finalizer),'trusted finalizer closes') end)
+check(denied(trusted_close_result) and sys.stat(marker)==nil,'trusted close finalizer retains narrowed authority')
 -- Repeated short resumes across invocations cannot reset an outer hook budget.
 tools.register_body('_short_resume','',{},[[
   if not saved then saved=coroutine.create(function() while true do coroutine.yield('short') end end) end
@@ -272,3 +284,66 @@ events.off(before_ctui);events.off(after_ctui)
 quota_connection:close()
 assert(os.remove(quota_path))
 print('invoke: '..passed..' passed')
+
+-- BRAIN-16: initial and live-policy queued approval must never dispatch.
+for _, profile in ipairs({"queue", "typo", false}) do
+  local before=count
+  local state={mode="manual",guards=false,headless=profile}
+  local c=invoke.context({state=state})
+  check(denied(invoke.string(c,"_effect",{})),"headless non-allow refuses admission")
+  check(count==before,"headless non-allow has no effect")
+end
+
+for _, initial in ipairs({"auto","manual"}) do
+  local before=count
+  local live={mode=initial,guards=false,headless="allow"}
+  local c=invoke.context({state=live})
+  local hook=events.on("tool:authorize",function(_,event)
+    if event.name=="_effect" then live.mode="manual";live.headless="queue" end
+  end)
+  check(denied(invoke.string(c,"_effect",{})),"new queued live approval refuses effect")
+  check(count==before,"live queued admission has no effect")
+  events.off(hook)
+end
+-- Canonical resources, including a symlink created after initial admission.
+local uv=require("uv")
+local dir=bog.userdir.."/brain16-allowed"
+local outside=bog.userdir.."/brain16-outside"
+assert(sys.mkdir_p(dir));assert(sys.mkdir_p(outside))
+assert(require("util").write_file(outside.."/secret","fixture"))
+local link=dir.."/escape"
+assert(uv.fs_symlink(outside,link))
+local pathpolicy=assert(require("policy").compile{{id="brain16-path",revision=1,
+  capabilities={allow={"read","write","bash","sys.exec","sys.shell","lua"}},
+  resources={path={evaluator="prefix",allow={assert(uv.fs_realpath(dir)).."/"}}}}})
+local pathctx=invoke.context({state={mode="auto",guards=false,headless="allow"},policy=pathpolicy})
+check(denied(invoke.string(pathctx,"read",{path=link.."/secret"})),"symlink read escapes canonical allowlist")
+check(denied(invoke.string(pathctx,"write",{path=link.."/new",content="escape"})),"symlink create escapes canonical allowlist")
+check(denied(invoke.string(pathctx,"bash",{command="printf escaped"})),"path authority cannot authorize shell")
+for _,name in ipairs({"exec","shell"}) do
+  check(denied(invoke.string(pathctx,"sys."..name,{values=table.pack("printf escaped")})),"raw shell has no invented path resource")
+end
+check(denied(invoke.string(pathctx,"bash",{command="printf escaped",path=dir.."/forged"})),"shell caller path label cannot grant resource authority")
+assert(uv.fs_unlink(link));assert(uv.fs_symlink(dir,link))
+local changed=events.on("tool:authorize",function(_,event)
+  if event.name=="write" then assert(uv.fs_unlink(link));assert(uv.fs_symlink(outside,link)) end
+end)
+check(denied(invoke.string(pathctx,"write",{path=link.."/new",content="escaped"})),"symlink retargeted in authorization callback rechecked before dispatch")
+events.off(changed)
+check(not sys.stat(outside.."/new"),"symlink refused effects absent")
+local _,missing_error,missing_receipt=invoke.call(pathctx,'read',{path=dir..'/absent/child'})
+check(missing_error and missing_error.code=='host_capability_error' and not missing_receipt.dispatched,
+  'initial missing canonical parent is a pre-dispatch capability error')
+local path_state=require('perm').state();local path_headless=path_state.headless
+path_state.headless='allow' -- explicitly admit the live-recheck fixture
+local vanishing=dir..'/vanishing';assert(sys.mkdir_p(vanishing))
+local removed=events.on('tool:authorize',function(_,event)
+ if event.name=='write' then assert(uv.fs_rmdir(vanishing)) end
+end)
+local _,vanished_error,vanished_receipt=invoke.call(pathctx,'write',{path=vanishing..'/child',content='escaped'})
+events.off(removed);path_state.headless=path_headless
+check(vanished_error and vanished_error.code=='host_capability_error' and not vanished_receipt.dispatched,
+  'live missing canonical parent refuses before dispatch without raw-path fallback')
+check(not sys.stat(vanishing..'/child'),'missing canonical parent produced no write')
+assert(uv.fs_unlink(link));sys.rmtree(dir);sys.rmtree(outside)
+print("invoke BRAIN-16: "..passed.." checks passed")

@@ -74,7 +74,10 @@ check(sl.kind == "slash" and sl.line == "/help", "/help is a slash line")
 local pr = take.parse("hello")
 check(pr.kind == "prompt" and pr.text == "hello", "prose is a prompt")
 
+local prior_headless = perm.state().headless
+perm.state().headless = "allow" -- intentional echo fixture, no approval UI
 local okb, out = take.run_bash("echo front-ok")
+perm.state().headless = prior_headless
 check(okb and tostring(out):find("front-ok", 1, true),
   "!bash runs through the bash tool (got " .. tostring(out):sub(1, 60) .. ")")
 

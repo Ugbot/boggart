@@ -81,6 +81,7 @@ struct Server {
   int        handler_ref;
   char      *token;      /* NULL = no auth (loopback only) */
   size_t     token_len;
+  char       host[128];
   int        nconns;
   Conn      *conns;
   int        stopped;
@@ -233,6 +234,7 @@ static void respond_stream(Conn *c) {
 typedef struct {
   char *method, *path, *query, *body;
   size_t body_len;
+  char *host, *origin;
   char *auth;         /* the Authorization header value, or NULL */
   int   headers_start;
 } Req;
@@ -258,6 +260,7 @@ static int parse_request(Conn *c, Req *out, size_t *consumed) {
   if (!hdr_end) {
     return c->len > MAX_HEADER_BYTES ? -1 : 0;
   }
+  if ((size_t)(hdr_end-buf)>MAX_HEADER_BYTES) return -1;
   const char *line_end = strstr(buf, "\r\n");
   if (!line_end || line_end > hdr_end) return -1;
 
@@ -276,27 +279,48 @@ static int parse_request(Conn *c, Req *out, size_t *consumed) {
   }
   if (!out->method || !out->path) return -1;
 
-  /* headers we care about: Content-Length and Authorization */
+  /* Security-sensitive headers are singletons. Reject ambiguous framing,
+   * folded/malformed fields and embedded NULs rather than normalizing them. */
+  if (memchr(buf, 0, (size_t)(hdr_end-buf))) return -1;
   size_t content_len = 0;
+  int seen_length = 0;
   const char *p = line_end + 2;
   while (p < hdr_end) {
     const char *eol = strstr(p, "\r\n");
-    if (!eol || eol > hdr_end) break;
+    if (!eol || eol > hdr_end) return -1;
     const char *colon = memchr(p, ':', (size_t)(eol - p));
-    if (colon) {
-      size_t nlen = (size_t)(colon - p);
-      const char *v = colon + 1;
-      trim_lead(&v);
-      if (nlen == 14 && strncasecmp(p, "content-length", 14) == 0) {
-        content_len = (size_t)strtoul(v, NULL, 10);
-        if (content_len > MAX_BODY_BYTES) return -1;
-      } else if (nlen == 13 && strncasecmp(p, "authorization", 13) == 0) {
-        free(out->auth);
-        out->auth = dup_range(v, eol);
+    if (!colon || colon==p) return -1;
+    for (const char *k=p;k<colon;k++) {
+      if (!((*k>='a' && *k<='z') || (*k>='A' && *k<='Z') ||
+            (*k>='0' && *k<='9') || strchr("!#$%&'*+-.^_`|~",*k))) return -1;
+    }
+    size_t nlen = (size_t)(colon - p);
+    const char *v = colon + 1, *end=eol;
+    trim_lead(&v);
+    while (end>v && (end[-1]==' ' || end[-1]=='\t')) end--;
+    for (const char *k=v;k<end;k++) if ((unsigned char)*k<32 || *k==127) return -1;
+    if (nlen == 14 && strncasecmp(p, "content-length", 14) == 0) {
+      if (seen_length++ || v==end) return -1;
+      for (const char *k=v;k<end;k++) {
+        if (*k<'0' || *k>'9') return -1;
+        content_len=content_len*10+(size_t)(*k-'0');
+        if (content_len>MAX_BODY_BYTES) return -1;
+      }
+    } else if (nlen==17 && strncasecmp(p,"transfer-encoding",17)==0) return -1;
+    else {
+      char **field=NULL;
+      if (nlen==13 && strncasecmp(p,"authorization",13)==0) field=&out->auth;
+      if (nlen==4 && strncasecmp(p,"host",4)==0) field=&out->host;
+      if (nlen==6 && strncasecmp(p,"origin",6)==0) field=&out->origin;
+      if (field) {
+        if (*field || v==end) return -1;
+        *field=dup_range(v,end);
+        if (!*field) return -1;
       }
     }
-    p = eol + 2;
+    p=eol+2;
   }
+  if (!out->host) return -1;
 
   size_t head_bytes = (size_t)(hdr_end - buf) + 4;
   if (c->len < head_bytes + content_len) return 0;   /* body still arriving */
@@ -309,7 +333,7 @@ static int parse_request(Conn *c, Req *out, size_t *consumed) {
 }
 
 static void req_free(Req *r) {
-  free(r->method); free(r->path); free(r->query); free(r->body); free(r->auth);
+  free(r->method); free(r->path); free(r->query); free(r->body); free(r->auth); free(r->host); free(r->origin);
   memset(r, 0, sizeof(*r));
 }
 
@@ -317,6 +341,9 @@ static void req_free(Req *r) {
 
 static void push_request(lua_State *L, Conn *c, Req *r) {
   lua_newtable(L);
+  lua_pushboolean(L, 1); lua_setfield(L, -2, "authenticated");
+  lua_pushstring(L, r->host); lua_setfield(L, -2, "host");
+  if (r->origin) { lua_pushstring(L, r->origin); lua_setfield(L, -2, "origin"); }
   lua_pushstring(L, r->method ? r->method : "GET"); lua_setfield(L, -2, "method");
   lua_pushstring(L, r->path ? r->path : "/");       lua_setfield(L, -2, "path");
   if (r->query) { lua_pushstring(L, r->query); lua_setfield(L, -2, "query"); }
@@ -341,6 +368,30 @@ static void handle_request(Conn *c, Req *r) {
   Server *s = c->srv;
   lua_State *L = s->L;
 
+  /* Compare the actual authority against this listener's bound host/port.
+   * A browser Origin, when supplied, must be exactly this HTTP origin. */
+  struct sockaddr_storage addr;
+  int addrlen=sizeof(addr), port=0;
+  if (uv_tcp_getsockname(&s->tcp,(struct sockaddr *)&addr,&addrlen)==0)
+    port=addr.ss_family==AF_INET ? ntohs(((struct sockaddr_in *)&addr)->sin_port)
+      : ntohs(((struct sockaddr_in6 *)&addr)->sin6_port);
+  char expected[160], origin[176];
+  snprintf(expected,sizeof(expected),strchr(s->host,':') ? "[%s]:%d" : "%s:%d",s->host,port);
+  int valid_host=r->host && strcmp(r->host,expected)==0;
+  if (!valid_host && (!strcmp(s->host,"127.0.0.1") || !strcmp(s->host,"localhost"))) {
+    snprintf(expected,sizeof(expected),"localhost:%d",port);
+    valid_host=r->host && strcmp(r->host,expected)==0;
+    if (!valid_host) {
+      snprintf(expected,sizeof(expected),"127.0.0.1:%d",port);
+      valid_host=r->host && strcmp(r->host,expected)==0;
+    }
+  }
+  snprintf(origin,sizeof(origin),"http://%s",r->host ? r->host : "");
+  if (!valid_host || (r->origin && strcmp(r->origin,origin)!=0)) {
+    respond(c,403,"text/plain; charset=utf-8","forbidden origin or host\n",25,NULL);
+    return;
+  }
+
   /* AUTH, in C. When a token is configured every request must carry it; this
    * is checked before the handler is reached, so no Lua route can forget to. */
   if (s->token) {
@@ -348,7 +399,7 @@ static void handle_request(Conn *c, Req *r) {
     const char *bearer = NULL;
     if (got) {
       if (strncasecmp(got, "bearer ", 7) == 0) bearer = got + 7;
-      else bearer = got;
+
     }
     if (!bearer || !ct_equal(bearer, strlen(bearer), s->token, s->token_len)) {
       respond(c, 401, "text/plain; charset=utf-8", "unauthorized\n", 13, NULL);
@@ -431,7 +482,7 @@ static void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
     respond(c, 400, "text/plain; charset=utf-8", "bad request\n", 12, NULL);
     return;
   }
-  if (st == 0) return;              /* need more bytes */
+  if (st == 0) { req_free(&r); return; }              /* need more bytes */
   /* one request per connection: drop what was consumed and stop reading */
   uv_read_stop(stream);
   c->len = 0;
@@ -489,7 +540,11 @@ static int l_listen(lua_State *L) {
   lua_getfield(L, 1, "token");
   const char *token = lua_isstring(L, -1) ? lua_tostring(L, -1) : NULL;
   char tokbuf[256] = {0};
-  if (token) snprintf(tokbuf, sizeof(tokbuf), "%s", token);
+  if (token) {
+    size_t n=lua_rawlen(L,-1);
+    if (n==0 || n>=sizeof(tokbuf) || strlen(token)!=n) return luaL_error(L,"invalid token length");
+    memcpy(tokbuf,token,n+1);
+  }
   lua_pop(L, 1);
 
   /* THE ENFORCEMENT. Binding somewhere the network can reach is a different
@@ -497,7 +552,12 @@ static int l_listen(lua_State *L) {
    * in C, where the Lua the agent rewrites cannot decide otherwise. */
   int loopback = (strcmp(hostbuf, "127.0.0.1") == 0 || strcmp(hostbuf, "::1") == 0
                   || strcmp(hostbuf, "localhost") == 0);
-  if (!loopback && tokbuf[0] == 0) {
+  lua_getfield(L, 1, "profile");
+  const char *profile=lua_tostring(L,-1);
+  int trusted=profile && strcmp(profile,"trusted_local")==0;
+  if (profile && !trusted && strcmp(profile,"authenticated")!=0) return luaL_error(L,"unknown control profile");
+  lua_pop(L,1);
+  if ((!loopback || !trusted) && tokbuf[0] == 0) {
     lua_pushnil(L);
     lua_pushfstring(L, "refusing to bind %s without a token: a control plane "
                        "reachable off this machine must be authenticated", hostbuf);
@@ -530,10 +590,12 @@ static int l_listen(lua_State *L) {
   memset(s, 0, sizeof(*s));
   s->L = L;
   s->handler_ref = handler_ref;
+  snprintf(s->host,sizeof(s->host),"%s",hostbuf);
   if (tokbuf[0]) {
     s->token_len = strlen(tokbuf);
     s->token = malloc(s->token_len + 1);
-    if (s->token) memcpy(s->token, tokbuf, s->token_len + 1);
+    if (!s->token) return luaL_error(L,"token allocation failed");
+    memcpy(s->token, tokbuf, s->token_len + 1);
   }
   luaL_getmetatable(L, SERVER_MT);
   lua_setmetatable(L, -2);

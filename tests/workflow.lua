@@ -177,3 +177,61 @@ register{id='review.abrupt',version='1',capabilities={['workflow.uncertain']='1'
 result=start('review.abrupt',{instructions=30000,context={x=function(ctx)ctx:call('workflow.uncertain',{});while true do end end}}):snapshot()
 check(result.status=='failed' and result.effects_incomplete and not result.verified and result.resolutions[1].status=='incomplete','budget-aborted provider preserves explicit unresolved effect record')
 print('workflow reviewed final: '..passed..' checks passed')
+
+-- Source work, unlike trusted host workflows, enters bounded native resumes.
+local source_limit=tools.LIMITS.memory_kb;tools.LIMITS.memory_kb=512
+for i,body in ipairs({
+ "pcall(function()return string.rep('x',8*1024*1024)end);return 'escaped'",
+ "return ('aaa'):match('a*a*a*b')",
+ "return function()while true do end end",
+ "return setmetatable({}, {__pairs=function()while true do end end})",
+ "return ctx:step('callback',function()return ('aaa'):match('a*a*a*b')end)",
+}) do
+ register{id='brain16.source.'..i,version='1',source='return function(ctx) '..body..' end'}
+ check(start('brain16.source.'..i):snapshot().status=='failed','source native/callback boundary '..i)
+end
+register{id='brain16.yield',version='1',source="return function(ctx)ctx:yield('pause');return string.rep('x',8*1024*1024)end"}
+local bounded_run=start('brain16.yield')
+check(bounded_run:snapshot().status=='suspended','source native budget can suspend')
+local host_allocation=string.rep('h',2*1024*1024)
+check(#host_allocation==2*1024*1024,'suspended source leaves host allocator live')
+check(bounded_run:resume().status=='failed','resumed source keeps allocation ceiling')
+local cancelled_run=start('brain16.yield');cancelled_run:cancel()
+check(cancelled_run:snapshot().status=='cancelled','cancelled source closes protected child')
+tools.LIMITS.memory_kb=source_limit
+print('workflow BRAIN-16: '..passed..' checks passed')
+
+-- Reviewer probes: eliminated provider frames cannot confer host authority.
+for i,body in ipairs({
+ "return ('aaa'):match('a*a*a*')",
+ "local value=('aaa'):match('a*a*a*'); return value",
+ "local alias=('aaa').match;return alias('aaa','a*a*a*')",
+ "return ('aaa')['match']('aaa','a*a*a*')",
+ "local function tail()return ('aaa'):match('a*a*a*')end;return tail()",
+ "local ok,value=pcall(function()return ('aaa'):match('a*a*a*')end);return value",
+}) do
+ register{id='brain16.provider.tail.'..i,version='1',source="return {defaults={x=function() "..body.." end},run=function(ctx)return ctx:resolve('x')end}"}
+ check(start('brain16.provider.tail.'..i):snapshot().status=='failed','provider native admission survives tail elimination '..i)
+end
+local close_effects=0
+tools.register('_brain16_close_effect',{effect='write',run=function()close_effects=close_effects+1;return 'effect'end})
+local close_state=require('perm').state();local old_headless=close_state.headless;close_state.headless='allow'
+local close_narrow=invoke.context{state={mode='auto',guards=false,tool_policy={_brain16_close_effect='deny'}}}
+for i,body in ipairs({"return ctx:resolve('x')", "local co=coroutine.create(function()return ctx:resolve('x')end);coroutine.resume(co);coroutine.yield('outer');coroutine.close(co)", "return ctx:resolve('x')"}) do
+ register{id='brain16.provider.close.'..i,version='1',source='return function(ctx) '..body..' end'}
+ local closed_run=start('brain16.provider.close.'..i,{context={x=function()
+  local closer <close> = setmetatable({},{__close=function()
+   tools.run('_brain16_close_effect',{})
+   if i==3 then error('trusted cleanup failure') end
+  end})
+  coroutine.yield('paused');return 'done'
+ end}})
+ check(closed_run:snapshot().status=='suspended','trusted provider suspends inside protected source '..i)
+ invoke.with_context(close_narrow,function()
+  if i==2 then closed_run:resume() else closed_run:cancel() end
+ end)
+ check(close_effects==0,'protected close intersects closer authority '..i)
+end
+check(tools.run('_brain16_close_effect',{})=='effect' and close_effects==1,'protected close restores ordinary host authority')
+close_state.headless=old_headless
+print('workflow BRAIN-16 review: '..passed..' checks passed')

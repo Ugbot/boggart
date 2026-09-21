@@ -25,6 +25,7 @@ local json = require "json"
 
 M.server = nil
 M.routes = {}
+local client_token
 M.token = nil
 
 -- ---------------------------------------------------------------------------
@@ -74,13 +75,36 @@ function M.route(method, pattern, fn, desc)
   return M
 end
 
+local invocation = require "invoke"
+local route_registry = {}
+local route_by_id = {}
+local client_context, scoped_client
+invocation.bind(route_registry, function(id)
+  local r=route_by_id[id]
+  return r and {id=id,version="1",effect=r.method=="GET" and "read" or "write"}
+end, function(id,a)
+  local r=assert(route_by_id[id])
+  return table.pack(r.fn(a.req,table.unpack(a.captures)))
+end)
+
 local function dispatch(req)
   for _, r in ipairs(M.routes) do
     if r.method == req.method then
       local caps = { req.path:match(r.pattern) }
       if caps[1] ~= nil then
         if caps[1] == req.path then caps = {} end
-        return r.fn(req, table.unpack(caps))
+        if not req.authenticated then return err(401,"authentication required") end
+        -- Deferred routes currently cannot preserve attenuated authority.
+        if scoped_client and (req.path=="/prompt" or req.path:match("^/hooks/")
+            or req.path:match("^/triggers") and req.method~="GET"
+            or req.path=="/permissions" and req.method~="GET") then
+          return err(403,"scoped deferred or authority-changing control is unsupported")
+        end
+        local id="control:"..r.method..":"..r.pattern:sub(2,-2)
+        route_by_id[id]=r
+        local result,why=invocation.call(client_context,id,{req=req,captures=caps},{registry=route_registry})
+        if why then return err(why.code=="permission_error" and 403 or 500,why.message) end
+        return table.unpack(result,1,result.n)
       end
     end
   end
@@ -352,20 +376,26 @@ end
 -- ---------------------------------------------------------------------------
 
 -- start{ host=, port=, token= } -> server, url
--- A token is generated unless one is supplied AND the bind is loopback; asking
--- for any other host without a token is refused in C, which is the point.
+-- Generate a token for every ordinary listener. Unauthenticated loopback
+-- requires the explicit trusted_local profile, checked again in C.
 function M.start(opts)
   opts = opts or {}
   if M.server then return M.server end
   local host = opts.host or os.getenv("BOGGART_SERVE_HOST") or "127.0.0.1"
   local port = tonumber(opts.port or os.getenv("BOGGART_SERVE_PORT")) or 0
   local token = opts.token or os.getenv("BOGGART_SERVE_TOKEN")
-  if token == nil and host ~= "127.0.0.1" and host ~= "::1" and host ~= "localhost" then
+  if token == nil and opts.profile ~= "trusted_local" then
     token = serve.token(24)   -- C: real entropy, not math.random
   end
 
+  local capabilities=opts.capabilities or {"*"}
+  local policy,policy_error=require("policy").compile{{id="control-client",revision=1,
+    capabilities={allow=capabilities}}}
+  if not policy then return nil,policy_error end
+  scoped_client=not (#capabilities==1 and capabilities[1]=="*")
+  client_context=invocation.context({state={mode="auto",guards=false},policy=policy})
   local srv, why = serve.listen{
-    host = host, port = port, token = token,
+    host = host, port = port, token = token, profile=opts.profile,
     handler = function(req)
       local okd, a, b, c = pcall(dispatch, req)
       if not okd then
@@ -377,10 +407,10 @@ function M.start(opts)
   }
   if not srv then return nil, why end
 
-  M.server, M.token = srv, token
+  M.server, client_token = srv, token
   install_bridge()
   local url = string.format("http://%s:%d", host, srv:port())
-  bog.events.emit("serve:started", { url = url, token = token })
+  bog.events.emit("serve:started", { url = url, authenticated=token~=nil })
   return srv, url
 end
 
@@ -388,10 +418,13 @@ function M.stop()
   if not M.server then return false end
   remove_bridge()
   M.server:stop()
-  M.server, M.token = nil, nil
+  M.server, client_token, client_context = nil, nil, nil
   bog.events.emit("serve:stopped", {})
   return true
 end
+
+-- Trusted host-only retrieval; never exposed by routes or event payloads.
+function M.client_token() return client_token end
 
 function M.url()
   if not M.server then return nil end

@@ -124,11 +124,20 @@ local function resolve(o)
     local ok, out = pcall(function() return bog.tools.run(r.tool, r.args or {}) end)
     return head .. "\n" .. (ok and tostring(out) or ("tool error: " .. tostring(out)))
   elseif type(r.lua) == "string" then
+    if #r.lua>1024*1024 then return head.."\nlua error: restricted source exceeds 1 MiB" end
     local T = require("tools")
     local env = T.tool_env(); env.args = r.args or {}
-    local chunk, err = load(r.lua, "choose:lua", "t", env)
+    local chunk, err = load(r.lua, "@tool:choose", "t", env)
     if not chunk then return head .. "\nlua compile error: " .. tostring(err) end
-    local ok, out = pcall(chunk)
+    local ticks,tripped=0,false
+    local function guard()
+      ticks=ticks+1000
+      T.check_restricted()
+      if ticks>T.LIMITS.instructions then tripped=true;error("choose instruction budget exhausted",0) end
+    end
+    local ok,out=T.with_count_hook(guard,1000,T.protected_source,chunk)
+    if tripped then ok,out=false,"choose instruction budget exhausted" end
+    if ok then ok,out=pcall(T.restricted_data,out) end
     return head .. "\n" .. (ok and tostring(out) or ("lua error: " .. tostring(out)))
   elseif type(r.cmd) == "string" then
     if bog and bog.handle_command then pcall(bog.handle_command, r.cmd) end

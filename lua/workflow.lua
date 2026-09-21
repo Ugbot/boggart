@@ -62,6 +62,7 @@ function M.register(d)
   if registry[d.id] and registry[d.id][d.version] then return nil,err('workflow_version_exists') end
   if d.durable~=nil and (d.durable~='replay-v1' or type(d.source)~='string') then return nil,err('workflow_non_resumable') end
   if d.source~=nil then
+    if type(d.source)=="string" and #d.source>1024*1024 then return nil,err("workflow_source_too_large") end
     if d.source_hash~=nil and (type(d.source)~='string' or d.source_hash~=M.hash(d.source)) then return nil,err('workflow_source_hash_mismatch') end
     if type(d.source)~='string' or d.run~=nil or d.verify~=nil or d.defaults~=nil then return nil,err('workflow_source_conflict') end
     if not load(d.source,'@workflow:'..d.id..':'..d.version,'t',{}) then return nil,err('workflow_source_invalid') end
@@ -152,6 +153,7 @@ function M.start(id, options)
     if not ok then return nil,type(result)=='table' and result or err('workflow_non_resumable') end
     run_package=result
   end
+  if root.source and (not sys.memcapable or not sys.memcapable()) then return nil,err("workflow_allocator_unavailable") end
   serial=serial+1
   local state={id=recovery and recovery.id or evidence.id('workflow-run'),workflow=identity(root),manifest=manifest,status='created',
     steps={},invocations={},resolutions={},verified=false}
@@ -202,7 +204,7 @@ function M.start(id, options)
           mark('failed',err('workflow_nondeterministic'));error(err('workflow_nondeterministic'),0)
         end)
       end
-      spec=assert(load(d.source,'@workflow:'..d.id..':'..d.version,'t',env))()
+      spec=tools.protected_source(assert(load(d.source,'@workflow:'..d.id..':'..d.version,'t',env)))
       if type(spec)=='function' then spec={run=spec} end
       if type(spec)~='table' or type(spec.run)~='function' or (spec.verify~=nil and type(spec.verify)~='function') then error(err('workflow_source_contract'),0) end
     end
@@ -249,6 +251,7 @@ function M.start(id, options)
       if budget_failed then error(err('workflow_budget'),0) end
     end
     function ctx:resolve(key,request,opts)
+      if d.source then tools.restricted_data(request);tools.restricted_data(opts) end
       alive();correlate()
       local req=request
       if req==nil then req={} end
@@ -283,6 +286,7 @@ function M.start(id, options)
       return value,provenance,failure_provenance
     end
     function ctx:call(cap,args,opts)
+      if d.source then tools.restricted_data(args);tools.restricted_data(opts) end
       alive();correlate()
       local record={step_id=frame().path,id=cap,version=d.capabilities[cap],status='running'}
       state.invocations[#state.invocations+1]=record
@@ -328,6 +332,7 @@ function M.start(id, options)
       end)
     end
     function ctx:observe(kind,value,links)
+      if d.source then tools.restricted_data(value);tools.restricted_data(links) end
       alive()
       if kind~="branch" and kind~="dataflow" then error(err("workflow_observation_invalid"),0) end
       local e=correlate();e.kind="observation."..kind;e.payload={value=value,links=links,source="explicit_annotation"}
@@ -335,12 +340,18 @@ function M.start(id, options)
       return evidence.append(e)
     end
     function ctx:yield(...) alive();if durable then mark('failed',err('workflow_nondeterministic'));error(err('workflow_nondeterministic'),0) end;return coroutine.yield(...) end
-    local result,run_error=spec.run(ctx)
+    local result,run_error
+    if d.source then result,run_error=tools.protected_source(spec.run,ctx)
+    else result,run_error=spec.run(ctx) end
+    if d.source then tools.restricted_data(result);tools.restricted_data(run_error) end
     if result==nil and run_error~=nil then mark('failed',err('workflow_returned_error')) end
     alive()
     local verified=false
     if not fatal and spec.verify then
-      if spec.verify(ctx,result)~=true then mark('failed',err('workflow_verification_failed')) else verified=true end
+      local verified_result
+      if d.source then verified_result=tools.protected_source(spec.verify,ctx,result)
+      else verified_result=spec.verify(ctx,result) end
+      if verified_result~=true then mark('failed',err('workflow_verification_failed')) else verified=true end
     end
     current[thread]=previous
     return result,verified
@@ -364,6 +375,7 @@ function M.start(id, options)
       return result,verified
     end)
   end)
+  if root.source then tools.restrict_coroutine(co) end
   local handle={}
   local finalized=false
   local function finish_run()
@@ -414,6 +426,7 @@ function M.start(id, options)
   end
   function handle:cancel()
     if state.status=='created' or state.status=='suspended' or state.status=='running' then
+      if coroutine.status(co)=="suspended" then pcall(safe.close,co) end
       cancelled=true;state.status='cancelled';state.error=err('workflow_cancelled');state.verified=false
       for _,record in ipairs(state.steps) do if record.status=='running' then record.status='cancelled' end end
       for _,record in ipairs(state.resolutions) do if record.status=='running' then record.status='incomplete';state.effects_incomplete=true end end

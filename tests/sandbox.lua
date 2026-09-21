@@ -26,6 +26,8 @@ sys.mkdir_p(bog.userdir)
 if bog.db then bog.db:close() end
 bog.db = nil
 bog.store.open()
+-- These fixtures intentionally exercise approved effects in a throwaway directory.
+require("perm").state().headless = "allow"
 
 -- Define a tool whose body is `return tostring(<expr>)`, then call it.
 local function probe(expr)
@@ -159,6 +161,18 @@ local flooded = bog.tools.run("flood", {})
 eq(kind_of(flooded), "result_too_large", "an oversized result is classified")
 ok(#flooded < 20000, "the oversized result was spilled, not returned inline (" .. #flooded .. " bytes)")
 ok(flooded:find("read the saved file", 1, true) ~= nil, "it points at the saved file")
+
+-- Larger primitive strings stop before host serialization; structured values
+-- still cannot smuggle callable/metatable behavior through the spill path.
+bog.tools.run("define_tool", {name="flood_cap",description="d",
+ lua="local s=string.rep('x',9*1024*1024);return s..s"})
+local capped=bog.tools.run("flood_cap",{})
+ok(capped:find('[result_too_large]',1,true) and capped:find('16 MiB',1,true),
+   "primitive string above finite ceiling is refused before serialization")
+bog.tools.run("define_tool", {name="flood_callback",description="d",
+ lua="return {text=string.rep('x',2*1024*1024),callback=function()return 'escaped'end}"})
+ok(bog.tools.run("flood_callback",{}):find('[runtime_error]',1,true),
+   "structured oversized result cannot bypass plain-data validation")
 
 -- ---- write-into-tools-dir footgun + reload_tools rescan -------------------
 -- `write` only touches disk: a tool file dropped there is not callable until the

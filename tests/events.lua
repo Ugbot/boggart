@@ -28,6 +28,8 @@ if bog.db then bog.db:close() end
 bog.db = nil
 bog.store.open()
 
+-- Offline effect fixtures intentionally authorize unattended writes.
+require("perm").state().headless="allow"
 local events = bog.events
 
 -- Every event seen during the whole run, by any path. Re-registered after each
@@ -606,6 +608,7 @@ do
   events.on("file:write", function(_, d) wrote = d end)
   events.on("file:edit", function(_, d) edited = d end)
 
+  require("perm").state().headless="allow" -- new_session above resets permission state
   -- through the real turn loop, as the model would reach it
   local target = bog.userdir .. "/written.txt"
   bog.session.messages = {}
@@ -782,6 +785,33 @@ do
   events.clear()
   ok(events.any("turn:end") == false, "bridge: any() false again after both are gone")
 end
+
+-- Generated event callbacks retain registration authority and execution caps.
+do
+  reset()
+  local tools,invoke=require('tools'),require('invoke')
+  local count=0
+  tools.register('_brain16_event_effect',{effect='write',run=function()count=count+1;return 'done'end})
+  local registration=invoke.context{state={mode='auto',guards=false,tool_policy={_brain16_event_effect='deny'}}}
+  local registered=invoke.string(registration,'on_event',{event='brain16:scope',lua="return tools.call('_brain16_event_effect',{})"})
+  ok(registered:find('Registered',1,true),'restricted handler registered')
+  events.emit('brain16:scope',{})
+  eq(count,0,'later broad emitter cannot widen registration authority')
+  local old=tools.LIMITS.memory_kb;tools.LIMITS.memory_kb=512
+  local messages={};local sink=events.sink
+  events.sink=function(msg)messages[#messages+1]=msg end
+  tools.run('on_event',{event='brain16:allocation',lua="pcall(function()return ('x'):rep(8*1024*1024)end);tools.call('_brain16_event_effect',{})"})
+  events.emit('brain16:allocation',{})
+  eq(count,0,'handler caught allocation cannot perform effect')
+  ok(table.concat(messages,' '):find('allocation budget',1,true),'handler allocation error reported')
+  tools.run('on_event',{event='brain16:pattern',lua="return ('aaa'):match('a*a*a*b')"})
+  events.emit('brain16:pattern',{})
+  ok(table.concat(messages,' '):find('restricted native',1,true),'handler string method bounded')
+  events.sink=sink;tools.LIMITS.memory_kb=old
+end
+
+local handler_limit_result=bog.tools.run('on_event',{event='brain16:source-limit',lua=string.rep(' ',1024*1024+1)})
+ok(handler_limit_result:find('validation_error',1,true),'handler source ceiling rejects before compilation')
 
 -- ---- cleanup ---------------------------------------------------------------
 os.getenv = real_getenv -- luacheck: ignore

@@ -116,7 +116,7 @@ local dmsg = tools.run("define_skill", {
     words = {
       description = "count whitespace-separated words in args.text",
       input_schema = { type = "object", properties = { text = { type = "string" } } },
-      body = "local n=0 for _ in tostring(args.text or ''):gmatch('%S+') do n=n+1 end return tostring(n)",
+      body = "local n,word=0,false local text=tostring(args.text or '') for i=1,#text do local b=text:byte(i) local space=b==32 or (b>=9 and b<=13) if not space and not word then n=n+1 end word=not space end return tostring(n)",
     },
   },
 })

@@ -163,8 +163,10 @@ local handle = bog.events.on("tool:authorize", function(_, ev)
   end
 end)
 local ran = {}
+local old_headless=perm.state().headless
+perm.state().headless="allow"
 local run = perm.wrap_run(function(name, input) ran[#ran + 1] = name; return "ok" end,
-                          { mode = "auto", tool_policy = {} })
+                          { mode = "auto", tool_policy = {}, headless="allow" })
 eq(run("bash", { command = "git status" }), "ok", "an un-vetoed call runs")
 ok(seen and seen.tool == "bash", "the hook sees the call")
 local refused = run("bash", { command = "git push --force" })
@@ -172,6 +174,7 @@ ok(tostring(refused):find("permission_error"), "a vetoed call is refused")
 ok(tostring(refused):find("forbids force%-push"), "the veto reason reaches the model")
 eq(#ran, 1, "the vetoed call never reached the tool")
 bog.events.off(handle)
+perm.state().headless=old_headless
 
 -- ---- the invariant: no rules means no change ------------------------------
 -- Every mode, every gated and ungated tool, with an empty rule table: the
@@ -186,6 +189,13 @@ for _, mode in ipairs({ "auto", "smart", "manual", "chat" }) do
     eq(after, before, string.format("%s/%s unchanged with no rules", mode, tool))
   end
 end
+
+for _, profile in ipairs({"deny", "queue", "typo", false}) do
+  eq(perm.headless_decision("write", {mode="manual",headless=profile}),
+    profile=="queue" and "queue" or "deny", "unattended profile never silently grants")
+end
+eq(perm.headless_decision("write", {mode="manual"}), "deny", "missing unattended profile denies")
+eq(perm.headless_decision("write", {mode="manual",headless="allow"}), "allow", "explicit legacy allow profile")
 
 io.write(string.format("perm: %d passed, %d failed\n", passed, failed))
 os.exit(failed == 0 and 0 or 1)

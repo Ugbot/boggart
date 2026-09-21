@@ -215,7 +215,11 @@ ok(bog.tools.project_root() ~= nil, "global still resolves to something (git, el
 -- Switching a project has to mean something for commands, not just for what
 -- boggart remembers.
 proj.switch("nightjar")
+local perm_state = require("perm").state()
+local prior_headless = perm_state.headless
+perm_state.headless = "allow" -- intentional cwd probe, no approval UI
 local pwd = bog.tools.run("bash", { command = "pwd" })
+perm_state.headless = prior_headless
 ok(tostring(pwd):find(proj.roots("nightjar")[1], 1, true),
    "bash runs in the project's root, not wherever the shell started")
 proj.switch("global")

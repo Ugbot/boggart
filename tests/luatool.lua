@@ -75,7 +75,7 @@ do
   eq(tools.run("lua", { code = "1 + 2 * 3" }), "7", "lua tool: expression form")
   eq(tools.run("lua", { code = "return 'hi'" }), "hi", "lua tool: explicit return")
   eq(tools.run("lua", { code = "print('a'); print('b')" }), "a\nb", "lua tool: captures print()")
-  eq(tools.run("lua", { code = "gold.re.all('a1 b2', '[0-9]')" }), '["1","2"]',
+  eq(tools.run("lua", { code = "return {'1','2'}" }), '["1","2"]',
      "lua tool: table result is JSON-encoded")
   ok(tools.run("lua", { code = "error('boom')" }):find("Tool error:"),
      "lua tool: runtime error surfaces as a tool error")
@@ -184,6 +184,82 @@ do
   -- nothing available -> a clear tool_not_found
   tools.register_fallback("_fb_none", "d", { type = "object" }, { "_fb_missing", "_fb_gone" })
   ok(tools.run("_fb_none", {}):find("tool_not_found"), "fallback: all-missing reports tool_not_found")
+end
+
+-- Native work admission covers direct, method, tailcall and callback paths.
+for _,code in ipairs({
+  "return string.match('aaa', 'a*a*a*a*b')",
+  "return ('aaa'):match('a*a*a*a*b')",
+  "local f=('').match; return f('aaa','a*a*a*a*b')",
+  "local f=('').match; pcall(f,'aaa','a*a*a*a*b'); return 'escaped'",
+  "return sys.re_find('aaa','(a+)+b')",
+  "return gold.re.match('aaa','(a+)+b')",
+  "return string.dump(function()end)",
+  "return table.move({},1,1000000000,1)",
+  "local s=string.rep('a',8192);table.sort({s,s})",
+  "table.sort({2,1},function() return ('aaa'):match('a*a*b') end)",
+  "sys.setenv('BRAIN16_SHARED_ENV','escaped')",
+  "math.randomseed(123); return 'escaped'",
+  "return setmetatable({}, {__gc=function() while true do end end})",
+  "return setmetatable({}, {__tostring=function() while true do end end})",
+  "return function() return ('a'):rep(1000000000) end",
+  "return {callback=function() while true do end end}",
+}) do
+  local result=tools.run("lua",{code=code})
+  ok(result:find("Tool error:",1,true) and not result:find("escaped",1,true),"restricted native/callback refusal: "..code)
+end
+eq(tools.run("lua",{code="return ('abc'):find('b',1,true)"}),"2\t2","bounded plain string method works")
+eq(tools.run("lua",{code="return ('a1'):match('%d')"}),"1","fixed-width bounded pattern works")
+eq(('aaa'):match('a+'),"aaa","trusted host keeps ordinary patterns")
+local null_result=tools.run("lua",{code="local j=json.decode('null'); rawset(j,'brain16',true); return json.encode(j)"})
+eq(null_result,"null","JSON sentinel is environment-local")
+eq(require('json').null.brain16,nil,"restricted JSON cannot mutate shared sentinel")
+
+-- A single native allocation is refused before commitment, even if caught.
+do
+  local old=tools.LIMITS.memory_kb
+  tools.LIMITS.memory_kb=512
+  local before=sys.membytes()
+  local result=tools.run("lua",{code="return string.rep('x', 8*1024*1024)"})
+  ok(result:find("allocation budget",1,true),"single native allocation rejected")
+  local caught=tools.run("lua",{code="pcall(function() return ('x'):rep(8*1024*1024) end); return 'escaped'"})
+  ok(caught:find("allocation budget",1,true) and not caught:find("escaped",1,true),"caught native allocation is sticky")
+  local effects=0
+  tools.register('_brain16_effect',{effect='write',run=function()effects=effects+1;return 'effect'end})
+  local stopped=tools.run('lua',{code="pcall(function() return string.rep('x',8*1024*1024) end); return tools.call('_brain16_effect',{})"})
+  eq(effects,0,"caught memory exhaustion cannot perform immediate effect")
+  ok(stopped:find('allocation budget',1,true),"immediate effect sees sticky exhaustion")
+
+  ok(sys.membytes()-before<4*1024*1024,"large allocation was not committed")
+  tools.register('_brain16_larger_child',{effect='pure',run=function()
+    tools.LIMITS.memory_kb=32*1024
+    local result=tools.run('lua',{code="return string.rep('x',8*1024*1024)"})
+    tools.LIMITS.memory_kb=512
+    return result
+  end})
+  local nested=tools.run('lua',{code="pcall(function()tools.call('_brain16_larger_child',{})end);return 'escaped'"})
+  ok(nested:find('allocation budget',1,true) and not nested:find('escaped',1,true),'larger nested ceiling cannot widen ancestor')
+  tools.LIMITS.memory_kb=512
+
+  local co=coroutine.create(function()
+    return tools.run("lua",{code="local a=coroutine.yield('pause'); return a"})
+  end)
+  local success,value=coroutine.resume(co)
+  ok(success and value=="pause","restricted source forwards yields")
+  local host_string=string.rep("h",2*1024*1024)
+  eq(#host_string,2*1024*1024,"suspended budget does not poison host allocation")
+  success,value=coroutine.resume(co,"resumed")
+  ok(success,"restricted resume remains protected after host growth")
+  tools.LIMITS.memory_kb=old
+  eq(tools.run("lua",{code="return 42"}),"42","host and future restricted calls remain live")
+end
+
+-- Independent worker allocators never silently borrow main-state ceilings.
+if worker then
+  local h=worker.spawn([[return require('tools').run('lua',{code="return 42"})]])
+  local joined,result=worker.join(h)
+  ok(joined and type(result)=='string' and result:find('restricted allocator unavailable',1,true),
+    'unsupported worker allocator refuses restricted source')
 end
 
 io.write(string.format("luatool: %d passed, %d failed\n", passed, failed))

@@ -30,6 +30,8 @@ sys.mkdir_p(bog.userdir .. "/lua/tools")
 -- re-wire so tools/memory re-scan under the fresh userdir (drops any tools
 -- the real ~/.boggart may have contributed at boot)
 ok(bog.reload(), "harness reload against temp userdir")
+-- Offline scripted turns explicitly approve their temporary-file effects.
+require("perm").state().headless = "allow"
 
 -- ---- offline auth: never consult the real env or `ant` ---------------------
 -- Credentials live in C (src/lauth.c) and are not readable from Lua, so a

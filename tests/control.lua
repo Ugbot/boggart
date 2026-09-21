@@ -26,6 +26,9 @@ end
 local json = require "json"
 local proc = require "proc"
 local S = require "control"
+-- This fixture explicitly authorizes repeated read polling; route/token scope
+-- and parser rejection are independent from the legacy doom-loop ask guard.
+require("perm").state().headless="allow"
 
 -- ---- C: entropy ----------------------------------------------------------
 local t1, t2 = serve.token(24), serve.token(24)
@@ -42,27 +45,33 @@ eq(srv, nil, "a non-loopback bind with no token is refused")
 ok(tostring(why):find("token"), "and it says why: " .. tostring(why))
 
 -- ---- start on loopback ---------------------------------------------------
+local started_event
+local started_listener=bog.events.on("serve:started",function(_,e) started_event=e end)
 local server, url = S.start{ host = "127.0.0.1", port = 0 }
 ok(server ~= nil, "the control plane starts on loopback: " .. tostring(url))
 if not server then
   io.write(string.format("control: %d passed, %d failed\n", passed, failed + 1))
   os.exit(1)
 end
+ok(started_event and started_event.token==nil,"startup evidence excludes token")
+ok(S.token==nil and type(S.client_token())=="string","token retrieval is host-only explicit API")
+bog.events.off(started_listener)
 local port = server:port()
 ok(port and port > 0, "the OS assigned a port (" .. tostring(port) .. ")")
 
 local base = "http://127.0.0.1:" .. port
+local default_auth="-H 'Authorization: Bearer "..S.client_token().."'"
 
 -- curl through proc so the uv loop keeps turning while the request is in flight
 local function GET(path, extra)
   local r = proc.run(string.format("curl -sS --max-time 5 %s '%s%s'",
-    extra or "", base, path), 10)
+    extra or default_auth, base, path), 10)
   return r.out or ""
 end
 local function POST(path, body, extra)
   local r = proc.run(string.format(
     "curl -sS --max-time 5 %s -X POST -H 'Content-Type: application/json' -d '%s' '%s%s'",
-    extra or "", body or "{}", base, path), 10)
+    extra or default_auth, body or "{}", base, path), 10)
   return r.out or ""
 end
 
@@ -96,6 +105,8 @@ ok(empty_sessions:find('"sessions":[]', 1, true) ~= nil,
 local real_sess_list = bog.store.sess_list
 bog.store.sess_list = function() error("simulated session store failure") end
 local session_error = json.decode(GET("/sessions"))
+local session_status=tonumber(GET("/sessions",default_auth.." -o /dev/null -w '%{http_code}'"))
+eq(session_status,500,"session store failure is HTTP500")
 bog.store.sess_list = real_sess_list
 ok(session_error.error and session_error.error:find("simulated session store failure", 1, true),
    "/sessions exposes store failures instead of returning zero rows")
@@ -138,11 +149,33 @@ local tok = serve.token(16)
 local server2 = S.start{ host = "127.0.0.1", port = 0, token = tok }
 ok(server2 ~= nil, "a token-protected server starts")
 base = "http://127.0.0.1:" .. server2:port()
-ok(GET("/health"):find("unauthorized"), "a request with no token is rejected")
+ok(GET("/health", ""):find("unauthorized"), "a request with no token is rejected")
 ok(GET("/health", "-H 'Authorization: Bearer " .. tok .. "'"):find('"ok"'),
    "a request with the right token is served")
 ok(GET("/health", "-H 'Authorization: Bearer wrong'"):find("unauthorized"),
    "a request with the wrong token is rejected")
+-- Actual wire status, parsed Host/Origin and header ambiguity.
+local function status(path, extra)
+  return tonumber(GET(path,(extra or ("-H 'Authorization: Bearer "..tok.."'")).." -o /dev/null -w '%{http_code}'"))
+end
+eq(status("/health",""),401,"missing authentication status")
+eq(status("/cancel","-X POST"),401,"unauthenticated mutation refused")
+eq(status("/health","-H 'Authorization: Bearer "..tok.."' -H 'Origin: "..base.."' -H 'Origin: "..base.."'"),400,"duplicate Origin refused")
+eq(status("/health","-H 'Authorization: Bearer "..tok.."' -H 'Origin: http://evil.invalid'"),403,"wrong origin status")
+eq(status("/health","-H 'Authorization: Bearer "..tok.."' -H 'Host: evil.invalid'"),403,"wrong host status")
+eq(status("/health","-H 'Authorization: Bearer "..tok.."' -H 'Origin: "..base.."'"),200,"same origin configured client")
+eq(status("/health","-H 'Authorization: Bearer "..tok.."' -H 'Authorization: Bearer "..tok.."'"),400,"duplicate authorization refused")
+S.stop()
+local scoped=S.start{token=tok,capabilities={"control:GET:/health","control:POST:/prompt"}}
+base="http://127.0.0.1:"..scoped:port()
+eq(status("/health"),200,"scoped token reads granted route")
+eq(status("/sessions"),403,"scoped token cannot read ungranted route")
+eq(status("/prompt","-X POST -d '{}' -H 'Authorization: Bearer "..tok.."'"),403,"scoped deferred work refused")
+S.stop()
+local trusted=S.start{profile="trusted_local"}
+base="http://127.0.0.1:"..trusted:port()
+eq(status("/health",""),200,"explicit trusted local profile")
+eq(status("/health","-H 'Origin: null'"),403,"trusted local still validates browser origin")
 S.stop()
 
 eq(S.server, nil, "stop() clears the server")

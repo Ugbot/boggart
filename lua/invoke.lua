@@ -27,7 +27,7 @@ local function intersect(a,b)
   if b==nil or a==b then return a end
   local state=contexts[a]
   if state and (state.parent==b or state.extra==b) then return a end
-  local h={}; contexts[h]={parent=a,extra=b,state={mode="auto"}}; return h
+  local h={}; contexts[h]={parent=a,extra=b,state={mode="auto",guards=false,rules={}}}; return h
 end
 function M.current()
   local co=key()
@@ -96,6 +96,10 @@ function M.resume(co,...)
   if type(co)=="thread" then resume_context(co) end
   return coroutine.resume(co,...)
 end
+function M.resume_with(resumer,co,...)
+  if type(co)=="thread" then resume_context(co) end
+  return resumer(co,...)
+end
 function M.close(co)
   if type(co)=="thread" then resume_context(co) end
   return coroutine.close(co)
@@ -103,7 +107,7 @@ end
 function M.with_context(context, fn, ...)
   assert(contexts[context], 'invalid invocation context')
   local k, old = key(), M.current()
-  local joined={}; contexts[joined]={parent=context,extra=old,state={mode="auto"}}
+  local joined={}; contexts[joined]={parent=context,extra=old,state={mode="auto",guards=false,rules={}}}
   active[k] = joined
   local result = table.pack(pcall(fn, ...))
   local hook,mask,count=debug.gethook(); debug.sethook()
@@ -173,7 +177,19 @@ function M.restrict_durable(current, restrictions)
   return authority
 end
 function M.call(context, name, args, options)
+  local loaded_tools=package.loaded.tools
+  if loaded_tools and loaded_tools.check_restricted then
+    loaded_tools.check_restricted();loaded_tools.restricted_arguments(args)
+  end
   options = options or {}
+  if sys.memcapable and not sys.memcapable() then
+    local binding=bindings[options.registry or loaded_tools]
+    local descriptor=binding and binding.resolve(name)
+    if descriptor and (descriptor._body or name=="lua") then
+      return nil,failure("host_capability_error","restricted allocator unavailable on this host"),
+        {id=name,dispatched=false,status="failed",usage={}}
+    end
+  end
   if args==nil then args={} end
   args=copy(args)
   if context == nil then context = M.current() or M.context() end
@@ -201,7 +217,7 @@ function M.call(context, name, args, options)
     local scope_ok=pcall(function()evidence.assert_scope(span.scope);evidence.assert_run(span.run_id)end)
     if not scope_ok then return nil,failure('retention_scope_unavailable','Evidence scope is unavailable') end
     if not span.event_id and span.error~="evidence_disabled" and evidence.status().failure_policy=='stop' then return nil,failure("evidence_unavailable","Durable invocation start could not be recorded") end
-    local joined={}; contexts[joined]={parent=context,extra=old,state={mode="auto"}}
+    local joined={}; contexts[joined]={parent=context,extra=old,state={mode="auto",guards=false,rules={}}}
     active[k]=joined
     events.emit('tool:before', {name=name, input=copy(args), invocation_id=id})
     states = chain(joined)
@@ -241,7 +257,9 @@ function M.call(context, name, args, options)
         return nil, failure('permission_error','tool is not permitted for this agent')
       end
       local legacy_name=descriptor.legacy_name or name
-      local legacy_args=descriptor.legacy_args and descriptor.legacy_args(args) or args
+      local legacy_args,path_error=args,nil
+      if descriptor.legacy_args then legacy_args,path_error=descriptor.legacy_args(args) end
+      if legacy_args==nil then return nil,failure("host_capability_error",path_error or "capability path unavailable") end
       local verdict, why = perm.decide(legacy_name,legacy_args,s.state)
       -- Live host revocations narrow a pinned snapshot; later grants never widen it.
       if s.source then
@@ -277,13 +295,13 @@ function M.call(context, name, args, options)
     if veto == 'deny' or type(veto)=='table' and veto.deny then
       return nil,failure('permission_error',type(veto)=='table' and veto.reason or 'authorization hook refused call')
     end
-    local approved
+    local approved, interactive_approved
     if #asks>0 then
-      if approver then approved=approver(name,copy(args),asks[1].why)==true
+      if approver then approved=approver(name,copy(args),asks[1].why)==true;interactive_approved=approved
       else
         approved=true
         for _,ask in ipairs(asks) do
-          if ask.mandatory or perm.headless_decision(ask.name or name,ask.state)=='deny' then approved=false end
+          if ask.mandatory or perm.headless_decision(ask.name or name,ask.state)~='allow' then approved=false end
         end
       end
       if not approved then return nil,failure('permission_error','approval required or rejected') end
@@ -301,10 +319,12 @@ function M.call(context, name, args, options)
           if a~="policy" and a~="policy_scopes" and a~="recent" then live[a]=b end
         end
         local legacy_name=descriptor.legacy_name or name
-        local legacy_args=descriptor.legacy_args and descriptor.legacy_args(args) or args
+        local legacy_args,path_error=args,nil
+        if descriptor.legacy_args then legacy_args,path_error=descriptor.legacy_args(args) end
+        if legacy_args==nil then return nil,failure("host_capability_error",path_error or "capability path unavailable") end
         local verdict,why=perm.decide(legacy_name,legacy_args,live)
         if verdict=="deny" then return nil,failure("permission_error",why or "permission revoked during admission") end
-        if verdict=="ask" and not approved and perm.headless_decision(legacy_name,live)=="deny" then
+        if verdict=="ask" and not interactive_approved and perm.headless_decision(legacy_name,live)~="allow" then
           return nil,failure("permission_error","approval requirements changed during admission")
         end
         if s.source.policy or s.source.policy_scopes then
@@ -319,6 +339,7 @@ function M.call(context, name, args, options)
       local latest=require("policy").decide(p.state.policy,descriptor,args,p.estimate)
       if latest.verdict=="deny" then return nil,failure("permission_error",table.concat(latest.reasons,"; ")) end
     end
+    if loaded_tools and loaded_tools.check_restricted then loaded_tools.check_restricted() end
     -- Reserve the entire inherited quota set in ONE ledger transaction.
     local scopes, seen, ledger, estimate, accountant = {}, {}, nil, copy(adapter_estimate), nil
     local ceilings={}
@@ -469,7 +490,7 @@ function M.call(context, name, args, options)
   evidence_active[k]=prior_evidence
   -- Terminal observers keep the call's authority. A failed/budget-exhausted
   -- invocation cannot launch fresh effects while delivering its terminal record.
-  local terminal={}; contexts[terminal]={parent=active[k] or context,state={mode="auto"},blocked=err~=nil}
+  local terminal={}; contexts[terminal]={parent=active[k] or context,state={mode="auto",guards=false,rules={}},blocked=err~=nil}
   active[k]=terminal
   if not err then debug.sethook(hook,mask,count) end
   local observed, observation_error = pcall(events.emit,'tool:after',

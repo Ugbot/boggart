@@ -21,6 +21,8 @@ sys.mkdir_p(bog.userdir .. "/lua/tools")
 if bog.db then bog.db:close() end
 bog.db = nil
 bog.store.open()
+-- These fixtures intentionally exercise approved effects in a throwaway directory.
+require("perm").state().headless = "allow"
 
 -- ---- json ----
 do

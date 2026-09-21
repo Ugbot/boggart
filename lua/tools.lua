@@ -225,7 +225,7 @@ end
 -- is separately admitted through the sys.exec/bash permission alias.
 local SECRETISH = { "KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH" }
 local function safe_getenv(name)
-  if type(name) ~= "string" then return nil end
+  if type(name) ~= "string" or #name>4096 then return nil end
   local up = name:upper()
   for _, pat in ipairs(SECRETISH) do
     if up:find(pat, 1, true) then return nil end
@@ -240,11 +240,22 @@ local SAFE_OS = { time = os.time, date = os.date, clock = os.clock,
 -- coroutine.create does not do this, which otherwise lets generated code move
 -- a runaway loop into a child coroutine and escape both inner and outer limits.
 local hook_controls=setmetatable({}, {__mode="k"})
+-- Shared across candidate/reloaded tools generations; generated code cannot
+-- obtain this metatable. A reload must not replace active source restrictions.
+local string_mt=debug.getmetatable("")
+local source_state=rawget(string_mt,"__boggart_source_state")
+if not source_state then
+  source_state={limits=setmetatable({}, {__mode="k"}),failures=setmetatable({}, {__mode="k"})}
+  rawset(string_mt,"__boggart_source_state",source_state)
+end
+local restricted_limits,native_failure=source_state.limits,source_state.failures
 local SAFE_COROUTINE = {}
 for k, v in pairs(coroutine) do SAFE_COROUTINE[k] = v end
 SAFE_COROUTINE.create = function(fn)
   local co = coroutine.create(fn)
   require("invoke").inherit(co)
+  local parent=restricted_limits[coroutine.running()]
+  if parent then restricted_limits[co]=sys.memlimit(M.LIMITS.memory_kb*1024,parent) end
   local hook, mask, count = debug.gethook()
   if hook then debug.sethook(co, hook, mask, count) end
   return co
@@ -303,6 +314,26 @@ local function operate_coroutine(operation,co,...)
     coroutine_hooks[combined]={entries=entries,members=members}
     debug.sethook(co,combined,both_mask,quantum)
   end
+  local limit=restricted_limits[co]
+  if operation=="resume" and limit then
+    return require("invoke").resume_with(function(thread,...)
+      M.check_restricted()
+      local result=table.pack(sys.memresume(limit,thread,...))
+      if native_failure[thread] or sys.memfailed(limit) then
+        local why=native_failure[thread] or "allocation budget exhausted in child"
+        if restricted_limits[coroutine.running()] then native_failure[coroutine.running()]=why end
+        return false,"restricted native call: "..why
+      end
+      return table.unpack(result,1,result.n)
+    end,co,...)
+  end
+  if operation=="close" and limit then
+    -- Closing executes finalizers: inherit the closer's restrictions before
+    -- activating the allocation ceiling, just as for an ordinary resume.
+    return require("invoke").resume_with(function(thread)
+      return sys.memclose(limit,thread)
+    end,co)
+  end
   return require("invoke")[operation](co,...)
 end
 SAFE_COROUTINE.resume=function(co,...) return operate_coroutine("resume",co,...) end
@@ -333,6 +364,152 @@ end
 local function clone(t)
   local out = {}; for k,v in pairs(t) do out[k]=v end; return out
 end
+-- Restricted native computation is an admission contract, not a native-call
+-- timeout. Only bounded primitives are exposed. Shared string-method lookup
+-- uses the same guards as env.string, including tail calls and aliases.
+local function native_refuse(why)
+  if restricted_limits[coroutine.running()] then native_failure[coroutine.running()]=why end
+  error("restricted native call: "..why,0)
+end
+function M.check_restricted()
+  local co=coroutine.running()
+  local why=native_failure[co]
+  local limit=restricted_limits[co]
+  if why then error("restricted native call: "..why,0) end
+  if limit and sys.memfailed(limit) then error("restricted allocation budget exhausted",0) end
+end
+function M.restricted_data(value,seen,budget,depth)
+  budget=budget or {nodes=0,bytes=0};depth=depth or 0
+  budget.nodes=budget.nodes+1
+  if type(value)=="string" then budget.bytes=budget.bytes+#value end
+  if budget.nodes>100000 or budget.bytes>M.LIMITS.result_bytes or depth>64 then native_refuse("source data size/depth bound exceeded") end
+  local kind=type(value)
+  if kind=="nil" or kind=="boolean" or kind=="string" or kind=="number" then return value end
+  if kind~="table" or getmetatable(value)~=nil then native_refuse("only plain data may leave restricted source") end
+  seen=seen or {};if seen[value] then native_refuse("cyclic source data") end;seen[value]=true
+  for k,v in next,value do
+    if type(k)~="string" and type(k)~="number" and type(k)~="boolean" then native_refuse("invalid source data key") end
+    M.restricted_data(k,seen,budget,depth+1);M.restricted_data(v,seen,budget,depth+1)
+  end
+  seen[value]=nil;return value
+end
+function M.restricted_arguments(value)
+  if restricted_limits[coroutine.running()] then M.restricted_data(value) end
+end
+local function string_bound(s)
+  if type(s)=="string" and #s>16*1024*1024 then native_refuse("string input exceeds 16 MiB") end
+end
+local raw_strings=clone(string)
+local function pattern_bound(subject,pattern)
+  -- Fixed-width Lua patterns have no backtracking amplification. Repetitions,
+  -- balanced matching and backreferences require an isolated/host capability.
+  if type(subject)~="string" or type(pattern)~="string" then native_refuse("pattern strings required") end
+  if #subject>65536 or #pattern>256 then native_refuse("pattern input bound exceeded") end
+  local i,inclass=1,false
+  while i<=#pattern do
+    local c=raw_strings.sub(pattern,i,i)
+    if c=="%" then
+      i=i+1;local escape=raw_strings.sub(pattern,i,i)
+      if escape=="b" or raw_strings.match(escape,"%d") then native_refuse("unbounded pattern form") end
+    elseif c=="[" then inclass=true
+    elseif c=="]" then inclass=false
+    elseif not inclass and (c=="*" or c=="+" or c=="-" or c=="?") then native_refuse("unbounded pattern repetition") end
+    i=i+1
+  end
+end
+local safe_strings={}
+for name,fn in pairs(raw_strings) do
+  if type(fn)=="function" then
+    safe_strings[name]=function(...)
+      M.check_restricted()
+      local a=table.pack(...)
+      for i=1,a.n do string_bound(a[i]) end
+      if name=="dump" or name=="pack" or name=="unpack" or name=="packsize" then
+        native_refuse("string."..name.." is not admitted")
+      elseif name=="match" or name=="gmatch" or name=="gsub" or name=="find" and not a[4] then
+        pattern_bound(a[1],a[2])
+      elseif name=="rep" then
+        local n=tonumber(a[2])
+        local size=type(a[1])=="string" and #a[1] or 0
+        local sep=type(a[3])=="string" and #a[3] or 0
+        if not n or n~=n or n>16*1024*1024/math.max(1,size+sep) then native_refuse("rep output bound exceeded") end
+      elseif name=="format" then
+        if type(a[1])~="string" or #a[1]>4096 or a.n>128 then native_refuse("format bound exceeded") end
+        for spec in raw_strings.gmatch(a[1],"%%[-+ #0]*%d*%.?%d*([%a])") do
+          if spec=="p" then native_refuse("identity formatting is not admitted") end
+        end
+        for i=2,a.n do
+          local kind=type(a[i])
+          if kind=="table" or kind=="function" or kind=="thread" or kind=="userdata" then native_refuse("identity formatting is not admitted") end
+        end
+      end
+      return fn(...)
+    end
+  else safe_strings[name]=fn end
+end
+-- Keep the host's original string library. Only method lookup needs a shared
+-- dispatcher because Lua's string metatable is shared by every environment.
+-- Select at lookup, before a subsequent tail call can erase its source frame.
+-- A stored source method alias retains the bounded function. Host callbacks do
+-- not create an ambient exemption: each generated callback performs its own
+-- lookup against its actual VM source frame.
+debug.getmetatable("").__index=function(_,name)
+  if restricted_limits[coroutine.running()] then
+    local caller=debug.getinfo(2,"S")
+    local source=caller and caller.source or ""
+    if not caller or caller.what=="C" or raw_strings.sub(source,1,6)=="@tool:"
+        or source=="@lua" or raw_strings.sub(source,1,9)=="@handler:"
+        or raw_strings.sub(source,1,10)=="@workflow:" then
+      return safe_strings[name]
+    end
+  end
+  return raw_strings[name]
+end
+local function bounded_tables()
+  local out=clone(table)
+  for _,name in ipairs({"concat","insert","remove","sort","unpack","move"}) do
+    local fn=table[name]
+    out[name]=function(t,...)
+      M.check_restricted()
+      if type(t)=="table" and (#t>65536 or rawlen(t)>65536) then native_refuse("table input bound exceeded") end
+      local a=table.pack(...)
+      if name=="move" and type(a[1])=="number" and type(a[2])=="number" and a[2]-a[1]>65536 then native_refuse("table.move range exceeded") end
+      if (name=="unpack" or name=="concat") then
+        local first=name=="concat" and a[2] or a[1]
+        local last=name=="concat" and a[3] or a[2]
+        if type(last)=="number" and last-(tonumber(first) or 1)>65536 then native_refuse("table range exceeded") end
+      end
+      if name=="sort" and a[1]==nil then
+        -- Force a Lua comparison safepoint; native default string sorting can
+        -- repeatedly scan long common prefixes without an instruction hook.
+        return fn(t,function(left,right)
+          M.check_restricted()
+          if type(left)=="string" and #left>4096 or type(right)=="string" and #right>4096 then native_refuse("sort string bound exceeded") end
+          return left<right
+        end)
+      end
+      return fn(t,...)
+    end
+  end
+  return out
+end
+local function denied_regex()
+  native_refuse("native regex requires a bounded isolated capability")
+end
+local function isolated_json()
+  local facade={null={},array={}}
+  local function translate(v,encode,seen)
+    if v==(encode and facade.null or json.null) then return encode and json.null or facade.null end
+    if v==(encode and facade.array or json.array) then return encode and json.array or facade.array end
+    if type(v)~="table" then return v end
+    seen=seen or {};if seen[v] then error("cyclic JSON value",0) end;seen[v]=true
+    local out={};for k,x in next,v do out[k]=translate(x,encode,seen) end
+    seen[v]=nil;return out
+  end
+  facade.encode=function(v) M.check_restricted();return json.encode(translate(v,true)) end
+  facade.decode=function(v) M.check_restricted();string_bound(v);return translate(json.decode(v),false) end
+  return facade
+end
 local function tool_env()
   local safe_sys = {}
   for _, name in ipairs({"read", "write", "listdir", "stat", "mkdir_p", "exec", "shell", "rmtree", "chmod", "glob", "cwd", "home", "tmpdir", "pid", "re_find", "re_gsub", "width", "wtake"}) do
@@ -351,24 +528,40 @@ local function tool_env()
       __metatable=false})
   end
   local env = {
-    sys=safe_sys, db=unavailable("db"), gold={re=clone(require("gold.re")),fs={read=safe_sys.read,write=safe_sys.write,glob=safe_sys.glob}}, data=unavailable("data"),
-    json=clone(json),
+    sys=safe_sys, db=unavailable("db"), gold={re=setmetatable({}, {__index=function() return denied_regex end,__metatable=false}),fs={read=safe_sys.read,write=safe_sys.write,glob=safe_sys.glob}}, data=unavailable("data"),
+    json=isolated_json(),
     tools={call=function(n,a) return M.run(n,a) end, names=function()
       local result,err=require("invoke").call(nil,"registry.names",{})
       if err then error("Tool error: ["..err.code.."] "..err.message,0) end
       return result
     end},
-    events={notify=events.notify},
-    string=clone(string), table=clone(table), math=clone(math), utf8=clone(utf8), os=clone(SAFE_OS),
+    events={notify=function(...) M.check_restricted();return events.notify(...) end},
+    string=clone(safe_strings), table=bounded_tables(), math=clone(math), utf8=clone(utf8), os=clone(SAFE_OS),
     ipairs=ipairs, pairs=pairs, next=next, select=select,
     tonumber=tonumber, tostring=tostring, type=type,
     pcall=pcall, xpcall=xpcall, error=error, assert=assert,
     rawget=rawget, rawset=rawset, rawequal=rawequal, rawlen=rawlen,
-    setmetatable=setmetatable,
+    setmetatable=function() native_refuse("generated metatables are not admitted") end,
     -- String metatables expose the process-wide string library; never return them.
-    getmetatable=function(v) if type(v)=="table" then return getmetatable(v) end end,
+    getmetatable=function() return nil end,
     coroutine=clone(SAFE_COROUTINE),
   }
+  local raw_date=SAFE_OS.date
+  env.os.date=function(fmt,...)
+    M.check_restricted()
+    if type(fmt)=="string" and #fmt>4096 then native_refuse("date format bound exceeded") end
+    return raw_date(fmt,...)
+  end
+  for name,fn in pairs(utf8) do
+    if type(fn)=="function" then env.utf8[name]=function(...)
+      M.check_restricted();local args=table.pack(...)
+      for i=1,args.n do string_bound(args[i]) end
+      return fn(...)
+    end end
+  end
+  safe_sys.re_find=denied_regex;safe_sys.re_gsub=denied_regex
+  env.math.randomseed=function() native_refuse("shared random seed mutation") end
+  env.math.random=function() native_refuse("shared random state mutation") end
   env._G=env
   return env
 end
@@ -377,6 +570,7 @@ M.tool_env = tool_env
 -- Build a tool def from parts. The body is a Lua chunk that receives `args`
 -- and must `return` a string.
 local function build_def(name, description, input_schema, body)
+  assert(type(body)=="string" and #body<=1024*1024,"restricted source exceeds 1 MiB")
   -- "t" = text chunks only (no precompiled bytecode, which bypasses the
   -- verifier), and an explicit _ENV so the body cannot reach _G.
   local chunk, err = load("return function(args)\n" .. body .. "\nend",
@@ -737,7 +931,7 @@ local function tool_define(a)
   if type(a.description) ~= "string" or a.description == "" then
     return M.err(M.ERR.validation, "define_tool needs a 'description'")
   end
-  if type(a.lua) ~= "string" or a.lua == "" then
+  if type(a.lua) ~= "string" or a.lua == "" or #a.lua>1024*1024 then
     return M.err(M.ERR.validation, "define_tool needs a Lua 'lua' body that returns a string")
   end
   local schema = a.input_schema
@@ -867,8 +1061,8 @@ end
 -- end` burns instructions. Wall-clock limits would kill the first and are not
 -- needed for the second -- proc.run already carries its own timeout for I/O.
 --
--- Enforced with a count hook. `debug` is deliberately absent from the tool
--- environment, so a body cannot clear the hook that is watching it.
+-- Instructions use a count hook; Lua allocation admission uses protected native
+-- resumes. `debug` is absent from the generated environment.
 M.LIMITS = {
   instructions = 200e6,     -- ~a few seconds of a tight loop
   memory_kb    = 256 * 1024,-- growth, not total: the session is already large
@@ -885,8 +1079,8 @@ M.LIMITS = {
 -- correct 14 MB -- so the limit had gone blind to exactly the likeliest way a
 -- generated tool blows memory, which is building an enormous string.
 --
--- Falls back to the GC's view if the counting allocator is not installed, so
--- an embedder that creates its own lua_State still gets *some* limit.
+-- The fallback is diagnostic only. Restricted admission separately requires
+-- the supported allocator; an arbitrary embedder does not gain a hard cap.
 local function used_kb()
   if sys.membytes then return (select(1, sys.membytes())) / 1024 end
   return collectgarbage("count")
@@ -916,6 +1110,8 @@ end
 
 local LIMIT_SENTINEL = "\0__bog_limit__"
 local OUTER_HOOK_ERROR = {}
+local hook_targets=setmetatable({}, {__mode="k"})
+function M.current_hook_target() return hook_targets[coroutine.running()] end
 
 -- Install a count hook without discarding an enclosing execution budget. Lua
 -- exposes one hook slot per coroutine, so nested limits must share that slot.
@@ -933,8 +1129,11 @@ local function with_count_hook(limit_hook, every, fn, ...)
   local child_ticks, parent_ticks = 0, 0
   local outer_failure
   local mask = previous_mask or ""
-  local function call_previous(event, line)
+  local function call_previous(event, line, target)
+    local co=coroutine.running();local old_target=hook_targets[co]
+    if target then hook_targets[co]=target end
     local ok, err = pcall(previous, event, line)
+    hook_targets[co]=old_target
     if not ok then
       if type(err) == "table" and err.marker == OUTER_HOOK_ERROR then err = err.error end
       outer_failure = outer_failure or err
@@ -953,7 +1152,13 @@ local function with_count_hook(limit_hook, every, fn, ...)
         end
       end
     elseif previous then
-      call_previous(event, line)
+      -- Metadata is trustworthy only when this is the VM's installed hook.
+      -- Unknown enclosing wrappers retain the previous hook's full fallback.
+      local target
+      if (event=="call" or event=="tail call") and debug.gethook()==combined then
+        target=debug.getinfo(2,"f").func
+      end
+      call_previous(event, line, target)
     end
   end
   local control={}
@@ -983,6 +1188,34 @@ local function with_count_hook(limit_hook, every, fn, ...)
 end
 M.with_count_hook = with_count_hook
 
+-- A protected native resume bounds allocations before commitment. Host work
+-- outside this resume is uncapped. A yielded budget keeps its absolute ceiling
+-- and sticky failure, but cannot poison the event loop allocator.
+function M.restrict_coroutine(co)
+  restricted_limits[co]=sys.memlimit(M.LIMITS.memory_kb*1024,restricted_limits[coroutine.running()])
+end
+local function protected_source(fn,...)
+  if not sys.memlimit or not sys.memresume or not sys.memcapable or not sys.memcapable() then error("restricted allocator unavailable",0) end
+  local co=SAFE_COROUTINE.create(fn)
+  M.restrict_coroutine(co)
+  local closer <close> = setmetatable({}, {__close=function()
+    if coroutine.status(co)~="dead" then pcall(SAFE_COROUTINE.close,co) end
+  end})
+  local args=table.pack(...)
+  while true do
+    local results=table.pack(SAFE_COROUTINE.resume(co,table.unpack(args,1,args.n)))
+    if native_failure[co] then results=table.pack(false,"restricted native call: "..native_failure[co]) end
+    if not results[1] then
+      local why=results[2]
+      pcall(SAFE_COROUTINE.close,co)
+      error(why,0)
+    end
+    if coroutine.status(co)=="dead" then return table.unpack(results,2,results.n) end
+    args=table.pack(coroutine.yield(table.unpack(results,2,results.n)))
+  end
+end
+M.protected_source=protected_source
+
 -- Run a generated body under the instruction/memory budget.
 local function run_bounded(d, args)
   local ticks, tripped, tripped_kind = 0, nil, M.ERR.timeout
@@ -990,6 +1223,7 @@ local function run_bounded(d, args)
   local step = M.LIMITS.check_every
 
   local function guard()
+    M.check_restricted()
     ticks = ticks + step
     if ticks > M.LIMITS.instructions then
       tripped = string.format("exceeded the instruction budget (%d)", M.LIMITS.instructions)
@@ -1004,11 +1238,20 @@ local function run_bounded(d, args)
 
   -- pcall is yieldable in 5.4, so a body that yields through proc.run still
   -- reaches the scheduler; the hook is per-coroutine and survives the yield.
-  local ok, res = with_count_hook(guard, step, d.run, args)
+  local ok, res = with_count_hook(guard, step, protected_source, d.run, args)
 
   if tripped then return M.err(tripped_kind, "%s and was stopped", tripped) end
   if not ok then
-    return M.err(M.ERR.runtime, tostring(res))
+    local kind=tostring(res):find("allocation budget",1,true) and M.ERR.resource or M.ERR.runtime
+    return M.err(kind, tostring(res))
+  end
+  -- Primitive strings have no deferred callbacks. Keep their established
+  -- spill/result_too_large path, with a finite pre-serialization ceiling.
+  if type(res)=="string" then
+    if #res>16*1024*1024 then return M.err(M.ERR.too_large,"source string exceeds the 16 MiB result ceiling") end
+  else
+    local plain,why=pcall(M.restricted_data,res)
+    if not plain then return M.err(M.ERR.runtime,tostring(why)) end
   end
   return res
 end
@@ -1100,12 +1343,29 @@ local function descriptor(name)
     local legacy=({read="read",write="write",listdir="list",stat="read",glob="list",mkdir_p="write",exec="bash",shell="bash",rmtree="write",chmod="write"})[method]
     return {id=name,version="1",effect=primitive_effects[method] or "write",_runner=primitive_runners[name],
       legacy_name=legacy or name,
-      legacy_args=function(a) return {path=a.values[1],command=a.values[1]} end,
-      resources=function(a) return {path=canonical(a.values[1])} end}
+      legacy_args=function(a)
+        if method=="exec" or method=="shell" then return {command=a.values[1]} end
+        if legacy=="read" or legacy=="write" or legacy=="list" then
+          local ok,path=pcall(canonical,a.values[1])
+          if not ok then return nil,"cannot resolve capability path: "..tostring(path) end
+          return {path=path}
+        end
+        return {}
+      end,
+      resources=function(a)
+        if method=="exec" or method=="shell" then return {} end
+        return {path=canonical(a.values[1])}
+      end}
   end
   local d=M.registry[name]; if not d then return nil end
   return {_entry=d,_runner=d.run,_body=d.body,_resources=d.resources,id=name,version=d.version or "1",effect=d.effect or effects[name] or (d.body and "pure" or "unknown"),
+    legacy_args=(name=="read" or name=="write" or name=="edit" or name=="list") and function(a)
+      local ok,path=pcall(canonical,a.path or ".")
+      if not ok then return nil,"cannot resolve capability path: "..tostring(path) end
+      local copy=clone(a);copy.path=path;return copy
+    end or nil,
     resources=d.resources or function(a)
+      if name=="bash" then return {} end
       return {path=canonical(a.path)}
     end}
 end
@@ -1189,18 +1449,23 @@ M.register("list", {
 -- is bounded by an instruction budget so a runaway loop cannot wedge the turn.
 local function tool_lua(a)
   local code = type(a) == "table" and a.code or nil
-  if type(code) ~= "string" or code == "" then
+  if type(code) ~= "string" or code == "" or #code>1024*1024 then
     return "Tool error: lua expects { code = \"<lua source>\" }"
   end
-  local out = {}
+  local out,output_bytes = {},0
   local env = tool_env()
+  local function append_output(value)
+    output_bytes=output_bytes+#value
+    if output_bytes>M.LIMITS.result_bytes then native_refuse("printed output bound exceeded") end
+    out[#out+1]=value
+  end
   env.print = function(...)
     local n, parts = select("#", ...), {}
     for i = 1, n do parts[i] = tostring((select(i, ...))) end
-    out[#out + 1] = table.concat(parts, "\t")
+    append_output(table.concat(parts, "\t"))
   end
   env.io = { write = function(...)
-    for i = 1, select("#", ...) do out[#out + 1] = tostring((select(i, ...))) end
+    for i = 1, select("#", ...) do append_output(tostring((select(i, ...)))) end
   end }
   -- Accept either an expression ("gold.fs.glob('*.c')") or a statement block;
   -- try the expression form first so a bare value is returned without `return`.
@@ -1208,17 +1473,23 @@ local function tool_lua(a)
   if not chunk then chunk, err = load(code, "@lua", "t", env) end
   if not chunk then return "Tool error: lua compile: " .. tostring(err) end
 
-  local budget = 0
+  local budget, budget_failed = 0, false
   local function guard()
     budget = budget + 1
-    if budget > 4000 then error("lua: instruction budget exceeded (possible runaway loop)", 0) end
+    if budget > 4000 then budget_failed=true;error("lua: instruction budget exceeded (possible runaway loop)", 0) end
   end
-  local packed = table.pack(with_count_hook(guard, 100000, chunk))
+  local packed = table.pack(with_count_hook(guard, 100000, protected_source, chunk))
 
-  if not packed[1] then return "Tool error: " .. tostring(packed[2]) end
+  if budget_failed then return "Tool error: lua instruction budget exhausted" end
+  if not packed[1] then
+    if tostring(packed[2]):find("allocation budget",1,true) then return M.err(M.ERR.resource,tostring(packed[2])) end
+    return "Tool error: " .. tostring(packed[2])
+  end
   local rets = {}
   for i = 2, packed.n do
     local v = packed[i]
+    local plain,why=pcall(M.restricted_data,v)
+    if not plain then return "Tool error: "..tostring(why) end
     if type(v) == "table" then
       local okj, s = pcall(json.encode, v)
       rets[#rets + 1] = okj and s or tostring(v)
@@ -1382,6 +1653,7 @@ local function tool_on_event(a)
   if type(a.lua) ~= "string" or a.lua == "" then
     return M.err(M.ERR.validation, "on_event needs a Lua 'lua' body")
   end
+  if #a.lua>1024*1024 then return M.err(M.ERR.validation,"handler source exceeds 1 MiB") end
   -- Same compilation rules as a tool body: text only, explicit _ENV, so a
   -- handler has exactly the capability surface a generated tool has.
   local chunk, err = load("return function(event, data)\n" .. a.lua .. "\nend",
@@ -1389,7 +1661,18 @@ local function tool_on_event(a)
   if not chunk then
     return M.err(M.ERR.validation, (tostring(err):gsub("^%[string [^%]]*%]:", "line ")))
   end
-  local h = events.on(a.event, chunk(), {
+  local handler=chunk()
+  local authority=require("invoke").current()
+  local function guarded_handler(...)
+    local function run(...)
+      local result=M.protected_source(handler,...)
+      M.restricted_data(result)
+      return result
+    end
+    if authority then return require("invoke").with_context(authority,run,...) end
+    return run(...)
+  end
+  local h = events.on(a.event, guarded_handler, {
     once = a.once and true or nil,
     desc = a.desc or ("agent handler for " .. a.event),
     source = "agent",

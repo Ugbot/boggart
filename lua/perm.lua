@@ -66,22 +66,16 @@ function M.policy_for(name, st)
   return M.GATED[name] and "ask" or "allow"
 end
 
--- Headless resolution. When NO interactive approver is attached (a one-shot, a
--- swarm/CLI worker), an "ask" cannot park for a human -- so instead of running a
--- gated tool blind (the old bypass-by-default hole: swarm/CLI agents ran
--- write/edit/bash unattended), we resolve it here by policy. "allow"/"deny" from
--- policy_for are honoured as-is; an "ask" that no one can answer falls back to
--- the headless default, which is ALLOW so headless automation still works, but
--- is a SINGLE governed, auditable, overridable point: set st.headless="deny" or
--- BOGGART_HEADLESS_POLICY=deny (or perm mode chat) to withhold gated tools when
--- unattended. Returns "allow" or "deny".
+-- Resolve an already-required approval without a human. An explicit profile
+-- is required even when an ordinary mode would allow: guards can still ask.
+-- Queue is a refusal/pending signal, not an approval or a durable queue.
 function M.headless_decision(name, st)
   st = st or M.state()
-  local p = M.policy_for(name, st)
-  if p == "deny" then return "deny" end
-  if p == "allow" then return "allow" end
-  local hd = st.headless or os.getenv("BOGGART_HEADLESS_POLICY") or "allow"
-  return (hd == "deny") and "deny" or "allow"
+  if M.policy_for(name, st) == "deny" then return "deny" end
+  local hd = st.headless
+  if hd == nil then hd = os.getenv("BOGGART_HEADLESS_POLICY") end
+  if hd == "allow" or hd == "queue" then return hd end
+  return "deny" -- missing, malformed and unknown profiles fail closed
 end
 
 -- One-line summary of a tool call, for the approval bar.
