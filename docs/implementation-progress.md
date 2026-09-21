@@ -24,6 +24,8 @@ status authority.
 | BRAIN-16 | Authenticated local control, explicit unattended admission, canonical effect paths and bounded generated execution | Final native66/66 and Linux65/65; native17 and Linux8 affected suites each twice; independent re-review approved | `2b81ea4` |
 | BRAIN-21 | Station discovery, host-qualified capabilities and faithful ZMQ/MCP outcomes without unsafe retry | Final six affected suites each twice on native/Linux; real native MCP stdio and ZMQ ROUTER fixtures; independent re-review approved | `ce2e651` |
 
+| BRAIN-22 | Faithful typed Station capture/bindings, bounded capture redaction, legacy export/import and terminal uncertain-state protection | Station forge203/catalog74/Ralph124/VerifyCode9; Boggart imports704, native/Linux repeated imports and actual current/redacted/legacy export bridges; independent re-review approved | Boggart `8b062dd`; Station `7e9e1b8f` |
+
 Build: `cmake --build build --target boggart -j 6` with `CCACHE_DIR` and
 `CCACHE_TEMPDIR` pointing inside `build/ccache`, because the default cache
 directory is outside the workspace sandbox. Tests ran through `./boggart
@@ -174,3 +176,41 @@ each intentional lost write exactly once. This is real native socket/client
 qualification against synthetic fixtures, not a claim about a live Station
 daemon's durable execution or remote writes. The fixture used temporary profiles
 and local pinned dependency sources; no paid models or real external messages.
+
+
+BRAIN-22 repairs both repositories. Station changes are on
+`feature/boggart-process-evidence` in the isolated checkout
+`.superpowers/station-forge`; the original dirty Station checkout was used only
+for read-only build recipes/dependencies. The focused builds recompiled every
+project translation unit from isolated source. This does not claim a full daemon
+build, live MCP/ZMQ exporter parity or byte equality against an uncaptured
+original-worktree snapshot. Existing macOS deployment-target/compiler/linker
+warnings remain disclosed; no dependencies were downloaded or modernized.
+
+Station now stores typed bindings/results with versioned JSON fields and tested
+legacy reads. Unknown preconditions and missing checkers cannot establish
+eligibility. Actual Ralph dispatch supplies current inputs; possibly effectful
+failure cannot fall through to a model or another template. Actual VerifyCode
+cannot erase the resulting terminal FAILED state. Its new registered standalone
+CMake/CTest target compiled18 real support sources and passed9 assertions; the
+prior unguarded implementation failed6 of those assertions. The target was
+qualified using its exact CMake block with existing dependency properties, without
+configuring the entire uninitialized sibling tree.
+
+Bounded host redaction runs before new Station trace/execution persistence;
+redacted traces cannot crystallize into executable literals. Unknown unlabelled
+secrets cannot be universally detected. Boggart applies its own import policy and
+retains redacted/truncated/missing coverage. Old callbacks without correlation
+remain distinct uncorrelated results; inferred call positions and observed output
+lengths remain explicit. Imported templates never inherit activation authority.
+JSON null is explicitly represented; the current decoder's empty-array/object
+ambiguity is disclosed rather than guessed.
+
+Final verification includes Station203/74/124 assertions plus actual VerifyCode9,
+Boggart imports704 and repeated native/Linux import tests. Evidence/retention
+passed twice on both platforms before the final additive legacy provenance fields;
+only imports changed afterward. Actual current, redacted and legacy C++ exporter
+outputs passed Boggart SQLite ingestion on both macOS and Linux ARM64. All fixtures
+were synthetic; no private history, paid models or real external messages were
+used. The independent re-review approved all23 product files. BRAIN-23 durable
+AIbyWire delegation is the next active ticket.

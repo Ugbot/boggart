@@ -541,16 +541,16 @@ assert(fake_station.write_count == 1)
 
 **Dependencies:** BRAIN-21, BRAIN-19
 
-**Files:** Sibling isolated checkout: src/forge/{ActionCapture.cpp,Forger.cpp,ForgeExecutor.cpp,ForgeTypes.h,SqliteForgeStore.cpp} and corresponding headers; src/ralph/{RalphExecutionActions.cpp,RalphForgeBinding.h}; src/tools/forge/{ForgeSearchTool.h,ForgeExecuteTool.h,ForgeManageTool.h}; focused forge/Ralph tests, tests/CMakeLists.txt source registration and project_map.md. Boggart lua/imports/{init.lua,station.lua} and tests/imports.lua for the versioned Station exchange. Read sibling AGENTS.md; preserve the original dirty checkout.
+**Files:** Sibling isolated checkout: src/forge/{ActionCapture.cpp,Forger.cpp,ForgeExecutor.cpp,ForgeTypes.h,CaptureRedaction.h} and corresponding headers; src/storage/sqlite/SqliteForgeStore.cpp; src/ralph/{RalphExecutionActions.cpp,RalphVerificationActions.cpp,RalphForgeBinding.h}; src/tools/forge/{ForgeSearchTool.h,ForgeExecuteTool.h,ForgeManageTool.h}; focused forge/Ralph tests, tests/CMakeLists.txt source registration and project_map.md. Boggart lua/imports/{init.lua,station.lua} and tests/imports.lua plus docs/imports.md for the versioned Station exchange. Read sibling AGENTS.md; preserve the original dirty checkout.
 
 **Implementation:** Use a JSON encoder, preserve results/artifact refs, populate fixed/template arguments and result bindings, and bind current task inputs in template-first execution. Unknown or unavailable precondition checks are ineligible. Expose repaired evidence/templates for Lua compilation; do not make Station a competing top-level learning owner. Run sibling tests in its own change set.
 
-**Interface:** Versioned ActionTrace/ActionTemplate exchange preserves typed bindings and evidence provenance; Boggart adapter imports it into normalized evidence and candidate Lua generation. Use the existing forge tool transport: an explicit structured search result and forge_manage export action, not a new RPC. Repair real Ralph search/result and execution argument-name mismatches. Persist typed bindings and provenance through structured store serialization with tested legacy reads; never infer dataflow from equal values. Imported Station evidence remains unverified observations with explicit missing/truncated coverage, normal scope/tombstone checks and redaction.
+**Interface:** Versioned ActionTrace/ActionTemplate exchange preserves typed bindings and evidence provenance; Boggart adapter imports it into normalized evidence and candidate Lua generation. Use the existing forge tool transport: an explicit structured search result and forge_manage export action, not a new RPC. Repair real Ralph search/result and execution argument-name mismatches. Persist typed bindings and provenance through structured store serialization with tested legacy reads; never infer dataflow from equal values. Imported Station evidence remains unverified observations with explicit missing/truncated/redacted coverage, normal scope/tombstone checks and redaction. Uncorrelated legacy callbacks stay uncorrelated. Apply bounded host redaction before Station trace/execution persistence; errors refuse persistence and redacted traces cannot crystallize into executable literals. Failed or uncertain template effects cannot fall through to another template or model execution.
 
 **Acceptance criteria:**
 
-- [ ] A trace containing quotes/newlines and nested results produces a faithful template that executes with distinct held-out parameter values.
-- [ ] Missing checker and unknown precondition cannot pass eligibility; Ralph supplies current arguments instead of historical literals.
+- [x] A trace containing quotes/newlines and nested results produces a faithful template that executes with distinct held-out parameter values.
+- [x] Missing checker and unknown precondition cannot pass eligibility; Ralph supplies current arguments instead of historical literals.
 
 **Test scenario:**
 

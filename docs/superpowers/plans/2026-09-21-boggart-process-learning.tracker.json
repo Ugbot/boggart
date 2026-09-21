@@ -323,9 +323,9 @@
         {
           "id": "forge",
           "title": "Repair Station capture and faithful parameter binding",
-          "files": "Sibling isolated checkout: src/forge/{ActionCapture.cpp,Forger.cpp,ForgeExecutor.cpp,ForgeTypes.h,SqliteForgeStore.cpp} and corresponding headers; src/ralph/{RalphExecutionActions.cpp,RalphForgeBinding.h}; src/tools/forge/{ForgeSearchTool.h,ForgeExecuteTool.h,ForgeManageTool.h}; focused forge/Ralph tests, tests/CMakeLists.txt source registration and project_map.md. Boggart lua/imports/{init.lua,station.lua} and tests/imports.lua for the versioned Station exchange. Read sibling AGENTS.md; preserve the original dirty checkout.",
+          "files": "Sibling isolated checkout: src/forge/{ActionCapture.cpp,Forger.cpp,ForgeExecutor.cpp,ForgeTypes.h,CaptureRedaction.h} and corresponding headers; src/storage/sqlite/SqliteForgeStore.cpp; src/ralph/{RalphExecutionActions.cpp,RalphVerificationActions.cpp,RalphForgeBinding.h}; src/tools/forge/{ForgeSearchTool.h,ForgeExecuteTool.h,ForgeManageTool.h}; focused forge/Ralph tests, tests/CMakeLists.txt source registration and project_map.md. Boggart lua/imports/{init.lua,station.lua} and tests/imports.lua plus docs/imports.md for the versioned Station exchange. Read sibling AGENTS.md; preserve the original dirty checkout.",
           "work": "Use a JSON encoder, preserve results/artifact refs, populate fixed/template arguments and result bindings, and bind current task inputs in template-first execution. Unknown or unavailable precondition checks are ineligible. Expose repaired evidence/templates for Lua compilation; do not make Station a competing top-level learning owner. Run sibling tests in its own change set.",
-          "api": "Versioned ActionTrace/ActionTemplate exchange preserves typed bindings and evidence provenance; Boggart adapter imports it into normalized evidence and candidate Lua generation. Existing forge transport provides structured search and forge_manage export; structured persistence preserves typed bindings/provenance with legacy reads. Ralph uses current execution argument names; Station imports remain unverified, scoped/redacted observations with explicit gaps.",
+          "api": "Versioned ActionTrace/ActionTemplate exchange preserves typed bindings and evidence provenance; Boggart adapter imports it into normalized evidence and candidate Lua generation. Existing forge transport provides structured search and forge_manage export; structured persistence preserves typed bindings/provenance with legacy reads. Ralph uses current execution argument names and never falls through after uncertain effects; Station imports remain unverified, scoped/redacted observations with explicit gaps and uncorrelated legacy callbacks. Bounded host redaction precedes Station trace/execution persistence; redaction errors refuse persistence and redacted traces cannot crystallize.",
           "ac": [
             "A trace containing quotes/newlines and nested results produces a faithful template that executes with distinct held-out parameter values.",
             "Missing checker and unknown precondition cannot pass eligibility; Ralph supplies current arguments instead of historical literals."
@@ -336,7 +336,7 @@
           ],
           "test": "Station forge and Ralph suites (select exact commands from repository instructions)",
           "example": "assert(replayed_target == held_out_target); assert(unknown_precondition_eligible == false)",
-          "status": "in_progress"
+          "status": "done"
         },
         {
           "id": "aibywire",
@@ -353,7 +353,8 @@
             "recovery"
           ],
           "test": "aibywire",
-          "example": "assert(resumed.remote_run_id == original.remote_run_id)"
+          "example": "assert(resumed.remote_run_id == original.remote_run_id)",
+          "status": "in_progress"
         },
         {
           "id": "gestalt",
@@ -651,7 +652,7 @@
           "id": "qualification",
           "title": "Run end-to-end product, failure and cost qualification",
           "files": "Create tools/process_bench.lua, tests/process_e2e.lua and docs/process-benchmark.md; extend CI configuration using repository conventions.",
-          "work": "Run Slack and novel fixtures plus held-out variants through observe\u2192mine\u2192evaluate\u2192promote\u2192recognize\u2192execute\u2192rollback. Include policy bypass probes, concurrency quotas, missing context, transport uncertainty, provider drift, import corruption and restart. Fresh native build plus registered Lua tests and relevant Studio/platform checks. Pin fixture seeds and versions; report cost per independently verified outcome, model calls, wrong applicability, false success, human corrections and amortization. Repair and qualify native-worker hook preservation across trusted invocation, evidence and import transactions: a C cancellation hook reported as an external hook must not be called as a Lua function, silently cleared or incorrectly restored. Verify real worker cancellation remains effective; explicit refusal of unsupported restricted allocation is a separate contract and does not waive this integration check.",
+          "work": "Run Slack and novel fixtures plus held-out variants through observe→mine→evaluate→promote→recognize→execute→rollback. Include policy bypass probes, concurrency quotas, missing context, transport uncertainty, provider drift, import corruption and restart. Fresh native build plus registered Lua tests and relevant Studio/platform checks. Pin fixture seeds and versions; report cost per independently verified outcome, model calls, wrong applicability, false success, human corrections and amortization. Repair and qualify native-worker hook preservation across trusted invocation, evidence and import transactions: a C cancellation hook reported as an external hook must not be called as a Lua function, silently cleared or incorrectly restored. Verify real worker cancellation remains effective; explicit refusal of unsupported restricted allocation is a separate contract and does not waive this integration check.",
           "api": "Benchmark produces machine-readable run manifest and report artifact with exact executable/source revision, configuration and per-case evidence IDs.",
           "ac": [
             "The full cycle succeeds on held-out inputs with no known false-success or duplicate-effect failures; failures remain visible rather than removed from denominators.",
