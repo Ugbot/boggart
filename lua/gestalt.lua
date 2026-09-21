@@ -55,6 +55,22 @@ function M.call(domain, action, params, timeout)
   return decoded.data
 end
 
+-- Source-backed Elasticsearch compatibility surface. Kept separate from CQRS:
+-- ES replies are raw objects, not the gateway's {ok,data} envelope.
+function M.es_request(base, method, path, value, timeout, api_key)
+  if not (http and http.request) then return nil, "http unavailable" end
+  local headers = {"content-type: application/json"}
+  if api_key and api_key ~= "" then headers[#headers+1] = "authorization: Bearer "..api_key end
+  local ok, status, raw = pcall(http.request, {url=base:gsub("/+$", "")..path,
+    method=method, headers=headers, body=value and json.encode(value) or nil, timeout=timeout or 3})
+  if not ok or not status then return nil, "gestalt transport unavailable" end
+  if (status < 200 or status >= 300) and not (method == "DELETE" and status == 404) then return nil, "gestalt HTTP "..tostring(status) end
+  local decoded, result = pcall(json.decode, raw or "")
+  if not decoded or type(result) ~= "table" or result.error then return nil, "invalid gestalt ES response" end
+  if status == 404 and result.result ~= "not_found" then return nil, "invalid gestalt deletion response" end
+  return result
+end
+
 -- Is a daemon reachable? A cheap SQL probe (SELECT 1) doubles as a ping.
 function M.available()
   local d = M.call("compute", "query.execute", { sql = "SELECT 1" }, 3)
