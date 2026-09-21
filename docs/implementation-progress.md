@@ -258,3 +258,5 @@ focused fix. That final correction still requires parent re-embedding, covering
 platform qualification and re-review before acceptance or ticket closure.
 
 BRAIN-26 is complete in `8c4717d`. The final cached-dependency correction passed fresh native/Linux builds and the 49-check suite twice on both platforms, plus both recorded Lua integration fixtures. Independent review approved spec compliance and quality. BRAIN-27 parameterized Lua candidate compilation is now in progress.
+
+BRAIN-27 now includes initial crystallization from native tool histories without an existing Lua workflow, as well as parameterizing source-backed workflows. The expanded implementation passed 80 checks twice on macOS and Linux, plus actual recorded novel, follow-up and source-free invocation fixtures on both platforms. Historical values stay outside emitted code; current context and explicit output bindings drive new runs. Candidate generation remains separate from evaluation and activation. Independent re-review is active. A later output-drift regression found that a missing bound field could reach a dependent capability; this guard is being fixed before acceptance.

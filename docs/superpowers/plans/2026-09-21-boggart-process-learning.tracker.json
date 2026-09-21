@@ -422,11 +422,11 @@
         {
           "id": "compile",
           "title": "Generate parameterized Lua with residual model steps",
-          "files": "Create lua/mining/compile.lua, tests/mining_compile.lua and examples/workflows/compiled_followup.lua.",
-          "work": "Compile observed stable regions into ordinary Lua ctx:step/ctx:call code with injected parameters/providers, clear guards and source mappings. Retain explicit model calls for unresolved decisions. Reject missing required evidence, unsafe literal secrets and unsupported transformations. No mandatory new workflow DSL and no arbitrary Lua-to-DAG translation. Compilation can invoke an LLM through the same policy/evidence contracts; generated code stays a candidate until evaluated.",
+          "files": "Create lua/mining/compile.lua, lua/mining/compile_trace.lua, tests/mining_compile.lua, examples/workflows/compiled_followup.lua and docs/mining-compile.md. Register mining_compile in CMakeLists.txt.",
+          "work": "Compile observed stable regions into ordinary Lua ctx:step/ctx:call code with injected parameters/providers, clear guards and source mappings. Retain explicit model calls for unresolved decisions. Reject missing required evidence, unsafe literal secrets and unsupported transformations. No mandatory new workflow DSL and no arbitrary Lua-to-DAG translation. Compilation can invoke an LLM through the same policy/evidence contracts; generated code stays a candidate until evaluated. Support bounded validated pure list/set comparison loops; distinguish direct observed bindings from source-backed derived transformations whose observed lineage remains unknown. Also provide initial trace-first crystallization without pre-existing Lua source: fully evidenced unique straight-line native invocation sequences become Lua using injected current arguments and explicit dataflow bindings. Preserve observed model calls, label synthesized sequencing/guards, and refuse unknown effects, ambiguous correspondence and unsupported control flow instead of inventing branches.",
           "api": "compile.candidate(alignment,options) -> {source,source_hash,manifest,source_map,required_context,verifiers,unknowns}|nil,error.",
           "ac": [
-            "A candidate executes correctly on distinct inputs without copying prior recipients, filenames or private context constants.",
+            "Candidates from both source-backed workflows and initially source-free native tool sequences execute correctly on distinct inputs without copying prior recipients, filenames or private context constants.",
             "Stable checks become Lua while ambiguous response interpretation remains an explicit model step; every emitted step links to source evidence or is labelled synthesized."
           ],
           "deps": [
