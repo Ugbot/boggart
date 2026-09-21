@@ -499,8 +499,8 @@ assert(second_import.added == 0); assert(missing_result.provenance == "missing")
 
 **Acceptance criteria:**
 
-- [ ] Deleting a project removes its payloads and derived retrieval entries after reconciliation without deleting unrelated scopes.
-- [ ] A replay/export cannot recover redacted credentials; missing evidence or storage failure is visible and excluded from promotion qualification.
+- [x] Deleting a project removes its payloads and derived retrieval entries after reconciliation without deleting unrelated scopes.
+- [x] A replay/export cannot recover redacted credentials; missing evidence or storage failure is visible and excluded from promotion qualification.
 
 **Test scenario:**
 

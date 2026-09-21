@@ -150,7 +150,8 @@
             "gate"
           ],
           "test": "control|invoke|sandbox",
-          "example": "assert(headless_ask.executed == false); assert(unauthenticated.status == 401)"
+          "example": "assert(headless_ask.executed == false); assert(unauthenticated.status == 401)",
+          "status": "in_progress"
         }
       ]
     },
@@ -289,9 +290,11 @@
           ],
           "test": "evidence_retention",
           "example": "assert(search_deleted_scope.total == 0)",
-          "status": "in_progress"
+          "status": "done",
+          "commit": "e0a1900"
         }
-      ]
+      ],
+      "status": "done"
     },
     {
       "id": "integrations",

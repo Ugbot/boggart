@@ -21,6 +21,8 @@ status authority.
 | BRAIN-43 | Opted-in durable Lua replay, operation reconciliation, ownership fencing and explicit result cache under current authority | Final native full64/64; runstore77/capability74; CTest runstore/capability/invoke each twice; real subprocess recovery with quotas; independent re-review approved | `3201e56` |
 | BRAIN-19 | Scoped Boggart/Claude/OpenAI JSONL imports, durable checkpoints/provenance, mirror dedup and explicit missing observations | Final native imports632/evidence132/sessions39/workflow65; CTest imports twice; independent re-review approved | `7b1ee37` |
 
+| BRAIN-20 | Scoped retention/deletion, redacted export, lineage invalidation, durable failure gaps and bounded recovery | Retention154 twice; final native and Linux seven affected suites each repeated twice; independent re-review approved | `e0a1900` |
+
 Build: `cmake --build build --target boggart -j 6` with `CCACHE_DIR` and
 `CCACHE_TEMPDIR` pointing inside `build/ccache`, because the default cache
 directory is outside the workspace sandbox. Tests ran through `./boggart
@@ -29,7 +31,7 @@ model requests or real messaging workflows were used.
 
 The existing user changes to judge/TypeSafe, models and completion were
 preserved outside these commits. The local runtime workstream BRAIN-3 is complete, including BRAIN-43 recovery.
-BRAIN-19 historical Boggart, Claude and OpenAI log imports are complete. BRAIN-20 retention, redacted export and deletion are in progress. Local control authentication and unattended-default hardening
+BRAIN-19 historical Boggart, Claude and OpenAI log imports are complete. BRAIN-20 retention, redacted export and deletion are complete; the evidence workstream BRAIN-4 is complete. Local control authentication and unattended-default hardening
 remain open as BRAIN-16.
 
 The broader 57-suite run passed 53 suites on its first pass. MCP and control
@@ -113,3 +115,17 @@ independently sliced repeated text is documented as ambiguous. Redaction learns
 within each bounded batch; it cannot retroactively discover unknown credentials
 in earlier committed batches. Known literal rules remain important. Linux/Windows
 execution and overall product qualification remain open BRAIN-39 work.
+
+
+BRAIN-20 final verification passed invoke, context, workflow, evidence, runstore,
+imports and evidence_retention twice each under persistent CTest profiles on both
+macOS and Linux ARM64 Clang19. Retention has 154 checks. Earlier full native66/66
+and Linux65/65 runs preceded the final registry fix; final verification targeted
+its affected suites. Independent review found and verified repairs for capture
+failures surviving restart, nested ownership, repeatable tombstone fixtures and
+pending gaps surviving garbage collection. Queues have per-store and aggregate
+bounds; verified opaque store identity permits reconnection without guessing paths.
+External deletion remains pending until an actual adapter acknowledges its job;
+Gestalt integration is BRAIN-24. Logical deletion does not promise physical erasure
+of WAL/free pages, returned values, exports or backups. Unavailable storage cannot
+promise to persist an observation gap before a crash. See [retention controls](evidence-retention.md).
