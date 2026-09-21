@@ -474,8 +474,8 @@ assert(roundtrip.payload.args.text == "quoted \"value\"\nnext line")
 
 **Acceptance criteria:**
 
-- [ ] Repeat and overlapping import add no duplicate logical events; interrupted import resumes without loss; malformed entries retain diagnostic provenance.
-- [ ] Claude/OpenAI fixtures correlate tool requests/results and available surrounding context; absent outputs remain marked missing and cannot qualify as verified successes.
+- [x] Repeat and overlapping import add no duplicate logical events; interrupted import resumes without loss; malformed entries retain diagnostic provenance.
+- [x] Claude/OpenAI fixtures correlate tool requests/results and available surrounding context; absent outputs remain marked missing and cannot qualify as verified successes.
 
 **Test scenario:**
 

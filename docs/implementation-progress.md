@@ -19,7 +19,7 @@ status authority.
 | BRAIN-42 | Source-backed versioned Lua workflows with dependency pins, nested steps, cancellation and local Slack fixture | Native full62/62 before review fixes; final covering workflow65/context80/capability73/invoke87/luatool42/events128 pass; CTest workflow and context each repeated twice; independent re-review approved | `6a3588c` |
 | BRAIN-18 | Durable correlated invocation/workflow/context evidence, bounded redaction and explicit incomplete coverage | Final native full63/63; evidence132 checks; CTest evidence/workflow/context/invoke each repeated twice; independent re-review approved | `cf3bda3` |
 | BRAIN-43 | Opted-in durable Lua replay, operation reconciliation, ownership fencing and explicit result cache under current authority | Final native full64/64; runstore77/capability74; CTest runstore/capability/invoke each twice; real subprocess recovery with quotas; independent re-review approved | `3201e56` |
-
+| BRAIN-19 | Scoped Boggart/Claude/OpenAI JSONL imports, durable checkpoints/provenance, mirror dedup and explicit missing observations | Final native imports632/evidence132/sessions39/workflow65; CTest imports twice; independent re-review approved | `7b1ee37` |
 
 Build: `cmake --build build --target boggart -j 6` with `CCACHE_DIR` and
 `CCACHE_TEMPDIR` pointing inside `build/ccache`, because the default cache
@@ -29,7 +29,7 @@ model requests or real messaging workflows were used.
 
 The existing user changes to judge/TypeSafe, models and completion were
 preserved outside these commits. The local runtime workstream BRAIN-3 is complete, including BRAIN-43 recovery.
-BRAIN-19 is implementing historical Boggart, Claude and OpenAI log imports next. Local control authentication and unattended-default hardening
+BRAIN-19 historical Boggart, Claude and OpenAI log imports are complete. BRAIN-20 retention, redacted export and deletion are in progress. Local control authentication and unattended-default hardening
 remain open as BRAIN-16.
 
 The broader 57-suite run passed 53 suites on its first pass. MCP and control
@@ -101,3 +101,15 @@ Review repaired per-workflow pin substitution and nil-vararg formatting gaps;
 a separate regression also fixed explicit false capability arguments becoming
 empty tables. See [durable recovery](runstore.md) for supported value semantics,
 source restrictions, attempt limits, cancellation and accounting boundaries.
+
+BRAIN-19 final verification used the rebuilt embedded binary without a source
+overlay. Independent review found six gaps in the initial passing implementation;
+fixes now cover escaped JSON credentials, batch-wide secret discovery, mixed-ID
+mirror aliases across reopen/batch boundaries, omitted content, source metadata
+and portable temporary paths. Imports remain explicitly selected bounded JSONL
+exports (16 MiB maximum), imported observations are never verified successes, and
+unknown formats retain coverage gaps. Identity without stable IDs remains inferred;
+independently sliced repeated text is documented as ambiguous. Redaction learns
+within each bounded batch; it cannot retroactively discover unknown credentials
+in earlier committed batches. Known literal rules remain important. Linux/Windows
+execution and overall product qualification remain open BRAIN-39 work.
