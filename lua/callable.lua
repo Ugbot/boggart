@@ -91,10 +91,11 @@ local function as_ctx(input)
   return ctx
 end
 
--- Invoke the lifecycle. before* (order) -> run (first that has one) -> finally*
--- (reverse). finally always runs, even on a raised error, then the error is
--- re-raised unless a finally replaced the result.
-function methods:invoke(input)
+-- Run the lifecycle and retain every part of the outcome. Verification is a
+-- distinct phase from cleanup: a verifier may fail the invocation, while every
+-- finalizer still runs exactly once. invoke() below remains the compatibility
+-- adapter which returns successful values and raises failed outcomes.
+function methods:result(input)
   local ctx = as_ctx(input)
   ctx.node = self
 
@@ -126,17 +127,66 @@ function methods:invoke(input)
     return phase_run()
   end)
 
-  -- finally runs in reverse, always, and sees (result, err).
-  for i = #self.components, 1, -1 do
-    local c = self.components[i]
-    if c.finally then
-      local fok, fres = pcall(c.finally, ctx, ok and res or nil, ok and nil or res)
-      if fok and fres ~= nil then res, ok = fres, true end
+  local outcome = {
+    status = ok and "success" or "failed",
+    value = ok and res or nil,
+    error = ok and nil or res,
+    verification = nil,
+    cleanup_error = nil,
+  }
+
+  -- Verifiers run only after a body result exists. A false result and a thrown
+  -- error are both failed verification; neither can be repaired by cleanup.
+  if ok then
+    for _, c in ipairs(self.components) do
+      if c.verify then
+        local vok, verdict = pcall(c.verify, ctx, outcome.value)
+        if not vok or verdict ~= true then
+          local detail = vok and
+            (type(verdict) == "string" and verdict or "check returned " .. tostring(verdict))
+            or tostring(verdict)
+          outcome.verification = { ok = false, error = detail }
+          outcome.status = "failed"
+          outcome.error = "verify failed: " .. detail
+          break
+        end
+        outcome.verification = { ok = true }
+      end
     end
   end
 
-  if not ok then error(res, 0) end
-  return res
+  -- finally is cleanup, in reverse, always, and sees the primary result/error.
+  for i = #self.components, 1, -1 do
+    local c = self.components[i]
+    if c.finally then
+      local fok, fres = pcall(c.finally, ctx, outcome.value, outcome.error)
+      if not fok then
+        local detail = tostring(fres)
+        outcome.cleanup_error = outcome.cleanup_error and
+          (outcome.cleanup_error .. "; " .. detail) or detail
+        if outcome.status == "success" then
+          outcome.status, outcome.error = "failed", detail
+        end
+      elseif fres ~= nil and outcome.status == "success" then
+        outcome.value = fres
+      end
+    end
+  end
+  return outcome
+end
+
+methods.invoke_result = methods.result
+
+function methods:invoke(input)
+  local outcome = self:result(input)
+  if outcome.status ~= "success" then
+    local err = tostring(outcome.error or "callable failed")
+    if outcome.cleanup_error and outcome.cleanup_error ~= outcome.error then
+      err = err .. " (cleanup also failed: " .. outcome.cleanup_error .. ")"
+    end
+    error(err, 0)
+  end
+  return outcome.value
 end
 
 mt.__call = function(self, input) return self:invoke(input) end

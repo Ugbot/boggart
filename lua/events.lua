@@ -65,6 +65,57 @@ local MAX_DEPTH = 8
 -- subscribed to something like turn:text would mean one traceback per streamed
 -- token for the rest of the session.
 local MAX_ERRORS = 5
+M.HANDLER_INSTRUCTIONS = 5e6
+local HANDLER_CHECK_EVERY = 10000
+local HANDLER_LIMIT = "event handler instruction budget exceeded"
+
+-- Compose a handler limit with the emitter's active hook. Hooks are per
+-- coroutine and Lua provides one slot, so replacing it would disable an outer
+-- tool/workflow budget while the callback runs.
+local function handler_hook(thread)
+  local parent, mask, count = debug.gethook()
+  local ticks, parent_ticks = 0, 0
+  local control = { outer_failure = nil, handler_failure = nil }
+  local quantum = HANDLER_CHECK_EVERY
+  if parent and count and count > 0 then
+    local a, b = quantum, count
+    while b ~= 0 do a, b = b, a % b end
+    quantum = a
+  end
+  local function call_parent(event, line)
+    if control.outer_failure ~= nil then
+      error({ boggart_outer_hook = true, error = control.outer_failure }, 0)
+    end
+    local ok, err = pcall(parent, event, line)
+    if not ok then
+      if type(err) == "table" and err.boggart_outer_hook then err = err.error end
+      if type(err) == "table" and err.error ~= nil and err.marker ~= nil then err = err.error end
+      control.outer_failure = err
+      error({ boggart_outer_hook = true, error = err }, 0)
+    end
+  end
+  local function hook(event, line)
+    if event == "count" then
+      ticks = ticks + quantum
+      if ticks > M.HANDLER_INSTRUCTIONS then
+        control.handler_failure = control.handler_failure or HANDLER_LIMIT
+        error(control.handler_failure, 0)
+      end
+      if parent and count > 0 then
+        parent_ticks = parent_ticks + quantum
+        if parent_ticks >= count then
+          parent_ticks = parent_ticks - count
+          call_parent(event, line)
+        end
+      end
+    elseif parent then
+      call_parent(event, line)
+    end
+  end
+  if thread then debug.sethook(thread, hook, mask or "", quantum)
+  else debug.sethook(hook, mask or "", quantum) end
+  return control
+end
 
 -- ---------------------------------------------------------------------------
 -- The events the harness emits, and what rides on them.
@@ -135,11 +186,9 @@ end
 -- reacting, not for doing I/O. The cost is one coroutine per handler per emit,
 -- paid only when something is actually subscribed.
 --
--- What this does NOT protect against: a handler that simply loops forever. It
--- would want a debug hook, and tools.lua already installs one around generated
--- tool bodies -- setting a second one here would clear that budget on the way
--- out and leave a runaway tool unbounded. A wedged handler wedges the agent;
--- that is the honest limit of this design.
+-- A count hook also bounds a handler that loops without yielding. It composes
+-- with an existing tool/workflow hook and restores that enclosing hook on exit,
+-- so callback isolation cannot remove the caller's execution budget.
 local function report(h, err, co)
   local msg = tostring(err)
   if not (type(err) == "table" and err.boggart_error) then
@@ -156,9 +205,16 @@ end
 
 local function invoke(h, name, data)
   local co = coroutine.create(h.fn)
+  local hook_control = handler_hook(co)
   h.calls = h.calls + 1
   local ok, err = coroutine.resume(co, name, data)
+  if hook_control.outer_failure ~= nil then return hook_control.outer_failure end
+  if hook_control.handler_failure ~= nil then
+    report(h, hook_control.handler_failure, co)
+    return
+  end
   if not ok then
+    if type(err) == "table" and err.boggart_outer_hook then return err.error end
     report(h, err, co)
   elseif coroutine.status(co) == "suspended" then
     coroutine.close(co)
@@ -261,6 +317,7 @@ function M.emit(name, data)
 
   state.depth = state.depth + 1
   local fired = 0
+  local outer_error
   -- `hs` is the list as it stood at entry, so a handler that *subscribes*
   -- during dispatch is called from the next emit rather than this one. An
   -- unsubscribe is honoured immediately (the `dead` check): after off()
@@ -270,11 +327,13 @@ function M.emit(name, data)
     local h = hs[i]
     if not h.dead then
       if h.once then M.off(h) end
-      invoke(h, name, data)
+      outer_error = invoke(h, name, data)
       fired = fired + 1
+      if outer_error ~= nil then break end
     end
   end
   state.depth = state.depth - 1
+  if outer_error ~= nil then error(outer_error, 0) end
   return fired
 end
 
@@ -303,8 +362,23 @@ function M.ask(name, data)
     if not h.dead then
       if h.once then M.off(h) end
       h.calls = h.calls + 1
+      local old, old_mask, old_count = debug.gethook()
+      local hook_control = handler_hook()
       local ok, res = pcall(h.fn, name, data)
+      debug.sethook(old, old_mask, old_count)
+      if hook_control.outer_failure ~= nil then
+        state.depth = state.depth - 1
+        error(hook_control.outer_failure, 0)
+      end
+      if hook_control.handler_failure ~= nil then
+        report(h, hook_control.handler_failure)
+        ok, res = true, nil
+      end
       if not ok then
+        if type(res) == "table" and res.boggart_outer_hook then
+          state.depth = state.depth - 1
+          error(res.error, 0)
+        end
         report(h, res)
       elseif res ~= nil then
         answer = res

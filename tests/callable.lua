@@ -63,6 +63,27 @@ do -- finally runs even when the body raises
   ok(tostring(caught):find("boom", 1, true) ~= nil, "the error re-raises after finally")
 end
 
+do -- verification failure remains primary while cleanup always runs
+  local cleaned = 0
+  local n = callable.new({ run = function() return "bad" end })
+  n:attach({ verify = function() return false end })
+  n:attach({ finally = function() cleaned = cleaned + 1; error("cleanup boom", 0) end })
+  local result = n:result({})
+  ok(result.status == "failed", "false verifier produces a failed structured outcome")
+  ok(result.verification and result.verification.ok == false,
+    "structured outcome retains verification failure")
+  ok(tostring(result.error):find("check returned false", 1, true) ~= nil,
+    "verification error remains the primary error")
+  ok(result.cleanup_error == "cleanup boom", "cleanup error is retained separately")
+  ok(cleaned == 1, "cleanup runs exactly once after verification failure")
+
+  local thrown = callable.new({ run = function() return "bad" end })
+  thrown:attach({ verify = function() error("verifier boom", 0) end })
+  local tr = thrown:result({})
+  ok(tr.status == "failed" and tostring(tr.error):find("verifier boom", 1, true),
+    "throwing verifier produces a failed outcome")
+end
+
 -- ---- components: attach, get, send ------------------------------------------
 do
   local n = callable.new({ name = "svc" })

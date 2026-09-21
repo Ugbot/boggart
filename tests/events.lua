@@ -251,6 +251,71 @@ do
   ok(n >= 2 and n <= 16, "a handler that re-emits its own event is depth-capped (" .. n .. ")")
 end
 
+-- ---- runaway handler is bounded without consuming the enclosing hook ----
+do
+  reset()
+  local quiet, tail = 0, false
+  local real_sink = events.sink
+  events.sink = function() quiet = quiet + 1 end
+  events.on("r:budget", function() while true do end end)
+  events.on("r:budget", function() tail = true end)
+  local outer_ticks = 0
+  local function outer() outer_ticks = outer_ticks + 1 end
+  debug.sethook(outer, "", 1000)
+  events.emit("r:budget", {})
+  local restored, _, count = debug.gethook()
+  debug.sethook()
+  ok(quiet > 0, "runaway event handler is stopped and reported")
+  ok(tail, "handler after a runaway handler still executes")
+  ok(restored == outer and count == 1000 and outer_ticks > 0,
+    "event handler bound preserves the enclosing instruction hook")
+
+  local function stopping_outer() error("outer budget stopped", 0) end
+  debug.sethook(stopping_outer, "", 1000)
+  local stopped, stoperr = pcall(events.emit, "r:budget", {})
+  restored, _, count = debug.gethook()
+  debug.sethook()
+  ok(not stopped and tostring(stoperr):find("outer budget stopped", 1, true),
+    "event isolation does not swallow an enclosing budget failure")
+  ok(restored == stopping_outer and count == 1000,
+    "enclosing hook remains installed after its budget failure")
+
+  reset()
+  events.sink = function() end
+  events.on("r:catch-outer", function()
+    pcall(function()
+      local x = 0
+      for i = 1, 100000 do x = x + i end
+    end)
+    return "attempted success"
+  end)
+  local parent_calls = 0
+  local function caught_outer()
+    parent_calls = parent_calls + 1
+    if parent_calls >= 2 then error("caught event outer budget", 0) end
+  end
+  debug.sethook(caught_outer, "", 1000)
+  local caught_ok, caught_err = pcall(events.emit, "r:catch-outer", {})
+  restored, _, count = debug.gethook()
+  debug.sethook()
+  ok(not caught_ok and tostring(caught_err):find("caught event outer budget", 1, true),
+    "handler pcall cannot swallow enclosing budget exhaustion")
+  ok(restored == caught_outer and count == 1000,
+    "caught event outer exhaustion preserves the enclosing hook")
+
+  reset()
+  events.sink = function() end
+  local caught_tail = false
+  events.on("r:catch-local", function()
+    pcall(function() while true do end end)
+    return "attempted success"
+  end)
+  events.on("r:catch-local", function() caught_tail = true end)
+  events.emit("r:catch-local", {})
+  ok(caught_tail, "caught local handler budget still fails in isolation and continues dispatch")
+  events.sink = real_sink
+end
+
 -- ==========================================================================
 -- notify -- one function, both worlds
 -- ==========================================================================

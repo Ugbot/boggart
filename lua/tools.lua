@@ -261,6 +261,26 @@ end
 local SAFE_OS = { time = os.time, date = os.date, clock = os.clock,
                   getenv = safe_getenv, difftime = os.difftime }
 
+-- Sandboxed coroutines inherit the caller's active debug hook. Native
+-- coroutine.create does not do this, which otherwise lets generated code move
+-- a runaway loop into a child coroutine and escape both inner and outer limits.
+local SAFE_COROUTINE = {}
+for k, v in pairs(coroutine) do SAFE_COROUTINE[k] = v end
+SAFE_COROUTINE.create = function(fn)
+  local co = coroutine.create(fn)
+  local hook, mask, count = debug.gethook()
+  if hook then debug.sethook(co, hook, mask, count) end
+  return co
+end
+SAFE_COROUTINE.wrap = function(fn)
+  local co = SAFE_COROUTINE.create(fn)
+  return function(...)
+    local packed = table.pack(coroutine.resume(co, ...))
+    if not packed[1] then error(packed[2], 2) end
+    return table.unpack(packed, 2, packed.n)
+  end
+end
+
 local function tool_env()
   local env = {
     -- capabilities (C-backed, policy included)
@@ -284,7 +304,7 @@ local function tool_env()
     pcall = pcall, xpcall = xpcall, error = error, assert = assert,
     rawget = rawget, rawset = rawset, rawequal = rawequal, rawlen = rawlen,
     setmetatable = setmetatable, getmetatable = getmetatable,
-    coroutine = coroutine, -- proc.run yields through this under the scheduler
+    coroutine = SAFE_COROUTINE, -- children inherit the active execution budget
   }
   env._G = env
   return env
@@ -832,6 +852,69 @@ function M.err(kind, fmt, ...)
 end
 
 local LIMIT_SENTINEL = "\0__bog_limit__"
+local OUTER_HOOK_ERROR = {}
+
+-- Install a count hook without discarding an enclosing execution budget. Lua
+-- exposes one hook slot per coroutine, so nested limits must share that slot.
+-- The combined hook advances both counters at their requested cadence and the
+-- exact previous hook is restored even when the protected function raises.
+local function with_count_hook(limit_hook, every, fn, ...)
+  local previous, previous_mask, previous_count = debug.gethook()
+  local args = table.pack(...)
+  local quantum = every
+  if previous and previous_count and previous_count > 0 then
+    local a, b = every, previous_count
+    while b ~= 0 do a, b = b, a % b end
+    quantum = a
+  end
+  local child_ticks, parent_ticks = 0, 0
+  local outer_failure
+  local mask = previous_mask or ""
+  local function call_previous(event, line)
+    local ok, err = pcall(previous, event, line)
+    if not ok then
+      if type(err) == "table" and err.marker == OUTER_HOOK_ERROR then err = err.error end
+      outer_failure = outer_failure or err
+      error({ marker = OUTER_HOOK_ERROR, error = outer_failure }, 0)
+    end
+  end
+  local function combined(event, line)
+    if event == "count" then
+      child_ticks = child_ticks + quantum
+      if child_ticks >= every then child_ticks = child_ticks - every; limit_hook() end
+      if previous and previous_count > 0 then
+        parent_ticks = parent_ticks + quantum
+        if parent_ticks >= previous_count then
+          parent_ticks = parent_ticks - previous_count
+          call_previous(event, line)
+        end
+      end
+    elseif previous then
+      call_previous(event, line)
+    end
+  end
+  debug.sethook(combined, mask, quantum)
+  local function run()
+    -- sethook() resets Lua's hidden remaining-count value. Charge one parent
+    -- tick per nested execution so a stream of children shorter than the
+    -- parent's count interval cannot reset that interval forever.
+    if previous and previous_count and previous_count > 0 then
+      call_previous("count")
+    end
+    return fn(table.unpack(args, 1, args.n))
+  end
+  local packed = table.pack(pcall(run))
+  debug.sethook(previous, previous_mask, previous_count)
+  if outer_failure ~= nil then
+    error({ marker = OUTER_HOOK_ERROR, error = outer_failure }, 0)
+  end
+  if not packed[1] and type(packed[2]) == "table"
+     and packed[2].marker == OUTER_HOOK_ERROR then
+    error(packed[2], 0)
+  end
+  return table.unpack(packed, 1, packed.n)
+end
+M.with_count_hook = with_count_hook
 
 -- Run a generated body under the instruction/memory budget.
 local function run_bounded(d, args)
@@ -839,7 +922,7 @@ local function run_bounded(d, args)
   local mem0 = used_kb()
   local step = M.LIMITS.check_every
 
-  debug.sethook(function()
+  local function guard()
     ticks = ticks + step
     if ticks > M.LIMITS.instructions then
       tripped = string.format("exceeded the instruction budget (%d)", M.LIMITS.instructions)
@@ -850,15 +933,14 @@ local function run_bounded(d, args)
       tripped = string.format("allocated more than %d MB", M.LIMITS.memory_kb // 1024)
       error(LIMIT_SENTINEL, 0)
     end
-  end, "", step)
+  end
 
   -- pcall is yieldable in 5.4, so a body that yields through proc.run still
   -- reaches the scheduler; the hook is per-coroutine and survives the yield.
-  local ok, res = pcall(d.run, args)
-  debug.sethook()
+  local ok, res = with_count_hook(guard, step, d.run, args)
 
+  if tripped then return M.err(tripped_kind, "%s and was stopped", tripped) end
   if not ok then
-    if tripped then return M.err(tripped_kind, "%s and was stopped", tripped) end
     return M.err(M.ERR.runtime, tostring(res))
   end
   return res
@@ -909,7 +991,10 @@ function M.run(name, input)
     end
   else
     local ok, r = pcall(d.run, input or {})
-    if not ok then return M.err(M.ERR.runtime, tostring(r)) end
+    if not ok then
+      if type(r) == "table" and r.marker == OUTER_HOOK_ERROR then error(r.error, 0) end
+      return M.err(M.ERR.runtime, tostring(r))
+    end
     res = r
   end
 
@@ -1029,9 +1114,7 @@ local function tool_lua(a)
     budget = budget + 1
     if budget > 4000 then error("lua: instruction budget exceeded (possible runaway loop)", 0) end
   end
-  debug.sethook(guard, "", 100000) -- ~4e8 instructions before it trips
-  local packed = table.pack(pcall(chunk))
-  debug.sethook()
+  local packed = table.pack(with_count_hook(guard, 100000, chunk))
 
   if not packed[1] then return "Tool error: " .. tostring(packed[2]) end
   local rets = {}

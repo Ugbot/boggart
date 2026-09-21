@@ -89,6 +89,71 @@ do
      "lua tool: can read files through gold.fs")
   tools.run("lua", { code = "bogus_global = 123" })
   eq(rawget(_G, "bogus_global"), nil, "lua tool: cannot leak into harness globals")
+
+  -- A nested tool must restore, rather than clear, its caller's hook.
+  local outer_ticks = 0
+  local function outer() outer_ticks = outer_ticks + 1 end
+  debug.sethook(outer, "", 1000)
+  tools.run("lua", { code = "local x=0; for i=1,10000 do x=x+i end; return x" })
+  local restored, _, restored_count = debug.gethook()
+  debug.sethook()
+  ok(restored == outer and restored_count == 1000 and outer_ticks > 0,
+    "nested lua tool preserves and advances the enclosing instruction hook")
+
+  debug.sethook(outer, "", 1000)
+  local nested_error = tools.run("lua", { code = "error('nested failure')" })
+  restored, _, restored_count = debug.gethook()
+  debug.sethook()
+  ok(nested_error:find("nested failure", 1, true) ~= nil and
+     restored == outer and restored_count == 1000,
+    "nested lua tool restores the enclosing hook after an error")
+
+  -- sethook resets Lua's hidden count remainder. Many children that each run
+  -- for less than the parent's interval must still exhaust the parent, and the
+  -- nested tool's error shaping must not swallow that outer termination.
+  local charges = 0
+  local function finite_outer()
+    charges = charges + 1
+    if charges >= 5 then error("outer finite budget exhausted", 0) end
+  end
+  debug.sethook(finite_outer, "", 1000000000)
+  local calls_ok, calls_err = pcall(function()
+    for _ = 1, 20 do tools.run("lua", { code = "return 1" }) end
+  end)
+  restored, _, restored_count = debug.gethook()
+  debug.sethook()
+  ok(not calls_ok and tostring(calls_err):find("outer finite budget exhausted", 1, true),
+    "many short nested tools consume and eventually exhaust the outer budget")
+  ok(charges == 5 and restored == finite_outer and restored_count == 1000000000,
+    "outer exhaustion escapes nested tool error conversion and restores its hook")
+
+  local mid_ticks = 0
+  local function mid_outer()
+    mid_ticks = mid_ticks + 1
+    if mid_ticks >= 3 then error("mid-body outer budget exhausted", 0) end
+  end
+  debug.sethook(mid_outer, "", 1000)
+  local mid_ok, mid_err = pcall(tools.run, "lua", { code = [[
+    local caught = pcall(function()
+      local x = 0
+      for i = 1, 100000 do x = x + i end
+    end)
+    return caught and "escaped" or "caught-and-tried-to-succeed"
+  ]] })
+  restored, _, restored_count = debug.gethook()
+  debug.sethook()
+  ok(not mid_ok and tostring(mid_err):find("mid-body outer budget exhausted", 1, true),
+    "caught mid-body outer exhaustion remains a terminal nested-tool failure")
+  ok(restored == mid_outer and restored_count == 1000,
+    "mid-body outer exhaustion restores the enclosing hook")
+
+  local child = tools.run("lua", { code = [[
+    local co = coroutine.create(function() while true do end end)
+    local ok, err = coroutine.resume(co)
+    return ok and "escaped" or tostring(err)
+  ]] })
+  ok(child:find("budget", 1, true) ~= nil and child:find("escaped", 1, true) == nil,
+    "sandbox coroutine inherits the instruction budget")
 end
 
 -- ---- fallback tools (prefer a rich impl, fall back to a built-in) ----------

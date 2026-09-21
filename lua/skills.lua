@@ -771,19 +771,16 @@ function M.as_callable(name)
     finally = sk.finally,
   })
   for _, c in ipairs(sk.components or {}) do node:attach(c) end
-  -- A `verify` FUNCTION becomes a code verifier that runs in finally: the
-  -- skill's own output is checked, and a failed check raises rather than
-  -- letting a bad result through. (A `verify` STRING stays the model-run tool
-  -- as before, for skills that have not moved that check into code yet.)
+  -- A `verify` FUNCTION is a verifier, not cleanup. Callable runs it after the
+  -- body and before finalizers, and retains its failure alongside cleanup errors.
   if type(sk.verify) == "function" then
     node:attach({
       name = "verify",
-      finally = function(ctx, res)
-        if res == nil then return nil end
+      verify = function(ctx, res)
         local ok = sk.verify(res, ctx)
-        if ok == true then return res end
-        error("skill '" .. name .. "' verify failed: " ..
-          (type(ok) == "string" and ok or tostring(ok)), 0)
+        if ok == true then return true end
+        return "skill '" .. name .. "': " ..
+          (type(ok) == "string" and ok or tostring(ok))
       end,
     })
   end

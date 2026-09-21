@@ -199,6 +199,30 @@ do
      "a fallback contributes tools, not a second instruction block")
 end
 
+-- Skill verifiers are distinct from finalizers: false/throw fail the call and
+-- cleanup still executes once, with both errors visible in the result record.
+do
+  local cleaned = 0
+  package.preload["skills.__lifecycle"] = function()
+    return {
+      description = "lifecycle regression skill", instructions = "test",
+      run = function() return "candidate" end,
+      verify = function() return false end,
+      finally = function() cleaned = cleaned + 1; error("cleanup detail", 0) end,
+    }
+  end
+  package.loaded["skills.__lifecycle"] = nil
+  local node = skills.as_callable("__lifecycle")
+  local result = node:result({})
+  ok(result.status == "failed" and result.verification and not result.verification.ok,
+    "skill false verifier cannot report success")
+  ok(result.cleanup_error and result.cleanup_error:find("cleanup detail", 1, true),
+    "skill outcome retains cleanup error detail")
+  ok(cleaned == 1, "skill finalizer runs once after verifier failure")
+  package.preload["skills.__lifecycle"] = nil
+  package.loaded["skills.__lifecycle"] = nil
+end
+
 -- ---- invocation (model vs user) --------------------------------------------
 ok(skills.validate({ instructions = "i", invocation = "model" }) == nil, "invocation=model ok")
 ok(skills.validate({ instructions = "i", invocation = "user" }) == nil, "invocation=user ok")
