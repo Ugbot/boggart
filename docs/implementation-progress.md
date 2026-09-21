@@ -23,8 +23,9 @@ status authority.
 | BRAIN-20 | Scoped retention/deletion, redacted export, lineage invalidation, durable failure gaps and bounded recovery | Retention154 twice; final native and Linux seven affected suites each repeated twice; independent re-review approved | `e0a1900` |
 | BRAIN-16 | Authenticated local control, explicit unattended admission, canonical effect paths and bounded generated execution | Final native66/66 and Linux65/65; native17 and Linux8 affected suites each twice; independent re-review approved | `2b81ea4` |
 | BRAIN-21 | Station discovery, host-qualified capabilities and faithful ZMQ/MCP outcomes without unsafe retry | Final six affected suites each twice on native/Linux; real native MCP stdio and ZMQ ROUTER fixtures; independent re-review approved | `ce2e651` |
-
 | BRAIN-22 | Faithful typed Station capture/bindings, bounded capture redaction, legacy export/import and terminal uncertain-state protection | Station forge203/catalog74/Ralph124/VerifyCode9; Boggart imports704, native/Linux repeated imports and actual current/redacted/legacy export bridges; independent re-review approved | Boggart `8b062dd`; Station `7e9e1b8f` |
+
+| BRAIN-23 | Durable AIbyWire MCP delegation with retained SQLite claims, input-bound reconnect, backend-owned retries and privacy-aware receipts | Backend92 tests; Lua23 checks; native/Linux five affected suites each twice; actual MCP1.30 typed/restart/privacy/lost-ack/readonly checks; independent re-review approved | Boggart `3fc1412`; AIbyWire `4e8127e` |
 
 Build: `cmake --build build --target boggart -j 6` with `CCACHE_DIR` and
 `CCACHE_TEMPDIR` pointing inside `build/ccache`, because the default cache
@@ -213,4 +214,28 @@ only imports changed afterward. Actual current, redacted and legacy C++ exporter
 outputs passed Boggart SQLite ingestion on both macOS and Linux ARM64. All fixtures
 were synthetic; no private history, paid models or real external messages were
 used. The independent re-review approved all23 product files. BRAIN-23 durable
-AIbyWire delegation is the next active ticket.
+AIbyWire delegation was subsequently completed; BRAIN-24 Gestalt memory is now active.
+
+
+BRAIN-23 qualifies the Python native SQLite backend through real MCP controller
+wrappers. Boggart retains Lua control flow and a local binding from operation ID
+to target, capability version, input hash and retained evidence. AIbyWire owns
+retries and permanent atomic submission claims. A reserved `boggart:` ID
+namespace excludes ordinary admissions before dispatch, including controller
+trigger/external routes and startup recovery. In-flight ownership uncertainty
+never authorizes client resubmission or automatic controller takeover.
+
+Review found and reproduced an escaped-secret evidence leak and a mixed-profile
+admission race; both now have RED/GREEN regressions and independent approval.
+Exact public JSON is retained only after inspection of the full parsed response.
+Sanitization removes the raw bytes and marks exact source unavailable; projected
+Lua results explicitly disclose empty-array/object ambiguity.
+
+The AIbyWire changes are committed on isolated branch
+`feature/boggart-durable-jobs`; the original checkout and Python environment
+remain unmodified. A disposable SDK environment qualified the resolver-selected
+MCP1.30.0. Dependency acquisition used network access; the final lock consistency
+check passed offline. Existing Pydantic/linker warning noise remains disclosed.
+Remote policy/usage ceilings, compensation, Rust/external backends and arbitrary
+worker exactly-once delivery remain unqualified. Tests used synthetic workers
+and temporary profiles, with no paid models or real external messages.
