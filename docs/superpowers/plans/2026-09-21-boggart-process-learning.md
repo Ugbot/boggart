@@ -353,8 +353,8 @@ Ordinary Lua controls every step, including delegation; injected values and func
 
 **Acceptance criteria:**
 
-- [ ] Legacy tools register through an adapter without losing arguments or structured results; incompatible descriptor versions reject before dispatch.
-- [ ] Effectful timeout reports uncertain when execution cannot be disproved, rather than declaring failed and authorizing blind retry.
+- [x] Legacy tools register through an adapter without losing arguments or structured results; incompatible descriptor versions reject before dispatch.
+- [x] Effectful timeout reports uncertain when execution cannot be disproved, rather than declaring failed and authorizing blind retry.
 
 **Test scenario:**
 

@@ -13,6 +13,7 @@ status authority.
 | BRAIN-12 | Shared SQLite quota reservation, reconciliation, restart and clock protection | Rebuilt-binary quota 52 checks and policy 36 checks; real writer and commit lock contention; independent review approved | `3623844` |
 | BRAIN-13 | Common invocation gate across nested tools, CLI/cTUI, Studio and child agents; coroutine authority/budgets, structured results and single accounting | Full rebuilt-binary Lua suite 59/59; invoke 87 checks; CTest invoke repeated twice; independent review approved | `15198f9` |
 | BRAIN-14 | Verifier failures propagate, cleanup remains visible, and nested tool/event budgets survive resets and caught errors | Rebuilt-binary callable 35, skills 95, luatool 42 and events 128 checks; independent review approved | `2c79885` |
+| BRAIN-17 | Immutable exact-version capabilities, structured outcomes, conservative effect uncertainty, and bounded usage reconciliation | Full rebuilt-binary Lua suite 60/60; capability 73, invoke 87, quota 54 and luatool 42 checks; deterministic native code-search fixture; CTest capability repeated twice; independent review approved | `d1e6c1a` |
 | BRAIN-15 | Failed reload restores worker/module bindings and event registrations; session listing uses the actual store API and exposes errors | Rebuilt-binary lifecycle 114 checks, sessions 39 checks, real HTTP control 33 checks; independent review approved | `1470254` |
 
 Build: `cmake --build build --target boggart -j 6` with `CCACHE_DIR` and
@@ -22,8 +23,8 @@ directory is outside the workspace sandbox. Tests ran through `./boggart
 model requests or real messaging workflows were used.
 
 The existing user changes to judge/TypeSafe, models and completion were
-preserved outside these commits. BRAIN-17 is implementing versioned capability
-contracts next. Local control authentication and unattended-default hardening
+preserved outside these commits. BRAIN-17 is complete; BRAIN-41 is implementing injected context values and
+providers next. Local control authentication and unattended-default hardening
 remain open as BRAIN-16.
 
 The broader 57-suite run passed 53 suites on its first pass. MCP and control
@@ -42,3 +43,12 @@ model was absent; the suite verified the clean missing-model behavior. Studio
 coverage uses the existing stub-window harness, not a real GUI session. This
 build includes the preserved user work and is not a clean-checkout release
 qualification.
+
+BRAIN-17 final integration passed all 60 registered Lua suites in one uninterrupted
+run. The initial run exposed a code-search ranking test whose corpus was the
+changing repository; a fixed temporary corpus now checks real native relevance
+ordering and incremental updates. Review also found sparse-array validation and
+throwing output-validator accounting gaps; both are repaired with direct regressions
+and demonstrated failing mutations. The same voice, GUI and platform limits above
+apply. Provider adapters must actually enforce the ceilings they declare; concrete
+remote-provider qualification remains in the integration tickets.

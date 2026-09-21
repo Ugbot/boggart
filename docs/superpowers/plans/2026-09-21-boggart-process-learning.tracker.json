@@ -174,7 +174,7 @@
           ],
           "test": "capability",
           "example": "assert(timeout_outcome.status == \"uncertain\")",
-          "status": "in_progress"
+          "status": "done"
         },
         {
           "id": "context",
@@ -190,7 +190,8 @@
             "capability"
           ],
           "test": "context",
-          "example": "assert(ctx:resolve(\"character\", {id=\"fixture\"}) .name == \"Fixture Character\")"
+          "example": "assert(ctx:resolve(\"character\", {id=\"fixture\"}) .name == \"Fixture Character\")",
+          "status": "in_progress"
         },
         {
           "id": "workflow",
