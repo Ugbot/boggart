@@ -191,7 +191,7 @@
           ],
           "test": "context",
           "example": "assert(ctx:resolve(\"character\", {id=\"fixture\"}) .name == \"Fixture Character\")",
-          "status": "in_progress"
+          "status": "done"
         },
         {
           "id": "workflow",
@@ -209,7 +209,8 @@
             "reload"
           ],
           "test": "workflow",
-          "example": "assert(old_run.version == \"v1\"); assert(new_run.version == \"v2\")"
+          "example": "assert(old_run.version == \"v1\"); assert(new_run.version == \"v2\")",
+          "status": "in_progress"
         },
         {
           "id": "recovery",

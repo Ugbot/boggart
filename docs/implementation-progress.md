@@ -15,6 +15,7 @@ status authority.
 | BRAIN-14 | Verifier failures propagate, cleanup remains visible, and nested tool/event budgets survive resets and caught errors | Rebuilt-binary callable 35, skills 95, luatool 42 and events 128 checks; independent review approved | `2c79885` |
 | BRAIN-17 | Immutable exact-version capabilities, structured outcomes, conservative effect uncertainty, and bounded usage reconciliation | Full rebuilt-binary Lua suite 60/60; capability 73, invoke 87, quota 54 and luatool 42 checks; deterministic native code-search fixture; CTest capability repeated twice; independent review approved | `d1e6c1a` |
 | BRAIN-15 | Failed reload restores worker/module bindings and event registrations; session listing uses the actual store API and exposes errors | Rebuilt-binary lifecycle 114 checks, sessions 39 checks, real HTTP control 33 checks; independent review approved | `1470254` |
+| BRAIN-41 | Injected concrete values, functions and composable providers; exact capability pins, revision-aware caches, provenance and restrictive authority | Rebuilt-binary context 78, capability 73, invoke 87, events 128, policy 36 and quota 54 checks; CTest context repeated twice; independent review approved | `6407221` |
 
 Build: `cmake --build build --target boggart -j 6` with `CCACHE_DIR` and
 `CCACHE_TEMPDIR` pointing inside `build/ccache`, because the default cache
@@ -23,8 +24,8 @@ directory is outside the workspace sandbox. Tests ran through `./boggart
 model requests or real messaging workflows were used.
 
 The existing user changes to judge/TypeSafe, models and completion were
-preserved outside these commits. BRAIN-17 is complete; BRAIN-41 is implementing injected context values and
-providers next. Local control authentication and unattended-default hardening
+preserved outside these commits. BRAIN-17 and BRAIN-41 are complete; BRAIN-42 is implementing versioned Lua
+workflow execution next. Local control authentication and unattended-default hardening
 remain open as BRAIN-16.
 
 The broader 57-suite run passed 53 suites on its first pass. MCP and control
@@ -52,3 +53,11 @@ throwing output-validator accounting gaps; both are repaired with direct regress
 and demonstrated failing mutations. The same voice, GUI and platform limits above
 apply. Provider adapters must actually enforce the ceilings they declare; concrete
 remote-provider qualification remains in the integration tickets.
+
+BRAIN-41 native verification covered all six affected suites. Mutation regressions
+proved that adjacent 64-bit request integers stay distinct, stale suspended-provider
+results cannot repopulate an invalidated cache, benign instrumentation does not
+leak raw provider errors, and short resolution loops cannot evade the enclosing
+instruction budget. Counter charging is conservative, not exact VM instruction
+measurement. Context emits metadata/provenance; redacted evaluated-value persistence
+remains BRAIN-18. This ticket did not rerun the full platform/release matrix.

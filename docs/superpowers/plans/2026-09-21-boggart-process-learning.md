@@ -376,8 +376,8 @@ assert(timeout_outcome.status == "uncertain")
 
 **Acceptance criteria:**
 
-- [ ] The same workflow works with a concrete character record and a provider function; injection wins over defaults and missing values are explicit.
-- [ ] Provider calls are traced and policy-gated; run caching does not leak across runs; cyclic providers fail with the resolution path.
+- [x] The same workflow works with a concrete character record and a provider function; injection wins over defaults and missing values are explicit.
+- [x] Provider calls are traced and policy-gated; run caching does not leak across runs; cyclic providers fail with the resolution path.
 
 **Test scenario:**
 
