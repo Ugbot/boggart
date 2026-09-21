@@ -541,11 +541,11 @@ assert(fake_station.write_count == 1)
 
 **Dependencies:** BRAIN-21, BRAIN-19
 
-**Files:** Sibling ~/llm-station/src/forge/{ActionCapture.cpp,Forger.cpp,ForgeExecutor.cpp,ForgeTypes.h}, src/ralph/RalphExecutionActions.cpp and relevant forge tests; read its AGENTS.md and project_map.md before edits.
+**Files:** Sibling isolated checkout: src/forge/{ActionCapture.cpp,Forger.cpp,ForgeExecutor.cpp,ForgeTypes.h,SqliteForgeStore.cpp} and corresponding headers; src/ralph/{RalphExecutionActions.cpp,RalphForgeBinding.h}; src/tools/forge/{ForgeSearchTool.h,ForgeExecuteTool.h,ForgeManageTool.h}; focused forge/Ralph tests, tests/CMakeLists.txt source registration and project_map.md. Boggart lua/imports/{init.lua,station.lua} and tests/imports.lua for the versioned Station exchange. Read sibling AGENTS.md; preserve the original dirty checkout.
 
 **Implementation:** Use a JSON encoder, preserve results/artifact refs, populate fixed/template arguments and result bindings, and bind current task inputs in template-first execution. Unknown or unavailable precondition checks are ineligible. Expose repaired evidence/templates for Lua compilation; do not make Station a competing top-level learning owner. Run sibling tests in its own change set.
 
-**Interface:** Versioned ActionTrace/ActionTemplate exchange preserves typed bindings and evidence provenance; Boggart adapter imports it into normalized evidence and candidate Lua generation.
+**Interface:** Versioned ActionTrace/ActionTemplate exchange preserves typed bindings and evidence provenance; Boggart adapter imports it into normalized evidence and candidate Lua generation. Use the existing forge tool transport: an explicit structured search result and forge_manage export action, not a new RPC. Repair real Ralph search/result and execution argument-name mismatches. Persist typed bindings and provenance through structured store serialization with tested legacy reads; never infer dataflow from equal values. Imported Station evidence remains unverified observations with explicit missing/truncated coverage, normal scope/tombstone checks and redaction.
 
 **Acceptance criteria:**
 

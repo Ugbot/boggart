@@ -323,9 +323,9 @@
         {
           "id": "forge",
           "title": "Repair Station capture and faithful parameter binding",
-          "files": "Sibling ~/llm-station/src/forge/{ActionCapture.cpp,Forger.cpp,ForgeExecutor.cpp,ForgeTypes.h}, src/ralph/RalphExecutionActions.cpp and relevant forge tests; read its AGENTS.md and project_map.md before edits.",
+          "files": "Sibling isolated checkout: src/forge/{ActionCapture.cpp,Forger.cpp,ForgeExecutor.cpp,ForgeTypes.h,SqliteForgeStore.cpp} and corresponding headers; src/ralph/{RalphExecutionActions.cpp,RalphForgeBinding.h}; src/tools/forge/{ForgeSearchTool.h,ForgeExecuteTool.h,ForgeManageTool.h}; focused forge/Ralph tests, tests/CMakeLists.txt source registration and project_map.md. Boggart lua/imports/{init.lua,station.lua} and tests/imports.lua for the versioned Station exchange. Read sibling AGENTS.md; preserve the original dirty checkout.",
           "work": "Use a JSON encoder, preserve results/artifact refs, populate fixed/template arguments and result bindings, and bind current task inputs in template-first execution. Unknown or unavailable precondition checks are ineligible. Expose repaired evidence/templates for Lua compilation; do not make Station a competing top-level learning owner. Run sibling tests in its own change set.",
-          "api": "Versioned ActionTrace/ActionTemplate exchange preserves typed bindings and evidence provenance; Boggart adapter imports it into normalized evidence and candidate Lua generation.",
+          "api": "Versioned ActionTrace/ActionTemplate exchange preserves typed bindings and evidence provenance; Boggart adapter imports it into normalized evidence and candidate Lua generation. Existing forge transport provides structured search and forge_manage export; structured persistence preserves typed bindings/provenance with legacy reads. Ralph uses current execution argument names; Station imports remain unverified, scoped/redacted observations with explicit gaps.",
           "ac": [
             "A trace containing quotes/newlines and nested results produces a faithful template that executes with distinct held-out parameter values.",
             "Missing checker and unknown precondition cannot pass eligibility; Ralph supplies current arguments instead of historical literals."
