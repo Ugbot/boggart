@@ -40,10 +40,14 @@ The descriptor fields are:
 | `estimate` | Trusted `(args) -> {metric=amount}` reservation estimate |
 | `bounded` | Trusted provider adapter assertion `{tokens=true, monetary_micro_units=true, ...}` |
 | `target` | Informational execution target, default `local`; adapter owns actual dispatch |
-| `cancel`, `reconcile` | Optional trusted host callbacks for provider-specific receipt handling; never automatically invoked |
+| `cancel` | Optional trusted host cancellation callback; not automatically invoked |
+| `reconcile` | Optional trusted `(args, execution)` callback used by explicit host reconciliation and opted-in durable recovery |
+| `reconcile_estimate`, `reconcile_bounded` | Separate estimate/enforcement contract for reconciliation-query usage; original-effect usage is historical |
+| `revision`, `provider_revision`, `source_revision`, `cache` | Host revision labels and explicit `cache='result'` eligibility used by [runstore](runstore.md); writes are ineligible |
 
 A runner receives `(args, execution)` where execution contains the host-generated
-`invocation_id`, `target`, and `ceilings`. It returns `result, metadata` with
+`invocation_id`, `operation_id`, `target`, and `ceilings`. Durable execution gives
+the original adapter a stable operation ID before its first effect. It returns `result, metadata` with
 optional metadata `{status, usage, receipt, artifacts, error, effect_disproven}`.
 Default status is succeeded. Provider-specific job IDs, cancellation acknowledgements
 and reconciliation tokens belong in `metadata.receipt`. Registering a callback
@@ -83,7 +87,9 @@ and blocks overruns, including policies containing only hard per-call limits.
 Unknown failed usage retains reservations; missing successful usage is refused
 and quarantines the live ledger object. Recovery after unknown accounting remains
 a host responsibility. A replacement custom runner cannot inherit a bounded
-adapter's authority. Multiple inherited limits take the minimum ceiling.
+adapter's authority; reconciliation declares its own bounds. Cache reuse reports
+zero new provider usage under current authorization and keeps historical usage
+and artifacts separately. Multiple inherited limits take the minimum ceiling.
 
 `quota_bounds` is an additive SQLite table recording new hard-limit reservations.
 Existing tables and historical reservations are unchanged; historical reservations

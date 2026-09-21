@@ -2,7 +2,8 @@
 
 `context` supplies injected values and ordinary Lua providers to a workflow.
 Workflow registration and execution belong to `workflow`; durable observations
-belong to [evidence](evidence.md). Crash recovery remains separate work. No mandatory context
+belong to [evidence](evidence.md). Opted-in source workflows use
+[runstore](runstore.md) for durable recovery. No mandatory context
 JSON schema is imposed; capability input/output validation remains at the
 [capability invocation boundary](capabilities.md).
 
@@ -261,7 +262,9 @@ dependency manifest, steps, context provenance, explicit invocation receipts,
 result and verification flag. States are created, running, suspended, succeeded,
 failed, uncertain or cancelled. Terminal handles never restart. The
 [evidence store](evidence.md) persists observed boundaries by default. Run handles
-remain live coroutine state: no replay, automatic retry or crash resume is implied.
+remain live coroutine state. Durable restart recovery is a separate
+[opt-in source contract](runstore.md), with a new handle and ownership fencing;
+ordinary registration does not imply replay or automatic retry.
 
 Workflow context provides:
 

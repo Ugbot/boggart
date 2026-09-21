@@ -95,9 +95,13 @@ function M.register(descriptor, runner)
     assert(({pure=true,read=true,write=true,unknown=true})[d.effect],"invalid effect class")
     d.target=d.target or "local"
     assert(type(d.target)=="string" and d.target~="","target required")
-    for _,k in ipairs({"resources","estimate","cancel","reconcile"}) do assert(d[k]==nil or type(d[k])=="function",k.." must be callable") end
+    for _,k in ipairs({"resources","estimate","cancel","reconcile","reconcile_estimate"}) do assert(d[k]==nil or type(d[k])=="function",k.." must be callable") end
     assert(d.requires_approval==nil or type(d.requires_approval)=="boolean","requires_approval must be boolean")
     d.validate_input=validator(d,"input"); d.validate_output=validator(d,"output")
+    if d.reconcile_bounded then
+      assert(type(d.reconcile_bounded)=="table" and type(d.reconcile_estimate)=="function" and type(d.reconcile)=="function","bounded reconciliation requires hook and estimator")
+      for metric,enabled in pairs(d.reconcile_bounded) do assert(type(metric)=="string" and metric~="" and enabled==true,"invalid reconciliation bounded metric") end
+    end
     if d.bounded then
       assert(type(d.bounded)=="table" and type(d.estimate)=="function","bounded adapters require estimator")
       for metric,enabled in pairs(d.bounded) do assert(type(metric)=="string" and metric~="" and enabled==true,"invalid bounded metric") end
@@ -142,23 +146,44 @@ function M.adapt(id,version,registry,metadata)
   end
   return registered
 end
-function M.call(context,id,version,args)
+local function dispatch(context,id,version,args,options)
+  options=options or {}
   local d,err=M.resolve(id,version)
   if not d then return {status="failed",error={code="version_unavailable",message=err,retryable=false},usage={},receipt={dispatched=false,id=id,version=version}} end
   local e=entries[id][version]
   local owner={}
-  require("invoke").bind(owner,function(name) if name==id and (not e.source or e.source()) then return e.descriptor end end,
-    function(_,input,execution)
-      local result,meta=e.runner(input,execution)
+  local function runner(_,input,execution)
+      if options.guard then options.guard(execution) end
+      local result,meta=(options.runner or e.runner)(input,execution)
       meta=meta or {status="succeeded"}
       assert(type(meta)=="table","execution metadata must be separate table")
       meta=copy(meta); meta.status=meta.status or "succeeded"
       assert(({succeeded=true,failed=true,cancelled=true,uncertain=true})[meta.status],"invalid execution status")
       if meta.usage then for metric,value in pairs(meta.usage) do assert(type(metric)=="string" and finite(value),"invalid actual usage") end end
       return result,meta
-    end,nil,true)
-  local result,call_error,receipt=require("invoke").call(context,id,args,{registry=owner})
+    end
+  require("invoke").bind(owner,function(name) if name==id and (not e.source or e.source()) then return e.descriptor end end,runner,nil,true)
+  local result,call_error,receipt=require("invoke").call(context,id,args,{registry=owner,operation_id=options.operation_id,reuse=options.reuse,reconcile=options.reconcile,runner=options.runner and runner or nil})
   return {status=receipt.status,result=result,error=call_error,usage=receipt.usage or {},
     artifacts=receipt.artifacts,receipt=receipt}
+end
+function M.call(context,id,version,args,options)
+  return dispatch(context,id,version,args,{operation_id=options and options.operation_id,guard=options and options.guard})
+end
+-- These are trusted host helpers; source Lua cannot select runners or receipts.
+function M.reconcile(context,id,version,args,operation_id,guard)
+  local d=M.resolve(id,version)
+  if not d or not d.reconcile then return {status='uncertain',error={code='reconciliation_unavailable'}} end
+  return dispatch(context,id,version,args,{operation_id=operation_id,runner=d.reconcile,guard=guard,reconcile=true})
+end
+function M.reuse(context,id,version,args,outcome,kind)
+  local result=dispatch(context,id,version,args,{reuse=true,runner=function(_,execution)
+    local usage={}
+    for metric in pairs(execution.ceilings) do usage[metric]=0 end
+    return copy(outcome.result),{status='succeeded',usage=usage,artifacts=copy(outcome.artifacts),receipt={reuse=kind,
+      original_invocation_id=outcome.receipt and outcome.receipt.invocation_id,
+      historical_usage=copy(outcome.usage or {})}}
+  end})
+  return result
 end
 return M

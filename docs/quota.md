@@ -7,6 +7,14 @@ bindings are copied at open; policy `subject` names a dimension in this host
 configuration. Invocation arguments cannot choose a bucket identity. Use one
 durable database for every local agent/run sharing a quota authority.
 
+`quota.identity(ledger)` returns a copied persistent identity and subject bindings
+only for ledgers recognized by this module. The additive `quota_identity` table
+keeps that identity stable when the same database is reopened. It is an identity
+check, not authorization: [durable recovery](runstore.md) requires a matching
+ledger from current host authority and retains the original restrictions.
+Pending original reservations stay charged until genuinely settled; reconciling
+an external effect does not by itself settle its original quota accounting.
+
 ```lua
 local ledger = assert(require('quota').open(conn, os.time, {
   subjects = {principal = authenticated_principal},

@@ -174,3 +174,11 @@ check(costthrow.usage.tokens==7 and costthrow.receipt.execution.job_id=='overrun
 local costreopened=assert(require('quota').open(costthrowdb))
 check(cap.call(limited(costreopened,'cost-throw'),'bounded','1',{}).error.code=='overrun','validator throw overrun halt persists across reopen')
 print('capability: '..passed..' checks passed')
+-- Explicit false is an input value, not an omitted argument/default object.
+local false_inputs=0
+assert(cap.register({id='_false_input',version='1',effect='pure',input_schema={type='boolean'},output_schema={type='boolean'}},function(value)
+ false_inputs=false_inputs+1;assert(value==false);return value
+end))
+local false_outcome=cap.call(ctx,'_false_input','1',false)
+check(false_outcome.status=='succeeded' and false_outcome.result==false and false_inputs==1,'explicit false input reaches boolean capability unchanged')
+print('capability reviewed false input: '..passed..' checks passed')

@@ -1,6 +1,13 @@
 -- Persistent, local shared quotas. Only trusted host code owns a ledger/DB.
 local policy = require 'policy'
 local M = {}
+local identities=setmetatable({}, {__mode="k"})
+function M.identity(ledger)
+  local saved=identities[ledger]
+  if not saved then return nil end
+  local subjects={};for k,v in pairs(saved.subjects) do subjects[k]=v end
+  return {id=saved.id,subjects=subjects}
+end
 local MAX = 9007199254740991 -- exact integer boundary for SQLite REAL accounting
 local function finite(n) return type(n)=='number' and n==n and n>=0 and n<=MAX end
 local function nonempty(s) return type(s)=='string' and #s>0 end
@@ -41,6 +48,7 @@ end
 local SCHEMA=[[
 CREATE TABLE IF NOT EXISTS quota_meta (id INTEGER PRIMARY KEY CHECK(id=1), watermark REAL NOT NULL, blocked INTEGER NOT NULL);
 INSERT OR IGNORE INTO quota_meta VALUES(1,0,0);
+CREATE TABLE IF NOT EXISTS quota_identity (singleton INTEGER PRIMARY KEY CHECK(singleton=1), identity TEXT UNIQUE NOT NULL);
 CREATE TABLE IF NOT EXISTS quota_rules (rule TEXT PRIMARY KEY, shape TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS quota_buckets (bucket TEXT PRIMARY KEY, used REAL NOT NULL CHECK(used>=0));
 CREATE TABLE IF NOT EXISTS quota_reservations (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, status TEXT NOT NULL, outcome TEXT NOT NULL, overrun INTEGER NOT NULL);
@@ -62,6 +70,7 @@ function M.open(conn, clock, options)
       subjects[k]=v
     end
     checked(conn:exec(SCHEMA))
+    checked(conn:run("INSERT OR IGNORE INTO quota_identity(singleton,identity) VALUES(1,?)",{require("evidence").id("quota-ledger")}))
     -- All transaction work is synchronous native SQLite plus private plain data.
     -- The injected clock is called before BEGIN, never while holding a lock.
     local function transaction(fn)
@@ -84,6 +93,7 @@ function M.open(conn, clock, options)
         overrun=row.overrun==1,replayed=replayed or false}
     end
     local ledger={}
+    identities[ledger]={id=query("SELECT identity FROM quota_identity WHERE singleton=1")[1].identity,subjects=subjects}
     function ledger:reserve(compiled, invocation_id, estimate)
       local prepared,err=protected(function()
         assert(nonempty(invocation_id),'invocation ID required')

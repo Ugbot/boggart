@@ -43,7 +43,7 @@ end
 local function identity(d)
   return {id=d.id,version=d.version,source_kind=d.source and 'lua_source' or 'trusted_host',
     source_hash=d.source and M.hash(d.source) or nil,hash_algorithm=d.source and 'sha256' or nil,
-    capabilities=copy(d.capabilities),workflows=copy(d.workflows),metadata=copy(d.metadata)}
+    capabilities=copy(d.capabilities),workflows=copy(d.workflows),metadata=copy(d.metadata),durable=d.durable}
 end
 local function bindings(values)
   assert(values==nil or type(values)=='table','context must be a table')
@@ -60,6 +60,7 @@ end
 function M.register(d)
   if type(d)~='table' or getmetatable(d)~=nil or not text(d.id) or not text(d.version) then return nil,err('workflow_invalid') end
   if registry[d.id] and registry[d.id][d.version] then return nil,err('workflow_version_exists') end
+  if d.durable~=nil and (d.durable~='replay-v1' or type(d.source)~='string') then return nil,err('workflow_non_resumable') end
   if d.source~=nil then
     if d.source_hash~=nil and (type(d.source)~='string' or d.source_hash~=M.hash(d.source)) then return nil,err('workflow_source_hash_mismatch') end
     if type(d.source)~='string' or d.run~=nil or d.verify~=nil or d.defaults~=nil then return nil,err('workflow_source_conflict') end
@@ -102,7 +103,8 @@ function M.start(id, options)
     for cap,version in pairs(d.capabilities) do
       local found=capability.resolve(cap,version)
       if not found then error(err('capability_not_found'),0) end
-      manifest.capabilities[segment(cap)..segment(version)]={id=cap,version=version}
+      if root.durable and (type(found.revision)~='string' or found.revision=='') then error(err('dependency_revision_required'),0) end
+      manifest.capabilities[segment(cap)..segment(version)]=root.durable and require('runstore').identity(found) or {id=cap,version=version}
     end
     for child,version in pairs(d.workflows) do
       local nested=registry[child] and registry[child][version]
@@ -111,6 +113,7 @@ function M.start(id, options)
     end
   end
   local ok,why=pcall(pin,root);if not ok then return nil,why end
+  local authority=invoke.context({policy=options.policy},options.authority)
   local injected=bindings(options.context)
   local source_revisions=copy(options.source_revisions)
   for key,value in pairs(injected) do
@@ -118,12 +121,44 @@ function M.start(id, options)
       manifest.providers.injected[key]={kind='trusted_host',revision=type(value)=='table' and value.revision or nil}
     end
   end
+  local recovery=options._durable_resume
+  if recovery and not root.durable then return nil,err('workflow_non_resumable') end
+  local durable,run_package
+  if root.durable then
+    local ok,result=pcall(function()
+      local rs=require('runstore')
+      local sources={}
+      for _,d in pairs(definitions) do
+        if d.durable~='replay-v1' or not d.source then error(err('workflow_non_resumable'),0) end
+        sources[#sources+1]={id=d.id,version=d.version,source=d.source,source_hash=M.hash(d.source),durable=d.durable,capabilities=d.capabilities,workflows=d.workflows}
+      end
+      table.sort(sources,function(a,b)return a.id..'@'..a.version<b.id..'@'..b.version end)
+      if not options.authority then error(err('current_authority_required'),0) end
+      injected=rs.snapshot(injected)
+      local package={runtime=rs.runtime(),root=root.id,version=root.version,sources=sources,context=injected,source_revisions=source_revisions,
+        capabilities=manifest.capabilities,instructions=options.instructions or tools.LIMITS.instructions,restrictions=invoke.durable_restrictions(authority)}
+      if recovery then
+        for _,field in ipairs({'sources','capabilities'}) do
+          local _,old=rs.snapshot(recovery.package[field]);local _,now=rs.snapshot(package[field])
+          if old~=now then error(err('dependency_changed'),0) end
+        end
+        package=recovery.package
+      end
+      return package
+    end)
+    if not ok then return nil,type(result)=='table' and result or err('workflow_non_resumable') end
+    run_package=result
+  end
   serial=serial+1
-  local state={id=evidence.id('workflow-run'),workflow=identity(root),manifest=manifest,status='created',
+  local state={id=recovery and recovery.id or evidence.id('workflow-run'),workflow=identity(root),manifest=manifest,status='created',
     steps={},invocations={},resolutions={},verified=false}
   local capture_failures=evidence.status().failures
   local run_span=evidence.begin("workflow",{run_id=state.id,correlation_id=state.id},{workflow=state.workflow,manifest=manifest,context=injected,source_revisions=source_revisions})
-  local authority=invoke.context({policy=options.policy},options.authority)
+  if run_package then
+    local ok,value=pcall(require('runstore').open_run,state.id,run_package,authority,recovery)
+    if not ok then return nil,type(value)=='table' and value or err('runstore_unavailable') end
+    durable=value
+  end
   local safe=tools.tool_env().coroutine
   local fatal, cancelled, budget_failed, ticks=nil,false,false,0
   local budget=options.instructions or tools.LIMITS.instructions
@@ -131,6 +166,7 @@ function M.start(id, options)
   local function mark(status,e)
     if not fatal or status=='uncertain' then fatal={status=status,error=copy(e or err('workflow_'..status))} end
   end
+  if durable then durable.on_error=function(why) mark(why.code=='reconciliation_uncertain' and 'uncertain' or 'failed',why) end end
   local function guard()
     if cancelled then error(err('workflow_cancelled'),0) end
     ticks=ticks+1000
@@ -138,6 +174,7 @@ function M.start(id, options)
   end
   local execute
   execute=function(d,values,path)
+    if durable then values=require('runstore').snapshot(values) end
     local thread=coroutine.running();local previous=current[thread]
     current[thread]={run_id=state.id,workflow_id=d.id,version=d.version,step_id=path,attempt=1}
     local spec=d
@@ -154,11 +191,17 @@ function M.start(id, options)
       for name in pairs(env.gold.fs) do env.gold.fs[name]=unversioned end
       env.events={notify=unversioned}
       env.os.getenv=unversioned
+      if durable then
+        require('runstore').environment(env,function()
+          mark('failed',err('workflow_nondeterministic'));error(err('workflow_nondeterministic'),0)
+        end)
+      end
       spec=assert(load(d.source,'@workflow:'..d.id..':'..d.version,'t',env))()
       if type(spec)=='function' then spec={run=spec} end
       if type(spec)~='table' or type(spec.run)~='function' or (spec.verify~=nil and type(spec.verify)~='function') then error(err('workflow_source_contract'),0) end
     end
     local defaults=bindings(spec.defaults)
+    if durable then defaults=require('runstore').snapshot(defaults) end
     local occurrence={workflow_id=d.id,version=d.version,injected={},defaults={}}
     manifest.providers.occurrences[path]=occurrence
     local function describe_providers(map,out,source_kind,source_hash)
@@ -186,6 +229,7 @@ function M.start(id, options)
       return frames[co]
     end
     local ctx={}
+    local durable_depth=0
     local function correlate()
       local f=frame()
       current[coroutine.running()]={run_id=state.id,workflow_id=d.id,version=d.version,step_id=f.path,attempt=1,attempt_id="1"}
@@ -194,6 +238,7 @@ function M.start(id, options)
     local function alive()
       if state.status~='running' then error(err('workflow_not_running'),0) end
       if cancelled then error(err('workflow_cancelled'),0) end
+      if durable then durable:check() end
       if budget_failed then error(err('workflow_budget'),0) end
     end
     function ctx:resolve(key,request,opts)
@@ -205,7 +250,10 @@ function M.start(id, options)
       end
       local resolution={step_id=frame().path,status='running'}
       state.resolutions[#state.resolutions+1]=resolution
-      local value,provenance,failure_provenance=resolver:resolve(key,req)
+      local value,provenance,failure_provenance
+      if durable then
+        value,provenance,failure_provenance=durable:resolve({key=key,request=req,step=frame().path},function()return resolver:resolve(key,req)end)
+      else value,provenance,failure_provenance=resolver:resolve(key,req) end
       local observed=value==nil and failure_provenance or provenance
       resolution.provenance=copy(observed);resolution.error=value==nil and copy(provenance) or nil
       resolution.status=value==nil and 'failed' or 'succeeded'
@@ -231,8 +279,14 @@ function M.start(id, options)
       alive();correlate()
       local record={step_id=frame().path,id=cap,version=d.capabilities[cap],status='running'}
       state.invocations[#state.invocations+1]=record
-      local outcome=resolver:call(cap,args)
+      local outcome
+      if durable then
+        if durable_depth==0 then mark('failed',err('durable_step_required'));error(err('durable_step_required'),0) end
+        if not d.capabilities[cap] then error(err('capability_unpinned'),0) end
+        outcome=durable:call(cap,d.capabilities[cap],args,frame().path)
+      else outcome=resolver:call(cap,args) end
       record.status=outcome.status;record.receipt=copy(outcome.receipt);record.usage=copy(outcome.usage);record.artifacts=copy(outcome.artifacts);record.error=copy(outcome.error)
+      if durable and durable.last_reused then record.historical_usage=record.usage;record.usage={};record.reused='resume' end
       if outcome.status=='uncertain' or outcome.status~='succeeded' and not (opts and opts.required==false) then mark(outcome.status,outcome.error) end
       return outcome
     end
@@ -242,15 +296,19 @@ function M.start(id, options)
       local co=coroutine.running();local parent=frame();local previous_correlation=current[co]
       parent.counts[site]=(parent.counts[site] or 0)+1
       local occurrence=parent.path..'/'..segment(site)..'#'..parent.counts[site]
+      if durable then durable:boundary('step.start',{id=occurrence,site=site}) end
       local record={id=occurrence,site=site,parent_id=parent.path,status='running',workflow=identity(d)}
       state.steps[#state.steps+1]=record;frames[co]={path=occurrence,counts={}}
       current[co]={run_id=state.id,workflow_id=d.id,version=d.version,step_id=occurrence,attempt=1}
       local span=evidence.begin("step",{run_id=state.id,step_id=occurrence,parent_id=parent.path,correlation_id=occurrence},{site=site,workflow=identity(d)})
+      durable_depth=durable_depth+1
       local packed=table.pack(pcall(fn,ctx))
+      durable_depth=durable_depth-1
       evidence.finish(span,{status=not packed[1] and "failed" or (fatal and fatal.status or "succeeded"),results=packed[1] and {table.unpack(packed,2,packed.n)} or nil})
       frames[co]=parent;current[co]=previous_correlation
       if not packed[1] then record.status='failed';record.error=err('workflow_step_error');mark('failed',record.error);error(record.error,0) end
       record.status=fatal and fatal.status or 'succeeded'
+      if durable then durable:boundary('step.terminal',{id=occurrence,results={n=packed.n-1,table.unpack(packed,2,packed.n)}}) end
       return table.unpack(packed,2,packed.n)
     end
     function ctx:workflow(child,opts)
@@ -266,9 +324,10 @@ function M.start(id, options)
       alive()
       if kind~="branch" and kind~="dataflow" then error(err("workflow_observation_invalid"),0) end
       local e=correlate();e.kind="observation."..kind;e.payload={value=value,links=links,source="explicit_annotation"}
+      if durable then return durable:resolve({kind='observe',event=e},function()return evidence.append(e)end) end
       return evidence.append(e)
     end
-    function ctx:yield(...) alive();return coroutine.yield(...) end
+    function ctx:yield(...) alive();if durable then mark('failed',err('workflow_nondeterministic'));error(err('workflow_nondeterministic'),0) end;return coroutine.yield(...) end
     local result,run_error=spec.run(ctx)
     if result==nil and run_error~=nil then mark('failed',err('workflow_returned_error')) end
     alive()
@@ -281,8 +340,18 @@ function M.start(id, options)
   end
   local co=safe.create(function()
     return invoke.with_context(authority,function()
-      local passed,result,verified=tools.with_count_hook(guard,1000,execute,root,injected,
-        segment(root.id)..segment(root.version))
+      local previous,mask,count=debug.gethook()
+      if durable then
+        local hook=require('runstore').source_hook(previous,mask or '',function()
+          mark('failed',err('workflow_nondeterministic'));error(err('workflow_nondeterministic'),0)
+        end)
+        debug.sethook(hook,(mask or '')..'c',count)
+      end
+      local called=table.pack(pcall(tools.with_count_hook,guard,1000,execute,root,injected,
+        segment(root.id)..segment(root.version)))
+      if durable then debug.sethook(previous,mask,count) end
+      if not called[1] then error(called[2],0) end
+      local passed,result,verified=table.unpack(called,2,called.n)
       if budget_failed then error(err('workflow_budget'),0) end
       if not passed then error(err('workflow_runtime_error'),0) end
       return result,verified
@@ -292,6 +361,10 @@ function M.start(id, options)
   local finalized=false
   local function finish_run()
     if finalized then return end;finalized=true
+    if durable then
+      local ok,why=pcall(durable.finish,durable,state.status)
+      if not ok then state.status='failed';state.error=type(why)=='table' and why or err('runstore_unavailable');state.verified=false end
+    end
     local event,why=evidence.finish(run_span,{status=state.status,result=state.result,error=state.error,verified=state.verified,manifest=state.manifest,effects_incomplete=state.effects_incomplete})
     state.evidence={terminal_event_id=event,coverage=run_span.event_id and event and evidence.status().failures==capture_failures and "observed" or "incomplete",error=why or run_span.error}
   end

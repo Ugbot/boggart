@@ -108,8 +108,48 @@ local function chain(context)
   add(M.current()); add(context)
   return out
 end
+-- Persist restrictions, never executable authority. Unsupported accounting closures
+-- cannot be reconstructed honestly and make durable opt-in fail closed.
+function M.durable_restrictions(context)
+  assert(contexts[context], 'durable authority required')
+  local out={}
+  local states=chain(context)
+  states[#states+1]=contexts[M.context({state=require('perm').state()})]
+  for _,s in ipairs(states) do
+    assert(not s.invalid and not s.blocked and not s.estimate and not s.actual,
+      'durable authority unsupported')
+    local ledger=s.ledger and assert(require('quota').identity(s.ledger),'durable ledger unsupported')
+    out[#out+1]={state=copy(s.state),allow=copy(s.allow),ledger=ledger,
+      scopes=s.policy and require('policy').describe(s.policy).scopes or nil}
+    if s.source then
+      local live={}
+      for _,k in ipairs({'mode','approve_all','tool_policy','rules','guards','agent_rules','headless'}) do live[k]=copy(s.source[k]) end
+      local policy=s.source.policy or (s.source.policy_scopes and assert(require('policy').compile(s.source.policy_scopes)))
+      out[#out+1]={state=live,ledger=ledger,scopes=policy and require('policy').describe(policy).scopes or nil}
+    end
+  end
+  return out
+end
+function M.restrict_durable(current, restrictions)
+  assert(contexts[current], 'current host authority required')
+  local authority=current
+  local states=chain(current)
+  for _,r in ipairs(restrictions) do
+    local ledger
+    if r.ledger then
+      for _,s in ipairs(states) do
+        if s.ledger and same(require('quota').identity(s.ledger),r.ledger) then ledger=s.ledger;break end
+      end
+      assert(ledger,'durable ledger identity unavailable')
+    end
+    authority=M.context({state=r.state,allow=r.allow,policy_scopes=r.scopes,ledger=ledger},authority)
+  end
+  return authority
+end
 function M.call(context, name, args, options)
-  options = options or {}; args = copy(args or {})
+  options = options or {}
+  if args==nil then args={} end
+  args=copy(args)
   if context == nil then context = M.current() or M.context() end
   serial = serial + 1
   local id = evidence.id('invocation')
@@ -125,9 +165,9 @@ function M.call(context, name, args, options)
   correlation.run_id=correlation.run_id or (parent_evidence and parent_evidence.run_id)
   correlation.parent_id=parent_evidence and parent_evidence.invocation_id or correlation.step_id
   correlation.correlation_id=id
-  local span=evidence.begin("invocation",correlation,{name=name,args=args})
+  local span=evidence.begin("invocation",correlation,{name=name,args=args,operation_id=options.operation_id or id})
   local prior_evidence=evidence_active[k];evidence_active[k]={run_id=span.run_id,invocation_id=id}
-  local receipt={invocation_id=id,id=name,dispatched=false,status="failed",usage={}}
+  local receipt={invocation_id=id,operation_id=options.operation_id or id,id=name,dispatched=false,status="failed",usage={}}
   local execution_meta, dispatched_descriptor
   local entry_hook=debug.gethook()
   -- Explicit contexts cannot replace an active ancestor.
@@ -152,7 +192,14 @@ function M.call(context, name, args, options)
       local valid,why=descriptor.validate_input(args)
       if valid~=true then return nil,failure("input_validation",why) end
     end
-    local adapter_estimate=descriptor.estimate and descriptor.estimate(copy(args)) or {}
+    local adapter_estimate
+    if options.reuse then
+      adapter_estimate={}
+      for metric in pairs(descriptor.bounded or {}) do adapter_estimate[metric]=0 end
+    else
+      local estimator=options.reconcile and descriptor.reconcile_estimate or descriptor.estimate
+      adapter_estimate=estimator and estimator(copy(args)) or {}
+    end
     adapter_estimate=copy(adapter_estimate); adapter_estimate.calls=1
     local asks, policies = {}, {}
     if binding.execution_receipts and (descriptor.requires_approval or descriptor.effect=="unknown") then
@@ -248,7 +295,7 @@ function M.call(context, name, args, options)
     -- Reserve the entire inherited quota set in ONE ledger transaction.
     local scopes, seen, ledger, estimate, accountant = {}, {}, nil, copy(adapter_estimate), nil
     local ceilings={}
-    local bounded=binding.execution_receipts and not options.runner and descriptor.bounded or {}
+    local bounded=binding.execution_receipts and ((options.reconcile and descriptor.reconcile_bounded) or ((not options.runner or options.reuse) and descriptor.bounded)) or {}
     local function equal(a,b)
       if type(a)~=type(b) then return false end
       if type(a)~="table" then return a==b end
@@ -300,7 +347,9 @@ function M.call(context, name, args, options)
       if blocked_ledgers[ledger] then return nil,failure("quota_uncertain","quota authority requires accounting recovery") end
       local combined,ce=require("policy").compile(scopes)
       if not combined then return nil,failure("policy_conflict",ce) end
-      local receipt,re=ledger:reserve(combined,id,estimate)
+      local reservation_id=options.operation_id and not options.reconcile and not options.reuse and options.operation_id or id
+      receipt.reservation_id=reservation_id
+      local receipt,re=ledger:reserve(combined,reservation_id,estimate)
       if not receipt then return nil,re end
       if receipt.replayed then return nil,failure('replayed','reservation already exists; recovery required') end
       reservations[1]={ledger=ledger,id=receipt.id,state=accountant}
@@ -312,7 +361,7 @@ function M.call(context, name, args, options)
     if not admission_event and admission_error~="evidence_disabled" then return nil,failure("evidence_unavailable","Durable admission could not be recorded") end
     receipt.dispatched=true
     local value,metadata = (options.runner or binding.dispatch)(name,args,
-      {invocation_id=id,ceilings=copy(ceilings),target=descriptor.target})
+      {invocation_id=id,operation_id=options.operation_id or id,ceilings=copy(ceilings),target=descriptor.target})
     if binding.execution_receipts then
       execution_meta=metadata or {status="succeeded"}
       receipt.usage=copy(execution_meta.usage or {})
