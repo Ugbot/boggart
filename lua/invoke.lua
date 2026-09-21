@@ -1,5 +1,7 @@
 -- Common admission boundary. Host APIs below are deliberately absent from tool_env.
 local M = {}
+local evidence=require("evidence")
+local evidence_active=setmetatable({}, {__mode="k"})
 local contexts = setmetatable({}, {__mode='k'})
 local active = setmetatable({}, {__mode='k'})
 local resumed = setmetatable({}, {__mode="k"})
@@ -54,6 +56,9 @@ function M.context(options, parent)
   return handle
 end
 function M.inherit(co, context)
+  local workflow=package.loaded.workflow
+  if workflow and workflow.inherit then workflow.inherit(co) end
+  evidence_active[co]=evidence_active[key()]
   active[co]=intersect(active[co],context or M.current())
   resumed[co]=intersect(resumed[co],active[co])
 end
@@ -107,18 +112,28 @@ function M.call(context, name, args, options)
   options = options or {}; args = copy(args or {})
   if context == nil then context = M.current() or M.context() end
   serial = serial + 1
-  local id = prefix .. ':' .. serial
+  local id = evidence.id('invocation')
   local events, perm = require('events'), require('perm')
   local reservations = {}
   local revisions = {}
   local old, k = M.current(), key()
   local raised
+  local workflow=package.loaded.workflow
+  local correlation=workflow and workflow.current() or {}
+  correlation=correlation or {}
+  local parent_evidence=evidence_active[k]
+  correlation.run_id=correlation.run_id or (parent_evidence and parent_evidence.run_id)
+  correlation.parent_id=parent_evidence and parent_evidence.invocation_id or correlation.step_id
+  correlation.correlation_id=id
+  local span=evidence.begin("invocation",correlation,{name=name,args=args})
+  local prior_evidence=evidence_active[k];evidence_active[k]={run_id=span.run_id,invocation_id=id}
   local receipt={invocation_id=id,id=name,dispatched=false,status="failed",usage={}}
   local execution_meta, dispatched_descriptor
   local entry_hook=debug.gethook()
   -- Explicit contexts cannot replace an active ancestor.
   local states
   local ok, result, err = pcall(function()
+    if not span.event_id and span.error~="evidence_disabled" then return nil,failure("evidence_unavailable","Durable invocation start could not be recorded") end
     local joined={}; contexts[joined]={parent=context,extra=old,state={mode="auto"}}
     active[k]=joined
     events.emit('tool:before', {name=name, input=copy(args), invocation_id=id})
@@ -292,6 +307,9 @@ function M.call(context, name, args, options)
     end
     -- Trusted bounded adapters must enforce every supplied ceiling at the
     -- provider boundary; estimates are reservations, never enforcement alone.
+    local admission_event,admission_error=evidence.append{run_id=span.run_id,step_id=span.step_id,parent_id=id,correlation_id=id,
+      kind="invocation.admitted",payload={decision="allow",policy_revisions=revisions,descriptor={id=descriptor.id,version=descriptor.version,target=descriptor.target,effect=descriptor.effect},ceilings=ceilings}}
+    if not admission_event and admission_error~="evidence_disabled" then return nil,failure("evidence_unavailable","Durable admission could not be recorded") end
     receipt.dispatched=true
     local value,metadata = (options.runner or binding.dispatch)(name,args,
       {invocation_id=id,ceilings=copy(ceilings),target=descriptor.target})
@@ -363,6 +381,11 @@ function M.call(context, name, args, options)
     pcall(bog.telemetry.decision,{run_id=rec and rec.run_id or aid,agent_id=aid},
       {tool=name,decision=err and "deny" or "allow",invocation_id=id})
   end
+  local terminal_event,capture_error=evidence.finish(span,{result=result,result_type=type(result),error=err,receipt=receipt,
+    policy={decision=receipt.dispatched and "admitted" or "not_dispatched",revisions=revisions}})
+  receipt.evidence={run_id=span.run_id,start_event_id=span.event_id,terminal_event_id=terminal_event,
+    coverage=span.event_id and terminal_event and "observed" or "incomplete",error=capture_error or span.error}
+  evidence_active[k]=prior_evidence
   -- Terminal observers keep the call's authority. A failed/budget-exhausted
   -- invocation cannot launch fresh effects while delivering its terminal record.
   local terminal={}; contexts[terminal]={parent=active[k] or context,state={mode="auto"},blocked=err~=nil}

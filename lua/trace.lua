@@ -43,6 +43,10 @@ function M.start(opts)
   for p in M._pattern:gmatch("[^,%s]+") do pats[#pats + 1] = p end
   if #pats == 0 then pats = { "*" } end
   local function on_evt(topic, payload)
+    local evidence,json=require("evidence"),require("json")
+    local ok,value=pcall(json.decode,payload)
+    payload=ok and json.encode(evidence.redact(value)) or evidence.redact(payload)
+    if type(payload)~="string" then payload=json.encode(payload) end
     M._n = M._n + 1
     -- pcall: a broken sink (a torn-down studio view) must not kill the publisher.
     pcall(sink, string.format("%6d  %-24s %s", M._n, topic, preview(payload)))

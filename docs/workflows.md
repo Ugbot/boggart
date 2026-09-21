@@ -1,8 +1,8 @@
 # Lua workflow context
 
 `context` supplies injected values and ordinary Lua providers to a workflow.
-It does not register workflows, persist runs, or execute a workflow DSL. Those
-interfaces belong to subsequent workflow/runstore work. No mandatory context
+Workflow registration and execution belong to `workflow`; durable observations
+belong to [evidence](evidence.md). Crash recovery remains separate work. No mandatory context
 JSON schema is imposed; capability input/output validation remains at the
 [capability invocation boundary](capabilities.md).
 
@@ -80,7 +80,8 @@ function-valued context result can be returned by a provider without serializati
 Provider context offers `ctx:resolve` and `ctx:call`; it contains neither the
 host authority nor a mutable capability manifest. Requests and returned values
 retain ordinary Lua identity; credentials must be opaque host handles, and the
-resolver does not clone, stringify, or persist resolved values.
+resolver preserves their identity. The evidence integration separately snapshots
+serializable observations, redacting secrets and marking opaque values unavailable.
 
 `ctx:call(id, args)` returns the full capability outcome with `status`, `result`,
 `error`, `usage`, `artifacts`, and `receipt`. Missing pins return a failed outcome
@@ -184,9 +185,10 @@ cache eligibility or future provenance.
 
 This module deliberately records metadata only: request bodies, resolved values,
 closures, raw credential handles, and raw error messages are excluded. Host-owned
-keys/revision/run labels must themselves be nonsecret. BRAIN-18 owns redacted
-value/artifact persistence and durable evidence correlation; this module does
-not implement a competing store or claim that evaluated values have been saved.
+keys/revision/run labels must themselves be nonsecret. The separate
+[evidence store](evidence.md) captures redacted requests and observed values at
+runtime boundaries; its receipts and coverage markers describe persistence
+failures and unavailable values. Metadata provenance alone is not a value snapshot.
 
 ## Versioned workflow runtime
 
@@ -257,8 +259,9 @@ it created. `handle:resume(...)` continues a suspended run and returns a snapsho
 plus yielded values, if any. `handle:snapshot()` returns status, identity,
 dependency manifest, steps, context provenance, explicit invocation receipts,
 result and verification flag. States are created, running, suspended, succeeded,
-failed, uncertain or cancelled. Terminal handles never restart. No replay,
-automatic retry, disk persistence or crash resume is implied.
+failed, uncertain or cancelled. Terminal handles never restart. The
+[evidence store](evidence.md) persists observed boundaries by default. Run handles
+remain live coroutine state: no replay, automatic retry or crash resume is implied.
 
 Workflow context provides:
 
@@ -310,13 +313,14 @@ This is not native process containment. No wall-time duration is claimed.
 
 `workflow.current()` is a read-only host correlation seam returning current
 run/workflow/version/step and attempt (currently always 1) on the executing
-workflow coroutine. BRAIN-18 can capture it **at the invocation boundary before
+workflow coroutine. Evidence captures it **at the invocation boundary before
 observer dispatch**, including trusted-host direct mediated `sys`/`tools` calls. Source packages must
 use version-pinned `ctx:call` instead. Event observers
 run in separate coroutines and cannot infer their emitter using `current()`.
-Arbitrary user-created child coroutines have no inherited correlation before
-entering an explicit step; evidence integration must propagate that association
-when supporting those direct calls. No competing persistence layer is introduced.
+Safe generated-code coroutines inherit their emitter's association;
+`ctx:call` and `ctx:resolve` establish the executing thread's occurrence. Raw
+host-created coroutines must explicitly enter workflow context. No global last-run
+association is inferred.
 
 The executable package [slack_followup.lua](../examples/workflows/slack_followup.lua)
 gathers fake replies, computes missing people locally, branches to an optional

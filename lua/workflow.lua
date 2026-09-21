@@ -1,5 +1,6 @@
 -- Versioned ordinary Lua workflows. Host registry/handles never enter source environments.
 local M = {}
+local evidence=require("evidence")
 local invoke, context, capability = require('invoke'), require('context'), require('capability')
 local tools = require('tools')
 local registry, active, serial = {}, {}, 0
@@ -10,6 +11,7 @@ local function copy(v, seen)
   local t={}; seen[v]=t; for k,x in pairs(v) do t[k]=copy(x,seen) end; return t
 end
 function M.current() return copy(current[coroutine.running()]) end
+function M.inherit(co) current[co]=M.current() end
 local function err(code) return {code=code,message=code,retryable=false} end
 local function text(v) return type(v)=='string' and #v>0 end
 -- SHA-256 (FIPS 180-4), operating on the exact supplied source bytes.
@@ -117,8 +119,10 @@ function M.start(id, options)
     end
   end
   serial=serial+1
-  local state={id='workflow-run:'..serial,workflow=identity(root),manifest=manifest,status='created',
+  local state={id=evidence.id('workflow-run'),workflow=identity(root),manifest=manifest,status='created',
     steps={},invocations={},resolutions={},verified=false}
+  local capture_failures=evidence.status().failures
+  local run_span=evidence.begin("workflow",{run_id=state.id,correlation_id=state.id},{workflow=state.workflow,manifest=manifest,context=injected,source_revisions=source_revisions})
   local authority=invoke.context({policy=options.policy},options.authority)
   local safe=tools.tool_env().coroutine
   local fatal, cancelled, budget_failed, ticks=nil,false,false,0
@@ -173,17 +177,27 @@ function M.start(id, options)
     local frames=setmetatable({}, {__mode='k'})
     local function frame()
       local co=coroutine.running()
-      if not frames[co] then thread_serial=thread_serial+1;frames[co]={path=path..'/thread#'..thread_serial,counts={}} end
+      if not frames[co] then
+        thread_serial=thread_serial+1
+        local inherited=current[co];local parent=inherited and inherited.run_id==state.id and inherited.step_id or path
+        frames[co]={path=parent..'/thread#'..thread_serial,counts={}}
+        evidence.append{run_id=state.id,step_id=frames[co].path,parent_id=parent,kind="workflow.thread",payload={observation="entered_context"}}
+      end
       return frames[co]
     end
     local ctx={}
+    local function correlate()
+      local f=frame()
+      current[coroutine.running()]={run_id=state.id,workflow_id=d.id,version=d.version,step_id=f.path,attempt=1,attempt_id="1"}
+      return M.current()
+    end
     local function alive()
       if state.status~='running' then error(err('workflow_not_running'),0) end
       if cancelled then error(err('workflow_cancelled'),0) end
       if budget_failed then error(err('workflow_budget'),0) end
     end
     function ctx:resolve(key,request,opts)
-      alive()
+      alive();correlate()
       local req=request
       if req==nil then req={} end
       if type(req)=='table' and getmetatable(req)==nil then
@@ -214,7 +228,7 @@ function M.start(id, options)
       return value,provenance,failure_provenance
     end
     function ctx:call(cap,args,opts)
-      alive()
+      alive();correlate()
       local record={step_id=frame().path,id=cap,version=d.capabilities[cap],status='running'}
       state.invocations[#state.invocations+1]=record
       local outcome=resolver:call(cap,args)
@@ -231,7 +245,9 @@ function M.start(id, options)
       local record={id=occurrence,site=site,parent_id=parent.path,status='running',workflow=identity(d)}
       state.steps[#state.steps+1]=record;frames[co]={path=occurrence,counts={}}
       current[co]={run_id=state.id,workflow_id=d.id,version=d.version,step_id=occurrence,attempt=1}
+      local span=evidence.begin("step",{run_id=state.id,step_id=occurrence,parent_id=parent.path,correlation_id=occurrence},{site=site,workflow=identity(d)})
       local packed=table.pack(pcall(fn,ctx))
+      evidence.finish(span,{status=not packed[1] and "failed" or (fatal and fatal.status or "succeeded"),results=packed[1] and {table.unpack(packed,2,packed.n)} or nil})
       frames[co]=parent;current[co]=previous_correlation
       if not packed[1] then record.status='failed';record.error=err('workflow_step_error');mark('failed',record.error);error(record.error,0) end
       record.status=fatal and fatal.status or 'succeeded'
@@ -245,6 +261,12 @@ function M.start(id, options)
       return self:step(opts.site or ('workflow:'..child),function()
         return execute(nested,opts.context and bindings(opts.context) or values,frame().path..'/'..segment(child)..segment(version))
       end)
+    end
+    function ctx:observe(kind,value,links)
+      alive()
+      if kind~="branch" and kind~="dataflow" then error(err("workflow_observation_invalid"),0) end
+      local e=correlate();e.kind="observation."..kind;e.payload={value=value,links=links,source="explicit_annotation"}
+      return evidence.append(e)
     end
     function ctx:yield(...) alive();return coroutine.yield(...) end
     local result,run_error=spec.run(ctx)
@@ -267,6 +289,12 @@ function M.start(id, options)
     end)
   end)
   local handle={}
+  local finalized=false
+  local function finish_run()
+    if finalized then return end;finalized=true
+    local event,why=evidence.finish(run_span,{status=state.status,result=state.result,error=state.error,verified=state.verified,manifest=state.manifest,effects_incomplete=state.effects_incomplete})
+    state.evidence={terminal_event_id=event,coverage=run_span.event_id and event and evidence.status().failures==capture_failures and "observed" or "incomplete",error=why or run_span.error}
+  end
   function handle:snapshot() return copy(state) end
   function handle:resume(...)
     if state.status~='created' and state.status~='suspended' then return self:snapshot() end
@@ -289,6 +317,7 @@ function M.start(id, options)
       end
     end
     for _,record in ipairs(state.steps) do if record.status=='running' then record.status=state.status end end
+    finish_run()
     return self:snapshot()
   end
   function handle:cancel()
@@ -297,6 +326,7 @@ function M.start(id, options)
       for _,record in ipairs(state.steps) do if record.status=='running' then record.status='cancelled' end end
       for _,record in ipairs(state.resolutions) do if record.status=='running' then record.status='incomplete';state.effects_incomplete=true end end
       for _,record in ipairs(state.invocations) do if record.status=='running' then record.status='incomplete';state.effects_incomplete=true end end
+      finish_run()
     end
     return self:snapshot()
   end

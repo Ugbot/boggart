@@ -20,16 +20,21 @@ end
 -- Append one transcript entry (a message) to a run's log. Order is the record
 -- id (monotonic). Returns the record result.
 function M.append(run_id, agent_id, role, content)
+  local evidence=require("evidence")
+  local payload=evidence.redact({role=role,content=content})
+  local event,why=evidence.append{run_id=run_id,kind="session.entry",payload=payload,provenance={observation="transcript_append",agent_id=agent_id}}
+  if not event and why~="evidence_disabled" then return nil,why end
   return bog.store.record_append("entry", {
     run_id = run_id, agent_id = agent_id,
-    payload = { role = role, content = content },
+    payload = payload,
   })
 end
 
 -- Append a whole message array (e.g. when seeding a fork or snapshotting).
 function M.append_all(run_id, agent_id, messages)
   for _, m in ipairs(messages or {}) do
-    M.append(run_id, agent_id, m.role, m.content)
+    local ok,why=M.append(run_id, agent_id, m.role, m.content)
+    if not ok then return nil,why end
   end
   return #(messages or {})
 end
@@ -68,8 +73,7 @@ end
 function M.fork(run_id, new_run_id)
   local msgs, err = M.replay(run_id)
   if not msgs then return nil, err end
-  M.append_all(new_run_id, new_run_id, msgs)
-  return #msgs
+  return M.append_all(new_run_id, new_run_id, msgs)
 end
 
 return M

@@ -1,5 +1,6 @@
 -- Injected values and trusted Lua providers. One resolver belongs to one run.
 local M = {}
+local evidence=require("evidence")
 local invoke, capability, events = require('invoke'), require('capability'), require('events')
 local serial = 0
 local errors = setmetatable({}, {__mode='k'})
@@ -108,11 +109,18 @@ function M.new(injected, defaults, authority, options)
     local frames=stack()
     local path={}; for _,frame in ipairs(frames) do path[#path+1]=frame.key end; path[#path+1]=key
     serial=serial+1
-    local p={schema_version=1,resolution_id=serial,key=key,run_id=run_id,
+    local p={schema_version=1,resolution_id=evidence.id("resolution"),key=key,run_id=run_id,
       parent_id=frames[#frames] and frames[#frames].id,cache='none',dependencies={},capabilities={}}
+    local workflow=package.loaded.workflow
+    local correlation=workflow and workflow.current() or {}
+    correlation=correlation or {};correlation.run_id=run_id or correlation.run_id
+    correlation.parent_id=p.parent_id or correlation.step_id;correlation.correlation_id=p.resolution_id
+    local span=evidence.begin("context",correlation,{key=key,request=request})
     local function finish(value,err)
       p.status=err and (err.code=='context_missing' and 'missing' or 'failed') or 'resolved'
       p.error_code=err and err.code; p.value_type=not err and type(value) or nil
+      local event,capture_error=evidence.finish(span,{provenance=p,value=value,error=err})
+      p.evidence={event_id=event,coverage=span.event_id and event and 'observed' or 'incomplete',error=capture_error or span.error}
       emit('after',p)
       local parent=frames[#frames]
       if parent then parent.dependencies[#parent.dependencies+1]=copy(p) end
