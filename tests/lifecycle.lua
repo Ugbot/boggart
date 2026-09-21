@@ -437,6 +437,74 @@ return 0
 end
 
 -- ---- cleanup ---------------------------------------------------------------
+do
+  -- A failed reload is a transaction failure: none of the candidate module
+  -- bindings or registrations may leak into the running generation.  Put the
+  -- failure after workers/events have loaded so this catches both the historic
+  -- workers -> bog.worker alias bug and callback mutation during require().
+  local overlay = ROOT .. "/lua"
+  local event_dir = overlay .. "/events"
+  sys.mkdir_p(event_dir)
+  local event_file = event_dir .. "/reload_transaction.lua"
+  -- lifecycle exercises several stores by changing bog.userdir, while the
+  -- module overlay path is fixed once at boot.  Inject the broken module into
+  -- that fixed package.path entry; events intentionally scan current userdir.
+  local module_overlay = package.path:match("([^;]+)/%?%.lua")
+  sys.mkdir_p(module_overlay)
+  local bad_module = module_overlay .. "/complete.lua"
+
+  bog.util.write_file(event_file, [[
+local events = ...
+events.on("reload:transaction", function()
+  bog.__reload_transaction_old = (bog.__reload_transaction_old or 0) + 1
+end, { desc = "reload transaction fixture" })
+]])
+  local loaded, load_err = bog.reload()
+  ok(loaded, "reload fixture installs before rollback test: " .. tostring(load_err))
+
+  local prior_worker = bog.worker
+  local prior_events = bog.events
+  local prior_tools = bog.tools
+  bog.__reload_transaction_old = 0
+  bog.__reload_transaction_new = 0
+
+  bog.util.write_file(event_file, [[
+local events = ...
+events.on("reload:transaction", function()
+  bog.__reload_transaction_new = (bog.__reload_transaction_new or 0) + 1
+end, { desc = "reload transaction fixture" })
+]])
+  bog.util.write_file(bad_module, "this is deliberately not valid lua !")
+
+  local reloaded, reload_err = bog.reload()
+  ok(not reloaded and tostring(reload_err):find("complete", 1, true) ~= nil,
+     "an injected wiring failure is reported")
+  eq(bog.worker, prior_worker, "failed reload restores the bog.worker alias")
+  eq(bog.events, prior_events, "failed reload restores the events module")
+  eq(bog.tools, prior_tools, "failed reload restores previously published modules")
+
+  bog.events.emit("reload:transaction", {})
+  eq(bog.__reload_transaction_old, 1, "the previous callback still executes")
+  eq(bog.__reload_transaction_new, 0, "a candidate callback is not published")
+  local registrations = 0
+  for _, h in ipairs(bog.events.list()) do
+    if h.desc == "reload transaction fixture" then registrations = registrations + 1 end
+  end
+  eq(registrations, 1, "failed reload does not duplicate callback registrations")
+
+  os.remove(bad_module)
+  local recovered, recover_err = bog.reload()
+  ok(recovered, "a later valid reload still succeeds: " .. tostring(recover_err))
+  bog.events.emit("reload:transaction", {})
+  eq(bog.__reload_transaction_old, 1, "the retired callback no longer executes")
+  eq(bog.__reload_transaction_new, 1, "the replacement callback executes once")
+
+  os.remove(event_file)
+  bog.reload()
+  bog.__reload_transaction_old = nil
+  bog.__reload_transaction_new = nil
+end
+
 if bog.db then bog.db:close(); bog.db = nil end
 bog.userdir = ROOT
 sys.rmtree(ROOT)

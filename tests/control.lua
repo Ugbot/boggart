@@ -80,6 +80,26 @@ local tools = json.decode(GET("/tools"))
 ok(type(tools.tools) == "table" and #tools.tools > 5,
    "/tools lists the live registry (" .. tostring(#(tools.tools or {})) .. " tools)")
 
+-- Session discovery uses the store's public listing API.  Exercise this over
+-- the real HTTP route so a misspelled method cannot quietly look like an empty
+-- store, and so the wire representation of zero rows remains a JSON array.
+local sid = bog.store.sess_create("control route fixture", "test-model")
+local sessions = json.decode(GET("/sessions?limit=1"))
+eq(#(sessions.sessions or {}), 1, "/sessions returns a populated store")
+eq(sessions.sessions and sessions.sessions[1] and sessions.sessions[1].id, sid,
+   "/sessions returns the stored session")
+bog.store.sess_delete(sid)
+local empty_sessions = GET("/sessions?limit=1")
+ok(empty_sessions:find('"sessions":[]', 1, true) ~= nil,
+   "/sessions encodes zero rows as an empty JSON array")
+
+local real_sess_list = bog.store.sess_list
+bog.store.sess_list = function() error("simulated session store failure") end
+local session_error = json.decode(GET("/sessions"))
+bog.store.sess_list = real_sess_list
+ok(session_error.error and session_error.error:find("simulated session store failure", 1, true),
+   "/sessions exposes store failures instead of returning zero rows")
+
 local perms = json.decode(GET("/permissions"))
 ok(perms.mode ~= nil, "/permissions reports the mode")
 ok(type(perms.modes) == "table", "/permissions offers the mode list")

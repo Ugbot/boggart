@@ -295,12 +295,39 @@ function bog.resume_startup()
 end
 
 function bog.reload()
-  local snap, snap_loaded = {}, {}
-  for _, m in ipairs(CORE) do snap[m] = bog[m]; snap_loaded[m] = package.loaded[m] end
+  -- require() is allowed to run ordinary Lua, and several core modules register
+  -- callbacks while loading.  Snapshot the actual publication surfaces before
+  -- wiring a candidate generation: CORE names are not bog field names
+  -- (`workers` is deliberately exposed as `bog.worker`), and dependencies may
+  -- add package.loaded entries beyond CORE.
+  local function shallow_copy(t)
+    local out = {}
+    for k, v in pairs(t) do out[k] = v end
+    return out
+  end
+  local function restore(t, snap)
+    for k in pairs(t) do if snap[k] == nil then t[k] = nil end end
+    for k, v in pairs(snap) do t[k] = v end
+  end
+
+  local snap_bog = shallow_copy(bog)
+  local snap_loaded = shallow_copy(package.loaded)
+  -- events registrations intentionally live outside package.loaded so runtime
+  -- subscriptions survive successful reloads.  Preserve the table identity
+  -- captured by the previous events module while restoring its contents on a
+  -- failed candidate load.
+  local event_state = rawget(bog, "__events")
+  local snap_events
+  if event_state then
+    snap_events = shallow_copy(event_state)
+    snap_events.handlers = shallow_copy(event_state.handlers or {})
+  end
+
   local ok, err = bog.try(wire)
   if not ok then
-    -- restore BOTH bog.* and package.loaded so "old code kept" is fully true
-    for _, m in ipairs(CORE) do bog[m] = snap[m]; package.loaded[m] = snap_loaded[m] end
+    restore(package.loaded, snap_loaded)
+    restore(bog, snap_bog)
+    if event_state and snap_events then restore(event_state, snap_events) end
     return false, err
   end
   return true

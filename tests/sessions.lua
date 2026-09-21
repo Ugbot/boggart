@@ -29,6 +29,9 @@ local function count()
 end
 
 eq(count(), 0, "a fresh store has no sessions")
+local listed, empty_list = pcall(bog.store.sess_list, 20)
+ok(listed, "the public session listing API succeeds on an empty store")
+eq(#empty_list, 0, "the public session listing API reports zero rows")
 
 -- ---- doing nothing stores nothing ----------------------------------------
 bog.new_session()
@@ -99,6 +102,8 @@ ok(failed_row and #failed_row.messages > 0,
 -- ---- the listing has no blanks in it -------------------------------------
 local list = bog.store.sess_list(50)
 eq(#list, 3, "the recents list holds exactly the real conversations")
+ok(list[1] and list[1].id ~= nil,
+   "the public session listing API returns stored session records")
 for _, sr in ipairs(list) do
   local full = bog.store.sess_load(sr.id)
   ok(full and #full.messages > 0, "session " .. sr.id .. " is not empty")

@@ -123,8 +123,8 @@ end, "the live tool registry")
 M.route("GET", "/sessions", function(req)
   local q = parse_query(req.query)
   local limit = tonumber(q.limit) or 20
-  local list = (bog.store and bog.store.sessions and bog.store.sessions(limit)) or {}
-  return ok({ sessions = list })
+  local list = bog.store.sess_list(limit)
+  return ok({ sessions = #list == 0 and json.array or list })
 end, "recent sessions")
 
 -- ---- permissions: read and set the policy over the wire -------------------
