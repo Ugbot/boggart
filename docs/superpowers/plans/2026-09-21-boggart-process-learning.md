@@ -46,7 +46,7 @@ The audit documents are the source of current-state findings:
 
 On the existing macOS executable, 56 Lua suites passed, yet targeted probes reproduced nested permission bypass, an explicit allow overriding stronger restrictions, swallowed verifier failure, lost enclosing instruction limits, incomplete reload rollback, broken session listing and duplicate pre-call events. Source review also identified unbounded event callbacks, local control trust gaps and incomplete effect coverage. Therefore new regression tests must target those guarantees rather than treat the old suite as proof of safety.
 
-Station source review found lossy capture, missing parameter/dataflow materialization and fail-open preconditions. AIbyWire has useful durable execution contracts but its Python idempotency path needs an atomic-claim check under concurrency. Sibling suites and a fresh native Boggart build were not run in that audit. Do not present source findings as reproduced sibling bugs or support claims.
+Station source review found lossy capture, missing parameter/dataflow materialization and fail-open preconditions. AIbyWire has useful durable execution contracts, but both Python and Rust idempotency paths use read-then-write storage and need atomic-claim qualification under concurrency; active-executor deduplication is a narrower guarantee. Sibling suites and a fresh native Boggart build were not run in that audit. Do not present source findings as reproduced sibling bugs or support claims.
 
 Pre-existing changes include CMake, boot, complete, model/native files and TypeSafe/judge work. Preserve them. Scope commits to new work and review interactions explicitly.
 
