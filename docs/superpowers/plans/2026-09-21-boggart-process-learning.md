@@ -326,8 +326,8 @@ assert(bog.worker == prior_worker); assert(#listed_sessions == 1)
 
 **Acceptance criteria:**
 
-- [ ] Unauthenticated or wrong-origin control mutations fail; explicit configured clients still work and tokens never appear in evidence.
-- [ ] A headless ask without a configured decision cannot execute; symlink/path and shared-environment attack fixtures cannot bypass the mediated capability boundary.
+- [x] Unauthenticated or wrong-origin control mutations fail; explicit configured clients still work and tokens never appear in evidence.
+- [x] A headless ask without a configured decision cannot execute; symlink/path and shared-environment attack fixtures cannot bypass the mediated capability boundary.
 
 **Test scenario:**
 

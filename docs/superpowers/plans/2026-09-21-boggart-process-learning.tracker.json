@@ -151,9 +151,10 @@
           ],
           "test": "control|invoke|sandbox",
           "example": "assert(headless_ask.executed == false); assert(unauthenticated.status == 401)",
-          "status": "in_progress"
+          "status": "done"
         }
-      ]
+      ],
+      "status": "done"
     },
     {
       "id": "runtime",
@@ -316,7 +317,8 @@
             "evidence"
           ],
           "test": "station",
-          "example": "assert(fake_station.write_count == 1)"
+          "example": "assert(fake_station.write_count == 1)",
+          "status": "in_progress"
         },
         {
           "id": "forge",
@@ -369,7 +371,8 @@
           "test": "memory",
           "example": "assert(hit.scope == requested_scope); assert(hit.source_ref ~= nil)"
         }
-      ]
+      ],
+      "status": "in_progress"
     },
     {
       "id": "mining",
