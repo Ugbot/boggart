@@ -735,20 +735,20 @@ assert(report.eligibility == false); assert(report.regressions.wrong_recipient =
 
 #### BRAIN-30 — Promote automatically with pins, rollback and user controls
 
-**Status:** In progress.
+**Status:** Complete — `ae9c36f`; independent review approved. Final 43 promotion checks and affected suites passed twice on native macOS/Linux; actual suspended-run pinning, live provider revocation, quarantine preservation and two-process SQLite CAS/restart probes passed.
 
 **Dependencies:** BRAIN-29, BRAIN-28
 
-**Files:** Create lua/learning/registry.lua, lua/learning/promote.lua and tests/learning_promote.lua.
+**Files:** Create lua/learning/registry.lua, lua/learning/promote.lua, shared lua/learning/identity.lua, tests/learning_promote.lua and docs/learning-promotion.md. Integrate narrow inactive registration/admission hooks in lua/workflow.lua and lua/context.lua; reuse shared identity from lua/learning/evaluate.lua; register suite in CMakeLists.txt.
 
-**Implementation:** Store candidate/evaluated/active/disabled/quarantined versions and atomic active pointers. Default automatic activation only after configured evidence gates pass; expose review-required and off modes at project/workflow scope. Deny promotion on missing evidence, failed verifiers, resource-policy mismatch or unsupported preconditions. Keep run pins, rollback, reason/evidence ledger and staged rollout options. Initial gate proposal: all declared invariants pass and no known effect-safety regression; statistical thresholds remain explicit configuration measured by evaluation.
+**Implementation:** Store candidate/evaluated/active/disabled/quarantined versions and atomic active pointers. Default automatic activation only after configured evidence gates pass; expose review-required and off modes at project/workflow scope. Deny promotion on missing evidence, failed verifiers, resource-policy mismatch or unsupported preconditions. Keep run pins, rollback, reason/evidence ledger and staged rollout options. Initial gate proposal: all declared invariants pass and no known effect-safety regression; statistical thresholds remain explicit configuration measured by evaluation. Use explicit registry:start with the durable selected version, project-namespaced inactive runtime registration and a trusted per-run admission guard; preserve legacy registration behavior and avoid a mutable global selector map. Admission revalidates direct, provider and nested effects while retaining ordinary invoke authority. Bind immutable persisted reports with lossless numeric serialization; compare exact candidate execution identity, not source alone. Require explicit expected generation for activation/rollback CAS, separate current source/resource-policy validation and host runtime-qualification evidence, and compose project/workflow/request promotion modes restrictively. Off controls promotion; disabled/quarantined execution states remain distinct. Qualify actual suspended-run pinning, live provider revocation and a two-process SQLite CAS/restart race.
 
 **Interface:** registry.activate(id,version,report,mode) -> activation_record|nil,reason; registry.rollback(id,target); registry.resolve(id,run_context) -> pinned_version.
 
 **Acceptance criteria:**
 
-- [ ] Passing candidates activate automatically in auto mode; review mode queues them and off mode leaves active pointer unchanged.
-- [ ] Activation and rollback do not alter in-flight versions; concurrent promotions use compare-and-swap or transaction conflict detection and leave an auditable winner.
+- [x] Passing candidates activate automatically in auto mode; review mode queues them and off mode leaves active pointer unchanged.
+- [x] Activation and rollback do not alter in-flight versions; concurrent promotions use compare-and-swap or transaction conflict detection and leave an auditable winner.
 
 **Test scenario:**
 
@@ -759,6 +759,8 @@ assert(inflight.version == "v1"); assert(registry.resolve(id,new_context).versio
 **Verification:** Planned suite: `learning_promote`. Add a failing fixture for the scenario, implement the contract, then rebuild and run the registered suite using the protocol above; run affected existing suites. Native, sibling and Studio commands must come from the applicable repository build recipes. Attach actual test references/results before closure.
 
 #### BRAIN-31 — Recognize ordinary requests and bind current context
+
+**Status:** In progress.
 
 **Dependencies:** BRAIN-30, BRAIN-26
 

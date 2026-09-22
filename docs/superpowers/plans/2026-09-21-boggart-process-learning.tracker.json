@@ -490,8 +490,8 @@
         {
           "id": "promotion",
           "title": "Promote automatically with pins, rollback and user controls",
-          "files": "Create lua/learning/registry.lua, lua/learning/promote.lua and tests/learning_promote.lua.",
-          "work": "Store candidate/evaluated/active/disabled/quarantined versions and atomic active pointers. Default automatic activation only after configured evidence gates pass; expose review-required and off modes at project/workflow scope. Deny promotion on missing evidence, failed verifiers, resource-policy mismatch or unsupported preconditions. Keep run pins, rollback, reason/evidence ledger and staged rollout options. Initial gate proposal: all declared invariants pass and no known effect-safety regression; statistical thresholds remain explicit configuration measured by evaluation.",
+          "files": "Create lua/learning/registry.lua, lua/learning/promote.lua, shared lua/learning/identity.lua, tests/learning_promote.lua and docs/learning-promotion.md. Integrate narrow inactive registration/admission hooks in lua/workflow.lua and lua/context.lua; reuse shared identity from lua/learning/evaluate.lua; register suite in CMakeLists.txt.",
+          "work": "Store candidate/evaluated/active/disabled/quarantined versions and atomic active pointers. Default automatic activation only after configured evidence gates pass; expose review-required and off modes at project/workflow scope. Deny promotion on missing evidence, failed verifiers, resource-policy mismatch or unsupported preconditions. Keep run pins, rollback, reason/evidence ledger and staged rollout options. Initial gate proposal: all declared invariants pass and no known effect-safety regression; statistical thresholds remain explicit configuration measured by evaluation. Use explicit registry:start with the durable selected version, project-namespaced inactive runtime registration and a trusted per-run admission guard; preserve legacy registration behavior and avoid a mutable global selector map. Admission revalidates direct, provider and nested effects while retaining ordinary invoke authority. Bind immutable persisted reports with lossless numeric serialization; compare exact candidate execution identity, not source alone. Require explicit expected generation for activation/rollback CAS, separate current source/resource-policy validation and host runtime-qualification evidence, and compose project/workflow/request promotion modes restrictively. Off controls promotion; disabled/quarantined execution states remain distinct. Qualify actual suspended-run pinning, live provider revocation and a two-process SQLite CAS/restart race.",
           "api": "registry.activate(id,version,report,mode) -> activation_record|nil,reason; registry.rollback(id,target); registry.resolve(id,run_context) -> pinned_version.",
           "ac": [
             "Passing candidates activate automatically in auto mode; review mode queues them and off mode leaves active pointer unchanged.",
@@ -503,7 +503,9 @@
           ],
           "test": "learning_promote",
           "example": "assert(inflight.version == \"v1\"); assert(registry.resolve(id,new_context).version == \"v2\")",
-          "status": "in_progress"
+          "status": "done",
+          "commit": "ae9c36f",
+          "verification": "Final43 plus affected suites twice native macOS/Linux; actual runtime pins, provider revocation, quarantine and two-process CAS/restart; independent review approved."
         },
         {
           "id": "routing",
@@ -520,7 +522,8 @@
             "recognition"
           ],
           "test": "learning_route",
-          "example": "assert(selected.binding.recipient == current_recipient)"
+          "example": "assert(selected.binding.recipient == current_recipient)",
+          "status": "in_progress"
         },
         {
           "id": "drift",
