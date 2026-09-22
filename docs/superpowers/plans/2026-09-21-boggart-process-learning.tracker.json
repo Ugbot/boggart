@@ -557,8 +557,8 @@
         {
           "id": "slack",
           "title": "Deliver the Slack follow-up workflow with fixture-first validation",
-          "files": "Create examples/workflows/slack_followup.lua, tests/workflow_slack.lua and docs/examples/slack-followup.md.",
-          "work": "Implement gather, compare expected list, interpret ambiguous replies with bounded model calls, compute missing responders, send through a capability, track progress and generate report. Inject channel/list/time window/provider/policy. Recheck response state immediately before sending, use run-recipient-campaign operation IDs, reconcile uncertain sends and record opt-outs. All development tests use fakes; enabling real sends requires the user's actual workflow configuration/authorization.",
+          "files": "Expand examples/workflows/slack_followup.lua; create tests/workflow_slack.lua and docs/examples/slack-followup.md. Preserve the earlier minimal engine example as a local fixture in tests/workflow.lua; register workflow_slack in CMakeLists.txt.",
+          "work": "Implement gather, compare expected list, interpret ambiguous replies with bounded model calls, compute missing responders, send through a capability, track progress and generate report. Inject channel/list/time window/provider/policy. Recheck response state immediately before sending, use run-recipient-campaign operation IDs, reconcile uncertain sends and record opt-outs. All development tests use fakes; enabling real sends requires the user's actual workflow configuration/authorization. Register the exact authored source with replay-v1 and pinned capability deployment/provider revisions. Keep logical campaign/cohort/period/recipient identity distinct from execution attempts; bind canonical sorted intent, including artifact target, while excluding ephemeral observation time. Require the host send primitive to enforce fresh reply/opt-out preconditions and durable idempotency at its actual effect boundary; unsupported guarantees produce visible pending work rather than a false claim about native Slack. Persist pending progress before effects and reconcile post-dispatch uncertainty through runstore without blind retries. Models may suppress reminders by recognizing replies but cannot add recipients or replace factual rows/counts. Validate dense participant lists, retain incomplete states, and measure actual common-gate synthetic model calls for both workflow and baseline. Preserve the earlier runtime-only fixture independently of the expanded authored example.",
           "api": "Workflow context supplies response source, expected participants, reporting target, current time and model capability; outputs report artifact, progress record and effect receipts.",
           "ac": [
             "Late replies and duplicate triggers do not produce duplicate or obsolete reminders; ignored/ambiguous replies follow declared policy.",
@@ -570,12 +570,12 @@
           ],
           "test": "workflow_slack",
           "example": "assert(reminder_count(\"late_responder\") == 0); assert(reminder_count(\"missing_person\") == 1)",
-          "status": "in_progress"
+          "status": "done"
         },
         {
           "id": "novel",
           "title": "Deliver novel context, timeline and text-maintenance workflows",
-          "files": "Create examples/workflows/novel_{character,timeline,cleanup,wordcount}.lua and tests/workflow_novel.lua.",
+          "files": "Create examples/workflows/novel_{character,timeline,cleanup,wordcount}.lua, tests/workflow_novel.lua and docs/examples/novel-workflows.md; register the suite in CMakeLists.txt.",
           "work": "Use synthetic novel fixtures to retrieve detailed character evidence, assemble timeline constraints, propose cleanup diffs and compute word count under an explicit documented counting rule. Inject novel/corpus/revision and provider functions. Preserve provenance and distinguish inconsistent statements from missing facts. Default creative/canon changes to proposed artifacts; canon authority semantics were not settled in the interview. Cleaning must not silently rewrite narrative facts.",
           "api": "Each workflow returns evidence-backed artifacts; cleanup returns diff plus checks; timeline returns ordered/partial constraints and conflicts, not invented dates.",
           "ac": [
@@ -587,7 +587,8 @@
             "gestalt"
           ],
           "test": "workflow_novel",
-          "example": "assert(timeline.conflicts[1].source_refs ~= nil); assert(cleanup.changed_facts == 0)"
+          "example": "assert(timeline.conflicts[1].source_refs ~= nil); assert(cleanup.changed_facts == 0)",
+          "status": "in_progress"
         },
         {
           "id": "triggers",

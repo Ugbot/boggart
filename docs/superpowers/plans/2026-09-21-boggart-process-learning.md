@@ -814,20 +814,20 @@ Make cheaper repeatable work usable without prompting, and make its behavior ins
 
 #### BRAIN-33 — Deliver the Slack follow-up workflow with fixture-first validation
 
-**Status:** In progress.
+**Status:** Complete (`27f63aa`); independent review approved. Final 235 Slack checks and workflow suite twice on native macOS/Linux; initial fresh builds and five affected suites twice. Independent equivalent reports and separate-process duplicate/recovery probes passed both platforms. Synthetic comparison 11 versus 4 actual model calls; separate parent cohorts 10 versus 4. No production Slack adapter or real-provider cost claim.
 
 **Dependencies:** BRAIN-31, BRAIN-43
 
-**Files:** Create examples/workflows/slack_followup.lua, tests/workflow_slack.lua and docs/examples/slack-followup.md.
+**Files:** Expand examples/workflows/slack_followup.lua; create tests/workflow_slack.lua and docs/examples/slack-followup.md. Preserve the earlier minimal engine example as a local fixture in tests/workflow.lua; register workflow_slack in CMakeLists.txt.
 
-**Implementation:** Implement gather, compare expected list, interpret ambiguous replies with bounded model calls, compute missing responders, send through a capability, track progress and generate report. Inject channel/list/time window/provider/policy. Recheck response state immediately before sending, use run-recipient-campaign operation IDs, reconcile uncertain sends and record opt-outs. All development tests use fakes; enabling real sends requires the user's actual workflow configuration/authorization.
+**Implementation:** Implement gather, compare expected list, interpret ambiguous replies with bounded model calls, compute missing responders, send through a capability, track progress and generate report. Inject channel/list/time window/provider/policy. Recheck response state immediately before sending, use run-recipient-campaign operation IDs, reconcile uncertain sends and record opt-outs. All development tests use fakes; enabling real sends requires the user's actual workflow configuration/authorization. Register the exact authored source with replay-v1 and pinned capability deployment/provider revisions. Keep logical campaign/cohort/period/recipient identity distinct from execution attempts; bind canonical sorted intent, including artifact target, while excluding ephemeral observation time. Require the host send primitive to enforce fresh reply/opt-out preconditions and durable idempotency at its actual effect boundary; unsupported guarantees produce visible pending work rather than a false claim about native Slack. Persist pending progress before effects and reconcile post-dispatch uncertainty through runstore without blind retries. Models may suppress reminders by recognizing replies but cannot add recipients or replace factual rows/counts. Validate dense participant lists, retain incomplete states, and measure actual common-gate synthetic model calls for both workflow and baseline. Preserve the earlier runtime-only fixture independently of the expanded authored example.
 
 **Interface:** Workflow context supplies response source, expected participants, reporting target, current time and model capability; outputs report artifact, progress record and effect receipts.
 
 **Acceptance criteria:**
 
-- [ ] Late replies and duplicate triggers do not produce duplicate or obsolete reminders; ignored/ambiguous replies follow declared policy.
-- [ ] Two distinct cohorts and periods produce independently checked reports, with measured model-call reduction against the baseline.
+- [x] Late replies and duplicate triggers do not produce duplicate or obsolete reminders; ignored/ambiguous replies follow declared policy.
+- [x] Two distinct cohorts and periods produce independently checked reports, with measured model-call reduction against the baseline.
 
 **Test scenario:**
 
@@ -839,9 +839,11 @@ assert(reminder_count("late_responder") == 0); assert(reminder_count("missing_pe
 
 #### BRAIN-34 — Deliver novel context, timeline and text-maintenance workflows
 
+**Status:** In progress.
+
 **Dependencies:** BRAIN-31, BRAIN-24
 
-**Files:** Create examples/workflows/novel_{character,timeline,cleanup,wordcount}.lua and tests/workflow_novel.lua.
+**Files:** Create examples/workflows/novel_{character,timeline,cleanup,wordcount}.lua and tests/workflow_novel.lua; document docs/examples/novel-workflows.md and register the suite in CMakeLists.txt.
 
 **Implementation:** Use synthetic novel fixtures to retrieve detailed character evidence, assemble timeline constraints, propose cleanup diffs and compute word count under an explicit documented counting rule. Inject novel/corpus/revision and provider functions. Preserve provenance and distinguish inconsistent statements from missing facts. Default creative/canon changes to proposed artifacts; canon authority semantics were not settled in the interview. Cleaning must not silently rewrite narrative facts.
 
