@@ -839,20 +839,20 @@ assert(reminder_count("late_responder") == 0); assert(reminder_count("missing_pe
 
 #### BRAIN-34 — Deliver novel context, timeline and text-maintenance workflows
 
-**Status:** In progress.
+**Status:** Complete (`9686ec3`); independent re-review approved. Final 66 novel checks and workflow suite twice native macOS/Linux; initial fresh builds and five affected suites twice. Independent domain, 30,000-word, generated Unicode data and actual scoped-memory update/deletion/revocation probes passed.
 
 **Dependencies:** BRAIN-31, BRAIN-24
 
-**Files:** Create examples/workflows/novel_{character,timeline,cleanup,wordcount}.lua and tests/workflow_novel.lua; document docs/examples/novel-workflows.md and register the suite in CMakeLists.txt.
+**Files:** Create examples/workflows/novel_{character,timeline,cleanup,wordcount}.lua, shared source fragment examples/workflows/novel_context.lua, and tests/workflow_novel.lua; document docs/examples/novel-workflows.md and register the suite in CMakeLists.txt.
 
-**Implementation:** Use synthetic novel fixtures to retrieve detailed character evidence, assemble timeline constraints, propose cleanup diffs and compute word count under an explicit documented counting rule. Inject novel/corpus/revision and provider functions. Preserve provenance and distinguish inconsistent statements from missing facts. Default creative/canon changes to proposed artifacts; canon authority semantics were not settled in the interview. Cleaning must not silently rewrite narrative facts.
+**Implementation:** Use synthetic novel fixtures to retrieve detailed character evidence, assemble timeline constraints, propose cleanup diffs and compute word count under an explicit documented counting rule. Inject novel/corpus/revision and provider functions. Preserve provenance and distinguish inconsistent statements from missing facts. Default creative/canon changes to proposed artifacts; canon authority semantics were not settled in the interview. Cleaning must not silently rewrite narrative facts. Compose the shared Lua context fragment with each domain source before registration; hash and execute the exact combined bytes without dynamic module access. Evidence envelopes carry exact novel/corpus/revision identity and source references; resolve current injected providers through pinned capabilities. Preserve competing character assertions, missing versus unavailable evidence and sourced partial-order cycles; never infer calendar dates. Default cleanup normalizes CRLF and trailing horizontal whitespace as a reviewable proposal; literal checks and formatting equivalence have explicit limits, and arbitrary semantic proposals remain unverified. Count Unicode letters/numbers/marks using pinned Unicode 13.0.0 category tables, explicit internal apostrophe/hyphen rules and strict UTF-8 validation. Document CJK run counting, numbers, unassigned scalars and lack of linguistic segmentation. Qualify current local-memory provider integration and independent fixture outcomes without a required daemon or model account.
 
 **Interface:** Each workflow returns evidence-backed artifacts; cleanup returns diff plus checks; timeline returns ordered/partial constraints and conflicts, not invented dates.
 
 **Acceptance criteria:**
 
-- [ ] Same character name in different novels stays scoped; contradictions and unavailable evidence are shown rather than merged into fabricated facts.
-- [ ] Cleanup preserves fixture facts and supports diff review; word counts follow the declared Unicode/apostrophe/hyphen convention with edge fixtures.
+- [x] Same character name in different novels stays scoped; contradictions and unavailable evidence are shown rather than merged into fabricated facts.
+- [x] Cleanup preserves fixture facts and supports diff review; word counts follow the declared Unicode/apostrophe/hyphen convention with edge fixtures.
 
 **Test scenario:**
 
@@ -863,6 +863,8 @@ assert(timeline.conflicts[1].source_refs ~= nil); assert(cleanup.changed_facts =
 **Verification:** Planned suite: `workflow_novel`. Add a failing fixture for the scenario, implement the contract, then rebuild and run the registered suite using the protocol above; run affected existing suites. Native, sibling and Studio commands must come from the applicable repository build recipes. Attach actual test references/results before closure.
 
 #### BRAIN-35 — Expose named runs, buttons and scheduled execution
+
+**Status:** In progress.
 
 **Dependencies:** BRAIN-16, BRAIN-31, BRAIN-43
 

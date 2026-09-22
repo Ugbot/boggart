@@ -575,8 +575,8 @@
         {
           "id": "novel",
           "title": "Deliver novel context, timeline and text-maintenance workflows",
-          "files": "Create examples/workflows/novel_{character,timeline,cleanup,wordcount}.lua, tests/workflow_novel.lua and docs/examples/novel-workflows.md; register the suite in CMakeLists.txt.",
-          "work": "Use synthetic novel fixtures to retrieve detailed character evidence, assemble timeline constraints, propose cleanup diffs and compute word count under an explicit documented counting rule. Inject novel/corpus/revision and provider functions. Preserve provenance and distinguish inconsistent statements from missing facts. Default creative/canon changes to proposed artifacts; canon authority semantics were not settled in the interview. Cleaning must not silently rewrite narrative facts.",
+          "files": "Create examples/workflows/novel_{character,timeline,cleanup,wordcount}.lua, shared source fragment examples/workflows/novel_context.lua, tests/workflow_novel.lua and docs/examples/novel-workflows.md; register the suite in CMakeLists.txt.",
+          "work": "Use synthetic novel fixtures to retrieve detailed character evidence, assemble timeline constraints, propose cleanup diffs and compute word count under an explicit documented counting rule. Inject novel/corpus/revision and provider functions. Preserve provenance and distinguish inconsistent statements from missing facts. Default creative/canon changes to proposed artifacts; canon authority semantics were not settled in the interview. Cleaning must not silently rewrite narrative facts. Compose the shared Lua context fragment with each domain source before registration; hash and execute the exact combined bytes without dynamic module access. Evidence envelopes carry exact novel/corpus/revision identity and source references; resolve current injected providers through pinned capabilities. Preserve competing character assertions, missing versus unavailable evidence and sourced partial-order cycles; never infer calendar dates. Default cleanup normalizes CRLF and trailing horizontal whitespace as a reviewable proposal; literal checks and formatting equivalence have explicit limits, and arbitrary semantic proposals remain unverified. Count Unicode letters/numbers/marks using pinned Unicode 13.0.0 category tables, explicit internal apostrophe/hyphen rules and strict UTF-8 validation. Document CJK run counting, numbers, unassigned scalars and lack of linguistic segmentation. Qualify current local-memory provider integration and independent fixture outcomes without a required daemon or model account.",
           "api": "Each workflow returns evidence-backed artifacts; cleanup returns diff plus checks; timeline returns ordered/partial constraints and conflicts, not invented dates.",
           "ac": [
             "Same character name in different novels stays scoped; contradictions and unavailable evidence are shown rather than merged into fabricated facts.",
@@ -588,7 +588,7 @@
           ],
           "test": "workflow_novel",
           "example": "assert(timeline.conflicts[1].source_refs ~= nil); assert(cleanup.changed_facts == 0)",
-          "status": "in_progress"
+          "status": "done"
         },
         {
           "id": "triggers",
@@ -606,7 +606,8 @@
             "recovery"
           ],
           "test": "workflow_triggers",
-          "example": "assert(runs_for_occurrence(schedule_id, occurrence_id) == 1)"
+          "example": "assert(runs_for_occurrence(schedule_id, occurrence_id) == 1)",
+          "status": "in_progress"
         },
         {
           "id": "ui",
