@@ -530,8 +530,8 @@
         {
           "id": "drift",
           "title": "Detect regressions and quarantine degraded procedures",
-          "files": "Create lua/learning/monitor.lua and tests/learning_monitor.lua.",
-          "work": "Track outcomes by workflow/capability/provider version and task variant. Detect verifier failures, cost regressions, stale applicability and unknown outcomes; automatically suspend unsafe candidate activation and quarantine active versions according to policy. Preserve failed examples for targeted remining, without treating failure as a successful exemplar. Compare canary and baseline cohorts with minimum sample/confidence controls.",
+          "files": "Create lua/learning/monitor.lua, tests/learning_monitor.lua and docs/learning-monitoring.md. Integrate explicit per-registry monitoring and terminal workflow observation through narrow lua/learning/registry.lua and/or lua/workflow.lua hooks; register suite in CMakeLists.txt.",
+          "work": "Track outcomes by workflow/capability/provider version and task variant. Detect verifier failures, cost regressions, stale applicability and unknown outcomes; automatically suspend unsafe candidate activation and quarantine active versions according to policy. Preserve failed examples for targeted remining, without treating failure as a successful exemplar. Compare canary and baseline cohorts with minimum sample/confidence controls. Attach an explicit project monitor to the durable registry and observe finalized workflow snapshots on completion, resumed completion, cancellation and retention-driven refusal. Reserve bounded observation capacity durably before effects; retain pending coverage on failed observation and require reconciliation of actual terminal evidence after restart, never replaying effects merely to fill health gaps. Persist idempotent receipts, bounded variant/dependency samples and monotone quarantine intent before applying registry state. Host independent assessments supply version/input-bound verifiers, current applicability/dependency evidence and declared costs; success status alone is not verification. Include observed failures in cost per independently verified outcome, expose Wilson failure/unknown and bounded-cost confidence assumptions, and prevent missing cost coverage from claiming confident improvement. Preserve actual effect outcome if observation fails, block further monitored admission on unresolved coverage/storage failures and retain healthy explicit rollback targets.",
           "api": "monitor.observe(run_outcome) -> actions; monitor.explain(workflow_id) -> evidence-backed health state.",
           "ac": [
             "A changed tool schema or repeated verification failure prevents further automatic selection of the affected version and preserves rollback.",
@@ -542,10 +542,12 @@
           ],
           "test": "learning_monitor",
           "example": "assert(registry.status(broken_version) == \"quarantined\")",
-          "status": "in_progress"
+          "status": "done",
+          "commit": "689bb75",
+          "verification": "Final33+retention twice native/Linux; prior6affected suites twice and actual drift/storagegap/freshprocess/cost/retention probes both; independent review approved."
         }
       ],
-      "status": "in_progress"
+      "status": "done"
     },
     {
       "id": "product",
@@ -567,7 +569,8 @@
             "recovery"
           ],
           "test": "workflow_slack",
-          "example": "assert(reminder_count(\"late_responder\") == 0); assert(reminder_count(\"missing_person\") == 1)"
+          "example": "assert(reminder_count(\"late_responder\") == 0); assert(reminder_count(\"missing_person\") == 1)",
+          "status": "in_progress"
         },
         {
           "id": "novel",
@@ -623,7 +626,8 @@
           "test": "Studio workflow interaction suite and CLI workflow inspection tests",
           "example": "assert(displayed_total_cost == evaluation.total_cost)"
         }
-      ]
+      ],
+      "status": "in_progress"
     },
     {
       "id": "extensions",

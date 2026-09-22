@@ -785,20 +785,20 @@ assert(selected.binding.recipient == current_recipient)
 
 #### BRAIN-32 — Detect regressions and quarantine degraded procedures
 
-**Status:** In progress.
+**Status:** Complete — `689bb75`; independent review approved. Final 33 monitoring checks and retention suite passed twice on native macOS/Linux; prior six affected suites each passed twice. Actual backend drift, independent verifier quarantine, storage-failure/reopen/reconciliation, fresh-process dedup/health, measured provider-cost cohorts and pending-only deleted-scope probes passed both platforms.
 
 **Dependencies:** BRAIN-31
 
-**Files:** Create lua/learning/monitor.lua and tests/learning_monitor.lua.
+**Files:** Create lua/learning/monitor.lua, tests/learning_monitor.lua and docs/learning-monitoring.md. Integrate explicit per-registry monitoring and terminal workflow observation through narrow lua/learning/registry.lua and/or lua/workflow.lua hooks; register suite in CMakeLists.txt.
 
-**Implementation:** Track outcomes by workflow/capability/provider version and task variant. Detect verifier failures, cost regressions, stale applicability and unknown outcomes; automatically suspend unsafe candidate activation and quarantine active versions according to policy. Preserve failed examples for targeted remining, without treating failure as a successful exemplar. Compare canary and baseline cohorts with minimum sample/confidence controls.
+**Implementation:** Track outcomes by workflow/capability/provider version and task variant. Detect verifier failures, cost regressions, stale applicability and unknown outcomes; automatically suspend unsafe candidate activation and quarantine active versions according to policy. Preserve failed examples for targeted remining, without treating failure as a successful exemplar. Compare canary and baseline cohorts with minimum sample/confidence controls. Attach an explicit project monitor to the durable registry and observe finalized workflow snapshots on completion, resumed completion, cancellation and retention-driven refusal. Reserve bounded observation capacity durably before effects; retain pending coverage on failed observation and require reconciliation of actual terminal evidence after restart, never replaying effects merely to fill health gaps. Persist idempotent receipts, bounded variant/dependency samples and monotone quarantine intent before applying registry state. Host independent assessments supply version/input-bound verifiers, current applicability/dependency evidence and declared costs; success status alone is not verification. Include observed failures in cost per independently verified outcome, expose Wilson failure/unknown and bounded-cost confidence assumptions, and prevent missing cost coverage from claiming confident improvement. Preserve actual effect outcome if observation fails, block further monitored admission on unresolved coverage/storage failures and retain healthy explicit rollback targets.
 
 **Interface:** monitor.observe(run_outcome) -> actions; monitor.explain(workflow_id) -> evidence-backed health state.
 
 **Acceptance criteria:**
 
-- [ ] A changed tool schema or repeated verification failure prevents further automatic selection of the affected version and preserves rollback.
-- [ ] One noisy latency observation does not cause unbounded promotion/rollback oscillation; thresholds, sample counts and evidence are inspectable.
+- [x] A changed tool schema or repeated verification failure prevents further automatic selection of the affected version and preserves rollback.
+- [x] One noisy latency observation does not cause unbounded promotion/rollback oscillation; thresholds, sample counts and evidence are inspectable.
 
 **Test scenario:**
 
@@ -813,6 +813,8 @@ assert(registry.status(broken_version) == "quarantined")
 Make cheaper repeatable work usable without prompting, and make its behavior inspectable.
 
 #### BRAIN-33 — Deliver the Slack follow-up workflow with fixture-first validation
+
+**Status:** In progress.
 
 **Dependencies:** BRAIN-31, BRAIN-43
 
