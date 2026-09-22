@@ -95,4 +95,9 @@ M.tools = {
   },
 }
 
+-- Ordinary request routing is separate from FTS skill discovery.
+function M.learned(request, context, policy)
+  return require('learning.route').run(request, context, policy)
+end
+
 return M

@@ -197,4 +197,9 @@ function M.utility()
   return M.alias("cheap") or M.alias("fast") or M.current()
 end
 
+-- Model endpoint resolution above remains independent of learned execution.
+function M.request(request, context, policy)
+  return require('skillrouter').learned(request, context, policy)
+end
+
 return M

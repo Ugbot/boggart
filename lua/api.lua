@@ -1827,6 +1827,29 @@ function M.run_on(sess, user_text, on_text, opts)
     end
   end
 
+  -- An explicit session/turn host configuration enables automatic learned routing.
+  -- Once admitted, failures and uncertain effects never retry through a model.
+  local learning = opts.learning or sess.learning
+  if user_text ~= nil and learning then
+    local handle, selection, why = require("route").request(user_text,
+      opts.context or learning.context or {}, learning)
+    local snapshot = handle and handle:snapshot()
+    sess.learning_run = handle
+    sess.learning_selection = selection
+    local result = snapshot and snapshot.result
+    local text = type(result) == "string" and result
+      or result ~= nil and require("json").encode(result)
+      or "[learning] " .. tostring(snapshot and snapshot.status or why and why.code or "failed")
+    local prefix = selection.fallback and "[learning fallback: " .. selection.reason .. "]\n" or ""
+    text = prefix .. text
+    sink(text)
+    local msg = { role = "assistant", content = { { type = "text", text = text } } }
+    sess.messages[#sess.messages + 1] = msg
+    stop_reason = snapshot and snapshot.status or "denied"
+    checkpoint()
+    return msg, stop_reason
+  end
+
   -- OPTIONAL auto-dispatch: if this fresh request is "different enough" from what
   -- this agent does (see lua/dispatch.lua), hand the whole turn to a specialist
   -- sub-agent and return its answer, instead of answering here. Off by default,
