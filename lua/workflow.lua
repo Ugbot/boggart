@@ -78,7 +78,7 @@ function M.register(d)
   end
   local saved=copy(d);saved.metadata=plain(d.metadata);saved.defaults=bindings(d.defaults);saved.capabilities=saved.capabilities or {};saved.workflows=saved.workflows or {}
   registry[d.id]=registry[d.id] or {};registry[d.id][d.version]=saved
-  active[d.id]=active[d.id] or d.version
+  if d.inactive~=true then active[d.id]=active[d.id] or d.version end
   return identity(saved)
 end
 function M.activate(id,version)
@@ -156,7 +156,7 @@ function M.start(id, options)
   if root.source and (not sys.memcapable or not sys.memcapable()) then return nil,err("workflow_allocator_unavailable") end
   serial=serial+1
   local state={id=recovery and recovery.id or evidence.id('workflow-run'),workflow=identity(root),manifest=manifest,status='created',
-    steps={},invocations={},resolutions={},verified=false}
+    steps={},invocations={},resolutions={},verified=false,learning=copy(options.learning)}
   local capture_failures=evidence.status().failures
   local run_span=evidence.begin("workflow",{run_id=state.id,scope=scope,parent_id=inherited.parent_id or inherited.step_id,correlation_id=state.id},{workflow=state.workflow,manifest=manifest,context=injected,source_revisions=source_revisions})
   if not run_span.event_id and run_span.error~='evidence_disabled' and evidence.status().failure_policy=='stop' then return nil,err('evidence_unavailable') end
@@ -223,7 +223,7 @@ function M.start(id, options)
     local selected_defaults={};for key,value in pairs(defaults) do if values[key]==nil then selected_defaults[key]=value end end
     describe_providers(selected_defaults,occurrence.defaults,d.source and 'lua_source' or 'trusted_host',d.source and M.hash(d.source) or nil)
     local resolver=context.new(values,defaults,authority,{run_id=state.id,
-      capabilities=d.capabilities,source_revisions=source_revisions})
+      capabilities=d.capabilities,source_revisions=source_revisions,admit=options.admit})
     local thread_serial=0
     local frames=setmetatable({}, {__mode='k'})
     local function frame()
@@ -244,6 +244,7 @@ function M.start(id, options)
       return M.current()
     end
     local function alive()
+      if options.admit then local allowed,why=options.admit();if allowed~=true then mark('denied',why);error(why or err('workflow_admission_denied'),0)end end
       if state.status~='running' then error(err('workflow_not_running'),0) end
       if cancelled then error(err('workflow_cancelled'),0) end
       if not pcall(evidence.assert_run,state.id) then mark('failed',err('retention_scope_unavailable'));error(err('retention_scope_unavailable'),0) end

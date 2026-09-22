@@ -94,6 +94,10 @@ function M.new(injected, defaults, authority, options)
     events.emit('context:resolve_' .. stage, copy(p))
   end
   function resolver:call(id,args)
+    if options.admit then
+      local ok,why=options.admit()
+      if ok~=true then return {status="denied",error=why or failure("context_admission_denied","Current admission denied"),usage={},receipt={dispatched=false,id=id}} end
+    end
     local version=pins[id]
     if not version then
       return {status='failed', error=failure('capability_unpinned','Capability is not pinned'),

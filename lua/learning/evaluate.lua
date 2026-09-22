@@ -24,14 +24,7 @@ local function copy(value,host,seen,depth,budget)
  end
  seen[value]=nil;return out
 end
-local function canonical(v)
- if type(v)=='table' then
-  local parts={};for k,x in pairs(v)do parts[#parts+1]=canonical(k)..'='..canonical(x) end
-  table.sort(parts);return '{'..table.concat(parts,',')..'}'
- elseif type(v)=='function' then return '<trusted-host-function>'
- elseif type(v)=='string' then return string.format('%q',v)
- else return type(v)..':'..tostring(v) end
-end
+local canonical=require('learning.identity').canonical
 local function reason(report,code)
  if not report._reasons[code] then report._reasons[code]=true;report.reasons[#report.reasons+1]=code end
  report.eligibility=false
