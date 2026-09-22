@@ -42,6 +42,11 @@ CREATE TABLE IF NOT EXISTS learning_pins(project TEXT,id TEXT,run TEXT,version T
 CREATE TABLE IF NOT EXISTS learning_audit(sequence INTEGER PRIMARY KEY AUTOINCREMENT,project TEXT,id TEXT,body TEXT NOT NULL);
 ]]))
   local r={}
+  local monitor,monitor_error
+  function r:monitor(instance)
+   if type(instance)~='table' or instance.project~=o.project or type(instance.observe)~='function' or type(instance.admit)~='function' or type(instance.begin)~='function' or type(instance.abort)~='function' then return nil,{code='monitor_configuration_invalid'}end
+   monitor=instance;monitor_error=nil;return true
+  end
   local function rows(sql,args)return must(db:query(sql,args))end
   local function run(sql,args)return must(db:run(sql,args))end
   local function tx(fn)
@@ -69,6 +74,8 @@ CREATE TABLE IF NOT EXISTS learning_audit(sequence INTEGER PRIMARY KEY AUTOINCRE
    return selected
   end
   local function validate(v,phase,ctx)
+   if monitor_error then fail('monitor_observation_unavailable')end
+   if monitor then local ok,why=monitor:admit(v.id,v.version,ctx and ctx.run_id);if not ok then error(why,0)end end
    if not v.report then fail('evaluation_missing')end
    require('learning.promote').check(v.candidate,v.report)
    if v.binding~=identity.hash({revisions=o.revisions or {},qualification={id=o.qualification.id,revision=o.qualification.revision}}) then fail('evaluation_stale')end
@@ -222,8 +229,19 @@ CREATE TABLE IF NOT EXISTS learning_audit(sequence INTEGER PRIMARY KEY AUTOINCRE
      if inherited_admit then return inherited_admit()end
      return true
     end
-    opts.learning={project=o.project,id=id,version=definition.version,run_id=options.run_id}
-    local handle,why=workflow.start(definition.id,opts);if not handle then error(why,0)end;return handle
+    local h=head(id)
+    opts.learning={project=o.project,id=id,version=definition.version,run_id=options.run_id,baseline=h.previous~='' and h.previous or nil,cohort=h.percent<100 and (definition.version==h.version and 'canary' or 'baseline') or 'active'}
+    if monitor then local observer=monitor;local inherited_terminal=options.on_terminal
+     opts.on_terminal=function(snapshot)
+      local ok,value,why=pcall(observer.observe,observer,snapshot)
+      if not ok or not value then monitor_error=true end
+      if inherited_terminal then pcall(inherited_terminal,copy(snapshot))end
+      if not ok then return nil,{code='monitor_observation_failed'}end
+      return value,why
+     end
+    end
+    if monitor then local ok,why=monitor:begin(id,definition.version,options.run_id);if not ok then error(why,0)end end
+    local handle,why=workflow.start(definition.id,opts);if not handle then if monitor then monitor:abort(id,definition.version,options.run_id)end;error(why,0)end;return handle
    end)
   end
   function r:audit(id)return protect(function()local out={};for _,row in ipairs(rows('SELECT sequence,body FROM learning_audit WHERE project=? AND id=? ORDER BY sequence',{o.project,id}))do local v=decode(row.body);v.sequence=row.sequence;out[#out+1]=v end;return out end)end

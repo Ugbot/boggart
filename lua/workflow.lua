@@ -388,6 +388,10 @@ function M.start(id, options)
     local event,why=evidence.finish(run_span,{status=state.status,result=state.result,error=state.error,verified=state.verified,manifest=state.manifest,effects_incomplete=state.effects_incomplete})
     state.evidence={terminal_event_id=event,coverage=run_span.event_id and event and evidence.status().failures==capture_failures and "observed" or "incomplete",error=why or run_span.error}
     if state.evidence.coverage~='observed' then state.verified=false end
+    if options.on_terminal then
+      local ok,value,why=pcall(options.on_terminal,copy(state))
+      state.monitoring=ok and (value or {error=why}) or {error={code='terminal_observer_failed'}}
+    end
   end
   function handle:snapshot()
     if not pcall(function()evidence.assert_scope(scope);evidence.assert_run(state.id)end) then
@@ -401,6 +405,7 @@ function M.start(id, options)
     if not allowed then
       state.status='failed';state.error=err('retention_scope_unavailable');state.verified=false;state.result=nil
       state.steps={};state.invocations={};state.resolutions={};current[co]=nil
+      finish_run()
       return self:snapshot()
     end
     state.status='running'
