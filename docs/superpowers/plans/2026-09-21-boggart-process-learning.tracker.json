@@ -510,7 +510,7 @@
         {
           "id": "routing",
           "title": "Recognize ordinary requests and bind current context",
-          "files": "Create lua/learning/route.lua and tests/learning_route.lua; integrate lua/skillrouter.lua and lua/route.lua.",
+          "files": "Create lua/learning/route.lua, tests/learning_route.lua and docs/learning-routing.md; integrate lua/skillrouter.lua and lua/route.lua while preserving existing skill search and model endpoint semantics. Add a narrow lua/api.lua ordinary-request hook and covering request-path tests; register learning_route in CMakeLists.txt.",
           "work": "Separate candidate retrieval, concrete context binding, applicability evaluation and execution. Prefer eligible learned workflow/fragments on normal requests; reject ambiguous/wrong-scope/stale matches and use an explicit model planning Lua step. Bound retrieval/judgment cost so recognition cannot cost more than it saves unnoticed. Never substitute historical arguments for missing current inputs. Log selected/rejected alternatives and reasons.",
           "api": "route.select(request,context,policy) -> {workflow,version,binding,evidence}|{fallback,reason}; invocation always enters workflow.start.",
           "ac": [
@@ -523,7 +523,9 @@
           ],
           "test": "learning_route",
           "example": "assert(selected.binding.recipient == current_recipient)",
-          "status": "in_progress"
+          "status": "done",
+          "commit": "42a39fd",
+          "verification": "Final38/context80/workflow87 twice native macOS/Linux; prior8affected suites twice; actual request/provider/memory/deletion probes both platforms; independent review approved."
         },
         {
           "id": "drift",
@@ -539,7 +541,8 @@
             "routing"
           ],
           "test": "learning_monitor",
-          "example": "assert(registry.status(broken_version) == \"quarantined\")"
+          "example": "assert(registry.status(broken_version) == \"quarantined\")",
+          "status": "in_progress"
         }
       ],
       "status": "in_progress"

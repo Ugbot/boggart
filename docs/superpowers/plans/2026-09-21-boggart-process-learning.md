@@ -760,11 +760,11 @@ assert(inflight.version == "v1"); assert(registry.resolve(id,new_context).versio
 
 #### BRAIN-31 — Recognize ordinary requests and bind current context
 
-**Status:** In progress.
+**Status:** Complete — `42a39fd`; independent review approved. Final 38 routing checks plus context/workflow passed twice on native macOS/Linux; earlier eight affected suites each passed twice. Actual ordinary requests with recorded/compiled/evaluated/promoted candidates, current recipients, bounded Lua fallback, live denial, shared-provider reuse and real scoped memory retrieval/deletion passed both platforms.
 
 **Dependencies:** BRAIN-30, BRAIN-26
 
-**Files:** Create lua/learning/route.lua and tests/learning_route.lua; integrate lua/skillrouter.lua and lua/route.lua.
+**Files:** Create lua/learning/route.lua, tests/learning_route.lua and docs/learning-routing.md; integrate lua/skillrouter.lua and lua/route.lua while preserving existing skill search and model endpoint semantics. Add a narrow lua/api.lua ordinary-request hook and covering request-path tests; register learning_route in CMakeLists.txt.
 
 **Implementation:** Separate candidate retrieval, concrete context binding, applicability evaluation and execution. Prefer eligible learned workflow/fragments on normal requests; reject ambiguous/wrong-scope/stale matches and use an explicit model planning Lua step. Bound retrieval/judgment cost so recognition cannot cost more than it saves unnoticed. Never substitute historical arguments for missing current inputs. Log selected/rejected alternatives and reasons.
 
@@ -772,8 +772,8 @@ assert(inflight.version == "v1"); assert(registry.resolve(id,new_context).versio
 
 **Acceptance criteria:**
 
-- [ ] A paraphrased known task uses its workflow with current recipients; a subtly different task fails applicability and falls back visibly.
-- [ ] Missing context cannot trigger historical side effects; policy denial remains denial even when a candidate has high similarity.
+- [x] A paraphrased known task uses its workflow with current recipients; a subtly different task fails applicability and falls back visibly.
+- [x] Missing context cannot trigger historical side effects; policy denial remains denial even when a candidate has high similarity.
 
 **Test scenario:**
 
@@ -784,6 +784,8 @@ assert(selected.binding.recipient == current_recipient)
 **Verification:** Planned suite: `learning_route`. Add a failing fixture for the scenario, implement the contract, then rebuild and run the registered suite using the protocol above; run affected existing suites. Native, sibling and Studio commands must come from the applicable repository build recipes. Attach actual test references/results before closure.
 
 #### BRAIN-32 — Detect regressions and quarantine degraded procedures
+
+**Status:** In progress.
 
 **Dependencies:** BRAIN-31
 
