@@ -483,7 +483,9 @@
           ],
           "test": "learning_evaluate",
           "example": "assert(report.eligibility == false); assert(report.regressions.wrong_recipient == 1)",
-          "status": "in_progress"
+          "status": "done",
+          "commit": "a235b1b",
+          "verification": "Final85 evaluator checks plus context/workflow twice macOS/Linux; actual recorded two-route, provider parity, costs/lineage/retention probes; independent review approved."
         },
         {
           "id": "promotion",
@@ -500,7 +502,8 @@
             "mining_jobs"
           ],
           "test": "learning_promote",
-          "example": "assert(inflight.version == \"v1\"); assert(registry.resolve(id,new_context).version == \"v2\")"
+          "example": "assert(inflight.version == \"v1\"); assert(registry.resolve(id,new_context).version == \"v2\")",
+          "status": "in_progress"
         },
         {
           "id": "routing",

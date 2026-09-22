@@ -710,7 +710,7 @@ Automatic learning remains reversible and evidence-driven; users can change auto
 
 #### BRAIN-29 — Evaluate candidates against held-out outcomes and costs
 
-**Status:** In progress.
+**Status:** Complete in `a235b1b`; independent review approved after provider-parity correction. Final85 evaluator checks and affected suites passed twice on macOS/Linux; actual recorded compiler routes, production branch/provider comparison, costs, split leakage and retention probes passed both. Eligibility remains explicitly scoped to isolated compiler-subset evaluation; promotion must revalidate current authority, exact contract and coverage.
 
 **Dependencies:** BRAIN-27, BRAIN-43, BRAIN-14
 
@@ -722,8 +722,8 @@ Automatic learning remains reversible and evidence-driven; users can change auto
 
 **Acceptance criteria:**
 
-- [ ] A wrong-recipient candidate and a verifier-failure candidate are rejected even if their report text looks plausible.
-- [ ] Held-out inputs are absent from synthesis; baseline and candidate costs include amortized learning costs and demonstrate where break-even occurs.
+- [x] A wrong-recipient candidate and a verifier-failure candidate are rejected even if their report text looks plausible.
+- [x] Held-out inputs are absent from synthesis; baseline and candidate costs include amortized learning costs and demonstrate where break-even occurs.
 
 **Test scenario:**
 
@@ -734,6 +734,8 @@ assert(report.eligibility == false); assert(report.regressions.wrong_recipient =
 **Verification:** Planned suite: `learning_evaluate`. Add a failing fixture for the scenario, implement the contract, then rebuild and run the registered suite using the protocol above; run affected existing suites. Native, sibling and Studio commands must come from the applicable repository build recipes. Attach actual test references/results before closure.
 
 #### BRAIN-30 — Promote automatically with pins, rollback and user controls
+
+**Status:** In progress.
 
 **Dependencies:** BRAIN-29, BRAIN-28
 

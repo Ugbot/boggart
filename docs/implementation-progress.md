@@ -268,3 +268,9 @@ BRAIN-27 is complete in `e3e5035`. Independent review approved the final bound-o
 BRAIN-28 is complete in `90c7dbd`. Directed/background mining uses one durable, bounded worker engine for native trace crystallization and source-backed refinement. It preserves source authority and restrictive inherited permission state, fences concurrent cursor selection, and retries pending claim cleanup. Candidate identity includes execution contracts. Independent review approved after three regression fixes. Final 67 mining checks plus affected suites passed twice on macOS/Linux; actual separate-process restart/crash/cursor-race and source/authority/identity fixtures passed both. Deadline overruns remain measured/refused, not claimed as hard real-time enforcement.
 
 BRAIN-6 mining milestone is complete. BRAIN-29 held-out evaluation is in progress; candidates remain inactive pending evaluation/promotion.
+
+## BRAIN-29 complete; promotion started
+
+BRAIN-29 is complete in `a235b1b`. The evaluator executes exact compiled Lua against isolated adapters, separates training/validation/held-out lineage, checks independent invariants and applicability, and accounts for learning/execution costs without treating unknowns as zero. Provider request/failure semantics were corrected after independent review. Final85 evaluator checks and affected suites passed twice on macOS/Linux; actual recorded source-free/source-backed, production provider/branch, cost, split-leakage and retention probes passed both. Reports explicitly distinguish isolated evaluation from production-runtime qualification and authorization.
+
+BRAIN-30 automatic promotion, pinned versions and rollback is in progress. No workflows have been promoted by these tests.
