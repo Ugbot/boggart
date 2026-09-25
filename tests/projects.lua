@@ -124,6 +124,27 @@ local moved = false
 for _, r in ipairs(rl2) do if r.title == "scene one" then moved = true end end
 ok(moved, "and it moves")
 
+-- "the recent chats" with no project named means THIS project's, first. It
+-- used to mean the project-less ones only, so "most recent" skipped every
+-- project chat and the studio resumed one stale global row on every launch.
+do
+  proj.switch("global")
+  local g = bog.store.sess_create("loose chat", "m", nil)
+  bog.store.sess_save(g, "loose chat", "m", { { role = "user", content = "hi" } })
+  proj.switch("redwing")
+  local newest = bog.store.sess_create("redwing latest", "m", "redwing")
+  bog.store.sess_save(newest, "redwing latest", "m", { { role = "user", content = "hi" } })
+  local top = bog.store.sess_list(1)
+  eq(top[1] and top[1].id, newest, "omitted project: the current project's newest chat leads")
+  local seen_global = false
+  for _, r in ipairs(bog.store.sess_list(50)) do if r.id == g then seen_global = true end end
+  ok(seen_global, "omitted project: loose global chats are still listed")
+  local only = bog.store.sess_list(50, "global")
+  local leaked = false
+  for _, r in ipairs(only) do if r.id == newest then leaked = true end end
+  ok(not leaked, "explicit global still lists only the loose chats")
+end
+
 -- ---- roots ---------------------------------------------------------------
 local dir = bog.userdir .. "/root-a"
 sys.mkdir_p(dir)

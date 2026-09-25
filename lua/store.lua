@@ -545,7 +545,18 @@ local function now() return os.time() end
 -- These now delegate to the C data API (bog.repo). The SQL that used to live
 -- here moved into src/lrepo.c behind the backend seam; callers (bog.store.kv_*)
 -- are unchanged. This is the template every other op follows as it moves.
-function M.kv_set(k, v) return bog.repo:kv_set(k, v) end
+-- The kv accessors answer "not open" instead of raising before store.open()
+-- has attached bog.repo. bog.store is the module table from boot onwards, so
+-- every caller's `bog.store and bog.store.kv_get` guard passes long before
+-- there is a repo behind it -- and a raise there, swallowed by the caller's
+-- pcall, silently dropped whatever it was reading (the studio's skill list
+-- lost its database skills this way). Reads see "nothing stored"; writes
+-- report the store is not open.
+function M.is_open() return bog.repo ~= nil end
+function M.kv_set(k, v)
+  if not bog.repo then return nil, "store not open" end
+  return bog.repo:kv_set(k, v)
+end
 
 -- ---- the model catalog -----------------------------------------------------
 -- Thin pass-throughs to the C operations (src/lrepo.c), the same shape as the
@@ -559,9 +570,16 @@ function M.provider_put(row)    return bog.repo:provider_put(row) end
 function M.catalog_list(what)   return bog.repo:catalog_list(what or "models") end
 function M.role_get(name)       return bog.repo:role_get(name) end
 function M.role_put(name, spec) return bog.repo:role_put(name, spec) end
-function M.kv_get(k) return bog.repo:kv_get(k) end
-function M.kv_del(k) return bog.repo:kv_del(k) end
+function M.kv_get(k)
+  if not bog.repo then return nil end
+  return bog.repo:kv_get(k)
+end
+function M.kv_del(k)
+  if not bog.repo then return nil, "store not open" end
+  return bog.repo:kv_del(k)
+end
 function M.kv_list(prefix)
+  if not bog.repo then return {} end
   if prefix and prefix ~= "" then
     return bog.repo:kv_list(prefix)
   end
@@ -1008,24 +1026,34 @@ function M.sess_list_in(project, limit)
   if p then
     return bog.db:query(
       "SELECT id,title,model,updated,project FROM sessions WHERE project=? "
-      .. "ORDER BY updated DESC LIMIT ?", { p, limit or 20 })
+      .. "ORDER BY updated DESC, id DESC LIMIT ?", { p, limit or 20 })
   end
   return bog.db:query(
     "SELECT id,title,model,updated,project FROM sessions WHERE project IS NULL "
-    .. "ORDER BY updated DESC LIMIT ?", { limit or 20 })
+    .. "ORDER BY updated DESC, id DESC LIMIT ?", { limit or 20 })
 end
 
+-- `project` omitted means the CURRENT project (its chats first, then the loose
+-- global ones); pass "global" for the loose chats alone. Every caller -- the
+-- studio and cTUI resume, --resume, completion, the control API -- asks for
+-- "the recent chats" without naming a project, and treating that as global
+-- meant "most recent" skipped every project chat: the studio resumed the one
+-- global row on every launch and piled each new conversation into it.
 function M.sess_list(limit, project)
+  if project == nil then
+    local okp, proj = pcall(require, "project")
+    project = okp and proj.current() or nil
+  end
   local p = proj_or_global(project)
   if p then
     return bog.db:query(
       "SELECT id,title,model,updated,project FROM sessions "
       .. "WHERE (project=? OR project IS NULL) "
-      .. "ORDER BY (project IS NULL), updated DESC LIMIT ?", { p, limit or 20 })
+      .. "ORDER BY (project IS NULL), updated DESC, id DESC LIMIT ?", { p, limit or 20 })
   end
   return bog.db:query(
     "SELECT id,title,model,updated,project FROM sessions WHERE project IS NULL "
-    .. "ORDER BY updated DESC LIMIT ?", { limit or 20 })
+    .. "ORDER BY updated DESC, id DESC LIMIT ?", { limit or 20 })
 end
 
 -- Remove session rows that hold nothing at all.

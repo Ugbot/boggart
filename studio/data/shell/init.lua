@@ -275,15 +275,9 @@ function shell.attach()
   -- a store that cannot be read must still leave a usable chat window. (The old
   -- studio.attach does this too, but the shell suppresses that path, so the
   -- behaviour has to be reproduced here.)
-  core.try(function()
-    if require("core.welcomeview").is_first_run() then return end
-    if not (bog.resume_startup and bog.resume_startup()) then
-      local recent = bog.store.sess_list(1)
-      local id = recent and recent[1] and recent[1].id
-      if id then bog.resume_session(id) end
-    end
-    if bog.session and bog.session.id then view:repaint(bog.session.messages) end
-  end)
+  -- (studio.resume_last: the studio's OWN last conversation, not the store's
+  -- most recent -- that one is often live in the TUI; see core/studio.lua.)
+  core.try(function() studio.resume_last(view) end)
 
   -- the app-wide neovim spine: Ctrl-w panes, g/gt, leader, normal-mode nav
   core.try(function() require("shell.modal").install() end)

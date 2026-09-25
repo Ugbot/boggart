@@ -49,6 +49,39 @@ function studio.agent_view()
   return nil
 end
 
+-- Land back in the STUDIO's own last conversation on launch (the desktop-app
+-- behaviour), not "the most recent chat in the store". Those differ: the most
+-- recent chat is often live in another process -- your TUI -- and sess_save
+-- writes the whole transcript, so two processes resuming one row silently
+-- overwrite each other's turns (a 31-turn chat was lost to a lone "hello" this
+-- way). So the studio remembers which conversation it was last in
+-- (kv studio.last_session, written whenever this process saves one) and
+-- reopens that. An explicit --resume still wins. Used by both the legacy
+-- attach and the shell (studio/data/shell/init.lua).
+studio.LAST_KEY = "studio.last_session"
+local tracking = false
+
+function studio.track_last()
+  if tracking or not (bog.events and bog.events.on) then return end
+  tracking = true
+  local function remember(_, data)
+    local id = data and data.id
+    if id and bog.store and bog.store.kv_set then pcall(bog.store.kv_set, studio.LAST_KEY, tostring(id)) end
+  end
+  bog.events.on("session:created", remember)
+  bog.events.on("session:saved", remember)
+end
+
+function studio.resume_last(view)
+  studio.track_last()
+  if require("core.welcomeview").is_first_run() then return end
+  if not (bog.resume_startup and bog.resume_startup()) then
+    local id = bog.store and bog.store.kv_get and tonumber(bog.store.kv_get(studio.LAST_KEY))
+    if id then bog.resume_session(id) end
+  end
+  if view and bog.session and bog.session.id then view:repaint(bog.session.messages) end
+end
+
 -- Shared startup that both attach paths run: fonts, drawing tools, the swarm
 -- pump, resume the last session, and (on a first run) the welcome surface.
 local function attach_common(view)
@@ -58,15 +91,7 @@ local function attach_common(view)
     for _, p2 in ipairs(problems or {}) do core.log("%s", p2) end
   end)
   core.try(studio.setup_swarm)
-  core.try(function()
-    if require("core.welcomeview").is_first_run() then return end
-    if not (bog.resume_startup and bog.resume_startup()) then
-      local recent = bog.store.sess_list(1)
-      local id = recent and recent[1] and recent[1].id
-      if id then bog.resume_session(id) end
-    end
-    if bog.session and bog.session.id then view:repaint(bog.session.messages) end
-  end)
+  core.try(function() studio.resume_last(view) end)
   core.try(function() require("core.welcomeview").maybe_open() end)
   studio.start_mcp()
   return view
