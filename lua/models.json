@@ -17,7 +17,12 @@
     "  key_slot  is the credential slot, and src/lauth.c refuses to send a key",
     "            to a host this table does not register for that slot. It is",
     "            also explicit because deriving it from the hostname gives 'x'",
-    "            for api.x.ai and 'z' for api.z.ai."
+    "            for api.x.ai and 'z' for api.z.ai.",
+    "",
+    "typesafe is not a chat endpoint: System One answers typed questions",
+    "(lua/typesafe.lua, docs/typesafe.md). Its wire is 'systemone' so the chat",
+    "wires never see it, and it has no models rows, so /model never offers it.",
+    "The row exists so src/lauth.c honours the bearer slot for api.typesafe.ai."
   ],
   "version": 1,
 
@@ -66,6 +71,12 @@
       "wire": "anthropic", "auth": "x-api-key",
       "key_slot": "deepseek", "env": "DEEPSEEK_API_KEY",
       "catalog_url": "https://api.deepseek.com/models"
+    },
+    "typesafe": {
+      "label": "TypeSafe (Jev)",
+      "url": "https://api.typesafe.ai/v1",
+      "wire": "systemone", "auth": "bearer",
+      "key_slot": "typesafe", "env": "TYPESAFE_API_KEY"
     },
     "moonshot": {
       "label": "Moonshot (Kimi)",

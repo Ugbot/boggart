@@ -807,6 +807,21 @@ local function handle_command(line)
       if h then io.write("tracing " .. pat .. " -- /trace off to stop\n")
       else io.write("trace: " .. tostring(err) .. "\n") end
     end
+  elseif cmd == "judge" then
+    -- The decision router (lua/judge.lua): /judge shows where small discrete
+    -- decisions go; /judge auto|jev|chat|off picks; /judge min <0..1> sets the
+    -- confidence below which a jev answer is re-asked of the chat model.
+    local jd = bog.judge
+    local a, b = rest:match("^(%S+)%s*(.*)$")
+    if not a or a == "" then
+      io.write(jd.describe(), "\n")
+    elseif a == "min" then
+      local v, e = jd.set_min_confidence(b)
+      io.write(v and ("judge min_confidence = " .. tostring(v) .. "\n") or ("judge: " .. e .. "\n"))
+    else
+      local v, e = jd.set_backend(a)
+      io.write(v and (jd.describe() .. "\n") or ("judge: " .. e .. "\n"))
+    end
   elseif cmd == "fork" then
     -- Branch the active session: a new session seeded with a copy of this one's
     -- transcript, so you can explore a divergent path without disturbing the
@@ -1380,6 +1395,8 @@ end
 bog.llmstation = require("llmstation")
 bog.station = require("stationlink") -- ZMQ transport policy; dormant unless built
 bog.gestalt = require("gestalt") -- data plane for graph/SQL; dormant unless up
+bog.typesafe = require("typesafe") -- System One typed judge; dormant without a key
+bog.judge = require("judge") -- decision router: simple choices to jev, else the utility model
 -- Eval skips MCP so tests do not spawn subprocesses. Embedded (studio)
 -- skips it here too: connect/handshake block the thread, and the window
 -- stays hidden until boot returns. Studio starts the same load after the
@@ -1457,6 +1474,7 @@ function bog.activate_agents()
   bog.tools_swarm = bog.tools_swarm or require("tools_swarm")
   if swarm and swarm.attach then pcall(swarm.attach, bog.db) end
   pcall(bog.tools_swarm.register)
+  pcall(bog.judge.register) -- the `judge` tool; routes per /judge
   bog.thread.max_agents = tonumber(os.getenv("BOGGART_MAX_AGENTS")) or 16
   -- Arm the liveness watchdog for the whole runtime (idempotent).
   if bog.watchdog and bog.watchdog.start then pcall(bog.watchdog.start) end
