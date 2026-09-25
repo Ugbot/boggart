@@ -80,11 +80,38 @@ CREATE TABLE IF NOT EXISTS learning_health_seen(project TEXT,run TEXT,PRIMARY KE
   function m:abort(id,v,run_id)
    return protect(function()run('DELETE FROM learning_health_pending WHERE project=? AND run=? AND owner=?',{o.project,key(id,v,run_id),owner});return true end)
   end
+  local function owns(value)return value==owner or type(value)=='string' and value:sub(1,#owner+1)==owner..':'end
+  function m:recovery_ticket(id,v,run_id)
+   return protect(function()
+    local row=rows('SELECT owner FROM learning_health_pending WHERE project=? AND run=?',{o.project,key(id,v,run_id)})[1]
+    if not row then fail('monitor_recovery_receipt_missing')end
+    return {owner=row.owner,id=id,version=v,run_id=run_id,project=o.project}
+   end)
+  end
+  -- Exact-owner CAS: a proof for an old executor cannot steal its successor.
+  function m:recover(id,v,run_id,proof)
+   return protect(function()
+    if type(proof)~='table' or not text(proof.ref) or not text(proof.owner) or proof.project~=o.project or proof.id~=id or proof.version~=v or proof.run_id~=run_id then fail('monitor_recovery_proof_required')end
+    must(db:exec('BEGIN IMMEDIATE'))
+    local ok,result=pcall(function()
+     local k=key(id,v,run_id)
+     local pending=rows('SELECT id,version,owner FROM learning_health_pending WHERE project=? AND run=?',{o.project,k})[1]
+     if not pending or pending.owner~=proof.owner or pending.id~=id or pending.version~=v then fail('monitor_recovery_owner_changed')end
+     require('evidence').assert_scope(o.project)
+     run('UPDATE learning_health_pending SET owner=? WHERE project=? AND run=? AND owner=?',{owner..':'..require('evidence').id('recovery'),o.project,k,proof.owner})
+     return true
+    end)
+    if not ok then pcall(db.exec,db,'ROLLBACK');error(result,0)end
+    if not db:exec('COMMIT')then pcall(db.exec,db,'ROLLBACK');fail('monitor_storage_unavailable')end
+    return true
+   end)
+  end
   function m:admit(id,v,run_id)
    return protect(function()
     local h=get(id,v);retained(h);if h.quarantine then fail('monitor_quarantined')end
-    if #rows('SELECT run FROM learning_health_pending WHERE project=? AND owner<>?',{o.project,owner})>0 then fail('monitor_recovery_required')end
-    local own=run_id and rows('SELECT run FROM learning_health_pending WHERE project=? AND run=? AND owner=?',{o.project,key(id,v,run_id),owner})[1]
+    for _,pending in ipairs(rows('SELECT owner FROM learning_health_pending WHERE project=?',{o.project}))do if not owns(pending.owner)then fail('monitor_recovery_required')end end
+    local pending=run_id and rows('SELECT owner FROM learning_health_pending WHERE project=? AND run=?',{o.project,key(id,v,run_id)})[1]
+    local own=pending and owns(pending.owner)
     if not own then capacity()end
     return true
    end)

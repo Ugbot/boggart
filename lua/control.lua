@@ -78,7 +78,8 @@ end
 local invocation = require "invoke"
 local route_registry = {}
 local route_by_id = {}
-local client_context, scoped_client
+local client_context, scoped_client, client_binding
+local deferred=require("trigger_authority")
 invocation.bind(route_registry, function(id)
   local r=route_by_id[id]
   return r and {id=id,version="1",effect=r.method=="GET" and "read" or "write"}
@@ -94,11 +95,8 @@ local function dispatch(req)
       if caps[1] ~= nil then
         if caps[1] == req.path then caps = {} end
         if not req.authenticated then return err(401,"authentication required") end
-        -- Deferred routes currently cannot preserve attenuated authority.
-        if scoped_client and (req.path=="/prompt" or req.path:match("^/hooks/")
-            or req.path:match("^/triggers") and req.method~="GET"
-            or req.path=="/permissions" and req.method~="GET") then
-          return err(403,"scoped deferred or authority-changing control is unsupported")
+        if scoped_client and req.path=="/permissions" and req.method~="GET" then
+          return err(403,"scoped authority-changing control is unsupported")
         end
         local id="control:"..r.method..":"..r.pattern:sub(2,-2)
         route_by_id[id]=r
@@ -284,7 +282,7 @@ M.route("POST", "/prompt", function(req)
     return err(400, "a prompt needs a `text` field")
   end
   local id = tostring(os.time()) .. "-" .. tostring(math.random(1e6))
-  bog.events.emit("serve:prompt", { id = id, text = text, source = body.source or "http" })
+  bog.events.emit("serve:prompt", deferred.attach({ id = id, text = text, source = "http" },client_binding))
   return ok({ accepted = true, id = id })
 end, "queue a prompt as a turn (async; watch /events for the result)")
 
@@ -297,8 +295,8 @@ end, "queue a prompt as a turn (async; watch /events for the result)")
 -- it the start of a flow. Same door.
 M.route("POST", "/hooks/([%w_%-%.]+)", function(req, name)
   local body = body_table(req)
-  bog.events.emit("hook:" .. name, { name = name, body = body, raw = req.body,
-                                     remote = req.remote })
+  bog.events.emit("hook:" .. name, deferred.attach({ name = name, body = body, raw = req.body,
+                                     remote = req.remote },client_binding))
   return ok({ delivered = "hook:" .. name })
 end, "deliver an external event as hook:<name>")
 
@@ -321,7 +319,8 @@ M.route("POST", "/triggers", function(req)
     return err(400, "a trigger needs a `when`: {every=n} | {at=\"09:00\"} | {on=\"hook:x\"}")
   end
   local T = require "triggers"
-  local t = T.add(body.name, body.when, body.run, { enabled = body.enabled ~= false })
+  local t = T.add(body.name, body.when, body.run, { enabled = body.enabled ~= false,
+    authority_binding=client_binding, restrictions=deferred.capture(client_binding) })
   return ok({ trigger = { name = t.name, when = t.when, enabled = t.enabled,
                           next_at = t.next_at } }, 201)
 end, "create or replace a trigger")
@@ -329,7 +328,7 @@ end, "create or replace a trigger")
 M.route("POST", "/triggers/([%w_%-%.]+)/fire", function(req, name)
   local T = require "triggers"
   if not T.list[name] then return err(404, "no trigger called " .. name) end
-  T.fire(name, { manual = true })
+  T.fire(name, deferred.attach({ manual = true },client_binding))
   return ok({ fired = name })
 end, "fire a trigger now, by hand")
 
@@ -338,6 +337,42 @@ M.route("DELETE", "/triggers/([%w_%-%.]+)", function(req, name)
   if not T.remove(name) then return err(404, "no trigger called " .. name) end
   return ok({ removed = name })
 end, "delete a trigger")
+
+-- Host-configured workflow names: clients select a binding, never submit code,
+-- a registry, a provider closure or an authority object.
+M.route("GET", "/workflows", function()
+  local w=require("triggers").workflows
+  return ok({workflows=w and w:status() or {}})
+end,"host workflow bindings and durable occurrence status")
+M.route("POST", "/workflows/([%w_%-%.]+)/run", function(req,name)
+  local w=require("triggers").workflows
+  if not w then return err(503,"workflow bindings unavailable") end
+  local event=deferred.attach({},client_binding)
+  local job,why=w:enqueue(name,require("evidence").id("control-occasion"),"named",event)
+  if not job then return err(409,why and why.code or "workflow unavailable") end
+  return ok({accepted=true,occurrence=job.occurrence},202)
+end,"queue a named workflow using current pinned registry admission")
+M.route("GET", "/workflows/([%w_%-%.]+)/preview", function(req,name)
+  local w=require("triggers").workflows
+  local value=w and w:preview(name)
+  if not value then return err(404,"workflow binding unavailable") end
+  return ok(value)
+end,"effect-free schedule preview")
+M.route("POST", "/workflows/([%w_%-%.]+)/pause", function(req,name)
+  local w=require("triggers").workflows
+  local value=w and w:pause(name,body_table(req).paused~=false)
+  if not value then return err(404,"workflow binding unavailable") end
+  return ok({paused=body_table(req).paused~=false})
+end,"pause or resume future workflow admissions")
+
+M.route("POST", "/workflows/([%w_%-%.]+)/cancel", function(req,name)
+  local w=require("triggers").workflows
+  local body=body_table(req)
+  if type(body.occurrence)~="string" then return err(400,"occurrence required") end
+  local value=w and w:cancel(name,body.occurrence)
+  if not value then return err(404,"occurrence unavailable") end
+  return ok({cancel_requested=true})
+end,"cancel a queued or executing workflow occurrence")
 
 -- ---- the event stream -----------------------------------------------------
 
@@ -393,7 +428,10 @@ function M.start(opts)
     capabilities={allow=capabilities}}}
   if not policy then return nil,policy_error end
   scoped_client=not (#capabilities==1 and capabilities[1]=="*")
-  client_context=invocation.context({state={mode="auto",guards=false},policy=policy})
+  client_binding=opts.binding_id or "control:default"
+  local client_state={mode="auto",guards=false,policy=policy}
+  deferred.register(client_binding,client_state)
+  client_context=invocation.context({state=client_state})
   local srv, why = serve.listen{
     host = host, port = port, token = token, profile=opts.profile,
     handler = function(req)
@@ -417,11 +455,14 @@ end
 function M.stop()
   if not M.server then return false end
   remove_bridge()
+  deferred.revoke(client_binding)
   M.server:stop()
   M.server, client_token, client_context = nil, nil, nil
   bog.events.emit("serve:stopped", {})
   return true
 end
+
+function M.revoke() if client_binding then deferred.revoke(client_binding) end end
 
 -- Trusted host-only retrieval; never exposed by routes or event payloads.
 function M.client_token() return client_token end

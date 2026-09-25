@@ -104,3 +104,24 @@ check(not pending_explanation,'deleted pending-only scope cannot expose pending 
 local missing_explanation=group_monitor:explain('nonexistent')
 check(not missing_explanation,'nonexistent workflow cannot bypass deleted scope guard')
 print('learning_monitor final: '..count..' checks passed')
+
+-- BRAIN-35 monitored learned replay-v1 restart resolves the original receipt.
+local trigger_fixture=dofile('tests/fixtures/workflow_triggers.lua')
+local trigger_path=os.tmpname()
+local first_host=trigger_fixture.open{path=trigger_path,interrupt=true,monitor=true}
+local pending=assert(first_host.coordinator:run('fixture','timer','monitored-recovery'))
+check(pending:snapshot().status=='suspended' and first_host.count()==1,'monitored learned occurrence interrupted after synthetic effect')
+local next_host=trigger_fixture.open{path=trigger_path,monitor=true}
+local resumed,resume_error=next_host.coordinator:recover('fixture','monitored-recovery',next_host.proof)
+assert(resumed,resume_error and resume_error.code)
+local resumed_snapshot=resumed:snapshot()
+check(resumed_snapshot.status=='succeeded' and next_host.count()==1,'monitored restart reconciles one physical effect')
+check(resumed_snapshot.monitoring and resumed_snapshot.monitoring.health.latest.n==1,'recovered terminal invokes current monitor observer once')
+check(next_host.db:query('SELECT COUNT(*) AS n FROM learning_health_pending')[1].n==0,'recovery completes original monitor receipt')
+assert(next_host.monitor:begin('followup','1','stale-proof'))
+local ticket=assert(next_host.monitor:recovery_ticket('followup','1','stale-proof'))
+local proof={owner=ticket.owner,ref='fixture:stopped-owner:'..ticket.owner,project=ticket.project,id=ticket.id,version=ticket.version,run_id=ticket.run_id}
+assert(next_host.monitor:recover('followup','1','stale-proof',proof))
+local stolen,stale_error=next_host.monitor:recover('followup','1','stale-proof',proof)
+check(not stolen and stale_error.code=='monitor_recovery_owner_changed','stale exact-owner proof cannot steal recovered monitor receipt')
+print('learning_monitor BRAIN-35: '..count..' checks passed')

@@ -170,7 +170,20 @@ local scoped=S.start{token=tok,capabilities={"control:GET:/health","control:POST
 base="http://127.0.0.1:"..scoped:port()
 eq(status("/health"),200,"scoped token reads granted route")
 eq(status("/sessions"),403,"scoped token cannot read ungranted route")
-eq(status("/prompt","-X POST -d '{}' -H 'Authorization: Bearer "..tok.."'"),403,"scoped deferred work refused")
+eq(status("/prompt","-X POST -d '{}' -H 'Authorization: Bearer "..tok.."'"),400,"scoped deferred route validates input")
+local queued_job
+local queue_handle=bog.events.on("serve:prompt",function(_,ev)queued_job=ev end)
+local admitted=json.decode(POST("/prompt",'{"text":"scoped","policy":{"allow":["*"]}}',"-H 'Authorization: Bearer "..tok.."'"))
+ok(admitted.accepted and queued_job,"scoped prompt enters actual deferred queue")
+local effects=0
+bog.tools.register("_control_deferred_write",{effect="write",run=function()effects=effects+1;return "written"end})
+local A=require("trigger_authority")
+local output=A.execute(queued_job,function()return bog.tools.run("_control_deferred_write",{})end)
+eq(effects,0,"scoped queued prompt cannot manufacture write authority")
+S.revoke()
+A.execute(queued_job,function()return bog.tools.run("_control_deferred_write",{})end)
+eq(effects,0,"post-enqueue client revocation remains restrictive")
+bog.events.off(queue_handle)
 S.stop()
 local trusted=S.start{profile="trusted_local"}
 base="http://127.0.0.1:"..trusted:port()

@@ -36,7 +36,7 @@ local function serialise()
   for name, t in pairs(M.list) do
     -- a function body cannot be persisted; those live only for this process
     if type(t.run) == "string" then
-      out[#out + 1] = { name = name, when = t.when, run = t.run, enabled = t.enabled }
+      out[#out + 1] = { name = name, when = t.when, run = t.run, enabled = t.enabled, authority_binding=t.authority_binding, restrictions=t.restrictions }
     end
   end
   return out
@@ -59,7 +59,7 @@ function M.load()
   local n = 0
   for _, t in ipairs(list) do
     if type(t) == "table" and t.name then
-      M.add(t.name, t.when, t.run, { enabled = t.enabled ~= false, quiet = true })
+      M.add(t.name, t.when, t.run, { enabled = t.enabled ~= false, quiet = true, authority_binding=t.authority_binding, restrictions=t.restrictions })
       n = n + 1
     end
   end
@@ -78,6 +78,7 @@ function M.add(name, when, run, opts)
   M.remove(name, true)   -- replacing is the common case; do not stack handlers
   local t = {
     name = name, when = when, run = run,
+    authority_binding=opts.authority_binding, restrictions=opts.restrictions,
     enabled = opts.enabled ~= false,
     fired = 0, last = nil, next_at = nil,
   }
@@ -87,7 +88,7 @@ function M.add(name, when, run, opts)
     t.next_at = M.next_clock_time(when.at)
   elseif when.on then
     bound[name] = bog.events.on(when.on, function(_, data)
-      M.fire(name, { event = when.on, data = data })
+      M.fire(name, require("trigger_authority").propagate(data,{ event = when.on, data = data }))
     end, { desc = "trigger " .. name, source = "triggers.lua" })
   end
   M.list[name] = t
@@ -130,20 +131,34 @@ end
 function M.fire(name, ctx)
   local t = M.list[name]
   if not t or not t.enabled then return false end
+  if t.authority_binding and not require("trigger_authority").available(t.authority_binding) then
+    t.last_error="trigger_authority_unavailable"
+    bog.events.emit("trigger:error",{name=name,error=t.last_error})
+    return false
+  end
+  t.last_error=nil
   t.fired = t.fired + 1
   t.last = os.time()
   bog.events.emit("trigger:fired", { name = name, when = t.when, at = t.last })
   if type(t.run) == "function" then
-    local okr, err = pcall(t.run, ctx or {})
+    local A=require("trigger_authority")
+    local envelope={}
+    if t.authority_binding then A.attach(envelope,t.authority_binding,t.restrictions) end
+    local okr, err = pcall(function()
+      return A.execute(envelope,function() return A.execute(ctx or {},t.run,ctx or {}) end)
+    end)
     if not okr then
-      bog.events.emit("trigger:error", { name = name, error = tostring(err) })
+      t.last_error=tostring(err)
+      bog.events.emit("trigger:error", { name = name, error = t.last_error })
     end
   elseif type(t.run) == "string" and t.run ~= "" then
     -- The same door a webhook or a human uses: queue a prompt. Nothing here
     -- runs a turn directly -- a timer callback is not a place to spend minutes.
-    bog.events.emit("serve:prompt",
-      { id = "trigger-" .. name .. "-" .. tostring(t.fired),
-        text = t.run, source = "trigger:" .. name })
+    local A=require("trigger_authority")
+    local event={ id = "trigger-" .. name .. "-" .. tostring(t.fired), text=t.run, source="trigger:"..name }
+    if t.authority_binding then A.attach(event,t.authority_binding,t.restrictions) end
+    A.propagate(ctx or {},event)
+    bog.events.emit("serve:prompt",event)
   end
   return true
 end
@@ -160,10 +175,10 @@ function M.tick(now)
       elseif t.when.at then
         t.next_at = M.next_clock_time(t.when.at, now)
       end
-      M.fire(name, { scheduled = true })
-      fired = fired + 1
+      if M.fire(name, { scheduled = true }) then fired = fired + 1 end
     end
   end
+  if M.workflows then fired=fired+M.workflows:tick(now) end
   return fired
 end
 
@@ -197,7 +212,8 @@ function M.status()
   for name, t in pairs(M.list) do
     out[#out + 1] = {
       name = name, when = t.when, enabled = t.enabled, fired = t.fired,
-      last = t.last, next_at = t.next_at,
+      last = t.last, next_at = t.next_at, error=t.last_error,
+      available=not t.authority_binding or require("trigger_authority").available(t.authority_binding),
       run = type(t.run) == "string" and t.run or "<function>",
     }
   end
@@ -205,4 +221,17 @@ function M.status()
   return out
 end
 
+-- Host configuration reconstructs trusted bindings; persisted rows alone grant nothing.
+function M.configure_workflows(opts)
+  M.workflows=require("workflow_triggers").open(opts or {db=bog.db})
+  return M.workflows
+end
+function M.bind(spec)
+  if not M.workflows then M.configure_workflows{db=bog.db} end
+  return M.workflows:bind(spec)
+end
+function M.run(name,origin,occurrence)
+  if not M.workflows then return nil,{code="trigger_binding_unavailable"} end
+  return M.workflows:run(name,origin,occurrence)
+end
 return M

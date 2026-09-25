@@ -213,6 +213,7 @@ function M.resume(id,options)
     if row.attempts>=8 then return nil,{code='resume_limit'} end
     if row.status=='succeeded' or row.status=='cancelled' then return nil,{code='run_terminal'} end
     local package=M.snapshot(decode(row.body))
+    if options.expected_root and (package.root~=options.expected_root or package.version~=options.expected_version) then return nil,{code='recovery_identity_mismatch'} end
     if encode(package.runtime)~=encode(M.runtime()) then return nil,{code='runtime_changed'} end
     local workflow=require('workflow')
     local function executable_identity(d)
@@ -233,9 +234,10 @@ function M.resume(id,options)
     local authority=require('invoke').restrict_durable(options.authority,package.restrictions)
     return workflow.start(package.root,{version=package.version,scope=package.scope,context=package.context,source_revisions=package.source_revisions,
       authority=authority,instructions=math.min(options.instructions or package.instructions,package.instructions),
+      learning=options.learning,admit=options.admit,on_terminal=options.on_terminal,
       _durable_resume={id=id,package=package}})
   end)
-  if not ok then return nil,type(result)=='table' and result or {code='recovery_failed'} end
+  if not ok then return nil,type(result)=='table' and result or {code='recovery_failed',message=tostring(result)} end
   return result,why
 end
 -- Lua string methods reach the process string metatable even when env.string is

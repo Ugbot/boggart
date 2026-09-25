@@ -346,6 +346,24 @@ check(vanished_error and vanished_error.code=='host_capability_error' and not va
   'live missing canonical parent refuses before dispatch without raw-path fallback')
 check(not sys.stat(vanishing..'/child'),'missing canonical parent produced no write')
 assert(uv.fs_unlink(link));sys.rmtree(dir);sys.rmtree(outside)
+print("invoke BRAIN-16: "..passed.." checks passed")
+
+-- BRAIN-35: host live contexts refresh opaque authority, preserving the floor.
+local current=invoke.context{state={mode='auto',guards=false}}
+local floor=invoke.context{state={mode='auto',guards=false},allow={_effect=true}}
+local live=invoke.live_context(function()return current end,floor)
+local initial_count=count
+check(invoke.string(live,'_effect',{})=='done','live current authority admits allowed effect')
+current=invoke.context{state={mode='auto',guards=false},allow={}}
+check(denied(invoke.string(live,'_effect',{})) and count==initial_count+1,'replaced opaque authority revokes later effect')
+local bad=invoke.live_context(function()return {}end,floor)
+check(denied(invoke.string(bad,'_effect',{})),'invalid live context fails closed')
+local yielded=invoke.live_context(function()coroutine.yield();return floor end,floor)
+check(denied(invoke.string(yielded,'_effect',{})),'live resolver cannot yield')
+local side_count=count
+local trying=invoke.live_context(function()tools.run('_effect',{});return floor end,floor)
+invoke.string(trying,'_effect',{})
+check(count==side_count+1,'resolver cannot perform mediated effects before admission')
 -- Decision records: only a permission refusal is a "deny". A call that was
 -- allowed and then failed (here, a raising tool) records "allow" plus its error
 -- code -- it used to be logged as a denial, so failed runs looked like
@@ -367,4 +385,4 @@ do
   check(seen[2].decision=='allow' and seen[2].error~=nil and seen[2].error~='permission_error',
     'an allowed call that fails is an allow, with its error code')
 end
-print("invoke BRAIN-16: "..passed.." checks passed")
+print('invoke BRAIN-35: '..passed..' checks passed')

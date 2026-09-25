@@ -7,6 +7,7 @@ local active = setmetatable({}, {__mode='k'})
 local resumed = setmetatable({}, {__mode="k"})
 local bindings = setmetatable({}, {__mode="k"})
 local blocked_ledgers=setmetatable({}, {__mode="k"})
+local resolver_depth=setmetatable({}, {__mode="k"})
 local serial = 0
 local prefix = tostring({}):gsub('table: ', '') .. ':' .. tostring(os.time())
 local function key() return coroutine.running() end
@@ -81,6 +82,14 @@ function M.context(options, parent)
     allow=copy(options.allow), estimate=options.estimate, actual=options.actual}
   return handle
 end
+-- Trusted host callback only. The initial floor remains an ancestor forever;
+-- current authority is resolved again for every admission (including providers).
+function M.live_context(resolve, initial)
+  assert(type(resolve)=='function' and contexts[initial], 'live authority required')
+  local handle={}
+  contexts[handle]={parent=initial,state={mode="auto",guards=false,rules={}},live=resolve}
+  return handle
+end
 function M.inherit(co, context)
   local workflow=package.loaded.workflow
   if workflow and workflow.inherit then workflow.inherit(co) end
@@ -128,15 +137,48 @@ function M.adapter(owner, name)
     function(args, execution) return binding.dispatch(name,args,execution) end
 end
 local function failure(code, message) return {code=code, message=tostring(message), retryable=false} end
+local resolving_live=setmetatable({}, {__mode='k'})
+local function resolve_live(s)
+  assert(not resolving_live[s], 'live authority cycle')
+  resolving_live[s]=true
+  -- A detached, synchronous host callback can construct a fresh context but
+  -- cannot perform mediated effects, yield, or consume unbounded Lua work.
+  local co=coroutine.create(s.live)
+  resolver_depth[co]=true
+  debug.sethook(co,function() error('live authority resolver budget',0) end,'',50000)
+  local ok,value=coroutine.resume(co)
+  local finished=coroutine.status(co)=='dead'
+  debug.sethook(co);resolver_depth[co]=nil;resolving_live[s]=nil
+  if not finished then pcall(coroutine.close,co) end
+  assert(ok and finished and contexts[value], 'current host authority unavailable')
+  return value
+end
 local function chain(context)
-  local out, seen = {}, {}
+  local out, seen, visiting = {}, {}, {}
   local function add(c)
-    if c == nil or seen[c] then return end
+    if c == nil then return end
+    assert(not visiting[c], 'live authority cycle')
+    if seen[c] then return end
     local s = contexts[c]; if not s then error('invalid invocation context') end
-    seen[c] = true; add(s.parent); add(s.extra); out[#out+1] = s
+    visiting[c]=true
+    add(s.parent); add(s.extra)
+    if s.live then add(resolve_live(s)) end
+    visiting[c]=nil;seen[c]=true;out[#out+1]=s
   end
   add(M.current()); add(context)
   return out
+end
+local function admission_signature(states)
+  local result={}
+  for _,s in ipairs(states) do
+    local source=s.source or {}
+    result[#result+1]={state=copy(s.state),allow=copy(s.allow),invalid=s.invalid,blocked=s.blocked,
+      policy=s.policy and require('policy').describe(s.policy),ledger=s.ledger,
+      current_policy=source.policy and require('policy').describe(source.policy),
+      current_scopes=copy(source.policy_scopes),current_mode=source.mode,
+      current_rules=copy(source.rules),current_tools=copy(source.tool_policy)}
+  end
+  return result
 end
 -- Persist restrictions, never executable authority. Unsupported accounting closures
 -- cannot be reconstructed honestly and make durable opt-in fail closed.
@@ -177,6 +219,9 @@ function M.restrict_durable(current, restrictions)
   return authority
 end
 function M.call(context, name, args, options)
+  if resolver_depth[key()] then
+    return nil,failure('permission_error','live authority resolvers cannot perform effects')
+  end
   local loaded_tools=package.loaded.tools
   if loaded_tools and loaded_tools.check_restricted then
     loaded_tools.check_restricted();loaded_tools.restricted_arguments(args)
@@ -291,6 +336,8 @@ function M.call(context, name, args, options)
         policies[#policies+1]={state=s,estimate=estimate,decision=decision}
       end
     end
+    local has_live=false;for _,s in ipairs(states) do if s.live then has_live=true;break end end
+    local live_signature=has_live and admission_signature(chain(joined))
     local veto = events.ask('tool:authorize',{name=name,tool=name,input=copy(args),invocation_id=id},{fail_closed=true})
     if veto == 'deny' or type(veto)=='table' and veto.deny then
       return nil,failure('permission_error',type(veto)=='table' and veto.reason or 'authorization hook refused call')
@@ -309,6 +356,9 @@ function M.call(context, name, args, options)
     -- Approval/authorization callbacks may yield. Recheck live restrictions
     -- and extract resources again at the actual effect boundary, without a
     -- second event or approval prompt.
+    if live_signature and not same(live_signature,admission_signature(chain(joined))) then
+      return nil,failure("policy_changed","live authority changed during admission")
+    end
     if perm.state()~=global_state then
       return nil,failure("policy_changed","global permission state changed during admission")
     end

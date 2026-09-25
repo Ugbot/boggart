@@ -620,6 +620,7 @@ function core.init()
     -- tab" composition is kept one release behind BOGGART_STUDIO_LEGACY=1; the
     -- interim activity-rail composition has been removed.
     core.studio = core.try(require, "core.studio") and require "core.studio" or nil
+    core.try(require, "core.workflows")
     local function attach_legacy()
       if core.studio then core.try(core.studio.attach_legacy) end
     end

@@ -83,7 +83,16 @@ CREATE TABLE IF NOT EXISTS learning_audit(sequence INTEGER PRIMARY KEY AUTOINCRE
    if ok~=true or not text(ref)then fail('authority_or_precondition_denied')end
    local qualified,evidence=o.qualification.check(copy(v.candidate),copy(v.report),phase,ctx)
    if qualified~=true or not text(evidence)then fail('runtime_unqualified')end
-   return {authority=ref,runtime=evidence,qualification={id=o.qualification.id,revision=o.qualification.revision},evaluation_runtime=v.report.coverage.runtime}
+   local profile=ctx and ctx.options and ctx.options.execution_profile
+   local profile_evidence
+   if profile then
+    if profile~='replay-v1' then fail('runtime_profile_unsupported')end
+    local check=o.qualification.profiles and o.qualification.profiles[profile]
+    if type(check)~='function' then fail('runtime_profile_unqualified')end
+    local admitted;admitted,profile_evidence=check(copy(v.candidate),copy(v.report),phase,ctx)
+    if admitted~=true or not text(profile_evidence)then fail('runtime_profile_unqualified')end
+   end
+   return {execution_profile=profile,profile_evidence=profile_evidence,authority=ref,runtime=evidence,qualification={id=o.qualification.id,revision=o.qualification.revision},evaluation_runtime=v.report.coverage.runtime}
   end
   function r:register(id,version,candidate)
    return protect(function()return tx(function()
@@ -204,7 +213,7 @@ CREATE TABLE IF NOT EXISTS learning_audit(sequence INTEGER PRIMARY KEY AUTOINCRE
       validate(fresh,'effect',ctx);return true
      end)
     end
-    return {id=id,version=pin.version,source=v.candidate.source,source_hash=v.candidate.source_hash,capabilities=copy(v.candidate.manifest.capabilities),metadata={learning_contract=v.contract_hash}},guard
+    return {id=id,version=pin.version,durable=options.execution_profile,source=v.candidate.source,source_hash=v.candidate.source_hash,capabilities=copy(v.candidate.manifest.capabilities),metadata={learning_contract=v.contract_hash}},guard
    end)
   end
   function r:start(id,options)
@@ -215,11 +224,11 @@ CREATE TABLE IF NOT EXISTS learning_audit(sequence INTEGER PRIMARY KEY AUTOINCRE
     if options.scope and options.scope~=o.project then fail('project_scope_mismatch')end
     local definition,guard=self:select(id,options);if not definition then error(guard,0)end
     local workflow=require('workflow')
-    definition.id='learning:'..#o.project..':'..o.project..':'..id
+    definition.id='learning:'..#o.project..':'..o.project..':'..id..(options.execution_profile and ':profile:'..options.execution_profile or '')
     definition.inactive=true
     local existing=workflow.resolve(definition.id,definition.version)
     if existing then
-     if existing.source_hash~=definition.source_hash or identity.hash(existing.capabilities)~=identity.hash(definition.capabilities) or not existing.metadata or existing.metadata.learning_contract~=definition.metadata.learning_contract then fail('runtime_version_conflict')end
+     if existing.durable~=definition.durable or existing.source_hash~=definition.source_hash or identity.hash(existing.capabilities)~=identity.hash(definition.capabilities) or not existing.metadata or existing.metadata.learning_contract~=definition.metadata.learning_contract then fail('runtime_version_conflict')end
     else local ok,why=workflow.register(definition);if not ok then error(why,0)end end
     local opts={};for k,v in pairs(options)do opts[k]=v end
     opts.version=definition.version;opts.scope=o.project
@@ -242,6 +251,44 @@ CREATE TABLE IF NOT EXISTS learning_audit(sequence INTEGER PRIMARY KEY AUTOINCRE
     end
     if monitor then local ok,why=monitor:begin(id,definition.version,options.run_id);if not ok then error(why,0)end end
     local handle,why=workflow.start(definition.id,opts);if not handle then if monitor then monitor:abort(id,definition.version,options.run_id)end;error(why,0)end;return handle
+   end)
+  end
+  function r:recovery_ticket(id,version,run_id)
+   if monitor then return monitor:recovery_ticket(id,version,run_id)end
+   return {unmonitored=true}
+  end
+  function r:resume(id,physical_run,options)
+   return protect(function()
+    options=options or {}
+    if options.execution_profile~='replay-v1' or not options.authority then fail('current_authority_required')end
+    local l=options.learning
+    if type(l)~='table' or l.project~=o.project or l.id~=id or l.run_id~=options.run_id or not text(l.version) then fail('recovery_identity_mismatch')end
+    if monitor then
+     local ok,why=monitor:recover(id,l.version,l.run_id,options.recovery_proof)
+     if not ok then error(why,0)end
+    end
+    local definition,guard=self:select(id,options)
+    if not definition then error(guard,0)end
+    if definition.version~=l.version then fail('recovery_identity_mismatch')end
+    local function admit()
+     local ok,why=guard();if ok~=true then return nil,why end
+     if options.admit then return options.admit()end
+     return true
+    end
+    local a=options.authority
+    local terminal=options.on_terminal
+    if monitor then
+     local observer=monitor
+     terminal=function(snapshot)
+      local ok,value,why=pcall(observer.observe,observer,snapshot)
+      if not ok or not value then monitor_error=true end
+      if options.on_terminal then pcall(options.on_terminal,copy(snapshot))end
+      if not ok then return nil,{code='monitor_observation_failed'}end
+      return value,why
+     end
+    end
+    return require('runstore').resume(physical_run,{authority=a,admit=admit,learning=copy(l),on_terminal=terminal,
+     expected_root='learning:'..#o.project..':'..o.project..':'..id..':profile:replay-v1',expected_version=definition.version})
    end)
   end
   function r:audit(id)return protect(function()local out={};for _,row in ipairs(rows('SELECT sequence,body FROM learning_audit WHERE project=? AND id=? ORDER BY sequence',{o.project,id}))do local v=decode(row.body);v.sequence=row.sequence;out[#out+1]=v end;return out end)end

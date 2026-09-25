@@ -1574,6 +1574,10 @@ elseif bog.mode == "serve" then
     queue[#queue + 1] = ev
   end, { desc = "serve: queue inbound prompts", source = "boot.lua" })
 
+  bog.events.on("serve:workflow", function(_, ev)
+    queue[#queue + 1] = { workflow_job=ev, id=ev.occurrence, source=ev.source }
+  end, { desc="serve: queue workflow occasions", source="boot.lua" })
+
   local stop = false
   bog.events.on("serve:shutdown", function() stop = true end,
     { desc = "serve: stop the service", source = "boot.lua" })
@@ -1604,9 +1608,16 @@ elseif bog.mode == "serve" then
         -- withhold them from inbound work entirely.
         local out = {}
         local okr, res = bog.try(function()
-          return bog.api.run_on(bog.active_session(), job.text,
-            function(chunk) out[#out + 1] = chunk end,
-            require("perm").turn_opts({}, {}))
+          if job.workflow_job then
+            local handle, why = assert(triggers.workflows):execute(job.workflow_job)
+            if not handle then error(why) end
+            return handle:snapshot()
+          end
+          return require("trigger_authority").execute(job,function()
+            return bog.api.run_on(bog.active_session(), job.text,
+              function(chunk) out[#out + 1] = chunk end,
+              require("perm").turn_opts({}, {}))
+          end)
         end)
         bog.events.emit("serve:done", { id = job.id, ok = okr,
                                         text = table.concat(out),
