@@ -498,7 +498,6 @@ add_executable(boggart
   src/lvoice.c
   src/lstation.c
   src/ltypesafe.c
-  src/ltypesafe.c
   ${EMBEDDED_C})
 
 target_include_directories(boggart PRIVATE src)
@@ -711,6 +710,7 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
   src/lserve.c
   src/lvoice.c
   src/lstation.c
+  src/ltypesafe.c
     ${EMBEDDED_C})
 
   target_include_directories(boggart-studio PRIVATE
