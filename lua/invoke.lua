@@ -481,7 +481,11 @@ function M.call(context, name, args, options)
     local aid=bog.sched and bog.sched.current and bog.sched.current()
     local rec=aid and bog.thread and bog.thread.live_recs and bog.thread.live_recs[aid]
     pcall(bog.telemetry.decision,{run_id=rec and rec.run_id or aid,agent_id=aid},
-      {tool=name,decision=err and "deny" or "allow",invocation_id=id})
+      -- Only a permission refusal is a "deny". Any other failure (tool not
+      -- found, runtime error, quota) happened to an ALLOWED call; logging it
+      -- as a denial made failed runs look like permission trouble.
+      {tool=name,decision=(err and err.code=="permission_error") and "deny" or "allow",
+       error=err and err.code or nil,invocation_id=id})
   end
   local terminal_event,capture_error=evidence.finish(span,{result=result,result_type=type(result),error=err,receipt=receipt,
     policy={decision=receipt.dispatched and "admitted" or "not_dispatched",revisions=revisions}})

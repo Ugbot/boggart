@@ -346,4 +346,25 @@ check(vanished_error and vanished_error.code=='host_capability_error' and not va
   'live missing canonical parent refuses before dispatch without raw-path fallback')
 check(not sys.stat(vanishing..'/child'),'missing canonical parent produced no write')
 assert(uv.fs_unlink(link));sys.rmtree(dir);sys.rmtree(outside)
+-- Decision records: only a permission refusal is a "deny". A call that was
+-- allowed and then failed (here, a raising tool) records "allow" plus its error
+-- code -- it used to be logged as a denial, so failed runs looked like
+-- permission trouble in the telemetry.
+do
+  local seen={}
+  local saved_tel=bog.telemetry
+  bog.telemetry={decision=function(_,d) seen[#seen+1]=d end}
+  perm.GATED._boom=true
+  tools.register('_boom',{effect='write',run=function() error('kaboom') end})
+  local refused=invoke.context({state={mode='auto',guards=false,tool_policy={_boom='deny'}}})
+  invoke.call(refused,'_boom',{})
+  local allowed=invoke.context({state={mode='auto',guards=false,tool_policy={}},approve=function() return true end})
+  invoke.call(allowed,'_boom',{})
+  perm.GATED._boom=nil
+  bog.telemetry=saved_tel
+  check(#seen==2,'one decision record per gated call')
+  check(seen[1].decision=='deny' and seen[1].error=='permission_error','a policy refusal is a deny')
+  check(seen[2].decision=='allow' and seen[2].error~=nil and seen[2].error~='permission_error',
+    'an allowed call that fails is an allow, with its error code')
+end
 print("invoke BRAIN-16: "..passed.." checks passed")
