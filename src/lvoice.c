@@ -476,6 +476,8 @@ static void transcribe_thread(void *arg) {
   free(snap);
 }
 
+void boggart_voice_shutdown(void);
+
 /* Load (or reuse a warm) whisper context for `model`. Returns NULL on success
  * with G.ctx valid, else an error string. */
 static const char *voice_warm_ctx(const char *model) {
@@ -484,6 +486,15 @@ static const char *voice_warm_ctx(const char *model) {
   struct whisper_context_params cparams = whisper_context_default_params();
   G.ctx = whisper_init_from_file_with_params(model, cparams);
   if (!G.ctx) return "failed to load whisper model";
+  /* main() frees the context before returning, but not every exit returns
+   * through main(): the studio quits via Lua's os.exit(), and so can anything
+   * an agent runs. libc exit() then ran GGML's static Metal device destructors
+   * with whisper still holding residency sets, and ggml_metal_rsets_free
+   * aborted (the studio's crash on quit). exit handlers run in reverse
+   * registration order, and GGML registered its destructors while the context
+   * above was being built, so registering here runs this one first. Once. */
+  static int exit_hook = 0;
+  if (!exit_hook) { exit_hook = 1; atexit(boggart_voice_shutdown); }
   snprintf(G.model, sizeof G.model, "%s", model);
   return NULL;
 }
