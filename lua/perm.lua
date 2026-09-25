@@ -22,12 +22,44 @@ for i, m in ipairs(M.MODES) do BY_ID[m.id] = i end
 
 -- Shared live state so /mode, Shift-Tab and policy_for agree across the TUI
 -- and the studio. Front ends may keep a local copy; set_mode is the writer.
+--
+-- The MODE persists (kv config.perm.mode) so it is one setting across
+-- surfaces and restarts: a mode picked in the TUI is the mode the studio opens
+-- in. Before this each process started at "smart", so a TUI in auto and a
+-- studio asking about every bash call looked like "the studio never answers".
+-- approve_all ("always allow") deliberately does NOT persist: it is a decision
+-- about one session, and carrying it across a restart would widen permissions
+-- without anyone choosing that.
+M.MODE_KEY = "config.perm.mode"
+
+local function stored_mode()
+  local store = type(bog) == "table" and bog.store
+  if not (store and store.kv_get) then return nil end
+  local ok, v = pcall(store.kv_get, M.MODE_KEY)
+  if ok and type(v) == "string" and BY_ID[v] then return v end
+  return nil
+end
+
 function M.state()
   if type(bog) ~= "table" then
     return { mode = "smart", approve_all = false, tool_policy = {} }
   end
-  bog.perm_state = bog.perm_state or { mode = "smart", approve_all = false, tool_policy = {} }
-  return bog.perm_state
+  local st = bog.perm_state
+  if not st then
+    st = { mode = "smart", approve_all = false, tool_policy = {} }
+    bog.perm_state = st
+  end
+  -- Hydrate once, and only when the store can answer: state() is reachable
+  -- before the store opens, and a miss then must not pin "smart" forever.
+  if not st.hydrated then
+    local store = bog.store
+    if store and store.kv_get and (not store.is_open or store.is_open()) then
+      st.hydrated = true
+      local m = stored_mode()
+      if m then st.mode = m end
+    end
+  end
+  return st
 end
 
 function M.mode_at(id)
@@ -47,6 +79,8 @@ function M.set_mode(id)
   if BY_ID[id or ""] then
     st.mode = m.id
     st.approve_all = false
+    local store = bog and bog.store
+    if store and store.kv_set then pcall(store.kv_set, M.MODE_KEY, m.id) end
   end
   return m, BY_ID[id or ""] ~= nil
 end

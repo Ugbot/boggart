@@ -197,5 +197,40 @@ end
 eq(perm.headless_decision("write", {mode="manual"}), "deny", "missing unattended profile denies")
 eq(perm.headless_decision("write", {mode="manual",headless="allow"}), "allow", "explicit legacy allow profile")
 
+-- ---- the mode persists across surfaces and restarts -------------------------
+do
+  local saved_state, saved_store = bog.perm_state, bog.store
+  local kv = {}
+  bog.store = { kv_get = function(k) return kv[k] end, kv_set = function(k, v) kv[k] = v end }
+  bog.perm_state = nil
+  eq(perm.state().mode, "smart", "fresh store: default mode")
+  perm.set_mode("auto")
+  eq(kv[perm.MODE_KEY], "auto", "set_mode persists the mode")
+  perm.state().approve_all = true
+  bog.perm_state = nil -- a new process, or the other front end
+  eq(perm.state().mode, "auto", "a new state reads the persisted mode")
+  eq(perm.state().approve_all, false, "always-allow does not carry across")
+  kv[perm.MODE_KEY] = "bogus"; bog.perm_state = nil
+  eq(perm.state().mode, "smart", "an unknown stored mode falls back to smart")
+  -- state() before the store exists must not pin the default forever
+  bog.store = nil; bog.perm_state = nil
+  eq(perm.state().mode, "smart", "no store yet: default")
+  kv[perm.MODE_KEY] = "manual"
+  bog.store = { kv_get = function(k) return kv[k] end, kv_set = function(k, v) kv[k] = v end }
+  eq(perm.state().mode, "manual", "hydrates once the store appears")
+  -- the real store module exists from boot, before it is open: no pinning
+  local open = false
+  bog.perm_state = nil
+  bog.store = { is_open = function() return open end,
+                kv_get = function(k) return open and kv[k] or nil end,
+                kv_set = function(k, v) kv[k] = v end }
+  eq(perm.state().mode, "smart", "store not open yet: default")
+  open = true
+  eq(perm.state().mode, "manual", "...then the stored mode once it opens")
+  perm.set_mode("nonsense")
+  eq(kv[perm.MODE_KEY], "manual", "an invalid set_mode is not persisted")
+  bog.perm_state, bog.store = saved_state, saved_store
+end
+
 io.write(string.format("perm: %d passed, %d failed\n", passed, failed))
 os.exit(failed == 0 and 0 or 1)
