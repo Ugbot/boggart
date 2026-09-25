@@ -807,6 +807,38 @@ local function handle_command(line)
       if h then io.write("tracing " .. pat .. " -- /trace off to stop\n")
       else io.write("trace: " .. tostring(err) .. "\n") end
     end
+  elseif cmd == "station" then
+    -- LLM Station over ZMQ (lua/stationlink.lua): /station shows the link;
+    -- start|stop|restart manage this workspace's daemon; autostart on|off
+    -- has boggart launch it the first time anything wants it.
+    local stn = require("stationlink")
+    local a, b = rest:match("^(%S*)%s*(.*)$")
+    local function show()
+      local s = stn.status()
+      io.write(string.format("station: %s%s\n", s.up and "up " or "down",
+        s.up and ("(" .. tostring(s.endpoint) .. ")")
+          or (" -- " .. tostring(s.why_disabled or s.why_down or "?"))))
+      io.write(string.format("  binary: %s   autostart: %s   search routing: %s\n",
+        s.binary or "not found", s.autostart and "on" or "off",
+        (s.up and os.getenv("BOGGART_STATION_SEARCH") ~= "0") and "on" or "off"))
+      local st = require("searchroute").stats
+      io.write(string.format("  searches this session: %d via station, %d fell back\n", st.routed, st.failed))
+    end
+    if a == "" or a == "status" then show()
+    elseif a == "start" or a == "restart" then
+      if a == "restart" then stn.stop() end
+      io.write("station: starting llm-station for " .. sys.cwd() .. " ...\n")
+      local ok, how = stn.start()
+      io.write(ok and ("station: " .. how .. "\n") or ("station: " .. tostring(how) .. "\n"))
+    elseif a == "stop" then
+      local ok, why = stn.stop()
+      io.write(ok and "station: stopped\n" or ("station: " .. tostring(why) .. "\n"))
+    elseif a == "autostart" and (b == "on" or b == "off") then
+      local ok, why = stn.set_autostart(b == "on")
+      io.write(ok ~= nil and ("station autostart " .. b .. "\n") or ("station: " .. tostring(why) .. "\n"))
+    else
+      io.write("usage: /station [status|start|stop|restart|autostart on|off]\n")
+    end
   elseif cmd == "judge" then
     -- The decision router (lua/judge.lua): /judge shows where small discrete
     -- decisions go; /judge auto|jev|chat|off picks; /judge min <0..1> sets the

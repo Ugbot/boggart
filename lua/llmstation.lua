@@ -36,18 +36,22 @@ function M.binary()
     "/usr/local/bin/llm-station",
     "/opt/homebrew/bin/llm-station",
   }
+  -- The NEWEST match wins, not the first. A source tree accumulates build
+  -- dirs (build-mcp, build/macos-arm64, ...) and glob order is alphabetical,
+  -- so "first" was an old build that no longer speaks the current daemon
+  -- protocol: it launched, then never answered a ZMQ ping.
+  local best, best_t = nil, -1
   for _, g in ipairs(candidates) do
     for _, p in ipairs(gold.fs.glob(g)) do
-      if sys.stat(p) == "file" then return p end
+      local kind, mtime = sys.stat(p)
+      if kind == "file" and (mtime or 0) > best_t then best, best_t = p, mtime or 0 end
     end
   end
-  return nil
+  return best
 end
 
 function M.available() return M.binary() ~= nil end
 
--- POSIX single-quote so a path with spaces survives the shell.
-local function shq(s) return "'" .. tostring(s):gsub("'", "'\\''") .. "'" end
 
 -- Try to LAUNCH the LLM Station daemon (detached), so it is up for boggart and
 -- any other client. Best-effort: the MCP adapter also runs standalone, so this
@@ -57,9 +61,21 @@ function M.launch(workspace)
   local bin = M.binary()
   if not bin then return false, "llm-station binary not found" end
   workspace = workspace or (sys.cwd and sys.cwd()) or "."
-  local cmd = shq(bin) .. " start --workspace " .. shq(workspace) .. " >/dev/null 2>&1 &"
-  local ok = pcall(sys.exec, cmd, 5)
-  return ok == true
+  -- Spawned DETACHED (its own session) and unref'd, never through sys.exec:
+  -- sys.exec runs the command in a process group it tears down on return, so
+  -- `start ... &` launched the daemon and then killed it a moment later -- the
+  -- launch "succeeded" and nothing was ever listening. `start` daemonizes and
+  -- exits; the daemon it forks inherits the new session and outlives us.
+  local ok, uv = pcall(require, "uv")
+  if not ok then return false end
+  local handle = uv.spawn(bin, {
+    args = { "start", "--workspace", workspace },
+    detached = true,
+    stdio = { nil, nil, nil },
+  }, function() end)
+  if not handle then return false end
+  uv.unref(handle)
+  return true
 end
 
 -- Connect LLM Station's MCP adapter and register its tools. `workspace` defaults

@@ -214,12 +214,112 @@ function M.pump()
   if M.conn then pcall(function() M.conn:pump(0) end) end
 end
 
--- Is ZMQ the active way to reach LLM Station? Probes on first ask.
+-- ---- starting the daemon --------------------------------------------------
+-- boggart can bring LLM Station up itself when the binary is installed:
+-- `/station start` on demand, or autostart (kv config.station.autostart, off by
+-- default) the first time anything wants the link. The daemon is per
+-- workspace and outlives us -- it is shared with other clients -- so boggart
+-- never stops one it did not explicitly start... except through `/station stop`,
+-- which is the user saying so.
+M.AUTOSTART_KEY = "config.station.autostart"
+-- A cold daemon indexes the workspace before it binds its socket: ~85s on
+-- this repository (vendored deps under build*/). Explicit /station start waits
+-- this long; autostart never waits at all.
+M.START_WAIT_S = 150
+local launched = false          -- autostart fires once per process
+
+local function kv_get(k)
+  local store = type(bog) == "table" and bog.store
+  if not (store and store.kv_get) then return nil end
+  local ok, v = pcall(store.kv_get, k)
+  return ok and v or nil
+end
+
+function M.autostart_enabled() return kv_get(M.AUTOSTART_KEY) == "on" end
+
+function M.set_autostart(on)
+  local store = bog and bog.store
+  if not (store and store.kv_set) then return nil, "store not open" end
+  store.kv_set(M.AUTOSTART_KEY, on and "on" or "off")
+  return on and true or false
+end
+
+local function binary()
+  local ok, ls = pcall(require, "llmstation")
+  return ok and ls and ls.binary and ls.binary() or nil, ls
+end
+
+-- Start the workspace daemon (if not already answering) and wait for it,
+-- cooperatively, up to `wait_s`. -> true, how | nil, why. Never raises.
+function M.start(workspace, wait_s)
+  if M.up() then return true, "already up" end
+  local okd, why = M.enabled()
+  if not okd then
+    return nil, "the ZMQ client is " .. tostring(why)
+      .. (why == "not built" and " (build with -DBOGGART_STATION=ON)" or "")
+  end
+  local bin, ls = binary()
+  if not bin then return nil, "llm-station binary not found (set BOGGART_LLM_STATION)" end
+  workspace = workspace or (sys.cwd and sys.cwd()) or "."
+  last_attempt = 0
+  if M.ensure(workspace) then return true, "already running" end
+  if not ls.launch(workspace) then return nil, "could not launch " .. bin end
+  launched = true
+  local deadline = os.time() + (wait_s or M.START_WAIT_S)
+  local proc = require("proc")
+  while os.time() <= deadline do
+    proc.sleep(0.5)
+    last_attempt = 0
+    if M.ensure(workspace) then return true, "started" end
+  end
+  return nil, "launched, but no answer within " .. (wait_s or M.START_WAIT_S) .. "s: " .. tostring(M.why)
+end
+
+-- Stop this workspace's daemon. -> true | nil, why
+function M.stop(workspace)
+  local bin = binary()
+  if not bin then return nil, "llm-station binary not found" end
+  workspace = workspace or (sys.cwd and sys.cwd()) or "."
+  mark_down("stopped by user")
+  local q = function(x) return "'" .. tostring(x):gsub("'", "'\\''") .. "'" end
+  local ok, r = pcall(sys.exec, q(bin) .. " stop --workspace " .. q(workspace) .. " 2>&1", 60)
+  if not ok then return nil, tostring(r) end
+  if r and r.code and r.code ~= 0 then
+    local msg = (r.out or ""):gsub("%s+$", "")
+    return nil, msg ~= "" and msg or ("exit " .. tostring(r.code))
+  end
+  return true
+end
+
+function M.status()
+  local okd, why = M.enabled()
+  return {
+    built = okd or why ~= "not built",
+    enabled = okd, why_disabled = (not okd) and why or nil,
+    up = M.up(), endpoint = M.up() and M.conn:endpoint() or nil,
+    why_down = (not M.up()) and M.why or nil,
+    binary = binary(), autostart = M.autostart_enabled(),
+  }
+end
+
+-- Is ZMQ the active way to reach LLM Station? Probes on first ask. With
+-- autostart on and the daemon absent, the first ask LAUNCHES it and returns
+-- without waiting -- a search must never stall for a cold daemon; the next ask
+-- after it comes up connects.
 function M.active()
   if M.up() then return true end
   local okd = M.enabled()
   if not okd then return false end
-  return M.ensure() ~= nil
+  if M.ensure() ~= nil then return true end
+  if not launched and M.autostart_enabled() then
+    local bin, ls = binary()
+    if bin then
+      launched = true
+      pcall(ls.launch, (sys.cwd and sys.cwd()) or ".")
+      if bog and bog.log then bog.log("station: autostarting llm-station for this workspace") end
+    end
+  end
+  return false
 end
 
 return M

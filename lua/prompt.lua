@@ -189,7 +189,18 @@ function M.place()
   if root and root ~= cwd then
     text = text .. "\nProject root (git): " .. root
   end
-  return text .. "\nRelative paths in read/write/edit/list/bash resolve here."
+  text = text .. "\nRelative paths in read/write/edit/list/bash resolve here."
+  -- Search goes to LLM Station while its link is up. Checked with up(), which
+  -- is a field read: this block is rebuilt every turn and must not touch the
+  -- network. Absent (and unsaid) when the link is down.
+  local okz, stn = pcall(require, "stationlink")
+  if okz and stn and stn.up and stn.up() then
+    text = text .. "\n\n# Code search\nLLM Station's code index is connected. To find code, "
+      .. "use `symbol_search` (where is X defined), `find_references` (every use of X) and "
+      .. "`code_search` (ranked search by words) -- they are AST-aware and never need "
+      .. "approval. Plain `grep`/`rg`/`find -name` in bash are answered by the index too."
+  end
+  return text
 end
 
 -- Project instructions: the per-repository steering file every other coding

@@ -188,6 +188,46 @@ code-search backend chain line. `tools.register_fallback` gains the ZMQ tier
 for `code_search` and friends — same logical tool names, and the chain below
 it is the *native* floor (bm25, grep), not MCP.
 
+## Search goes to the station (`lua/searchroute.lua`)
+
+When the ZMQ link is up, code search is answered by the daemon. The model
+searches through `bash` (grep -rn / rg / find -name account for almost every
+lookup; the dedicated `code_search` tool was chosen zero times in a sample of
+recent sessions), so routing happens at the `bash` tool:
+
+- A bash command that is a *plain search* becomes `grep_search` or
+  `glob_search`. Fidelity decides what is plain: one path, a filename glob,
+  context lines, `| head -n N`, and a pattern that means the same in
+  ECMAScript. Anything else (`-i`, `-v`, `-l`, several paths, shell globs,
+  BRE operators, pipes into other tools, redirects) runs in the shell as
+  typed. `tests/searchroute.lua` pins the mapping.
+- A daemon failure is never an answer: the shell runs the command instead.
+  A station "nothing found" is a miss too (its parsers do not index every
+  language; Lua symbols are absent), so the next tier looks.
+- First-class tools: `symbol_search` and `find_references` (AST-aware via the
+  daemon, word-grep floor), plus `code_search` (now `active()`-driven and
+  passing `top_k`, which station reads; `limit` was ignored). These are
+  read-only and run their grep floor directly, so they never trip the bash
+  approval gate. While the link is up the system prompt names them.
+- `BOGGART_STATION_SEARCH=0` turns routing off, for comparisons.
+
+### Starting the daemon from boggart
+
+`/station [status|start|stop|restart|autostart on|off]`. `start` launches
+`llm-station start --workspace <cwd>` fully detached and waits for the
+socket (a cold daemon indexes before binding: ~40-90s on this repository).
+`autostart on` (kv `config.station.autostart`) launches it the first time
+anything wants the link and never waits. The binary is the NEWEST match
+among the known locations, not the first glob hit (an old build-mcp binary
+launched but did not speak the current protocol).
+
+Measured on this repository, daemon warm: scoped searches (`lua/`) answer in
+50-170ms vs 10-50ms for local grep; `grep_search` is a single-threaded
+`std::regex` walk, so a search over `src/` (vendored libs) took ~6s and a
+repo-root search hit the 30s call timeout. It walks `build*/` (2.7GB here) --
+it skips only dot-directories. **Station-side follow-up:** make grep_search
+skip gitignored paths (or answer from the index) so unscoped search is cheap.
+
 ## Station-side work (llm-station repo)
 
 Narrow, well-scoped upgrades the survey identified; each is its own ticket:

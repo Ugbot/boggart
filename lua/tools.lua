@@ -1430,7 +1430,20 @@ M.register("bash", {
     },
     required = { "command" },
   },
-  run = tool_bash,
+  -- A plain search (grep/rg/find) is answered by LLM Station when its ZMQ link
+  -- is live; anything else, or any daemon failure, runs in the shell as typed.
+  -- See lua/searchroute.lua for exactly which forms route and why.
+  run = function(a)
+    local cmd = type(a) == "table" and a.command or nil
+    if type(cmd) == "string" then
+      local okr, sr = pcall(require, "searchroute")
+      if okr then
+        local ok, out = pcall(sr.run, cmd)
+        if ok and out then return out end
+      end
+    end
+    return tool_bash(a)
+  end,
 })
 M.register("list", {
   description = "List a directory (directories are suffixed with /).",
@@ -1867,10 +1880,14 @@ M.register("code_search", {
 
     -- 0. The ZMQ transport, when up. A failure means it just went down
     -- (stationlink flips it); the next tier answers. Never MCP as backup.
+    -- active(), not up(): up() is only true once something else has already
+    -- connected, so a session whose first station use was a search never used
+    -- the daemon at all. Station's parameter is top_k (limit was ignored).
     local okz, stn = pcall(require, "stationlink")
-    if okz and stn and stn.up and stn.up() then
-      local out = stn.call("code_search", { query = q, limit = tostring(limit) })
-      if out and out ~= "" then return out end
+    if okz and stn and stn.active and stn.active() then
+      local out = stn.call("code_search", { query = q, top_k = tostring(limit) })
+      -- station_miss is defined below, with the symbol tools; resolve it late.
+      if out and not (M.station_miss and M.station_miss(out)) then return out end
     end
 
     -- 1. code-intelligence server, if it is connected (registered).
@@ -1885,10 +1902,92 @@ M.register("code_search", {
     local native = code_search_native(q, limit)
     if native then return native end
 
-    -- 3. grep -- the floor. Fixed-string, binary files skipped.
-    local pat = q:gsub("'", "'\\''")
-    return M.run("bash", { command =
-      "grep -rnI -F -e '" .. pat .. "' . 2>/dev/null | head -n " .. tostring(limit) })
+    -- 3. grep -- the floor. Fixed-string, binary files skipped. Direct, not
+    -- the bash tool (see grep_floor): a search must not need bash approval.
+    return M.grep_floor(q, nil, limit, true)
+  end,
+})
+
+-- Symbol-level search, answered by LLM Station's code index when its ZMQ link
+-- is live (definitions from the AST, not text matches), with grep as the floor
+-- so the tools exist -- and mean roughly the same thing -- without a daemon.
+-- Read-only and ungated: unlike a `bash grep`, these never ask for approval.
+-- A station "nothing found" is a MISS, not an answer: its index covers the
+-- languages its parsers know (Lua symbols, most of this repository, are not
+-- among them), so "no symbols" can mean "not indexed" as easily as "absent".
+-- The next tier gets to look before the model is told there is nothing.
+local function station_miss(out)
+  if type(out) ~= "string" then return true end
+  local head = out:gsub("^%s+", ""):sub(1, 120)
+  return head == "" or head:find("^No %w+ found") ~= nil or head:find("^No results") ~= nil
+    or head:find("^Found 0 ") ~= nil
+end
+M.station_miss = station_miss
+
+local function station_call(tool, params)
+  local okz, stn = pcall(require, "stationlink")
+  if not (okz and stn and stn.active and stn.active()) then return nil end
+  local out = stn.call(tool, params)
+  if not station_miss(out) then return "[answered by llm-station " .. tool .. "]\n" .. out end
+  return nil
+end
+
+-- The grep floor runs grep itself, not the `bash` tool: these are read-only
+-- lookups, and routing them through bash put a fixed, harmless grep behind the
+-- bash approval gate -- a search tool asking permission to search.
+local function sq(x) return "'" .. tostring(x):gsub("'", "'\\''") .. "'" end
+local function grep_floor(pattern, path, limit, fixed)
+  local cmd = "grep -rnI" .. (fixed and "F" or "w") .. " -e " .. sq(pattern) .. " "
+    .. (path and sq(path) or ".") .. " 2>/dev/null | head -n " .. tostring(math.floor(limit or 30))
+  local ok, r = pcall(require("proc").run, cmd, 60)
+  if not ok or type(r) ~= "table" then return M.err(M.ERR.runtime, "grep failed: " .. tostring(r)) end
+  local out = (r.out or ""):gsub("%s+$", "")
+  return out ~= "" and out or ("No matches for " .. tostring(pattern))
+end
+M.grep_floor = grep_floor
+
+M.register("symbol_search", {
+  description = "Find where a function, class, method or variable is DEFINED, by name or partial "
+    .. "name. Uses LLM Station's code index (AST-aware) when connected, else a word grep. "
+    .. "Prefer this over grep for 'where is X defined'.",
+  input_schema = { type = "object", properties = {
+    query = { type = "string", description = "the symbol name, or part of it" },
+    symbol_type = { type = "string", description = "optional: function | class | method | variable" },
+    limit = { type = "integer", description = "max results (default 20)" } },
+    required = { "query" } },
+  fallback_chain = { "station zmq symbol_search", "grep -w" },
+  run = function(a)
+    local q = a and a.query
+    if type(q) ~= "string" or q:match("^%s*$") then
+      return M.err(M.ERR.validation, "symbol_search needs a non-empty 'query'")
+    end
+    local limit = tonumber(a.limit) or 20
+    local params = { query = q, limit = math.floor(limit) }
+    if type(a.symbol_type) == "string" and a.symbol_type ~= "" then params.symbol_type = a.symbol_type end
+    return station_call("symbol_search", params) or grep_floor(q, nil, limit)
+  end,
+})
+
+M.register("find_references", {
+  description = "Find every use of a symbol across the codebase (callers, reads, imports). Uses "
+    .. "LLM Station's AST-aware reference finder when connected, else a whole-word grep. "
+    .. "Prefer this over grep before renaming or changing a function's signature.",
+  input_schema = { type = "object", properties = {
+    symbol = { type = "string", description = "the exact symbol name" },
+    path = { type = "string", description = "optional directory or file to limit the search" },
+    include_definition = { type = "boolean", description = "also list the definition (default true)" },
+    limit = { type = "integer", description = "max results for the grep fallback (default 50)" } },
+    required = { "symbol" } },
+  fallback_chain = { "station zmq find_references", "grep -w" },
+  run = function(a)
+    local sym = a and a.symbol
+    if type(sym) ~= "string" or not sym:match("^[%w_%.:]+$") then
+      return M.err(M.ERR.validation, "find_references needs a 'symbol' (an identifier)")
+    end
+    local params = { symbol = sym }
+    if type(a.path) == "string" and a.path ~= "" then params.path = a.path end
+    if a.include_definition == false then params.include_definition = "false" end
+    return station_call("find_references", params) or grep_floor(sym, a.path, tonumber(a.limit) or 50)
   end,
 })
 
