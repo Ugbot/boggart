@@ -472,8 +472,9 @@ function AgentView:submit(text)
             on_ask=function(rec)
               if rec.diff and rec.path then self:push("diff", "", {diff=rec.diff,path=rec.path}) end
               self.pending=rec; self.status="waiting for approval"
+              self:announce_pending(rec)
             end,
-            on_done=function() self.pending=nil end,
+            on_done=function() self.pending=nil; self:clear_announce() end,
             on_deny=function(n) self:push("system", "blocked: " .. n) end,
           })
           local ok, out = pcall(gated, name, input)
@@ -493,6 +494,7 @@ function AgentView:submit(text)
     self:close_stream()
     if not okrun then self:push("error", tostring(err)) end
     self.busy, self.status, self.pending = false, "idle", nil
+    self:clear_announce()
     self.turn_id = nil
     if bog.save_session then pcall(bog.save_session) end
     self:maybe_capture_question()
@@ -2448,6 +2450,71 @@ function AgentView:draw_working(x, y, w, font)
     renderer.draw_rect(x, track_y, w, h, style.warn or style.accent)
   end
   return lh + h + style.padding.y
+end
+
+-- ---------------------------------------------------------------------------
+-- Making a parked turn impossible to miss
+-- ---------------------------------------------------------------------------
+--
+-- The approval bar below is only seen by someone looking at this panel. A turn
+-- that asks while the panel is on another workspace, behind a tab, or in a
+-- window behind another app just sits there -- which, from the chair, is
+-- indistinguishable from "the model never answered". So an ask is announced
+-- everywhere that does not steal the keyboard: the window title, the status
+-- bar, and -- when the window is not focused -- the dock and a notification.
+-- It deliberately does NOT move focus: with focus here, a "y" typed into a
+-- file would approve the call.
+
+-- What the call is about, in one short line.
+local function ask_summary(rec)
+  local input = rec.input or {}
+  local what = input.command or input.path or input.url or input.name or ""
+  what = tostring(what):gsub("%s+", " ")
+  if #what > 80 then what = what:sub(1, 77) .. "..." end
+  return (rec.name or "tool") .. (what ~= "" and (": " .. what) or "")
+end
+
+-- macOS notification, spawned with a real argv (no shell, and the text travels
+-- as `on run argv` arguments, so nothing in a command line needs escaping).
+local function notify(title, body)
+  local plat = rawget(_G, "PLATFORM") or ""
+  if plat ~= "macOS" and plat ~= "Mac OS X" then return end
+  local okuv, uv = pcall(require, "uv")
+  if not okuv then return end
+  pcall(function()
+    local h = uv.spawn("/usr/bin/osascript", {
+      args = { "-e", "on run argv", "-e",
+               "display notification (item 2 of argv) with title (item 1 of argv)",
+               "-e", "end run", title, body },
+    }, function() end)
+    if h then uv.unref(h) end
+  end)
+end
+
+function AgentView:announce_pending(rec)
+  local summary = ask_summary(rec)
+  self.announced = true
+  core.title_prefix = "[approve?] "
+  core.redraw = true
+  if core.status_view and core.status_view.show_message then
+    local visible = core.root_view and core.root_view.root_node
+      and core.root_view.root_node:get_node_for_view(self)
+      and self.visible ~= false
+    core.status_view:show_message("!", style.warn or style.accent,
+      "agent is waiting for approval -- " .. summary
+      .. (visible and "" or "  (ctrl+shift+a to open the agent panel)"))
+  end
+  if not system.window_has_focus() then
+    if system.request_attention then pcall(system.request_attention) end
+    notify("boggart is waiting for approval", summary)
+  end
+end
+
+function AgentView:clear_announce()
+  if not self.announced then return end
+  self.announced = nil
+  core.title_prefix = nil
+  core.redraw = true
 end
 
 -- The approval bar. The one piece of the UI that must be read rather than

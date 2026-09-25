@@ -966,6 +966,9 @@ function core.step()
   local name = core.active_view:get_name()
   local title = (name ~= "---") and (name .. " - boggart") or "boggart studio"
   if title ~= core.window_title then
+  -- A turn parked on a person (an approval) marks the title, so it reads from
+  -- the dock, the app switcher and a window behind others (agentview.lua).
+  if core.title_prefix then title = core.title_prefix .. title end
     system.set_window_title(title)
     core.window_title = title
   end

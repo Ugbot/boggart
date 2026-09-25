@@ -170,7 +170,7 @@ function MarkdownView:open_link(url)
   if url:match("^%a[%w+.%-]*://") or url:match("^mailto:") then
     local plat = rawget(_G, "PLATFORM") or ""
     local opener = (plat == "Windows" and 'start ""')
-      or (plat == "Mac OS X" and "open") or "xdg-open"
+      or ((plat == "macOS" or plat == "Mac OS X") and "open") or "xdg-open"
     core.log("Opening %s", url)
     pcall(system.exec, string.format("%s %q", opener, url))
   else

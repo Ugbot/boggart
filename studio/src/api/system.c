@@ -311,6 +311,16 @@ static int f_window_has_focus(lua_State *L) {
 }
 
 
+/* system.request_attention() -> bool. Ask the OS to draw the user's eye to
+ * the window until it is focused (macOS: bounce the dock icon; Windows: flash
+ * the taskbar button). For a turn parked on an approval nobody has seen: the
+ * prompt is in the window, and the window is behind something else. */
+static int f_request_attention(lua_State *L) {
+  lua_pushboolean(L, SDL_FlashWindow(window, SDL_FLASH_UNTIL_FOCUSED));
+  return 1;
+}
+
+
 static int f_show_confirm_dialog(lua_State *L) {
   const char *title = luaL_checkstring(L, 1);
   const char *msg = luaL_checkstring(L, 2);
@@ -591,6 +601,7 @@ static const luaL_Reg lib[] = {
   { "set_window_size",     f_set_window_size     },
   { "set_window_mode",     f_set_window_mode     },
   { "window_has_focus",    f_window_has_focus    },
+  { "request_attention",   f_request_attention   },
   { "show_confirm_dialog", f_show_confirm_dialog },
   { "chdir",               f_chdir               },
   { "list_dir",            f_list_dir            },
