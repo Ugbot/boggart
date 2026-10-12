@@ -466,6 +466,10 @@ local DEFAULT = { search = "query", asset = "list" }
 local sw = require("story.world")
 for noun, acts in pairs(sw.ACTIONS) do M.ACTIONS[noun] = acts end
 for noun, act in pairs(sw.DEFAULT) do DEFAULT[noun] = act end
+-- the world lookups (geo, check): code-only questions about where things are
+local sg = require("story.geotool")
+for noun, acts in pairs(sg.ACTIONS) do M.ACTIONS[noun] = acts end
+for noun, act in pairs(sg.DEFAULT) do DEFAULT[noun] = act end
 
 function M.call(a)
   a = a or {}
@@ -552,12 +556,15 @@ M.tool = {
   -- the model is never the author: whatever it passes, its writes are proposals
   run = function(a) a = a or {}; a._author = nil; return M.call(a) end,
 }
-M.tool.description = M.tool.description .. " " .. sw.DESCRIPTION
+M.tool.description = M.tool.description .. " " .. sw.DESCRIPTION .. " " .. sg.DESCRIPTION
 for k, v in pairs(sw.PROPS) do
   if not M.tool.input_schema.properties[k] then M.tool.input_schema.properties[k] = v end
 end
+for k, v in pairs(sg.PROPS) do
+  if not M.tool.input_schema.properties[k] then M.tool.input_schema.properties[k] = v end
+end
 M.tool.input_schema.properties.noun.description = "book|asset|search|character|chapter|style|plan|draft|"
-  .. "entity|event|fact|knows|promise|exemption|proposal|lore|model"
+  .. "entity|event|fact|knows|promise|exemption|proposal|lore|model|geo|check"
 
 function M.register()
   if bog and bog.tools and bog.tools.register then bog.tools.register("story", M.tool) end

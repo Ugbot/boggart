@@ -34,6 +34,7 @@ local function choice(q, name, p)
   return { [q] = { type = "choice", choice = name, confidence = p, probabilities = { [name] = p } } }, { status = 200 }
 end
 local function reset()
+  ladder.rand = function() return 1 end -- never draw the agreement sample unless a test says so
   kv = {}; script = nil
   for _, id in ipairs({ "swarm.supervise", "coding.verify", "tracker.classify", "story.judge" }) do
     ladder.set_enabled(id, false)

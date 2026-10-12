@@ -481,6 +481,8 @@ straight onto facts and knowledge.
   - `thread`, `entity`, `fact`, `event`, `knows`
   - `promise`, `proposal`, `finding`
   - `interview`, `draft`, `edit`, `extract`, `search`
+  - `geo` and `check`: code-only world lookups (where is X, is X inside Y, can they
+    get there in time, is this claim true) — see [story-world-tools.md](story-world-tools.md)
 
   Queries take `as_of=` (a chapter, scene or ord).
 - **TUI `/story` views:**
