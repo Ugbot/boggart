@@ -221,6 +221,43 @@ overlay files shadowing built-in modules, and free disk. It exits non-zero when
 something is genuinely broken, so `boggart doctor >/dev/null || ...` works in a
 script. `/doctor` prints the same report inside the REPL.
 
+## Optional: the tier ladder (and Jev)
+
+**You do not need Jev, a TypeSafe key, or any extra model to use boggart.** Everything
+in this section is off by default, and with it off boggart behaves exactly as described
+everywhere else in this README. Nothing phones home, nothing routes differently, and no
+setting is required.
+
+What it is: a way to answer small decisions *below* a full chat-model turn. Each decision
+site is a stack of stages, cheapest first — **code** (plain Lua rules and a memo of
+decisions that have been proven), then **Jev** (a typed judge that returns probabilities
+instead of prose; see [TypeSafe](docs/typesafe.md)), then your normal chat model. If a stage
+is unavailable, unsure or errors, the next one answers, so the worst case is the model
+doing what it always did.
+
+| Setup                               | What you get                                                         |
+|-------------------------------------|----------------------------------------------------------------------|
+| nothing (default)                   | boggart as always                                                    |
+| `/ladder on <site>`, no Jev key     | the **code** tier only: rules and hardened memos; no network use     |
+| `/ladder on <site>` + a Jev key     | code, then Jev, then the model                                       |
+
+Sites you can switch on individually: `tool.triage`, `tool.narrow`, `tool.force`,
+`tool.skip` (tool choice), `swarm.supervise`, `coding.verify`, `tracker.classify`,
+`story.judge`.
+
+```
+/ladder                        list sites and their state
+/ladder on|off [<site>]        master switch, or one site
+/ladder threshold|sample <site> <0..1>
+/harden                        what has been folded into plain code, per site
+/harden off                    kill switch for that folding
+/auth key typesafe <key>       only if you want the Jev tier (or set TYPESAFE_API_KEY)
+```
+
+Design, the full site list and the safety rules (routing never widens what a tool is
+allowed to do) are in [docs/jev-ladder.md](docs/jev-ladder.md). A planned local
+alternative to the hosted Jev is described in [docs/local-judge.md](docs/local-judge.md).
+
 ## Swarm mode — all agents are actors
 
 A separate mode adds lightweight **agentic fan-out**. The unit is an *agent*, which

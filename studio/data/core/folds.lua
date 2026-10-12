@@ -83,6 +83,8 @@ end
 local states = setmetatable({}, { __mode = "k" })
 
 local function detect(doc)
+  -- a large-file view (BOG-25) is not scanned whole: no folds
+  if doc.large then return {} end
   local ext = (doc.filename or ""):match("%.(%w+)$")
   local ranges = (ext and BRACE_EXTS[ext:lower()])
     and detect_by_brackets(doc.lines)

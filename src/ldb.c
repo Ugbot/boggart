@@ -16,6 +16,7 @@
 #include "sqlite3.h"
 #include "lua.h"
 #include "lauxlib.h"
+#include "bogassert.h"
 #include "ldb.h"
 
 #define API_TYPE_DB "boggart.db"
@@ -107,6 +108,7 @@ static int l_open(lua_State *L) {
   }
   sqlite3_busy_timeout(h, 5000);
   DBConn *c = (DBConn *)lua_newuserdatauv(L, sizeof(DBConn), 0);
+  BOG_ASSERT(h != NULL, "sqlite3_open succeeded but returned no handle");
   c->h = h;
   luaL_setmetatable(L, API_TYPE_DB);
   return 1;

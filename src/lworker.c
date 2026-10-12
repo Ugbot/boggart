@@ -108,7 +108,7 @@
  * instructions it trywaits kill_sem, and on success raises a Lua error that
  * unwinds the source's pcall (ok=0). This sidesteps the liveness gate the v1
  * comment worried about: lua_sethook is only ever called on the worker's own
- * state -- the main thread merely uv_sem_post(kill_sem), the same happens-before
+ * state -- the main thread merely bog_sem_post(kill_sem), the same happens-before
  * edge everything else here rides, so no thread touches another's lua_State and
  * the lua_close race cannot arise. kill() also does the cooperative stop, so a
  * worker blocked in C (recv, sys.exec) is still woken. The honest residual: a
@@ -126,8 +126,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #include "uv.h"
+#include "bogtsan.h"   /* semaphore hand-offs marked for TSan (no-op otherwise) */
 #include "lua.h"
 #include "lauxlib.h"
 #include "lualib.h"
@@ -204,38 +206,38 @@ static void ring_destroy(wk_ring *r) {
  * progress). The MAIN thread never calls this; it uses ring_trypush, because
  * the main thread must never block on a worker's consumption. */
 static void ring_push(wk_ring *r, const wk_slot *s) {
-  if (uv_sem_trywait(&r->space) != 0) {
+  if (bog_sem_trywait(&r->space) != 0) {
     r->stalls++;
-    uv_sem_wait(&r->space);
+    bog_sem_wait(&r->space);
   }
   r->slots[r->head & WK_MASK] = *s; /* ownership of s->str moves here */
   r->head++;
-  uv_sem_post(&r->items); /* publishes the slot write to the consumer */
+  bog_sem_post(&r->items); /* publishes the slot write to the consumer */
 }
 
 static int ring_trypush(wk_ring *r, const wk_slot *s) {
-  if (uv_sem_trywait(&r->space) != 0) return -1;
+  if (bog_sem_trywait(&r->space) != 0) return -1;
   r->slots[r->head & WK_MASK] = *s;
   r->head++;
-  uv_sem_post(&r->items);
+  bog_sem_post(&r->items);
   return 0;
 }
 
 static int ring_trypop(wk_ring *r, wk_slot *out) {
-  if (uv_sem_trywait(&r->items) != 0) return -1;
+  if (bog_sem_trywait(&r->items) != 0) return -1;
   *out = r->slots[r->tail & WK_MASK];
   r->tail++;
-  uv_sem_post(&r->space);
+  bog_sem_post(&r->space);
   return 0;
 }
 
 /* Blocking pop, for consumers entitled to block: the worker's recv() with no
  * timeout (stop() always wakes it -- see the header comment), and join(). */
 static void ring_pop_wait(wk_ring *r, wk_slot *out) {
-  uv_sem_wait(&r->items);
+  bog_sem_wait(&r->items);
   *out = r->slots[r->tail & WK_MASK];
   r->tail++;
-  uv_sem_post(&r->space);
+  bog_sem_post(&r->space);
 }
 
 /* ---- the worker ----------------------------------------------------------- */
@@ -276,7 +278,7 @@ struct worker {
   uv_sem_t pause_sem;        /* main requests a pause; the hook trywaits it */
   uv_sem_t resume_sem;       /* release a pause; the paused hook blocks on it */
   uv_sem_t gate;             /* THE lock; see the header comment */
-  int accepting;             /* guarded by gate once the worker is live */
+  atomic_int accepting;      /* release/acquire: set by the worker, read by posters */
 
   uv_async_t async_in;       /* wakeup, on the WORKER's loop */
   int async_in_closed;       /* worker-thread only */
@@ -433,7 +435,7 @@ static int wl_membytes(lua_State *L) {
 
 static int wk_check_stop(worker *h) {
   if (h->stopped) return 1;
-  if (uv_sem_trywait(&h->stop_sem) == 0) h->stopped = 1;
+  if (bog_sem_trywait(&h->stop_sem) == 0) h->stopped = 1;
   return h->stopped;
 }
 
@@ -637,16 +639,16 @@ static void wk_safepoint_hook(lua_State *L, lua_Debug *ar) {
   (void)ar;
   worker *h = *(worker **)lua_getextraspace(L);
   if (!h) return;
-  if (uv_sem_trywait(&h->kill_sem) == 0) {
+  if (bog_sem_trywait(&h->kill_sem) == 0) {
     h->killed = 1;
     luaL_error(L, "worker killed at safepoint"); /* unwinds the source pcall */
   }
-  if (uv_sem_trywait(&h->pause_sem) == 0) {
+  if (bog_sem_trywait(&h->pause_sem) == 0) {
     h->paused = 1;
-    uv_sem_wait(&h->resume_sem); /* parks the thread until resume/stop/kill */
+    bog_sem_wait(&h->resume_sem); /* parks the thread until resume/stop/kill */
     h->paused = 0;
     /* a kill delivered while parked takes effect the moment we wake */
-    if (uv_sem_trywait(&h->kill_sem) == 0) {
+    if (bog_sem_trywait(&h->kill_sem) == 0) {
       h->killed = 1;
       luaL_error(L, "worker killed at safepoint");
     }
@@ -664,8 +666,8 @@ static void worker_main(void *arg) {
     h->ok = 0; h->result_kind = WKS_STR;
     h->result_str = strdup("worker: cannot create Lua state");
     h->result_len = h->result_str ? strlen(h->result_str) : 0;
-    uv_sem_post(&h->ready);
-    uv_sem_post(&h->exit_sem);
+    bog_sem_post(&h->ready);
+    bog_sem_post(&h->exit_sem);
     wk_slot s; memset(&s, 0, sizeof s); s.kind = WKS_EXIT;
     ring_push(&h->out, &s);
     if (h->outa) uv_async_send(&h->outa->a);
@@ -687,8 +689,11 @@ static void worker_main(void *arg) {
   uv_async_init(loop, &h->async_in, in_async_cb);
   h->async_in.data = h;
   uv_unref((uv_handle_t *)&h->async_in); /* a wakeup must not hold the loop open */
-  h->accepting = 1; /* published to the main thread by the `ready` post */
-  uv_sem_post(&h->ready);
+  /* Published with a release store, read with acquire: correct under the C11
+   * model on its own, not only because uv_sem happens to be a kernel barrier
+   * (TSan cannot see through Mach semaphores, and flagged this). */
+  atomic_store_explicit(&h->accepting, 1, memory_order_release);
+  bog_sem_post(&h->ready);
 
   /* Assemble the boggart interpreter -- open_libs + boot is the identity;
    * without it this is just "a lua_State on a thread", not a boggart. */
@@ -747,15 +752,15 @@ static void worker_main(void *arg) {
   boggart_http_shutdown(L); /* onmessage path + neutralise curl handles before */
   boggart_station_shutdown(L);
                             /* lua_close's loop_gc (idempotent after the above) */
-  uv_sem_wait(&h->gate);
-  h->accepting = 0;
-  uv_sem_post(&h->gate);
+  bog_sem_wait(&h->gate);
+  atomic_store_explicit(&h->accepting, 0, memory_order_release);
+  bog_sem_post(&h->gate);
   uv_close((uv_handle_t *)&h->async_in, in_async_closed_cb);
   while (!h->async_in_closed) uv_run(loop, UV_RUN_ONCE);
   lua_close(L);
   h->L = NULL;
 
-  uv_sem_post(&h->exit_sem); /* result fields are now readable via status() */
+  bog_sem_post(&h->exit_sem); /* result fields are now readable via status() */
   wk_slot s; memset(&s, 0, sizeof s); s.kind = WKS_EXIT;
   ring_push(&h->out, &s);    /* join()'s wait target; may block, join drains */
   if (h->outa) uv_async_send(&h->outa->a);
@@ -773,7 +778,7 @@ static worker **check_handle(lua_State *L) {
  * trywait is the happens-before edge that makes ok/result readable here. */
 static int wk_exited(worker *h) {
   if (h->exit_flag) return 1;
-  if (uv_sem_trywait(&h->exit_sem) == 0) h->exit_flag = 1;
+  if (bog_sem_trywait(&h->exit_sem) == 0) h->exit_flag = 1;
   return h->exit_flag;
 }
 
@@ -843,25 +848,25 @@ static void out_async_free_cb(uv_handle_t *hd) {
 }
 
 static void wk_stop_signal(worker *h) {
-  uv_sem_post(&h->stop_sem);
+  bog_sem_post(&h->stop_sem);
   /* Unblock a parked worker so it can wind down; harmless if it is not parked
    * (the stray token makes the next pause a no-op, but a stopping worker gets no
    * next pause). This is what makes join/gc/atexit deadlock-free against pause. */
-  uv_sem_post(&h->resume_sem);
+  bog_sem_post(&h->resume_sem);
   wk_slot s; memset(&s, 0, sizeof s); s.kind = WKS_STOP;
   /* Best effort: a full ring cannot take the sentinel, but full also means
    * the worker is not blocked in recv, and every recv checks stop_sem. */
   ring_trypush(&h->in, &s);
-  uv_sem_wait(&h->gate);
-  if (h->accepting) uv_async_send(&h->async_in);
-  uv_sem_post(&h->gate);
+  bog_sem_wait(&h->gate);
+  if (atomic_load_explicit(&h->accepting, memory_order_acquire)) uv_async_send(&h->async_in);
+  bog_sem_post(&h->gate);
 }
 
 /* Preemptive kill: post kill_sem (the worker's count hook trywaits it and raises)
  * AND do the cooperative stop, so a worker blocked in C (recv, sys.exec) is woken
  * while a worker spinning in Lua is unwound at the next safepoint. */
 static void wk_kill_signal(worker *h) {
-  uv_sem_post(&h->kill_sem);
+  bog_sem_post(&h->kill_sem);
   wk_stop_signal(h);
 }
 
@@ -1058,7 +1063,7 @@ static int l_spawn(lua_State *L) {
   /* Until the worker's loop and wakeup async exist, post()/stop() would
    * uv_async_send into uninitialized memory. The worker posts `ready` the
    * moment they do (before boot, so this waits microseconds, not a boot). */
-  uv_sem_wait(&h->ready);
+  bog_sem_wait(&h->ready);
 
   worker **ud = (worker **)lua_newuserdata(L, sizeof(worker *));
   *ud = h;
@@ -1082,9 +1087,9 @@ static int l_post(lua_State *L) {
     lua_pushnil(L); lua_pushliteral(L, "full");
     return 2;
   }
-  uv_sem_wait(&h->gate);
-  if (h->accepting) uv_async_send(&h->async_in);
-  uv_sem_post(&h->gate);
+  bog_sem_wait(&h->gate);
+  if (atomic_load_explicit(&h->accepting, memory_order_acquire)) uv_async_send(&h->async_in);
+  bog_sem_post(&h->gate);
   lua_pushboolean(L, 1);
   return 1;
 }
@@ -1139,14 +1144,14 @@ static int l_kill(lua_State *L) {
  * it next returns to the VM). Balance with resume(). */
 static int l_pause(lua_State *L) {
   worker *h = *check_handle(L);
-  if (!h->joined && !wk_exited(h)) { uv_sem_post(&h->pause_sem); wk_emit(h, "worker:paused"); }
+  if (!h->joined && !wk_exited(h)) { bog_sem_post(&h->pause_sem); wk_emit(h, "worker:paused"); }
   return 0;
 }
 
 /* worker.resume(handle) -- release a paused worker. */
 static int l_resume(lua_State *L) {
   worker *h = *check_handle(L);
-  if (!h->joined) { uv_sem_post(&h->resume_sem); wk_emit(h, "worker:resumed"); }
+  if (!h->joined) { bog_sem_post(&h->resume_sem); wk_emit(h, "worker:resumed"); }
   return 0;
 }
 

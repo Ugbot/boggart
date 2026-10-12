@@ -621,6 +621,7 @@ function core.init()
     -- interim activity-rail composition has been removed.
     core.studio = core.try(require, "core.studio") and require "core.studio" or nil
     core.try(require, "core.workflows")
+    core.try(require, "core.trackerview")
     local function attach_legacy()
       if core.studio then core.try(core.studio.attach_legacy) end
     end

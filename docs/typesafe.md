@@ -170,7 +170,7 @@ backends stubbed).
 
 ## Where it could plug in
 
-Candidates only; none is wired. Each is a place boggart currently asks a chat
+Candidates only; none is wired yet (the tier ladder, docs/jev-ladder.md, is the seam they will use). Each is a place boggart currently asks a chat
 model for a small decision and parses prose, or applies a heuristic where a
 calibrated probability would do better.
 

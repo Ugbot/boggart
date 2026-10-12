@@ -653,6 +653,12 @@ local function to_openai_body(body)
   }
   if body.stream then out.stream_options = { include_usage = true } end
   if body.temperature then out.temperature = body.temperature end
+  -- Sampler extras (llama.cpp's min_p, DRY, XTC, logit_bias, ...): only this
+  -- wire forwards them, and only when a caller asked (the story module's
+  -- per-book decode settings). Every other wire drops the field.
+  if type(body.sampler) == "table" then
+    for k, v in pairs(body.sampler) do if out[k] == nil then out[k] = v end end
+  end
   -- OpenAI reasoning_effort tops out at "high"; clamp the Anthropic-only xhigh/max.
   if body.reasoning_effort then
     local e = body.reasoning_effort
@@ -667,6 +673,10 @@ local function to_openai_body(body)
       } }
     end
     out.tools = tools
+    -- Router-forced tool (lua/toolroute.lua): neutral {name=} -> this wire's shape.
+    if type(body.tool_choice) == "table" and body.tool_choice.name then
+      out.tool_choice = { type = "function", ["function"] = { name = body.tool_choice.name } }
+    end
   end
   return out
 end
@@ -835,6 +845,9 @@ local function to_responses_body(body)
         description = t.description, parameters = norm_schema(t.input_schema) or { type = "object" } }
     end
     out.tools = tools
+    if type(body.tool_choice) == "table" and body.tool_choice.name then
+      out.tool_choice = { type = "function", name = body.tool_choice.name }
+    end
   end
   return out
 end
@@ -961,6 +974,7 @@ local _warned_schema = {} -- tool names already reported as repaired, to log eac
 local function to_anthropic_body(body)
   local out = {}
   for k, v in pairs(body) do out[k] = v end
+  out.sampler = nil -- OpenAI-wire extras (see to_openai_body); Anthropic rejects unknown fields
 
   -- Every tool's input_schema must be valid draft-2020-12 or Anthropic 400s the
   -- WHOLE request; MCP servers and model-authored tools readily emit ones that
@@ -985,6 +999,14 @@ local function to_anthropic_body(body)
       bog.log("anthropic: normalised invalid tool schema(s) to draft-2020-12: "
         .. table.concat(repaired, ", "))
     end
+  end
+
+  -- Router-forced tool (lua/toolroute.lua): neutral {name=} -> Anthropic's shape,
+  -- and never without tools to force.
+  if out.tool_choice ~= nil then
+    local tc = out.tool_choice
+    out.tool_choice = (type(tc) == "table" and tc.name and type(out.tools) == "table" and #out.tools > 0)
+      and { type = "tool", name = tc.name } or nil
   end
 
   local eff = out.reasoning_effort
@@ -1038,7 +1060,31 @@ local function to_anthropic_body(body)
 end
 
 -- ---- the transport (always runs inside a scheduler coroutine) --------------
+-- Text deltas to a display callback never end mid-character: a local server
+-- can split a multibyte character across two deltas, and a renderer handed
+-- half of one shows U+FFFD (or worse, a scrub replaces it). Hold back an
+-- incomplete UTF-8 tail until the next delta completes it (src/ljson.c
+-- utf8_safe_len, after ds4's utf8_stream_safe_len). -> wrapped fn, flush()
+local function utf8_carry(fn)
+  local c = require("json").c
+  if not fn or not (c and c.utf8_safe_len) then return fn, function() end end
+  local pending = ""
+  local function feed(t)
+    if t == nil or t == "" then return fn(t) end
+    local s = pending .. t
+    local n = c.utf8_safe_len(s)
+    pending = s:sub(n + 1)
+    if n > 0 then fn(s:sub(1, n)) end
+  end
+  local function flush() if pending ~= "" then local p = pending; pending = ""; fn(p) end end
+  return feed, flush
+end
+M._utf8_carry = utf8_carry
+
 local function stream_async_once(body, on_text, w, on_think, rt)
+  local flush_text, flush_think
+  on_text, flush_text = utf8_carry(on_text)
+  on_think, flush_think = utf8_carry(on_think)
   local dec = (w == "responses" and new_responses_decoder(on_text, on_think))
     or (w == "openai" and new_openai_decoder(on_text, on_think))
     or new_decoder(on_text, on_think)
@@ -1080,6 +1126,7 @@ local function stream_async_once(body, on_text, w, on_think, rt)
   req:close()
   dec.feed("\n")
   local msg, stop, serr = dec.finish()
+  flush_text(); flush_think()
   return msg, stop, serr, status, err, table.concat(raw)
 end
 
@@ -1924,6 +1971,21 @@ function M.run_on(sess, user_text, on_text, opts)
       reasoning_effort = (route.effort ~= false) and sess.effort or nil,
     }
     local tools = tools_fn()
+    -- Tool routing (lua/toolroute.lua, every site opt-in): may narrow the offer,
+    -- force one tool, or decide the next call outright. Any failure leaves the
+    -- full offer exactly as it was.
+    local rplan = bog.toolroute and bog.toolroute.plan(sess, tools) or nil
+    if rplan then
+      tools = rplan.tools or tools
+      if rplan.tool_choice then body.tool_choice = { name = rplan.tool_choice } end
+      if rplan.skip then
+        local amsg = bog.toolroute.synth(sess, rplan.skip, rounds)
+        sess.messages[#sess.messages + 1] = amsg
+        checkpoint()
+        run_tool_round(sess, amsg, #sess.messages, run_tool, on_tool, checkpoint)
+        goto continue
+      end
+    end
     if #tools > 0 then body.tools = tools end
 
     ttfb_t0 = tel and tel.now_ms() or nil; ttfb_ms = nil
@@ -1938,6 +2000,18 @@ function M.run_on(sess, user_text, on_text, opts)
       on_think(chunk)
     end
     local msg, stop = stream(body, sink, think_sink)
+    -- A forced tool some models then ignore (constraint suppression): ask once
+    -- more with the choice withdrawn rather than accept a turn with no call.
+    if body.tool_choice then
+      local called = false
+      for _, b in ipairs(msg.content or {}) do if b.type == "tool_use" then called = true end end
+      if not called and stop ~= "refusal" then
+        body.tool_choice = nil
+        if bog.toolroute then bog.toolroute.note_unforced(rplan) end
+        msg, stop = stream(body, sink, think_sink)
+      end
+    end
+    if rplan and bog.toolroute then pcall(bog.toolroute.observe, rplan, msg) end
     stop_reason = stop -- what turn:end reports on the way out
     -- One turn span: model / TTFB / tokens / tool-calls / think-vs-output.
     -- Emitted before usage is scrubbed off msg, counted from the blocks the
@@ -2017,6 +2091,7 @@ function M.run_on(sess, user_text, on_text, opts)
     else
       return msg, stop -- end_turn / max_tokens / stop_sequence
     end
+    ::continue::
   end
 end
 
@@ -2060,5 +2135,6 @@ end
 M._to_responses_body = to_responses_body
 M._new_responses_decoder = new_responses_decoder
 M._to_openai_body = to_openai_body
+M._to_anthropic_body = to_anthropic_body
 
 return M

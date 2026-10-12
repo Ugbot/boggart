@@ -42,6 +42,7 @@ end
 -- for a 2-way conflict) plus git's labels. Unterminated regions are dropped.
 local function parse(doc)
   local regions, r = {}, nil
+  if doc.large then return regions end   -- a large view is not scanned whole (BOG-25)
   for i, line in ipairs(doc.lines) do
     local kind, label = marker(line)
     if kind == "start" then

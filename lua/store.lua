@@ -261,7 +261,17 @@ local function collect_text(v, out, budget)
     out[#out + 1] = v
     budget[1] = budget[1] - #v
   elseif t == "table" then
-    for _, item in pairs(v) do collect_text(item, out, budget) end
+    -- In a stable order (the array part, then the other keys sorted), so the
+    -- indexed text is the same whether built from a fresh table or one decoded
+    -- from the row -- pairs() order differs between the two.
+    local n = #v
+    for i = 1, n do collect_text(v[i], out, budget) end
+    local keys = {}
+    for k in pairs(v) do
+      if not (math.type(k) == "integer" and k >= 1 and k <= n) then keys[#keys + 1] = k end
+    end
+    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+    for _, k in ipairs(keys) do collect_text(v[k], out, budget) end
   end
 end
 
@@ -282,15 +292,35 @@ end
 -- Re-index one session by id, reading its current title/messages back from the
 -- row so the result is right no matter which columns the caller changed. A
 -- regular fts5 table takes a plain DELETE, so "replace" is delete-then-insert.
-local function fts_index_session(id)
+--
+-- `known` (optional) is what the caller already holds: { title = ..., messages =
+-- <table> }. A save used to encode the whole transcript, write it, then read it
+-- straight back and DECODE it again just to build this row -- every turn, so a
+-- long session paid a full decode per turn on top of the encode (BOG-13).
+-- With the table in hand there is nothing to read back; only a missing title
+-- is fetched (one small column).
+local function fts_index_session(id, known)
   if not id then return end
-  local r = bog.db:query("SELECT id,title,messages FROM sessions WHERE id=?", { id })
-  local s = r[1]
-  if not s then return end
+  local title, body
+  if known and type(known.messages) == "table" then
+    title = known.title
+    if title == nil then
+      local t = bog.db:query("SELECT title FROM sessions WHERE id=?", { id })[1]
+      if not t then return end
+      title = t.title
+    end
+    body = sess_body(known.messages)
+  else
+    local r = bog.db:query("SELECT id,title,messages FROM sessions WHERE id=?", { id })
+    local s = r[1]
+    if not s then return end
+    title, body = s.title, sess_body(s.messages)
+  end
   bog.db:run("DELETE FROM sessions_fts WHERE rowid=?", { id })
   bog.db:run("INSERT INTO sessions_fts(rowid,title,body) SELECT ?,?,? WHERE EXISTS (SELECT 1 FROM sessions WHERE id=?) AND NOT EXISTS (SELECT 1 FROM retention_session_ids WHERE id=?)",
-    { id, s.title or "", sess_body(s.messages),id,id })
+    { id, title or "", body, id, id })
 end
+M._fts_index_session = fts_index_session
 
 -- One-time seed for sessions written before this index existed, guarded by a
 -- meta flag so later opens skip the whole-table scan. Runs for the CLI too --
@@ -974,7 +1004,7 @@ function M.sess_create(title, model, project)
       { title or "", model or "", now(), now() })
   end
   assert(r,why or 'session_insert_failed')
-  fts_index_session(r.rowid)
+  fts_index_session(r.rowid, { title = title or "", messages = {} })
   return r.rowid
 end
 
@@ -994,7 +1024,7 @@ function M.sess_save(id, title, model, messages)
   if not ok then encoded = "[]" end
   local res = bog.db:run("UPDATE sessions SET title=?, model=?, updated=?, messages=? WHERE id=?",
     { title, model, now(), encoded, id })
-  fts_index_session(id)
+  fts_index_session(id, { title = title, messages = ok and messages or {} })
   return res
 end
 
@@ -1121,7 +1151,7 @@ function M.thread_create(opts)
     .. "VALUES((SELECT COALESCE(MAX(id),0)+1 FROM (SELECT id FROM sessions UNION ALL SELECT id FROM retention_session_ids)),?,?,?,?, '[]', NULLIF(?,0), ?, '[]', NULLIF(?,''),NULLIF(?, 'global'))",
     { opts.title or '', opts.model or '', now(), now(), opts.parent_id or 0,
       opts.status or "running", opts.spec and json.encode(opts.spec) or '',scope }))
-  fts_index_session(r.rowid)
+  fts_index_session(r.rowid, { title = opts.title or "", messages = {} })
   return r.rowid
 end
 
@@ -1141,7 +1171,13 @@ function M.thread_save(id, fields)
   put("updated", now())
   vals[#vals + 1] = id
   local res = bog.db:run("UPDATE sessions SET " .. table.concat(sets, ", ") .. " WHERE id=?", vals)
-  fts_index_session(id)
+  -- The index holds title + body: a status/spec/subscription update changes
+  -- neither, so it no longer re-reads and re-decodes the transcript.
+  if fields.messages ~= nil then
+    fts_index_session(id, { title = fields.title, messages = fields.messages })
+  elseif fields.title ~= nil then
+    fts_index_session(id)
+  end
   return res
 end
 

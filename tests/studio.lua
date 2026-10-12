@@ -916,5 +916,40 @@ do
   end
 end
 
+-- ---- large files open as read-only lazy views (BOG-25) ----------------------
+if okdoc and package.loaded.fileview then
+  local config = require("core.config")
+  local saved = config.large_file_mb
+  config.large_file_mb = 1
+  local TMPL = sys.tmpdir() .. "/large-doc-" .. tostring(os.time()) .. ".log"
+  local fl = io.open(TMPL, "wb")
+  for i = 1, 60000 do fl:write(string.format("line %06d of a large file, padded out a bit\r\n", i)) end
+  fl:close()
+  local d = Doc(TMPL)
+  ok(d.large ~= nil, "a file over the threshold opens as a view")
+  d.large:wait()
+  ok(#d.lines == 60000, "line count through the view: " .. tostring(#d.lines))
+  ok(d.lines[1] == "line 000001 of a large file, padded out a bit\n", "first line, CRLF folded like a normal load")
+  ok(d.lines[45678] == "line 045678 of a large file, padded out a bit\n", "any line, on demand")
+  ok(d.crlf, "CRLF noticed")
+  local n = 0
+  for i, l in ipairs(d.lines) do n = n + 1; if i == 3 then break end end
+  ok(n == 3, "ipairs walks it")
+  local before = d.lines[2]
+  d:insert(2, 1, "EDIT")
+  ok(d.lines[2] == before, "edits are refused (read-only)")
+  d:remove(1, 1, 3, 1)
+  ok(d.lines[1] ~= nil and d.lines[2] == before, "removes are refused")
+  d:save(TMPL)
+  local fl2 = io.open(TMPL, "rb"); local head = fl2:read(12); fl2:close()
+  ok(head == "line 000001 ", "save is refused: the file is untouched")
+  local SMALL = sys.tmpdir() .. "/small-doc-" .. tostring(os.time()) .. ".txt"
+  local fs = io.open(SMALL, "wb"); fs:write("a\nb\n"); fs:close()
+  local small = Doc(SMALL)
+  ok(small.large == nil and type(rawget(small, "lines")) == "table", "small files are unchanged")
+  config.large_file_mb = saved
+  os.remove(TMPL); os.remove(SMALL)
+end
+
 io.write(string.format("\n%d passed, %d failed\n", passed, failed))
 return failed == 0 and 0 or 1

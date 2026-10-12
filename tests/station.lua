@@ -69,6 +69,25 @@ do
     "minimal envelope round-trips")
 end
 
+-- A LARGE request: the encoder once appended through a luaL_Buffer while the
+-- payload walk pushed/popped the stack, which segfaulted (resizebox) as soon as
+-- a request outgrew the buffer's inline space -- every big code search in the
+-- studio. Hundreds of fields, some long, must encode and round-trip exactly.
+do
+  local big = {}
+  for i = 1, 400 do big["k" .. i] = string.rep(string.char(97 + i % 26), (i % 7) * 97 + 1) end
+  big.query = string.rep("function foo(bar) return bar end\n", 2000)   -- ~66KB, needs 32-bit length
+  local bytes = station._encode("tool_exec", "code_search", big)
+  ok(type(bytes) == "string" and #bytes > 100000, "a large request encodes (" .. tostring(bytes and #bytes) .. " bytes)")
+  local mt, tool, p = station._decode(bytes)
+  local same = mt == "tool_exec" and tool == "code_search" and type(p) == "table"
+  if same then for k, v in pairs(big) do if p[k] ~= v then same = false end end end
+  ok(same, "and round-trips field for field")
+  -- and under a Lua stack that is already deep (the studio calls it from deep in a turn)
+  local function deep(n) if n == 0 then return station._encode("tool_exec", "code_search", big) end; return deep(n - 1) end
+  ok(#deep(150) == #bytes, "from a deep call stack too")
+end
+
 -- Garbage in: a clean nil, err -- decode must never raise on wire noise.
 do
   local a, b = station._decode("not msgpack at all")

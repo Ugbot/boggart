@@ -44,6 +44,7 @@
 
 #include <lua.h>
 #include <lauxlib.h>
+#include "bogassert.h"
 #include "sqlite3.h"
 #include "cJSON.h"
 
@@ -151,12 +152,27 @@ static int l_endpoint(lua_State *L) {
  * The subset the wire uses: maps and strings. Decoding also skips other
  * well-formed values, so a new non-string field degrades to "key ignored". */
 
-typedef struct { luaL_Buffer b; lua_State *L; } stbuf;
+/* The encoder's own growable byte buffer. NOT a luaL_Buffer: the payload walk
+ * below pushes and pops the Lua stack (lua_next, lua_pushvalue) while bytes are
+ * being appended, and a luaL_Buffer that has outgrown its inline space keeps
+ * its storage in a box ON the stack -- so the first large request (a big code
+ * search) appended through a box that was no longer on top and segfaulted in
+ * resizebox (studio crash reports 2026-09-28, lstation.c envelope_encode). */
+typedef struct { char *p; size_t n, cap; int oom; lua_State *L; } stbuf;
 
 static void mp_bytes(stbuf *o, const void *p, size_t n) {
-  luaL_addlstring(&o->b, (const char *)p, n);
+  if (o->oom) return;
+  if (o->n + n > o->cap) {
+    size_t cap = o->cap ? o->cap : 256;
+    while (cap < o->n + n) cap *= 2;
+    char *np = (char *)realloc(o->p, cap);
+    if (!np) { o->oom = 1; return; }
+    o->p = np; o->cap = cap;
+  }
+  memcpy(o->p + o->n, p, n);
+  o->n += n;
 }
-static void mp_u8(stbuf *o, unsigned char c) { luaL_addchar(&o->b, (char)c); }
+static void mp_u8(stbuf *o, unsigned char c) { mp_bytes(o, &c, 1); }
 
 static void mp_str(stbuf *o, const char *s, size_t n) {
   if (n < 32) {
@@ -195,9 +211,8 @@ static int envelope_encode(lua_State *L, int base) {
   int has_payload = !lua_isnoneornil(L, base + 2);
   if (has_payload) luaL_checktype(L, base + 2, LUA_TTABLE);
 
-  stbuf o;
-  o.L = L;
-  luaL_buffinit(L, &o.b);
+  stbuf o = { NULL, 0, 0, 0, L };
+  BOG_STACK_GUARD(L);   /* the payload walk below must leave the stack as it found it */
   mp_map_header(&o, 3);
   mp_str(&o, "msg_type", 8); mp_str(&o, mt, mtn);
   mp_str(&o, "tool", 4);     mp_str(&o, tool, tooln);
@@ -220,18 +235,35 @@ static int envelope_encode(lua_State *L, int base) {
       if (lua_type(L, -2) == LUA_TSTRING &&
           (lua_type(L, -1) == LUA_TSTRING || lua_type(L, -1) == LUA_TNUMBER)) {
         size_t kn, vn;
-        const char *k = lua_tolstring(L, -2, &kn);
-        /* tolstring on the value copy; converting the key breaks lua_next. */
-        lua_pushvalue(L, -1);
-        const char *v = lua_tolstring(L, -1, &vn);
+        const char *k = lua_tolstring(L, -2, &kn);   /* a string key: no conversion, cannot raise */
+        const char *v;
+        char num[64];
+        if (lua_type(L, -1) == LUA_TSTRING) {
+          v = lua_tolstring(L, -1, &vn);
+        } else {
+          /* Numbers are formatted here rather than by lua_tolstring, which
+           * allocates (and so can raise) -- a raise mid-encode would leak o.p.
+           * Same text Lua produces: integers plainly, floats as %.14g. */
+          if (lua_isinteger(L, -1)) snprintf(num, sizeof(num), "%lld", (long long)lua_tointeger(L, -1));
+          else {
+            snprintf(num, sizeof(num), "%.14g", (double)lua_tonumber(L, -1));
+            if (!strpbrk(num, ".eEn")) strcat(num, ".0");   /* Lua writes 1.0, not 1 (inf/nan untouched) */
+          }
+          v = num; vn = strlen(num);
+        }
         mp_str(&o, k, kn);
         mp_str(&o, v, vn);
-        lua_pop(L, 1);
       }
       lua_pop(L, 1);
     }
   }
-  luaL_pushresult(&o.b);
+  BOG_STACK_EXPECT(L, 0);
+  if (o.oom) {
+    free(o.p);
+    return luaL_error(L, "station: out of memory encoding a request");
+  }
+  lua_pushlstring(L, o.p ? o.p : "", o.n);
+  free(o.p);
   return 1;
 }
 

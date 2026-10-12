@@ -6,6 +6,7 @@
 #include "uv.h"
 #include "sqlite3.h"
 #include "jwriter.h"
+#include "bogtsan.h"   /* the semaphore hand-offs below, made visible to TSan */
 
 /* ---- why there are no atomics here ----------------------------------------
  * This is a bounded SPSC buffer, and the two counting semaphores provide all
@@ -71,6 +72,7 @@ int jwriter_push(const jw_rec *rec) {
     g_stalls++;
     uv_sem_wait(&g_space);
   }
+  BOG_TSAN_ACQUIRE(&g_space);
 
   g_slots[g_head & JW_MASK] = *rec; /* ownership of topic/payload moves here */
   g_head++;
@@ -78,6 +80,7 @@ int jwriter_push(const jw_rec *rec) {
    * `pushed` and `written` permanently disagree by however many flushes have
    * happened, which is exactly the sort of counter nobody can then trust. */
   if (rec->kind == JW_INSERT || rec->kind == JW_PROCESSED) g_pushed++;
+  BOG_TSAN_RELEASE(&g_items);
   uv_sem_post(&g_items); /* publishes the slot write to the consumer */
   return 0;
 }
@@ -97,6 +100,7 @@ static void rec_free(jw_rec *r) {
 static void drain_batch(int *saw_stop, int *saw_flush) {
   uint32_t n = 1; /* the caller already consumed one from g_items */
   while (n < JW_BATCH && uv_sem_trywait(&g_items) == 0) n++;
+  BOG_TSAN_ACQUIRE(&g_items);
 
   sqlite3_stmt *ins = NULL, *upd = NULL;
   if (g_wdb) {
@@ -140,6 +144,7 @@ static void drain_batch(int *saw_stop, int *saw_flush) {
 
     rec_free(r);
     g_tail++;
+    BOG_TSAN_RELEASE(&g_space);
     uv_sem_post(&g_space); /* the slot is reusable */
   }
 
@@ -166,9 +171,10 @@ static void writer_main(void *arg) {
    * it is what lets the whole thing avoid atomics. */
   for (;;) {
     uv_sem_wait(&g_items);
+    BOG_TSAN_ACQUIRE(&g_items);
     int stop = 0, flush = 0;
     drain_batch(&stop, &flush);
-    if (flush) uv_sem_post(&g_flush_done);
+    if (flush) { BOG_TSAN_RELEASE(&g_flush_done); uv_sem_post(&g_flush_done); }
     if (stop) break;
   }
 
@@ -235,6 +241,7 @@ void jwriter_flush(void) {
    * durable" -- with no cross-thread counters to reason about. */
   if (push_control(JW_FLUSH) != 0) return;
   uv_sem_wait(&g_flush_done);
+  BOG_TSAN_ACQUIRE(&g_flush_done);
 }
 
 void jwriter_stop(void) {

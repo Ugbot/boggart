@@ -58,9 +58,56 @@ end
 
 -- ---- default tools ---------------------------------------------------------
 
+-- Views stay open across reads of the same file (paging through a big log
+-- re-indexes nothing): keyed by path, valid while size and mtime match.
+local view_cache, view_order = {}, {}
+local function cached_view(path, size, mtime)
+  local c = view_cache[path]
+  if c and c.size == size and c.mtime == mtime then return c.v end
+  if c then pcall(c.v.close, c.v); view_cache[path] = nil end
+  local v = sys.view(path)
+  if not v then return nil end
+  view_cache[path] = { v = v, size = size, mtime = mtime }
+  view_order[#view_order + 1] = path
+  if #view_order > 4 then
+    local old = table.remove(view_order, 1)
+    local oc = view_cache[old]
+    if oc and old ~= path then pcall(oc.v.close, oc.v); view_cache[old] = nil end
+  end
+  return v
+end
+
 local function tool_read(a)
   local path = a.path
   if type(path) ~= "string" then return M.err(M.ERR.validation, "read requires 'path'") end
+  -- Size FIRST (BOG-24): a whole-file read of something huge is refused before
+  -- a byte is read, and a range of a big file goes through a lazy view
+  -- (src/lview.c) that reads only the lines asked for.
+  local kind, mtime, size = sys.stat(path)
+  if kind == "file" and sys.view and not a.whole then
+    local okv, out = pcall(function()
+      local v = cached_view(path, size, mtime)
+      if not v then return nil end
+      local start = math.max(1, math.floor(tonumber(a.start_line) or 1))
+      local maxl = math.max(1, math.floor(tonumber(a.max_lines) or 120))
+      local got = v:lines(start, start + maxl - 1)
+      local n, complete = v:count()
+      if not complete and #got == maxl then v:line(start + maxl) end   -- know whether more follows
+      n, complete = v:count()
+      -- the same arithmetic the whole-file path always used, when the count is known
+      local last = complete and math.min(n, start + maxl - 1) or (start + #got - 1)
+      local out = {}
+      for i, line in ipairs(got) do out[i] = string.format("%d\t%s", start + i - 1, line) end
+      local total = complete and tostring(n) or (">=" .. n .. " (still indexing)")
+      local header = string.format("%s lines %d-%d of %s", path, start, last, total)
+      if (not complete) or last < n then header = header .. string.format(" (continue_offset=%d)", last + 1) end
+      return header .. "\n" .. table.concat(out, "\n")
+    end)
+    if okv and out then return out end
+  end
+  if kind == "file" and a.whole and (size or 0) > 16 * 1024 * 1024 then
+    return M.err(M.ERR.too_large, "file too large (>16MiB) to read whole: read a range (start_line, max_lines)")
+  end
   local data, err = util.read_file(path)
   if not data then return M.err(M.ERR.capability, "cannot read " .. path .. ": " .. tostring(err)) end
   if #data > 16 * 1024 * 1024 then return M.err(M.ERR.too_large, "file too large (>16MiB)") end

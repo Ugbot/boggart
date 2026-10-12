@@ -231,4 +231,15 @@ function json.decode(s)
   return v
 end
 
+-- The C codec (src/ljson.c, BOG-12): same output byte for byte, 10x+ faster
+-- on transcripts. The Lua functions above stay as the fallback (a build without
+-- it, or BOGGART_JSON=lua) and as the oracle tests/json_c.lua checks C against.
+json.lua_encode, json.lua_decode = json.encode, json.decode
+local okc, c = pcall(require, "json_c")
+if okc and type(c) == "table" and c.encode and os.getenv("BOGGART_JSON") ~= "lua" then
+  c.setup(json.null, json.array)
+  json.encode, json.decode = c.encode, c.decode
+  json.c = c
+end
+
 return json

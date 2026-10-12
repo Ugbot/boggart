@@ -15,6 +15,8 @@ table.insert(package.searchers, function(name)
 end)
 
 local strict = require("strict")
+-- sys.view(path): a lazy view of a file of any size (src/lview.c, BOG-23)
+if package.loaded.fileview and sys then sys.view = package.loaded.fileview.open end
 
 -- ---- app context ----------------------------------------------------------
 -- Declared as a real global (strict-friendly) so every module can reach it.
@@ -769,6 +771,10 @@ local function handle_command(line)
         napprove > 0 and string.format(", %d awaiting approval", napprove) or ""))
       for _, line in ipairs(out) do io.write(line, "\n") end
     end
+  elseif cmd == "perf" then
+    -- How long the shared event loop is being held, by what, and memory
+    -- (lua/looplag.lua): the numbers every perf change is judged by.
+    io.write(require("looplag").report(), "\n")
   elseif cmd == "kpis" then
     -- The reliability scoreboard for the active run: computed from the telemetry
     -- records, so "how good was that" is a number, not a vibe.
@@ -807,6 +813,23 @@ local function handle_command(line)
       if h then io.write("tracing " .. pat .. " -- /trace off to stop\n")
       else io.write("trace: " .. tostring(err) .. "\n") end
     end
+  elseif cmd == "tracker" then
+    -- The built-in tracker, drawn for reading (lua/tracker_view.lua):
+    -- /tracker, /tracker <PROJECT> [done|tree], /tracker <KEY-1>,
+    -- /tracker backend native|station, /tracker import [path].
+    local w = 80
+    local okt, tw = pcall(function() return rawget(_G, "term") and term.size and term.size() end)
+    if okt and tonumber(tw) then w = math.max(40, math.min(tonumber(tw), 120)) end
+    local okv, out = pcall(require("tracker_view").command, rest, w)
+    io.write(okv and out or ("tracker: " .. tostring(out)), "\n")
+  elseif cmd == "story" then
+    -- The story module (lua/story/): /story, /story chapters [book],
+    -- /story <noun> <action> key=value ... (any `story` tool call).
+    local w = 80
+    local okt, tw = pcall(function() return rawget(_G, "term") and term.size and term.size() end)
+    if okt and tonumber(tw) then w = math.max(40, math.min(tonumber(tw), 120)) end
+    local okv, out = pcall(function() return require("story").command(rest, w) end)
+    io.write(okv and out or ("story: " .. tostring(out)), "\n")
   elseif cmd == "station" then
     -- LLM Station over ZMQ (lua/stationlink.lua): /station shows the link;
     -- start|stop|restart manage this workspace's daemon; autostart on|off
@@ -854,6 +877,12 @@ local function handle_command(line)
       local v, e = jd.set_backend(a)
       io.write(v and (jd.describe() .. "\n") or ("judge: " .. e .. "\n"))
     end
+  elseif cmd == "ladder" then
+    -- The tier ladder (lua/ladder.lua): which decision sites may be answered
+    -- below the chat model. Every site is off until switched on.
+    io.write(bog.ladder.command(rest), "\n")
+  elseif cmd == "harden" then
+    io.write(bog.harden.command(rest), "\n")
   elseif cmd == "fork" then
     -- Branch the active session: a new session seeded with a copy of this one's
     -- transcript, so you can explore a divergent path without disturbing the
@@ -1396,10 +1425,13 @@ bog.first_run = (bog.store.state and bog.store.state.first_run) or false
 
 -- The welcome, on a new install only: store.state.first_run is true
 -- exactly when this start created the database. Not in eval (tests) or
--- embedded (the studio draws its own), and on stderr so a piped one-shot run
--- still emits only the model's answer on stdout.
+-- embedded (the studio draws its own), nor for the scripted subcommands
+-- (tracker, models): a CI runner is ALWAYS a new install, and "point it at a
+-- model" in every job log is noise. On stderr so a piped one-shot run still
+-- emits only the model's answer on stdout.
 if bog.store.state and bog.store.state.first_run
-   and bog.mode ~= "eval" and bog.mode ~= "embedded" then
+   and bog.mode ~= "eval" and bog.mode ~= "embedded"
+   and bog.mode ~= "tracker" and bog.mode ~= "story" and bog.mode ~= "models" then
   io.stderr:write(bog.lifecycle.welcome(), "\n")
 end
 
@@ -1429,6 +1461,17 @@ bog.station = require("stationlink") -- ZMQ transport policy; dormant unless bui
 bog.gestalt = require("gestalt") -- data plane for graph/SQL; dormant unless up
 bog.typesafe = require("typesafe") -- System One typed judge; dormant without a key
 bog.judge = require("judge") -- decision router: simple choices to jev, else the utility model
+bog.ladder = require("ladder") -- tier ladder: code -> jev -> llm per decision site; every site opt-in
+require("toolroute").install() -- tool choice sites (tool.triage|narrow|force|skip) on the ladder
+bog.harden = require("harden") -- /harden: fold proven decisions into the code tier, roll back on disagreement
+require("ladder_sites").install() -- swarm.supervise, coding.verify, tracker.classify, story.judge
+bog.tracker = require("tracker_core") -- the built-in tracker (station-compatible `tracker` tool)
+-- The story module (lua/story/, pure Lua): optional -- if it fails to load,
+-- boggart runs without it and /story says why.
+do
+  local ok, m = pcall(require, "story")
+  bog.story = ok and m or nil
+end
 -- Eval skips MCP so tests do not spawn subprocesses. Embedded (studio)
 -- skips it here too: connect/handshake block the thread, and the window
 -- stays hidden until boot returns. Studio starts the same load after the
@@ -1507,6 +1550,9 @@ function bog.activate_agents()
   if swarm and swarm.attach then pcall(swarm.attach, bog.db) end
   pcall(bog.tools_swarm.register)
   pcall(bog.judge.register) -- the `judge` tool; routes per /judge
+  pcall(bog.tracker.register) -- the `tracker` tool; native or station per /tracker backend
+  pcall(function() require("looplag").start() end) -- loop-lag metrics for /perf
+  if bog.story then pcall(bog.story.register) end -- the `story` tool
   bog.thread.max_agents = tonumber(os.getenv("BOGGART_MAX_AGENTS")) or 16
   -- Arm the liveness watchdog for the whole runtime (idempotent).
   if bog.watchdog and bog.watchdog.start then pcall(bog.watchdog.start) end
@@ -1634,6 +1680,20 @@ elseif bog.mode == "serve" then
   control.stop()
   return 0
 
+elseif bog.mode == "tracker" then
+  -- `boggart tracker ...` (lua/tracker_cli.lua): exit 1 on an error, so a CI
+  -- step fails when the tracker says no.
+  local out, code = require("tracker_cli").run(boggart.args or {})
+  io.write(out or "", "\n")
+  io.stdout:flush()
+  os.exit(code or 0)
+elseif bog.mode == "story" then
+  -- `boggart story ...` (lua/story/cli.lua): exit 1 on an error.
+  local okc, out, code = pcall(function() return require("story").cli(boggart.args or {}) end)
+  if not okc then out, code = "story: the story module failed to load: " .. tostring(out), 1 end
+  io.write(out or "", "\n")
+  io.stdout:flush()
+  os.exit(code or 0)
 elseif bog.mode == "models" then
   -- `boggart models ...` -- the catalog, from the command line. The store is
   -- already open (and seeded) by this point, so every subcommand is a query or

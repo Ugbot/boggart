@@ -42,6 +42,9 @@ function M.turn(ctx, d) emit("span:turn", ctx, d) end
 function M.tool(ctx, d) emit("span:tool", ctx, d) end
 -- A permission decision at the moment it was made: { tool, policy, decision }.
 function M.decision(ctx, d) emit("decision", ctx, d) end
+-- One ladder decision (lua/ladder.lua): { site, tier, escalated, confidence, ms,
+-- tried, agree }. A separate kind so it never mixes with permission decisions.
+function M.ladder(ctx, d) emit("ladder", ctx, d) end
 -- An agent's exit-contract outcome: { delivered, verified, checker, reason, stop }.
 function M.agent_exit(ctx, d) emit("agent:exit", ctx, d) end
 
@@ -74,6 +77,7 @@ function M.kpis(run_id)
   local turns, tool_calls, out_tok, think_c, text_c = 0, 0, 0, 0, 0
   local in_tok, cache_read, cache_write = 0, 0, 0
   local decisions = { allow = 0, deny = 0, ask = 0 }
+  local ladder = {}
   for _, r in ipairs(rows) do
     local p = decode(r.payload)
     local a = ag(r.agent_id)
@@ -89,6 +93,15 @@ function M.kpis(run_id)
     elseif r.kind == "agent:exit" then
       a.delivered = p.delivered and true or false
       a.verified = p.verified
+    elseif r.kind == "ladder" then
+      local site = tostring(p.site or "?")
+      local l = ladder[site] or { n = 0, tiers = {}, escalated = 0, agree = 0, disagree = 0 }
+      ladder[site] = l
+      l.n = l.n + 1
+      local t = tostring(p.tier or "?")
+      l.tiers[t] = (l.tiers[t] or 0) + 1
+      if p.escalated then l.escalated = l.escalated + 1 end
+      if p.agree == true then l.agree = l.agree + 1 elseif p.agree == false then l.disagree = l.disagree + 1 end
     elseif r.kind == "decision" then
       local dec = p.decision or p.policy
       if decisions[dec] ~= nil then decisions[dec] = decisions[dec] + 1 end
@@ -119,6 +132,7 @@ function M.kpis(run_id)
     false_success = n_false,
     tokens_per_artifact = n_delivered > 0 and (out_tok / n_delivered) or nil,
     decisions = decisions,
+    ladder = ladder,
     per_agent = agents,
   }
 end

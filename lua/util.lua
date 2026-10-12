@@ -126,6 +126,15 @@ function M.to_valid_utf8(s)
   if n >= seg_start then out[#out + 1] = sub(s, seg_start, n) end
   return table.concat(out)
 end
+-- The C version (src/ljson.c) has the same rules; the Lua one above stays as
+-- the fallback and the oracle in tests/json_c.lua.
+M.lua_to_valid_utf8 = M.to_valid_utf8
+do
+  local okc, c = pcall(require, "json_c")
+  if okc and type(c) == "table" and c.to_valid_utf8 and os.getenv("BOGGART_JSON") ~= "lua" then
+    M.to_valid_utf8 = c.to_valid_utf8
+  end
+end
 
 -- File helpers ----------------------------------------------------------------
 function M.read_file(path)

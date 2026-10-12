@@ -51,7 +51,12 @@ function M.green(cmd)
   if not cmd then return true end
   local ok, out = M.run(cmd)
   if ok then return true end
-  return "verification failed (`" .. cmd .. "`):\n" .. out
+  local msg = "verification failed (`" .. cmd .. "`):\n" .. out
+  -- coding.verify on the tier ladder (opt-in): name the kind of failure so the
+  -- next step fits it. nil leaves the message exactly as it was.
+  local cls = bog and bog.ladder_sites and bog.ladder_sites.classify_failure(cmd, out)
+  if cls then msg = msg .. "\nfailure class: " .. cls end
+  return msg
 end
 
 return M

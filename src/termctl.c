@@ -146,6 +146,27 @@ static void on_signal(int sig) {
     raise(sig);
 }
 
+/* Crash signals CHAIN: put the tty back, then hand the original signal --
+ * siginfo and all, so the fault address survives -- to whatever handler was
+ * there before us (boggart's crash reporter, src/bogcrash.c), and only fall
+ * back to the default action when there was none. Replacing it outright
+ * meant a crash in the TUI produced no report at all (BOG-9). */
+static struct sigaction prev_crash[NSIG];
+static void on_crash_signal(int sig, siginfo_t *info, void *uctx) {
+    restore_tty();
+    struct sigaction *p = (sig > 0 && sig < NSIG) ? &prev_crash[sig] : NULL;
+    if (p && (p->sa_flags & SA_SIGINFO) && p->sa_sigaction) {
+        p->sa_sigaction(sig, info, uctx);
+        return;
+    }
+    if (p && !(p->sa_flags & SA_SIGINFO) && p->sa_handler != SIG_DFL && p->sa_handler != SIG_IGN && p->sa_handler) {
+        p->sa_handler(sig);
+        return;
+    }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
 static void install_signals(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -156,10 +177,18 @@ static void install_signals(void) {
     sa.sa_flags = 0;
     sigaction(SIGWINCH, &sa, NULL);
 
-    int fatal[] = { SIGINT, SIGTERM, SIGHUP, SIGQUIT,
-                    SIGSEGV, SIGBUS, SIGABRT, SIGFPE };
+    int fatal[] = { SIGINT, SIGTERM, SIGHUP, SIGQUIT };
     for (size_t i = 0; i < sizeof(fatal) / sizeof(fatal[0]); i++)
         sigaction(fatal[i], &sa, NULL);
+
+    struct sigaction cs;
+    memset(&cs, 0, sizeof(cs));
+    cs.sa_sigaction = on_crash_signal;
+    cs.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&cs.sa_mask);
+    int crash[] = { SIGSEGV, SIGBUS, SIGABRT, SIGFPE, SIGILL, SIGTRAP };
+    for (size_t i = 0; i < sizeof(crash) / sizeof(crash[0]); i++)
+        sigaction(crash[i], &cs, &prev_crash[crash[i]]);
 
     /* Never die from writing to a closed pipe; we handle short writes. */
     signal(SIGPIPE, SIG_IGN);

@@ -147,6 +147,39 @@ end
 -- no row, and first[] points it at its fold head's row. Every geometry
 -- question below has one answer instead of two code paths.
 function DocView:build_wrap()
+  -- A large-file view (BOG-25): one row per line, built LAZILY. The table form
+  -- below makes a row per line of the whole document -- for a 500 MB log, six
+  -- million rows and a decode of every line just to open it. Here rows[k] is
+  -- made (decoding only line k) when something asks for it, first[line] is the
+  -- line itself, and both lengths follow the background index as it grows.
+  -- Soft wrap is off for such a document: it would measure every line.
+  if self.doc.large then
+    self.wrapping = false
+    local lines = self.doc.lines
+    local cache, cached = {}, 0
+    local rows = setmetatable({}, {
+      __len = function() return #lines end,
+      __index = function(_, k)
+        if math.type(k) ~= "integer" or k < 1 or k > #lines then return nil end
+        local r = cache[k]
+        if r then return r end
+        r = { line = k, s = 1, e = #lines[k] + 1 }
+        if cached >= 50000 then cache, cached = {}, 0 end
+        cache[k] = r
+        cached = cached + 1
+        return r
+      end,
+    })
+    local first = setmetatable({}, {
+      __len = function() return #lines end,
+      __index = function(_, l)
+        if math.type(l) == "integer" and l >= 1 and l <= #lines then return l end
+      end,
+    })
+    self.wrap = { rows = rows, first = first, w = -1, rev = self.doc:get_change_id(),
+      fold_rev = folds.version(self.doc), wrapping = false }
+    return
+  end
   local rows, first = {}, {}
   local lines = self.doc.lines
   local hidden = folds.hidden(self.doc)

@@ -36,8 +36,31 @@
 #include "uv.h"
 #include "lua.h"
 #include "lauxlib.h"
+#include "bogassert.h"
 #include "bogpaths.h"
 #include "ldb.h"      /* boggart_db_handle: the providers table is the slot registry */
+
+/* One lock for all credential state (BOG-6). Sub-agents make HTTP requests on
+ * pool threads, and every request asks this file for its header -- while the
+ * main thread may be reloading the shared file or storing a key. The lock is
+ * recursive because entry points call one another (header -> provider), and
+ * it is NEVER held across a call into Lua that can raise: a Lua error longjmps
+ * past the unlock, so every l_* reads its arguments first, copies what it
+ * needs under the lock, unlocks, and only then pushes results. */
+static uv_mutex_t g_mu;
+static uv_once_t g_mu_once = UV_ONCE_INIT;
+static void mu_init(void) { uv_mutex_init_recursive(&g_mu); }
+#define AUTH_LOCK() do { uv_once(&g_mu_once, mu_init); uv_mutex_lock(&g_mu); } while (0)
+#define AUTH_UNLOCK() uv_mutex_unlock(&g_mu)
+
+/* Values handed to C callers (the header, the provider name) live in
+ * per-thread buffers: a static shared one could be overwritten by another
+ * thread between the return and the caller's copy. */
+#if defined(_MSC_VER)
+#define BOG_TLS __declspec(thread)
+#else
+#define BOG_TLS _Thread_local
+#endif
 
 #define AUTH_MAX 4096
 
@@ -128,14 +151,40 @@ static char *key_slot(const char *provider, int create) {
 
 /* The provider currently configured, environment included. */
 const char *boggart_auth_provider(void) {
-  static char p[AUTH_NAME_MAX];
+  static BOG_TLS char p[AUTH_NAME_MAX];
+  AUTH_LOCK();
   const char *base = getenv("ANTHROPIC_BASE_URL");
   if (!base || !*base) base = g_base_url;
   provider_of(base, p, sizeof(p));
+  AUTH_UNLOCK();
   return p;
 }
 static char g_path[4096];
 static int g_loaded = 0;
+/* What the file looked like when we last read it. Several boggart processes
+ * share one credential file (a TUI left open for days, the studio, a CLI run),
+ * and each used to read it ONCE and then rewrite it whole from that copy on any
+ * change -- so a /model switch in a days-old TUI silently erased a key added
+ * in the studio since ("the studio is missing my keys again"). Now a read
+ * reloads whenever the file changed, and a write re-reads first. */
+static double g_file_mtime = -1;
+static int64_t g_file_size = -1;
+
+static void auth_reset(void) {
+  memset(g_keys, 0, sizeof(g_keys));
+  g_base_url[0] = g_model[0] = g_wire[0] = '\0';
+}
+
+/* -> 1 and the file's mtime (with sub-second part) and size, or 0 if absent */
+static int auth_stat(double *mtime, int64_t *size) {
+  uv_fs_t req;
+  int rc = uv_fs_stat(NULL, &req, g_path, NULL);
+  if (rc < 0) { uv_fs_req_cleanup(&req); return 0; }
+  *mtime = (double)req.statbuf.st_mtim.tv_sec + (double)req.statbuf.st_mtim.tv_nsec / 1e9;
+  *size = (int64_t)req.statbuf.st_size;
+  uv_fs_req_cleanup(&req);
+  return 1;
+}
 
 /* The credential file sits in boggart's data directory, wherever the shared
  * policy in bogpaths.h puts it -- so BOGGART_HOME moves the key along with the
@@ -164,9 +213,17 @@ static void set_field(const char *k, const char *v) {
 }
 
 static void auth_load(void) {
-  if (g_loaded) return;
-  g_loaded = 1;
   auth_path();
+  BOG_ASSERT(g_path[0] != '\0', "the credential path was never resolved");
+  double mt = -1; int64_t sz = -1;
+  int exists = auth_stat(&mt, &sz);
+  /* Unchanged since we read it: the copy in memory is current. */
+  if (g_loaded && mt == g_file_mtime && sz == g_file_size) return;
+  g_loaded = 1;
+  g_file_mtime = exists ? mt : -1;
+  g_file_size = exists ? sz : -1;
+  auth_reset();
+  if (!exists) return;
   FILE *f = fopen(g_path, "rb");
   if (!f) return;
   char line[AUTH_MAX * 2];
@@ -194,7 +251,11 @@ static void auth_save(void) {
      * that may both be missing on a new account. */
     boggart_mkdir_p(dir);
   }
-  FILE *f = fopen(g_path, "wb");
+  /* Write a sibling temp file and rename it over the real one: a reader in
+   * another process sees the old file or the new one, never half of either. */
+  char tmp[4200];
+  snprintf(tmp, sizeof(tmp), "%s.tmp.%d", g_path, (int)uv_os_getpid());
+  FILE *f = fopen(tmp, "wb");
   if (!f) return;
   for (int i = 0; i < AUTH_MAX_PROVIDERS; i++) {
     if (g_keys[i].name[0] && g_keys[i].value[0]) {
@@ -205,11 +266,16 @@ static void auth_save(void) {
   if (g_model[0])    fprintf(f, "model=%s\n", g_model);
   if (g_wire[0])     fprintf(f, "wire=%s\n", g_wire);
   fclose(f);
-  /* Owner-only, always -- the write above may have created it with the
-   * process umask, which is commonly 0644. */
+  /* Owner-only, always -- before the rename, so the key is never readable by
+   * others even for an instant (the process umask is commonly 0644). */
   uv_fs_t req;
-  uv_fs_chmod(NULL, &req, g_path, 0600, NULL);
+  uv_fs_chmod(NULL, &req, tmp, 0600, NULL);
   uv_fs_req_cleanup(&req);
+  if (uv_fs_rename(NULL, &req, tmp, g_path, NULL) < 0) { uv_fs_req_cleanup(&req); remove(tmp); return; }
+  uv_fs_req_cleanup(&req);
+  /* Our own write is not "someone else changed it". */
+  double mt; int64_t sz;
+  if (auth_stat(&mt, &sz)) { g_file_mtime = mt; g_file_size = sz; }
 }
 
 /* ---- used by lhttp.c ------------------------------------------------------ */
@@ -312,14 +378,20 @@ static int l_slot_allowed(lua_State *L) {
   const char *slot = luaL_optstring(L, 2, NULL);
   char host[256];
   host_of(url, host, sizeof(host));
-  lua_pushboolean(L, slot_registered_for_host(slot, host));
+  AUTH_LOCK();
+  int allowed = slot_registered_for_host(slot, host);
+  AUTH_UNLOCK();
+  lua_pushboolean(L, allowed);
   return 1;
 }
 
 /* auth.bind_store(db) -- hand C the store so the registry can be consulted.
  * Called once from lua/store.lua on open. */
 static int l_bind_store(lua_State *L) {
-  g_store = lua_isnoneornil(L, 1) ? NULL : boggart_db_handle(L, 1);
+  sqlite3 *h = lua_isnoneornil(L, 1) ? NULL : boggart_db_handle(L, 1);
+  AUTH_LOCK();
+  g_store = h;
+  AUTH_UNLOCK();
   lua_pushboolean(L, 1);
   return 1;
 }
@@ -338,8 +410,18 @@ static int l_bind_store(lua_State *L) {
  * `url` and `wire` are the request's own; either may be NULL, in which case the
  * globally configured value stands in. The key itself never crosses into Lua:
  * Lua names a destination, C picks the credential for it. */
+static const char *header_for_locked(const char *url, const char *wire,
+                                     const char *slot, const char *style);
 const char *boggart_auth_header_for(const char *url, const char *wire,
                                     const char *slot, const char *style) {
+  AUTH_LOCK();
+  const char *h = header_for_locked(url, wire, slot, style);
+  AUTH_UNLOCK();
+  return h;
+}
+
+static const char *header_for_locked(const char *url, const char *wire,
+                                     const char *slot, const char *style) {
   auth_load();
   char pbuf[AUTH_NAME_MAX];
   const char *provider;
@@ -360,7 +442,7 @@ const char *boggart_auth_header_for(const char *url, const char *wire,
   const char *stored = key_slot(provider, 0);
   const char *key = env ? env : ((stored && stored[0]) ? stored : NULL);
   if (!key) return NULL;
-  static char hdr[AUTH_MAX + 32];
+  static BOG_TLS char hdr[AUTH_MAX + 32];
   /* OpenAI-shaped wires (chat-completions and the Responses API) authenticate
    * with a Bearer token; Anthropic uses x-api-key. A wire named by the request
    * wins; otherwise the env override, then the stored value -- matching
@@ -398,29 +480,34 @@ const char *boggart_auth_header(void) {
 static int l_set(lua_State *L) {
   const char *k = luaL_checkstring(L, 1);
   const char *v = luaL_checkstring(L, 2);
+  /* auth.set("api_key", v, provider): store a key for a provider you are not
+   * currently pointed at, which a catalog of a dozen vendors makes routine.
+   * Without the third argument this is exactly as it was: the current one. */
+  const char *slot = luaL_optstring(L, 3, NULL);
   if (strcmp(k, "api_key") != 0 && strcmp(k, "base_url") != 0 && strcmp(k, "model") != 0
       && strcmp(k, "wire") != 0) {
     lua_pushnil(L);
     lua_pushfstring(L, "unknown setting: %s", k);
     return 2;
   }
+  int full = 0;
+  AUTH_LOCK();
+  g_loaded = 0;   /* a write starts from the file as it is NOW, not as we last saw it */
   auth_load();
-  /* auth.set("api_key", v, provider): store a key for a provider you are not
-   * currently pointed at, which a catalog of a dozen vendors makes routine.
-   * Without the third argument this is exactly as it was: the current one. */
-  const char *slot = luaL_optstring(L, 3, NULL);
   if (slot && *slot && strcmp(k, "api_key") == 0) {
     char *dst = key_slot(slot, 1);
-    if (!dst) {
-      lua_pushnil(L);
-      lua_pushliteral(L, "no free credential slot");
-      return 2;
-    }
-    snprintf(dst, AUTH_MAX, "%s", v);
+    if (!dst) full = 1;
+    else snprintf(dst, AUTH_MAX, "%s", v);
   } else {
     set_field(k, v);
   }
-  auth_save();
+  if (!full) auth_save();
+  AUTH_UNLOCK();
+  if (full) {
+    lua_pushnil(L);
+    lua_pushliteral(L, "no free credential slot");
+    return 2;
+  }
   lua_pushboolean(L, 1);
   return 1;
 }
@@ -428,6 +515,8 @@ static int l_set(lua_State *L) {
 /* auth.clear(kind?) -> true. No argument clears everything. */
 static int l_clear(lua_State *L) {
   const char *k = luaL_optstring(L, 1, NULL);
+  AUTH_LOCK();
+  g_loaded = 0;   /* as l_set: never write back a stale copy */
   auth_load();
   if (!k) {
     /* Everything, every provider. */
@@ -438,6 +527,7 @@ static int l_clear(lua_State *L) {
   }
   else set_field(k, "");
   auth_save();
+  AUTH_UNLOCK();
   lua_pushboolean(L, 1);
   return 1;
 }
@@ -445,7 +535,15 @@ static int l_clear(lua_State *L) {
 /* auth.has_key() -> bool. Whether a key exists, from either source. Lua needs
  * this to decide between "use the key" and "fall back to the CLI"; it does not
  * need the key itself. */
+/* Load (or reload) under the lock, so a default derived from the configured
+ * endpoint below reflects the file as it is now. */
+static void ensure_loaded(void) { AUTH_LOCK(); auth_load(); AUTH_UNLOCK(); }
+
 static int l_has_key(lua_State *L) {
+  ensure_loaded();
+  char prov[AUTH_NAME_MAX];
+  snprintf(prov, sizeof(prov), "%s", luaL_optstring(L, 1, boggart_auth_provider()));
+  AUTH_LOCK();
   auth_load();
   /* auth.has_key([provider]).
    *
@@ -456,32 +554,37 @@ static int l_has_key(lua_State *L) {
    * of a dozen providers needs in order to say which are actually usable.
    * Without it this silently answered for the CURRENT provider whatever was
    * asked, so "is the xai key set?" was really "is the anthropic key set?". */
-  const char *provider = luaL_optstring(L, 1, boggart_auth_provider());
-  const char *stored = key_slot(provider, 0);
-  lua_pushboolean(L, env_key_for(provider) != NULL || (stored && stored[0]));
+  const char *stored = key_slot(prov, 0);
+  int has = env_key_for(prov) != NULL || (stored && stored[0]);
+  AUTH_UNLOCK();
+  lua_pushboolean(L, has);
   return 1;
 }
 
 /* auth.masked() -> string. For display only; never the value. */
 static int l_masked(lua_State *L) {
-  auth_load();
   /* auth.masked([provider]) -> mask, source, provider. Defaults to the
    * provider in force, so a settings screen showing "the key" shows the one
    * that would actually be sent. */
-  const char *provider = luaL_optstring(L, 1, boggart_auth_provider());
+  ensure_loaded();
+  char provider[AUTH_NAME_MAX];
+  snprintf(provider, sizeof(provider), "%s", luaL_optstring(L, 1, boggart_auth_provider()));
+  char out[64];
+  AUTH_LOCK();
+  auth_load();
   const char *env = env_key_for(provider);
   const char *stored = key_slot(provider, 0);
   const char *key = env ? env : (stored ? stored : "");
   size_t n = strlen(key);
+  if (n > 12) snprintf(out, sizeof(out), "%.6s******%s", key, key + n - 4);
+  else if (n > 0) snprintf(out, sizeof(out), "************");
+  AUTH_UNLOCK();
   if (n == 0) {
     lua_pushstring(L, "(unset)");
     lua_pushnil(L);
     lua_pushstring(L, provider);
     return 3;
   }
-  char out[64];
-  if (n <= 12) snprintf(out, sizeof(out), "************");
-  else snprintf(out, sizeof(out), "%.6s******%s", key, key + n - 4);
   lua_pushstring(L, out);
   /* Name the variable, not just "environment": knowing WHICH one is winning is
    * the whole value of the answer when it is the wrong one. */
@@ -501,43 +604,45 @@ static int l_masked(lua_State *L) {
 
 /* auth.provider() -> the provider name the current endpoint resolves to. */
 static int l_provider(lua_State *L) {
+  char p[AUTH_NAME_MAX];
+  AUTH_LOCK();
   auth_load();
-  lua_pushstring(L, boggart_auth_provider());
+  snprintf(p, sizeof(p), "%s", boggart_auth_provider());
+  AUTH_UNLOCK();
+  lua_pushstring(L, p);
+  return 1;
+}
+
+/* A configured value copied out under the lock (env override first). */
+static int push_setting(lua_State *L, const char *envname, const char *field) {
+  static BOG_TLS char v[AUTH_MAX];
+  const char *env = envname ? getenv(envname) : NULL;
+  if (env && *env) { lua_pushstring(L, env); return 1; }
+  AUTH_LOCK();
+  auth_load();
+  snprintf(v, sizeof(v), "%s", field);
+  AUTH_UNLOCK();
+  if (v[0]) lua_pushstring(L, v); else lua_pushnil(L);
   return 1;
 }
 
 /* base_url and model are configuration, not secrets: readable. Environment
  * wins over the stored value, so a one-off override needs no undo. */
-static int l_base_url(lua_State *L) {
-  auth_load();
-  const char *env = getenv("ANTHROPIC_BASE_URL");
-  if (env && *env) lua_pushstring(L, env);
-  else if (g_base_url[0]) lua_pushstring(L, g_base_url);
-  else lua_pushnil(L);
-  return 1;
-}
+static int l_base_url(lua_State *L) { return push_setting(L, "ANTHROPIC_BASE_URL", g_base_url); }
 
-static int l_model(lua_State *L) {
-  auth_load();
-  if (g_model[0]) lua_pushstring(L, g_model);
-  else lua_pushnil(L);
-  return 1;
-}
+static int l_model(lua_State *L) { return push_setting(L, NULL, g_model); }
 
 /* auth.wire() -> "openai" | "anthropic" | nil. The wire protocol the endpoint
  * speaks; ANTHROPIC_WIRE overrides the stored value for a one-off. */
-static int l_wire(lua_State *L) {
-  auth_load();
-  const char *env = getenv("ANTHROPIC_WIRE");
-  if (env && *env) lua_pushstring(L, env);
-  else if (g_wire[0]) lua_pushstring(L, g_wire);
-  else lua_pushnil(L);
-  return 1;
-}
+static int l_wire(lua_State *L) { return push_setting(L, "ANTHROPIC_WIRE", g_wire); }
 
 static int l_path(lua_State *L) {
+  char p[4096];
+  AUTH_LOCK();
   auth_path();
-  lua_pushstring(L, g_path);
+  snprintf(p, sizeof(p), "%s", g_path);
+  AUTH_UNLOCK();
+  lua_pushstring(L, p);
   return 1;
 }
 

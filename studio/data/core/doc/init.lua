@@ -66,7 +66,52 @@ function Doc:reset_syntax()
 end
 
 
+-- Large files (BOG-25): above config.large_file_mb a document is a READ-ONLY
+-- view over src/lview.c instead of a table of every line. Opening a 500 MB
+-- log used to read and split all of it on the UI thread; now it maps the file,
+-- indexes lines in the background, and decodes only the lines on screen (an
+-- LRU of decoded lines bounds the memory). Editing is refused with a message:
+-- a piece table for editing huge files is a later step.
+local function large_threshold() return (config.large_file_mb or 8) * 1048576 end
+
+function Doc:load_large(filename, view)
+  self:reset()
+  self.filename = filename
+  self.large = view
+  local cache, cached, CAP = {}, 0, 20000
+  local doc = self
+  self.lines = setmetatable({}, {
+    __index = function(_, i)
+      if math.type(i) ~= "integer" then return nil end
+      local s = cache[i]
+      if s then return s end
+      local l = view:line(i)
+      if not l then return nil end
+      if l:byte(-1) == 13 then l = l:sub(1, -2); doc.crlf = true end
+      s = l .. "\n"
+      if cached >= CAP then cache, cached = {}, 0 end
+      cache[i] = s
+      cached = cached + 1
+      return s
+    end,
+    __len = function() return math.max(1, (view:count())) end,
+    __newindex = function() error("read-only: large file") end,
+  })
+  self.syntax = syntax.get("")   -- plain: no tokenizing of a huge file
+  self.highlighter:reset()
+  marks.attach(self)
+end
+
 function Doc:load(filename)
+  local probe = io.open(filename, "rb")
+  local size = probe and probe:seek("end") or 0
+  if probe then probe:close() end
+  local fv = package.loaded.fileview
+  if size >= large_threshold() and fv then
+    local v = fv.open(filename)
+    if v then return self:load_large(filename, v) end
+  end
+  self.large = nil
   local fp = assert( io.open(filename, "rb") )
   self:reset()
   self.filename = filename
@@ -111,7 +156,17 @@ function Doc:reload()
 end
 
 
+local function refuse_large(doc)
+  if not doc.large then return false end
+  local core = require("core")
+  if core and core.error then
+    core.error("%s is open read-only (larger than %d MB)", doc.filename or "this file", config.large_file_mb or 8)
+  end
+  return true
+end
+
 function Doc:save(filename)
+  if refuse_large(self) then return end
   filename = filename or assert(self.filename, "no filename set to default to")
   local fp = assert( io.open(filename, "wb") )
   for _, line in ipairs(self.lines) do
@@ -289,6 +344,7 @@ end
 
 
 function Doc:raw_insert(line, col, text, undo_stack, time)
+  if refuse_large(self) then return end
   -- split text into lines and merge with line at insertion point
   local lines = split_lines(text)
   local before = self.lines[line]:sub(1, col - 1)
@@ -320,6 +376,7 @@ end
 
 
 function Doc:raw_remove(line1, col1, line2, col2, undo_stack, time)
+  if refuse_large(self) then return end
   -- push undo
   local text = self:get_text(line1, col1, line2, col2)
   push_undo(undo_stack, time, "selection", self:get_selection())

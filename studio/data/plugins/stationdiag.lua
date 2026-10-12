@@ -67,7 +67,7 @@ core.add_thread(function()
       if state[doc] ~= rev and (stn.up() or stn.ensure()) then
         -- Debounce: fire only after the buffer holds still.
         coroutine.yield(0.6)
-        if doc:get_change_id() == rev then
+        if doc:get_change_id() == rev and not doc.large then   -- a large view is not sent whole (BOG-25)
           state[doc] = rev
           local abs = system.absolute_path(doc.filename) or doc.filename
           local okr, h = pcall(function()

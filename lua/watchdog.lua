@@ -29,12 +29,32 @@ function M.tick()
       -- A tool ran since last look: real progress. Reset the baseline + arming.
       rec._wd_turns, rec._wd_tools, rec._wd_nudged = turns, tools, false
     elseif (turns - base_t) >= M.stall_turns and out >= M.min_output and not rec._wd_nudged then
-      -- Stalled: many turns, no new tool call, tokens climbing. Nudge once.
+      -- Stalled: many turns, no new tool call, tokens climbing. Classify first
+      -- (swarm.supervise on the tier ladder, opt-in; nil keeps the old reading
+      -- of "stuck"), then nudge accordingly -- once.
+      local status = bog.ladder_sites and bog.ladder_sites.supervise(rec) or "stuck"
+      rec._wd_status = status
+      if status == "progressing" or status == "done" then
+        -- not a stall after all: re-baseline instead of nagging a working agent
+        rec._wd_turns, rec._wd_tools = turns, tools
+        goto continue
+      end
       rec._wd_nudged = true
       s.inbox = s.inbox or {}
-      s.inbox[#s.inbox + 1] =
-        "You have taken several turns without calling a tool. Stop planning and ACT "
-        .. "now: call a tool to make progress, or say plainly that you are blocked and why."
+      if status == "needs_human" then
+        s.inbox[#s.inbox + 1] = "You appear blocked on something only a person can supply. "
+          .. "Say plainly what you need and stop; do not keep planning."
+        if bog.events and bog.events.emit then
+          pcall(bog.events.emit, "agent:needs_human", { id = id })
+        end
+      elseif status == "looping" then
+        s.inbox[#s.inbox + 1] = "You are repeating yourself. Stop and change approach: "
+          .. "try something you have not tried, or say plainly that you are blocked and why."
+      else
+        s.inbox[#s.inbox + 1] =
+          "You have taken several turns without calling a tool. Stop planning and ACT "
+          .. "now: call a tool to make progress, or say plainly that you are blocked and why."
+      end
       if bog.log then
         bog.log(string.format("watchdog: nudged stalled agent %d (%d turns, no tool call)",
           id, turns - base_t))
@@ -44,6 +64,7 @@ function M.tick()
           { tool = "(watchdog)", decision = "nudge" })
       end
     end
+    ::continue::
   end
 end
 

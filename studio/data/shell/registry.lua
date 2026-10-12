@@ -163,6 +163,11 @@ M.tree = {
     { "Write manifest",      "project:manifest" },
     { "Check manifest",      "project:check" },
     M.SEP,
+    -- The built-in tracker (core/trackerview.lua over lua/tracker_view.lua).
+    { "Tracker",                 "tracker:open" },
+    { "Tracker: switch project\u{2026}", "tracker:pick-project" },
+    { "Tracker: list / board",   "tracker:toggle-board" },
+    M.SEP,
     -- The control plane: boggart as a service you can talk to (src/lserve.c
     -- + lua/control.lua).
     { "Start control plane",   "service:start" },

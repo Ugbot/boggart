@@ -18,7 +18,10 @@ local keymap = require "core.keymap"
 local style = require "core.style"
 local marks = require "core.marks"
 
-local function doc_text(doc) return table.concat(doc.lines) end
+local function doc_text(doc)
+  if doc.large then error("this file is open read-only (too large to edit inline)") end
+  return table.concat(doc.lines)
+end
 
 -- Strip a surrounding code fence. Fences only, never whitespace: trimming
 -- would delete the first line's indent or a needed trailing newline. Accepts

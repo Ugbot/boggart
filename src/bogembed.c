@@ -30,6 +30,9 @@ int luaopen_boggart_git(lua_State *L);
 int luaopen_boggart_bus(lua_State *L);  /* src/lbus.c: pub/sub + work-queue fabric */
 int luaopen_boggart_voice(lua_State *L); /* src/lvoice.c: native voice input (opt-in) */
 int luaopen_boggart_station(lua_State *L); /* src/lstation.c: LLM Station ZMQ client (opt-in) */
+int luaopen_boggart_json(lua_State *L);
+int luaopen_boggart_hash(lua_State *L);
+int luaopen_boggart_fileview(lua_State *L); /* src/lview.c: lazy file views */    /* src/lhash.c: SHA-256 in C */    /* src/ljson.c: JSON + UTF-8 in C */
 int luaopen_boggart_typesafe(lua_State *L); /* src/ltypesafe.c: TypeSafe System One codec */
 int luaopen_boggart_serve(lua_State *L); /* src/lserve.c: the inbound control surface (HTTP+SSE) */
 int luaopen_luv(lua_State *L);
@@ -95,6 +98,9 @@ void boggart_open_libs(lua_State *L) {
   luaL_requiref(L, "bus", luaopen_boggart_bus, 0);     lua_setglobal(L, "bus");
   luaL_requiref(L, "serve", luaopen_boggart_serve, 0); lua_setglobal(L, "serve");
   luaL_requiref(L, "voice", luaopen_boggart_voice, 0); lua_setglobal(L, "voice");
+  luaL_requiref(L, "json_c", luaopen_boggart_json, 0); lua_pop(L, 1);
+  luaL_requiref(L, "hash_c", luaopen_boggart_hash, 0); lua_pop(L, 1);   /* src/lhash.c: sha256 */
+  luaL_requiref(L, "fileview", luaopen_boggart_fileview, 0); lua_pop(L, 1);   /* src/lview.c: lazy file views */
   luaL_requiref(L, "station", luaopen_boggart_station, 0); lua_setglobal(L, "station");
   luaL_requiref(L, "typesafe_core", luaopen_boggart_typesafe, 0); /* package.loaded name differs so require("typesafe") reaches lua/typesafe.lua */ lua_setglobal(L, "typesafe");
 

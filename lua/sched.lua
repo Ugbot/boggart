@@ -8,6 +8,7 @@
 --   coroutine.yield("proc", h)    -- blocked until a child process progresses
 --   (return)                      -- the agent finished
 local uv = require("uv")
+local looplag = require("looplag")
 local events = require("events")
 
 local M = {}
@@ -59,7 +60,12 @@ local function resume(a)
   -- to be lying around. Set around the resume only; nil between actors so
   -- work outside a turn has no false owner.
   if bog then bog.current_agent = a.id end
+  -- Time each resume: a run that holds the shared loop for long is recorded
+  -- with the agent that did it (lua/looplag.lua, /perf).
+  local t0 = uv.hrtime()
   local ok, kind, arg = coroutine.resume(a.co)
+  local held = (uv.hrtime() - t0) / 1e6
+  if held >= looplag.THRESHOLD_MS then looplag.note("agent " .. tostring(a.id), held) end
   current_id = nil
   if bog then bog.current_agent = nil end
   if not ok then

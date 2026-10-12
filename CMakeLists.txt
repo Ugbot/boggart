@@ -54,6 +54,46 @@ target_compile_options(boggart_warnings INTERFACE
   $<$<NOT:$<C_COMPILER_ID:MSVC>>:-Wno-unused-parameter>)
 
 add_library(boggart_quiet INTERFACE)
+
+# ---- sanitizers (BOG-10) --------------------------------------------------------
+# BOGGART_SANITIZER=none|address|undefined|address,undefined|thread, applied PER
+# TARGET by boggart_apply_sanitizer() -- never as a global flag (after Venus's
+# venus_apply_sanitizer: a global -fsanitize also instruments build-time tools,
+# which then crash mid-build). Use a separate build tree per sanitizer.
+set(BOGGART_SANITIZER "none" CACHE STRING "none, address, undefined, address,undefined or thread")
+set(BOG_SAN_FLAGS "")
+if(NOT BOGGART_SANITIZER STREQUAL "none")
+  if(MSVC)
+    if(NOT BOGGART_SANITIZER STREQUAL "address")
+      message(FATAL_ERROR "MSVC supports only BOGGART_SANITIZER=address")
+    endif()
+    set(BOG_SAN_FLAGS /fsanitize=address)
+  else()
+    if(NOT BOGGART_SANITIZER MATCHES "^(address|undefined|address,undefined|thread)$")
+      message(FATAL_ERROR "unknown BOGGART_SANITIZER '${BOGGART_SANITIZER}'")
+    endif()
+    if(BOGGART_SANITIZER MATCHES "thread" AND BOGGART_SANITIZER MATCHES "address")
+      message(FATAL_ERROR "thread and address sanitizers cannot be combined")
+    endif()
+    set(BOG_SAN_FLAGS -fsanitize=${BOGGART_SANITIZER} -fno-omit-frame-pointer -g)
+    if(BOGGART_SANITIZER MATCHES "undefined")
+      list(APPEND BOG_SAN_FLAGS -fno-sanitize-recover=undefined)   # UB fails the test, not a log line
+    endif()
+  endif()
+  message(STATUS "boggart: sanitizer ${BOGGART_SANITIZER} on boggart's own targets")
+endif()
+function(boggart_apply_sanitizer)
+  if(BOG_SAN_FLAGS)
+    foreach(t ${ARGN})
+      if(TARGET ${t})
+        target_compile_options(${t} PRIVATE ${BOG_SAN_FLAGS})
+        if(NOT MSVC)
+          target_link_options(${t} PRIVATE ${BOG_SAN_FLAGS})
+        endif()
+      endif()
+    endforeach()
+  endif()
+endfunction()
 target_compile_options(boggart_quiet INTERFACE
   $<$<C_COMPILER_ID:MSVC>:/w>
   $<$<NOT:$<C_COMPILER_ID:MSVC>>:-w>)
@@ -477,6 +517,10 @@ target_link_libraries(mining_parser_vendor PRIVATE boggart_quiet)
 # overlapped-I/O handling, so the shim and its glob are gone.)
 add_executable(boggart
   src/boggart.c
+  src/bogcrash.c
+  src/ljson.c
+  src/lhash.c
+  src/lview.c
   src/lhttp.c
   src/lsys.c
   src/ldb.c
@@ -517,13 +561,20 @@ endif()
 
 # Keep ./boggart at the repo root, as the README documents. The per-config
 # properties matter only for multi-config generators (Visual Studio, Xcode),
-# which would otherwise append a Debug/ or Release/ subdirectory.
+# which would otherwise append a Debug/ or Release/ subdirectory. A SANITIZER
+# build writes into its own build tree instead: an instrumented binary must
+# never replace the one people run.
+if(BOGGART_SANITIZER STREQUAL "none")
+  set(BOGGART_OUT_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+else()
+  set(BOGGART_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR})
+endif()
 set_target_properties(boggart PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY                ${CMAKE_CURRENT_SOURCE_DIR}
-  RUNTIME_OUTPUT_DIRECTORY_DEBUG          ${CMAKE_CURRENT_SOURCE_DIR}
-  RUNTIME_OUTPUT_DIRECTORY_RELEASE        ${CMAKE_CURRENT_SOURCE_DIR}
-  RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_CURRENT_SOURCE_DIR}
-  RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL     ${CMAKE_CURRENT_SOURCE_DIR})
+  RUNTIME_OUTPUT_DIRECTORY                ${BOGGART_OUT_DIR}
+  RUNTIME_OUTPUT_DIRECTORY_DEBUG          ${BOGGART_OUT_DIR}
+  RUNTIME_OUTPUT_DIRECTORY_RELEASE        ${BOGGART_OUT_DIR}
+  RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${BOGGART_OUT_DIR}
+  RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL     ${BOGGART_OUT_DIR})
 
 # The linker ad-hoc signs, but a stale or invalid signature is what makes macOS
 # SIGKILL an arm64 binary at exec time. Re-sign explicitly so it always runs.
@@ -692,6 +743,10 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
 
   add_executable(boggart-studio
     ${APP_SOURCES}
+    src/bogcrash.c
+    src/ljson.c
+    src/lhash.c
+    src/lview.c
     ${STUDIO_ASSETS_C}
     src/lhttp.c
     src/lsys.c
@@ -753,7 +808,7 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
   # The editor core came from rxi's lite and still warns; ours build clean.
   set_source_files_properties(${APP_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
   set_target_properties(boggart-studio PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    RUNTIME_OUTPUT_DIRECTORY ${BOGGART_OUT_DIR})
   if(APPLE)
     add_custom_command(TARGET boggart-studio POST_BUILD
       COMMAND codesign -f -s - $<TARGET_FILE:boggart-studio>
@@ -798,6 +853,17 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
       $<TARGET_FILE:boggart-studio> ${CMAKE_CURRENT_SOURCE_DIR}
     DEPENDS boggart-studio
     COMMENT "Rendering the legacy studio composition and checking the agent panel"
+    USES_TERMINAL)
+
+  # `ninja ui-tracker` renders the tracker tab (list, selection, board) to
+  # studio-tracker-*.bmp. Needs tracker data in the store (`/tracker import`).
+  add_custom_target(ui-tracker
+    COMMAND ${CMAKE_COMMAND} -E env
+      BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/uitracker.lua
+      BOGGART_STUDIO_SHOT=${CMAKE_CURRENT_BINARY_DIR}/studio-tracker.bmp
+      $<TARGET_FILE:boggart-studio> ${CMAKE_CURRENT_SOURCE_DIR}
+    DEPENDS boggart-studio
+    COMMENT "Rendering the tracker tab"
     USES_TERMINAL)
 
   # `ninja ui-overlay` guards the dirty-rect/overlay invariant: a menu dropdown
@@ -851,7 +917,7 @@ endif()
 # rule itself under test -- it still resolves %LOCALAPPDATA%, that just now
 # points somewhere disposable.
 enable_testing()
-foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable typesafe judge policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast mining_recognition mining_compile mining_jobs learning_evaluate learning_promote learning_route learning_monitor workflow_slack workflow_novel workflow_triggers searchroute)
+foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable typesafe judge ladder toolroute ladder_sites harden policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast mining_recognition mining_compile mining_jobs learning_evaluate learning_promote learning_route learning_monitor workflow_slack workflow_novel workflow_triggers searchroute tracker story story_model story_style auth_file looplag http_body json_c store_save hash_c fileview)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home}
@@ -873,3 +939,29 @@ add_executable(termctl_smoke src/termctl.c src/termctl_test.c)
 target_include_directories(termctl_smoke PRIVATE src ${VENDOR}/libuv/include)
 target_link_libraries(termctl_smoke PRIVATE uv_a)
 add_test(NAME termctl COMMAND sh -c "$<TARGET_FILE:termctl_smoke> </dev/null")
+
+# BOG-6: the credential code under concurrency (8 threads reading headers while
+# the file is rewritten). Run under BOGGART_SANITIZER=thread for the race check.
+add_executable(auth_threads_test tests/c/auth_threads.c src/lauth.c)
+target_include_directories(auth_threads_test PRIVATE src ${VENDOR}/libuv/include ${VENDOR}/sqlite)
+target_link_libraries(auth_threads_test PRIVATE uv_a sqlite_vendor lua_vendor)
+add_test(NAME auth_threads COMMAND auth_threads_test)
+
+# BOG-8: always-on asserts trap at the call site with condition and file:line.
+if(NOT WIN32)
+  add_executable(assert_trap_test tests/c/assert_trap.c)
+  target_include_directories(assert_trap_test PRIVATE src)
+  target_link_libraries(assert_trap_test PRIVATE lua_vendor)
+  add_test(NAME assert_trap COMMAND assert_trap_test)
+
+  # BOG-9: a crash writes a report with C and Lua stacks, keeps the default action.
+  add_executable(crash_handler_test tests/c/crash_handler.c src/bogcrash.c)
+  target_include_directories(crash_handler_test PRIVATE src)
+  target_link_libraries(crash_handler_test PRIVATE lua_vendor)
+  add_test(NAME crash_handler COMMAND crash_handler_test)
+endif()
+
+# Sanitizers on boggart's own code and the C tests (BOG-10); the vendored
+# interpreter and JSON lib too, so a misuse inside them is attributed.
+boggart_apply_sanitizer(boggart boggart-studio auth_threads_test assert_trap_test crash_handler_test
+                        termctl_smoke lua_vendor cjson_vendor luv_lua)

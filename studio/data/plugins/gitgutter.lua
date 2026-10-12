@@ -46,6 +46,7 @@ end
 
 -- Diff HEAD against the buffer, into the per-line kind table. In-memory.
 local function rediff(doc, st)
+  if doc.large then st.lines, st.rev = {}, doc:get_change_id(); return end   -- not diffed whole (BOG-25)
   local a = difflib.lines(st.head)
   local b = difflib.lines(table.concat(doc.lines))
   local out = {}

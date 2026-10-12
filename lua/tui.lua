@@ -286,7 +286,10 @@ local function strip_rows(st)
   return math.min(cap, n) + 1 -- +1 for the divider row
 end
 
-local function draw(st)
+local draw_impl
+-- A paint that holds the loop for long is recorded as "tui paint" (/perf).
+local function draw(st) return require("looplag").time("tui paint", draw_impl, st) end
+draw_impl = function(st)
   local w, h = tc.size()
   if help.too_small(w, h) then
     tc.clear()

@@ -4,6 +4,7 @@ local Doc = require "core.doc"
 
 
 local function trim_trailing_whitespace(doc)
+  if doc.large then return end   -- read-only large view (BOG-25)
   local cline, ccol = doc:get_selection()
   for i = 1, #doc.lines do
     local old_text = doc:get_text(i, 1, i, math.huge)

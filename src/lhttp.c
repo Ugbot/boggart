@@ -37,25 +37,49 @@ const char *boggart_auth_header_for(const char *url, const char *wire,
 
 #include "lua.h"
 #include "lauxlib.h"
+#include "bogassert.h"
 
 /* luv gives each interpreter state its own uv loop; async HTTP lives on it. */
 extern uv_loop_t *luv_loop(lua_State *L);
 
+/* The response body is accumulated in an OWNED C buffer, not a luaL_Buffer
+ * (BOG-7). write_cb runs the on_chunk Lua callback between appends, and a
+ * luaL_Buffer that has grown keeps its storage in a box on the Lua stack --
+ * any imbalance in that callback path and the next append writes through a
+ * box that is no longer on top: the exact shape of the 2026-09-28 station
+ * segfault. Owned memory has no such coupling; it becomes a Lua string once,
+ * at the end. */
 typedef struct {
   lua_State *L;
   int on_chunk_ref;   /* LUA_NOREF if absent */
-  luaL_Buffer body;   /* accumulates the full response */
+  char *body;         /* accumulates the full response */
+  size_t len, cap;
+  int oom;            /* growth failed: the transfer is aborted */
   int cb_error;       /* set if the callback raised */
 } http_ctx;
+
+static int body_append(http_ctx *ctx, const char *p, size_t n) {
+  if (ctx->len + n > ctx->cap) {
+    size_t cap = ctx->cap ? ctx->cap : 16384;
+    while (cap < ctx->len + n) cap *= 2;
+    char *nb = (char *)realloc(ctx->body, cap);
+    if (!nb) { ctx->oom = 1; return 0; }
+    ctx->body = nb; ctx->cap = cap;
+  }
+  memcpy(ctx->body + ctx->len, p, n);
+  ctx->len += n;
+  return 1;
+}
 
 static size_t write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
   http_ctx *ctx = (http_ctx *)userdata;
   size_t n = size * nmemb;
 
-  luaL_addlstring(&ctx->body, ptr, n);
+  if (!body_append(ctx, ptr, n)) return 0;   /* short count: curl aborts the transfer */
 
   if (ctx->on_chunk_ref != LUA_NOREF && !ctx->cb_error) {
     lua_State *L = ctx->L;
+    BOG_STACK_GUARD(L);   /* the callback must leave the stack as it found it */
     lua_rawgeti(L, LUA_REGISTRYINDEX, ctx->on_chunk_ref);
     lua_pushlstring(L, ptr, n);
     if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
@@ -63,8 +87,10 @@ static size_t write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
        * Returning a short count makes libcurl stop with CURLE_WRITE_ERROR. */
       ctx->cb_error = 1;
       lua_pop(L, 1);
+      BOG_STACK_EXPECT(L, 0);
       return 0;
     }
+    BOG_STACK_EXPECT(L, 0);
   }
   return n;
 }
@@ -128,7 +154,7 @@ static int l_http_request(lua_State *L) {
   ctx.L = L;
   ctx.on_chunk_ref = LUA_NOREF;
   ctx.cb_error = 0;
-  luaL_buffinit(L, &ctx.body);
+  ctx.body = NULL; ctx.len = ctx.cap = 0; ctx.oom = 0;
 
   lua_getfield(L, 1, "on_chunk");
   if (lua_isfunction(L, -1)) {
@@ -172,24 +198,27 @@ static int l_http_request(lua_State *L) {
 
   if (ctx.cb_error) {
     /* the callback raised; surface it as a normal Lua error */
-    luaL_pushresult(&ctx.body); /* discard */
-    lua_pop(L, 1);
+    free(ctx.body);
     return luaL_error(L, "http.request: on_chunk callback error");
   }
 
+  if (ctx.oom) {
+    free(ctx.body);
+    lua_pushnil(L);
+    lua_pushstring(L, "http.request: out of memory buffering the response");
+    return 2;
+  }
+
   if (rc != CURLE_OK) {
-    luaL_pushresult(&ctx.body);
-    lua_pop(L, 1);
+    free(ctx.body);
     lua_pushnil(L);
     lua_pushstring(L, curl_easy_strerror(rc));
     return 2;
   }
 
-  /* Finalize the buffer first (its box must be on the stack top for
-   * pushresult), then order the two return values as (status, body). */
-  luaL_pushresult(&ctx.body); /* [body] */
-  lua_pushinteger(L, status); /* [body][status] */
-  lua_insert(L, -2);          /* [status][body] */
+  lua_pushinteger(L, status);
+  lua_pushlstring(L, ctx.body ? ctx.body : "", ctx.len);
+  free(ctx.body);
   return 2;
 }
 

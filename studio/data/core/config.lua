@@ -27,4 +27,6 @@ config.line_wrap = false
 -- (off/on/mandatory), read by the TUI, the composer, and the DocView editor.
 -- config.vim_mode is retired; vim:toggle and :set vim go through vimmode.
 
+config.large_file_mb = 8   -- files larger than this open read-only as lazy views (BOG-25)
+
 return config

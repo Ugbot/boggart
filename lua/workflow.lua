@@ -57,6 +57,23 @@ local function bindings(values)
   end
   return result
 end
+-- Which tier of the ladder (lua/ladder.lua) a capability call is: code, jev (a typed
+-- judgement) or llm (a model turn). By declaration (set_tier -- harden.propose
+-- declares residual model decisions), else by id: model.* is llm, jev.* and
+-- judge.* are jev, everything else is code. Recorded on every invocation so a run
+-- says how much of it needed a model, which is what harden reads.
+local tier_of_cap={}
+function M.set_tier(id,tier)
+  if not text(id) or (tier~='code' and tier~='jev' and tier~='llm') then return nil,err('workflow_invalid') end
+  tier_of_cap[id]=tier;return true
+end
+function M.tier_of(id)
+  if tier_of_cap[id] then return tier_of_cap[id] end
+  if type(id)~='string' then return 'code' end
+  if id:match('^model[%.:_]') then return 'llm' end
+  if id:match('^jev[%.:_]') or id:match('^judge[%.:_]') then return 'jev' end
+  return 'code'
+end
 function M.register(d)
   if type(d)~='table' or getmetatable(d)~=nil or not text(d.id) or not text(d.version) then return nil,err('workflow_invalid') end
   if registry[d.id] and registry[d.id][d.version] then return nil,err('workflow_version_exists') end
@@ -289,7 +306,7 @@ function M.start(id, options)
     function ctx:call(cap,args,opts)
       if d.source then tools.restricted_data(args);tools.restricted_data(opts) end
       alive();correlate()
-      local record={step_id=frame().path,id=cap,version=d.capabilities[cap],status='running'}
+      local record={step_id=frame().path,id=cap,version=d.capabilities[cap],status='running',tier=M.tier_of(cap)}
       state.invocations[#state.invocations+1]=record
       local outcome
       if durable then
@@ -443,5 +460,17 @@ function M.start(id, options)
   end
   if options.defer~=true then handle:resume() end
   return handle
+end
+-- SHA-256 in C (src/lhash.c, BOG-14): the same digest, ~100x faster. The Lua
+-- function above stays as the fallback and the oracle in tests/hash_c.lua.
+M.lua_hash = M.hash
+do
+  local okc, c = pcall(require, "hash_c")
+  if okc and type(c) == "table" and c.sha256 then
+    M.hash = function(source)
+      assert(type(source) == 'string', 'source must be a string')
+      return c.sha256(source)
+    end
+  end
 end
 return M

@@ -45,7 +45,8 @@ function MarkdownView:try_close(do_close) do_close() end
 
 function MarkdownView:get_text()
   if not self.doc then return "" end
-  return table.concat(self.doc.lines):gsub("\n$", "")
+  if self.doc.large then return "*(file too large to preview)*" end
+  return (table.concat(self.doc.lines):gsub("\n$", ""))
 end
 
 -- Load (and cache) a local image referenced from the document. Remote URLs are

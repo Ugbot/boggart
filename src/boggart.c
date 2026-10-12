@@ -14,6 +14,7 @@
 #endif
 
 #include "lua.h"
+#include "bogcrash.h"
 #include "lauxlib.h"
 #include "lualib.h"
 
@@ -38,6 +39,9 @@ int luaopen_boggart_term(lua_State *L); /* src/lterm.c: REPL completion (CLI onl
 int luaopen_boggart_termctl(lua_State *L); /* src/ltermctl.c: full-screen cTUI (CLI only) */
 int luaopen_boggart_voice(lua_State *L); /* src/lvoice.c: native voice input (opt-in) */
 int luaopen_boggart_station(lua_State *L); /* src/lstation.c: LLM Station ZMQ client (opt-in) */
+int luaopen_boggart_json(lua_State *L);
+int luaopen_boggart_hash(lua_State *L);
+int luaopen_boggart_fileview(lua_State *L); /* src/lview.c: lazy file views */    /* src/lhash.c: SHA-256 in C */    /* src/ljson.c: JSON + UTF-8 in C (lua/json.lua uses it) */
 int luaopen_boggart_serve(lua_State *L); /* src/lserve.c: the inbound control surface (HTTP+SSE) */
 int luaopen_boggart_typesafe(lua_State *L); /* src/ltypesafe.c: TypeSafe System One codec (typed judge) */
 void boggart_voice_shutdown(void); /* src/lvoice.c: free the warm whisper ctx before exit */
@@ -103,6 +107,11 @@ static void configure(lua_State *L, int argc, char **argv) {
      * boggart.args, because what those words MEAN is lua/catalog.lua's
      * business, not this parser's. */
     else if (strcmp(argv[i], "models") == 0) { mode = "models"; consumed = ++i; }
+    /* `boggart tracker ...` -- the built-in tracker from a shell or CI job
+     * (lua/tracker_cli.lua). Like models, the words after it are Lua's. */
+    else if (strcmp(argv[i], "tracker") == 0) { mode = "tracker"; consumed = ++i; }
+    /* `boggart story ...` -- the story layer (lua/story/cli.lua, the story module). */
+    else if (strcmp(argv[i], "story") == 0) { mode = "story"; consumed = ++i; }
   }
   for (; i < argc; i++) {
     const char *a = argv[i];
@@ -185,6 +194,10 @@ static void register_boggart(lua_State *L, int argc, char **argv) {
   lua_setglobal(L, "tc");
   luaL_requiref(L, "voice", luaopen_boggart_voice, 0);
   lua_setglobal(L, "voice");
+  luaL_requiref(L, "json_c", luaopen_boggart_json, 0);
+  lua_pop(L, 1);   /* package.loaded.json_c; lua/json.lua picks it up */
+  luaL_requiref(L, "hash_c", luaopen_boggart_hash, 0); lua_pop(L, 1);   /* src/lhash.c: sha256 */
+  luaL_requiref(L, "fileview", luaopen_boggart_fileview, 0); lua_pop(L, 1);   /* src/lview.c: lazy file views */
   luaL_requiref(L, "station", luaopen_boggart_station, 0);
   lua_setglobal(L, "station");
   luaL_requiref(L, "typesafe_core", luaopen_boggart_typesafe, 0); /* package.loaded name differs so require("typesafe") reaches lua/typesafe.lua */
@@ -244,6 +257,8 @@ static int early_exit_flags(int argc, char **argv) {
         "  boggart swarm \"<task>\"     swarm mode (coordinator; --tui adds a dashboard)\n"
         "  boggart serve              run as a service: control plane + webhooks\n"
         "  boggart models [cmd]       the model catalog: list, import, export, refresh\n"
+        "  boggart tracker [args]     the built-in tracker (for scripts and CI; `tracker help`)\n"
+        "  boggart story [args]       the story layer: books, chapters, style checks (`story help`)\n"
         "  boggart doctor             check the install and say what is wrong\n"
         "  boggart init               copy the built-in Lua into the data dir to edit\n"
         "  boggart --reset [file]     drop overlay Lua (all, or one module)\n\n"
@@ -274,6 +289,9 @@ static int early_exit_flags(int argc, char **argv) {
 
 int main(int argc, char **argv) {
   if (early_exit_flags(argc, argv)) return 0;
+  /* First: a crash anywhere after this point gets a report with the C and Lua
+   * stacks in <data dir>/crashes (src/bogcrash.c, BOG-9). */
+  bog_crash_install();
 #ifndef _WIN32
   /* MCP stdio children can abort. A later write is SIGPIPE; that is a
    * dead tool, not a reason for this process to die. */
@@ -284,6 +302,7 @@ int main(int argc, char **argv) {
    * on Lua 5.5. See src/lmem.c. */
   lua_State *L = boggart_newstate();
   if (!L) { fprintf(stderr, "boggart: cannot create Lua state\n"); return 1; }
+  bog_crash_set_lua(L);
   luaL_openlibs(L);
   register_boggart(L, argc, argv);
   boggart_open_mem(L);

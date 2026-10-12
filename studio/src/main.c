@@ -6,6 +6,7 @@
 #include "renderer.h"
 #include "assets.h"
 #include "version.h" /* BOGGART_VERSION, shared with the CLI so they can't drift */
+#include "bogcrash.h"   /* src/bogcrash.c: the crash handler */
 
 /* boggart, embedded. See src/bogembed.c for why the agent shares this exact
  * lua_State rather than living in a subprocess. */
@@ -96,6 +97,7 @@ static void init_window_icon(void) {
 
 
 int main(int argc, char **argv) {
+  bog_crash_install();   /* reports with C + Lua stacks (src/bogcrash.c) */
 #ifdef _WIN32
   /* Best-effort: on a stripped system either call can fail, and calling through
    * a NULL pointer would crash before the window ever opens. SDL sets DPI
@@ -150,6 +152,7 @@ int main(int argc, char **argv) {
 
 
   lua_State *L = boggart_newstate();
+  bog_crash_set_lua(L);
   luaL_openlibs(L);
   api_load_libs(L);
 

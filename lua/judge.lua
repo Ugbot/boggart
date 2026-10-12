@@ -431,6 +431,26 @@ function M.decide(spec)
   return a, m
 end
 
+-- judge.jev_only{ state=|state_json=, questions=|schema=, model=?, timeout? }
+--   -> answers, meta | nil, err
+-- The jev tier on its own, for callers (lua/ladder.lua) that own the fall-through
+-- themselves: no chat cascade, no chat fallback. Honours `/judge off|chat`
+-- and a missing key by failing with kind="unavailable" so the caller moves on.
+-- meta = { via = "jev", confidence = <lowest reported> }.
+function M.jev_only(spec)
+  if type(spec) ~= "table" then return nil, { kind = "validation", message = "jev_only{} takes a table" } end
+  if spec.state == nil and spec.state_json == nil then
+    return nil, { kind = "validation", message = "jev_only{} needs state" }
+  end
+  local via, reason, qs = M.route(spec)
+  if not via then return nil, { kind = "validation", message = reason } end
+  if via ~= "jev" or not qs then return nil, { kind = "unavailable", message = reason } end
+  local a, m = ask_jev(spec, qs)
+  if not a then return nil, m end
+  m.via, m.reason, m.confidence = "jev", reason, M.min_reported_confidence(a, qs)
+  return a, m
+end
+
 -- A schema that is not jev-simple: the chat model answers it directly and
 -- the raw object comes back (this is what spawn{schema=} would have done,
 -- minus the agent).
