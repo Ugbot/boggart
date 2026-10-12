@@ -107,3 +107,32 @@ boggart story check world book=~/novel
   roadmap (M4), which would feed this.
 - **Map rendering** and **region polygons** (is a point inside a country's border) are out: the
   containment tree is the authority, and coordinates are only for distance.
+
+## SQL: the world as tables
+
+The story model already lives in SQLite, so geography is queryable directly
+(`lua/story/geosql.lua`, `src/ldb.c`). Everything is derived from the model; nothing is
+a second copy except the R*Tree, which is only an index and is rebuilt on each `nearby`.
+
+| name                | what                                                               |
+|---------------------|--------------------------------------------------------------------|
+| `geo_km(a,b,c,d)`   | SQL function: great-circle km between (lat1,lon1) and (lat2,lon2)  |
+| `geo_bearing(...)`  | SQL function: initial bearing, degrees 0..360                      |
+| `st_place`          | `book,id,name,parent,lat,lon` (own coordinates)                    |
+| `st_place_geo`      | `book,id,lat,lon`: own coordinates, else the nearest container's   |
+| `st_place_closure`  | `book,ancestor,descendant,depth`: every container, any depth       |
+| `st_route`          | `book,src,dst,days,mode`: declared routes (two-way unless one_way) |
+| `st_place_rt`       | R*Tree over `st_place_geo` (bounding-box search)                   |
+
+```
+geo nearby name=Paris km=500             places within a radius, nearest first, with bearing
+geo nearby lat=45 lon=5 km=100           ... of a point
+geo sql query="SELECT p.name, geo_km(a.lat,a.lon,p.lat,p.lon) AS km
+               FROM st_place_geo a, st_place_geo p
+               WHERE a.book=:book AND p.book=:book AND a.id='paris' ORDER BY km"
+```
+
+`geo sql` takes one `SELECT` / `WITH ... SELECT`, capped at 50 rows (`limit=`). Write
+`book = :book` to scope to the current book. It refuses any write or DDL keyword and
+more than one statement. Places with no coordinates, here or in a container, are absent
+from `st_place_geo` and so from `nearby`: unknown, not far away.

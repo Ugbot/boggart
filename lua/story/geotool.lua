@@ -10,6 +10,7 @@
 local sb = require("story.book")
 local sm = require("story.model")
 local geo = require("story.geo")
+local geosql = require("story.geosql")
 local M = {}
 
 local function E(m) return "Error: " .. m end
@@ -225,9 +226,48 @@ local function check_world(a)
   return geo.audit_text(rep)
 end
 
+-- ---- SQL lookups ----------------------------------------------------------------------------
+local function geo_nearby(a)
+  local b, e = open(a); if not b then return E(e) end
+  local lat, lon = tonumber(a.lat), tonumber(a.lon)
+  local from
+  if not (lat and lon) then
+    local en, ee = sm.resolve1(b.name, a.name); if not en then return E(ee .. " (or give lat= lon=)") end
+    local ok, err = geosql.ensure(); if not ok then return E(err) end
+    local g = sm.q("SELECT lat, lon FROM st_place_geo WHERE book = ? AND id = ?", { b.name, en.id })
+    if not g[1] then return "UNKNOWN -- " .. en.name .. " has no coordinates (here or in a container): geo set name= lat= lon=" end
+    lat, lon, from = g[1].lat, g[1].lon, en
+  end
+  local km = tonumber(a.km or a.radius)
+  if not km or km <= 0 then return E("geo nearby needs km= (radius, > 0)") end
+  local rows, err = geosql.nearby(b.name, lat, lon, km, tonumber(a.limit))
+  if not rows then return E(err) end
+  local out = { string.format("places within %g km of %s", km, from and from.name or string.format("%.4f, %.4f", lat, lon)) }
+  local n = 0
+  for _, r in ipairs(rows) do
+    if not (from and r.id == from.id) then
+      n = n + 1
+      out[#out + 1] = string.format("  %-24s %8.1f km  bearing %3.0f", r.name, r.km, r.bearing)
+    end
+  end
+  if n == 0 then out[#out + 1] = "  none (places without coordinates are not searched)" end
+  return table.concat(out, "\n")
+end
+
+local function geo_sql(a)
+  local b, e = open(a); if not b then return E(e) end
+  local rows, err = geosql.query(b.name, a.query or a.sql, a.limit)
+  if not rows then return E(err) end
+  local json = require("json")
+  local out = { string.format("%d row(s)", #rows) }
+  for _, r in ipairs(rows) do out[#out + 1] = "  " .. json.encode(r) end
+  return table.concat(out, "\n")
+end
+
 M.ACTIONS = {
   geo = { where = geo_where, inside = geo_inside, contents = geo_contents, tree = geo_tree,
-          between = geo_between, distance = geo_distance, travel = travel, set = geo_set },
+          between = geo_between, distance = geo_distance, travel = travel, set = geo_set,
+          nearby = geo_nearby, sql = geo_sql },
   check = { claim = check_claim, facts = check_facts, world = check_world, travel = travel },
 }
 M.DEFAULT = { geo = "where", check = "claim" }
@@ -238,7 +278,10 @@ M.DESCRIPTION = "WORLD LOOKUPS (code only, no guessing; answers are TRUE, FALSE 
   .. "inside name= of= (is it within that place, nested)|contents name=place (deep=false for direct only, kind=)|"
   .. "tree (name=place to start from)|between name= other= (smallest place they share)|"
   .. "distance name= other= (km, needs lat/lon)|travel name=traveller-or-place to=place t1= t2= (per_day=, speed=km/day: "
-  .. "does the journey fit in the time)|set name=place lat= lon= | route_to=place days= mode= one_way=; "
+  .. "does the journey fit in the time)|nearby name=place-or-lat=+lon= km= (places within the radius, nearest first, with bearing)|"
+  .. "sql query=\"SELECT ...\" (read-only over the world: st_place(id,name,parent,lat,lon), st_place_geo (effective "
+  .. "lat/lon), st_place_closure(ancestor,descendant,depth), st_route(src,dst,days,mode), st_entity, st_event, st_delta; "
+  .. "filter with book = :book; geo_km(lat1,lon1,lat2,lon2) and geo_bearing() are SQL functions)|set name=place lat= lon= | route_to=place days= mode= one_way=; "
   .. "check claim=\"vera in paris\"|\"vera holds key\"|\"moth alive\"|\"vera mood=calm\"|\"vera trust>=3\"|\"vera knows F3\" (as_of=)|"
   .. "facts name= (as_of=, pos= hides what is withheld)|world (audit: place-tree cycles, moves to non-places, two places at "
   .. "once, teleporting past declared routes, items held twice, acting after death). Check a claim BEFORE writing it into prose."
@@ -254,6 +297,8 @@ M.PROPS = {
   t1 = { type = "number" }, t2 = { type = "number" },
   per_day = { type = "number", description = "story-time units per day (default 1)" },
   speed = { type = "number", description = "km per day, for a straight-line lower bound" },
+  km = { type = "number", description = "nearby: radius in km" },
+  query = { type = "string", description = "geo sql: one read-only SELECT" },
 }
 
 return M

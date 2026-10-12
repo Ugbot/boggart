@@ -211,7 +211,7 @@ if(UNIX AND NOT APPLE)
   target_link_libraries(lua_vendor PUBLIC m ${CMAKE_DL_LIBS})
 endif()
 
-# ---- vendored SQLite (FTS5, single-threaded, no loadable extensions) --------
+# ---- vendored SQLite (FTS5, R*Tree + Geopoly, single-threaded, no loadable extensions) --------
 # Upstream code: warnings suppressed, as in the Makefile.
 add_library(sqlite_vendor STATIC ${VENDOR}/sqlite/sqlite3.c)
 # SQLITE_THREADSAFE=2 ("multi-thread"), not 0.
@@ -227,7 +227,8 @@ add_library(sqlite_vendor STATIC ${VENDOR}/sqlite/sqlite3.c)
 # own connection. It costs mutexes only around shared global structures, not
 # per-connection, so it is materially cheaper than 1 (fully serialized).
 target_compile_definitions(sqlite_vendor PRIVATE
-  SQLITE_ENABLE_FTS5 SQLITE_THREADSAFE=2 SQLITE_OMIT_LOAD_EXTENSION)
+  SQLITE_ENABLE_FTS5 SQLITE_ENABLE_RTREE SQLITE_ENABLE_GEOPOLY
+  SQLITE_THREADSAFE=2 SQLITE_OMIT_LOAD_EXTENSION)
 target_include_directories(sqlite_vendor PUBLIC ${VENDOR}/sqlite)
 target_link_libraries(sqlite_vendor PRIVATE boggart_quiet)
 
@@ -917,7 +918,7 @@ endif()
 # rule itself under test -- it still resolves %LOCALAPPDATA%, that just now
 # points somewhere disposable.
 enable_testing()
-foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable typesafe judge ladder toolroute ladder_sites harden policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast mining_recognition mining_compile mining_jobs learning_evaluate learning_promote learning_route learning_monitor workflow_slack workflow_novel workflow_triggers searchroute tracker story story_model story_geo story_style auth_file looplag http_body json_c store_save hash_c fileview)
+foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable typesafe judge ladder toolroute ladder_sites harden policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast mining_recognition mining_compile mining_jobs learning_evaluate learning_promote learning_route learning_monitor workflow_slack workflow_novel workflow_triggers searchroute tracker story story_model story_geo story_geosql story_style auth_file looplag http_body json_c store_save hash_c fileview)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home}

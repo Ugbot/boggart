@@ -11,6 +11,7 @@
  * The amalgamation is compiled with FTS5 (see the Makefile), so full-text
  * search tables are available.
  */
+#include <math.h>
 #include <string.h>
 
 #include "sqlite3.h"
@@ -96,6 +97,39 @@ static int fail(lua_State *L, sqlite3 *h, const char *ctx) {
   return 2;
 }
 
+/* geo_km(lat1, lon1, lat2, lon2) -> great-circle km (haversine), NULL if any
+ * argument is NULL. geo_bearing(...) -> initial bearing in degrees 0..360.
+ * Registered on every connection so story-world queries can use them in SQL. */
+#define GEO_EARTH_KM 6371.0088
+#define GEO_RAD(d) ((d) * 3.14159265358979323846 / 180.0)
+
+static int geo_args(sqlite3_context *ctx, sqlite3_value **v, double out[4]) {
+  for (int i = 0; i < 4; i++) {
+    if (sqlite3_value_type(v[i]) == SQLITE_NULL) { sqlite3_result_null(ctx); return 0; }
+    out[i] = sqlite3_value_double(v[i]);
+  }
+  return 1;
+}
+
+static void sql_geo_km(sqlite3_context *ctx, int argc, sqlite3_value **v) {
+  double a[4]; (void)argc;
+  if (!geo_args(ctx, v, a)) return;
+  double dlat = GEO_RAD(a[2] - a[0]), dlon = GEO_RAD(a[3] - a[1]);
+  double h = sin(dlat / 2) * sin(dlat / 2) +
+             cos(GEO_RAD(a[0])) * cos(GEO_RAD(a[2])) * sin(dlon / 2) * sin(dlon / 2);
+  if (h > 1) h = 1;
+  sqlite3_result_double(ctx, 2 * GEO_EARTH_KM * asin(sqrt(h)));
+}
+
+static void sql_geo_bearing(sqlite3_context *ctx, int argc, sqlite3_value **v) {
+  double a[4]; (void)argc;
+  if (!geo_args(ctx, v, a)) return;
+  double p1 = GEO_RAD(a[0]), p2 = GEO_RAD(a[2]), dl = GEO_RAD(a[3] - a[1]);
+  double y = sin(dl) * cos(p2), x = cos(p1) * sin(p2) - sin(p1) * cos(p2) * cos(dl);
+  double deg = atan2(y, x) * 180.0 / 3.14159265358979323846;
+  sqlite3_result_double(ctx, fmod(deg + 360.0, 360.0));
+}
+
 static int l_open(lua_State *L) {
   const char *path = luaL_checkstring(L, 1);
   sqlite3 *h = NULL;
@@ -107,6 +141,8 @@ static int l_open(lua_State *L) {
     return 2;
   }
   sqlite3_busy_timeout(h, 5000);
+  sqlite3_create_function(h, "geo_km", 4, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, sql_geo_km, NULL, NULL);
+  sqlite3_create_function(h, "geo_bearing", 4, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, sql_geo_bearing, NULL, NULL);
   DBConn *c = (DBConn *)lua_newuserdatauv(L, sizeof(DBConn), 0);
   BOG_ASSERT(h != NULL, "sqlite3_open succeeded but returned no handle");
   c->h = h;
