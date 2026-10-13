@@ -127,7 +127,9 @@
       "status": "ported",
       "ported_files": [
         "src/bunicode.c",
-        "src/bunicode.h"
+        "src/bunicode.h",
+        "src/btunicode.c",
+        "src/btunicode.h"
       ]
     },
     {
@@ -139,8 +141,10 @@
     {
       "upstream_path": "src/unicode/props_table.zig",
       "sha256": "24515a3ad399aa168c148f6f97afe02e13213137565d8136b317b13511f415e9",
-      "status": "studied",
-      "ported_files": []
+      "status": "ported",
+      "ported_files": [
+        "src/btunicode_data.h"
+      ]
     },
     {
       "upstream_path": "src/renderer",
@@ -369,6 +373,16 @@
       "sha256": "d534a23a31500a0ac958d9634b84f532bd73ff1aca1bb8f7debbcbebc16ff39a",
       "ported_files": [
         "src/bkey.c"
+      ]
+    },
+    {
+      "component": "uucode terminal Unicode properties and grapheme transition data via pinned Ghostty",
+      "copyright": "Copyright (c) 2026 Jacob Sandlund",
+      "source": "pinned SDK archive zig-pkg/uucode-0.2.0-ZZjBPuuFVgC8YZ8eld4fOKsZANLIhTFMzULQxhkLi1C7/LICENSE.md",
+      "license_file": "THIRD_PARTY/uucode-LICENSE",
+      "sha256": "312e901e142be2477b4ca859e9311f9e3f80d33372991759b7921c1893605f33",
+      "ported_files": [
+        "src/btunicode_data.h"
       ]
     }
   ]

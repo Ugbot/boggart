@@ -6,10 +6,10 @@
  * ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/terminal/Terminal.zig
  * Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
  * SPDX-License-Identifier: MIT; see THIRD_PARTY/ghostty-LICENSE.
- * Adaptation: fixed geometry, generated Unicode 16 widths and owned C cells.
+ * Adaptation: owned C cells and a generated pinned SDK Unicode profile.
  */
 #include "bterm_internal.h"
-#include "bunicode.h"
+#include "btunicode.h"
 #include <stdlib.h>
 #include <string.h>
 static void require(bterm *t, bool ok) { if (!ok) t->failed = true; }
@@ -115,10 +115,10 @@ static bool append_cluster(bterm *t, uint32_t cp) {
   if (!previous) return false;
   bt_buffer *b = bt_active(t); bt_cursor *c = &b->cursor;
   lgrapheme_value v = lpage_grapheme(b->screen,previous);
-  bunicode_grapheme_state state = {0};
-  for (size_t i=0; i<v.length; i++) (void)bunicode_grapheme_break(&state,v.codepoints[i]);
-  if (bunicode_grapheme_break(&state,cp)) return false;
-  bunicode_width_effect effect = bunicode_grapheme_width_effect(v.codepoints[v.length-1],cp);
+  btunicode_state state = {0};
+  for (size_t i=0; i<v.length; i++) (void)btunicode_break(&state,v.codepoints[i]);
+  if (btunicode_break(&state,cp)) return false;
+  bunicode_width_effect effect = btunicode_effect(v.codepoints[v.length-1],cp);
   if (effect == BU_WIDTH_IGNORE) return true;
   unsigned old_width=previous->width, width=old_width;
   if (effect == BU_WIDTH_WIDE) width=2;
@@ -144,12 +144,12 @@ static bool append_cluster(bterm *t, uint32_t cp) {
 void bt_print(bterm *t, uint32_t cp) {
   bt_buffer *b = bt_active(t); bt_cursor *c = &b->cursor;
   if (cp > 255 && (t->modes & BT_GRAPHEME) && append_cluster(t,cp)) return;
-  unsigned width=(unsigned)bunicode_width(cp);
+  unsigned width=btunicode_width(cp);
   if (!width) {
     if (t->modes & BT_GRAPHEME) return;
     size_t x; const lpage_cell *previous=previous_cell(t,&x,true);
     if (!previous) return;
-    if ((cp==0xfe0e || cp==0xfe0f) && !(bunicode_properties(lpage_codepoint(b->screen,previous)) & BU_PICTOGRAPHIC)) return;
+    if ((cp==0xfe0e || cp==0xfe0f) && !btunicode_pictographic(lpage_codepoint(b->screen,previous))) return;
     require(t,lpage_append_grapheme(b->screen,c->y,x,cp,previous->width)); return;
   }
   t->last_printed = cp;

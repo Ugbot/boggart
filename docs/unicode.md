@@ -5,7 +5,8 @@ and terminal grapheme widths. The immutable property table is compiled once into
 `boggart_unicode`; lookup and segmentation allocate no memory. The table has
 122 unique 256-scalar pages and occupies 71,168 bytes.
 
-CLI, Studio, termctl and the terminal backend share this library through CMake.
+CLI, Studio and termctl string helpers share this library through CMake.
+The native terminal printer uses the separate pinned SDK profile described below.
 `src/utf8width.h` retains compatibility names without embedding another table;
 `tc_wcwidth` delegates to the same lookup. Terminal build identity includes the
 kernel, interface, generated table and cell grapheme pool (29 compiled source/header hashes).
@@ -83,3 +84,60 @@ for 40 modules / 26 ported files; strict C99 warning and diff checks passed.
 The original GC-close snapshot probe failed under ASan before the immutable
 image change and passed afterward. Compiled identity remains 29 files.
 BMUX-19 remains in progress for renderer/measurement agreement.
+
+## Pinned terminal profile (BMUX-20, 2026-10-13)
+
+`src/btunicode.c/h` now supplies the native printer's widths, grapheme boundaries
+and width effects. Its immutable data comes from the actual pinned SDK property
+lookup and all 1,620 reachable class/state transitions. The exporter captures
+all 1,114,112 code points, then the offline generator checks complete ranges,
+class/state encodings and pin/probe identities before compressing the data.
+The compiled profile uses 124 unique pages and 80,384 bytes, including indices
+and the 8 KiB transition table. Printing allocates nothing for Unicode lookup.
+
+The SDK's locked uucode dependency contains Unicode 18 draft data dated
+2026-06-29. This differs from the Unicode 16 policy of `bunicode` and the current
+string/rendering helpers. In particular, U+05C8/U+05C9 are combining marks in
+the SDK; treating them as new cells caused mixed-script feed snapshots to
+diverge before any resize. The profile follows the pinned dependency rather
+than claiming a released Unicode 18 standard. Renderer/measurement alignment
+remains BMUX-19 work. Existing Unicode 16 APIs and their official test vectors
+remain unchanged.
+
+`tools/ghostty/probe_unicode_profile.py` builds in an isolated source copy after
+verifying all 5,915 SDK archive files. It recomputes the uucode package hash with
+`zig fetch` into a separate verification cache and records every dependency-file
+SHA256. The dependency lock selects uucode commit
+`9d55524551411b493cca41ca06363625d90aff1e`. Normal product builds use checked-in
+C data and do not require Zig, Python or network access. The Ghostty, uucode MIT
+and Unicode notices accompany the data in `THIRD_PARTY`.
+
+```sh
+python3 tools/ghostty/probe_unicode_profile.py \
+  --work-root /private/tmp/bmux-unicode-profile \
+  --archive /private/tmp/bmux-ghostty-source.tar.gz \
+  --global-cache-dir /private/tmp/bmux-zig-global \
+  --output tests/fixtures/ghostty-unicode-profile.json
+python3 tools/ghostty/unicode_fixture.py --check
+python3 tests/ghostty_unicode_profile_test.py
+```
+
+The small C-ABI SDK corpus adds combining-mark, legacy attachment and
+Indic-linker regressions: 46 cases / 215 snapshots pass. Byte-split tests include
+the new marks and linker. The unchanged large corpus now matches 76 of 79
+snapshots; all three remaining failures are the final managed-page-capacity
+growth step. This is a narrower compatibility result, not complete terminal,
+renderer or application parity.
+
+Checkpoint verification: normal CLI/Studio builds pass; full serial CTest passes
+127/129 in 115.22 s. Failures are the three large compatibility mismatches and
+`mining_jobs` foreground_max 135.424 ms against its unchanged 100 ms bound;
+an isolated mining rerun passes (0.84 s). The final ASan/UBSan focused run passes
+five tests and reproduces the three compatibility mismatches without sanitizer
+diagnostics (11.11 s). The profile's four offline guards, unchanged Unicode 16
+generator/four guards, six SDK fixture guards, seven compiled harness checks,
+four benchmark identity guards, SDK fixture recaptures and strict C11 warning
+checks pass. CI and release workflows run the new offline profile checks.
+Attribution verifies 44 SDK modules / 32 ported files. This is no timing or
+memory improvement claim; the previous benchmark reports describe their own
+frozen source identities.
