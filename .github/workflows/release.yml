@@ -85,6 +85,9 @@ jobs:
           python3 tools/genwidth.py --check
           python3 tests/genwidth_test.py
 
+      - name: Check Ghostty oracle fixtures (offline)
+        run: python3 tests/ghostty_oracle_test.py
+
       # The newest released CMake and Ninja on every platform, rather than
       # whatever each runner image happens to ship -- those drift apart by
       # years between images, and "works on the Linux runner, fails on the

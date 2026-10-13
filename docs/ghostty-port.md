@@ -84,6 +84,12 @@ python3 tools/check_ghostty_port.py --upstream /path/to/pinned/ghostty
 python3 tools/gen_vt_table.py /path/to/pinned/ghostty --check
 ```
 
+The explicit `ghostty-oracle` CMake target builds the pinned public VT SDK in
+a scratch directory, validates its native ABI schema, and checks the immutable
+resize fixtures. It is a test tool with no product dependency. See
+[terminal-resize.md](terminal-resize.md) for compiler prerequisites, source and
+executable provenance, input coverage, and the native acceptance still pending.
+
 The second command checks every hashed source file. The first checks the exact
 licence hash and both directions of the source/destination attribution ledger.
 The generator checks source hashes and enum ordering before translating every

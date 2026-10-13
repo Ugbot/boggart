@@ -1009,6 +1009,20 @@ add_custom_target(termbench
   COMMENT "Measuring terminal parse throughput and stream fragmentation"
   USES_TERMINAL)
 
+# Explicit test-only oracle. Zig/Ghostty are never product dependencies.
+set(BOGGART_GHOSTTY_ORACLE_WORK_ROOT "${CMAKE_CURRENT_BINARY_DIR}/ghostty-oracle"
+    CACHE PATH "Scratch directory for the optional pinned Ghostty VT oracle")
+add_custom_target(ghostty-oracle
+  COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/ghostty/build_oracle.py"
+    --work-root "${BOGGART_GHOSTTY_ORACLE_WORK_ROOT}"
+  COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/ghostty_oracle_cli_test.py"
+    --binary "${BOGGART_GHOSTTY_ORACLE_WORK_ROOT}/resize-oracle"
+  COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/ghostty/capture_resize.py"
+    --binary "${BOGGART_GHOSTTY_ORACLE_WORK_ROOT}/resize-oracle" --check
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  COMMENT "Building the pinned test oracle and verifying resize fixtures"
+  USES_TERMINAL)
+
 foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable typesafe judge ladder toolroute ladder_sites harden policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast mining_recognition mining_compile mining_jobs learning_evaluate learning_promote learning_route learning_monitor workflow_slack workflow_novel workflow_triggers searchroute tracker story story_model story_geo story_geosql story_style auth_file looplag http_body json_c store_save hash_c fileview termbench terminal terminal_graphemes)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
