@@ -6,6 +6,7 @@
 #include "bosc.h"
 #include "bmouse.h"
 #include "bkey.h"
+#include "bpaste.h"
 typedef struct bterm bterm;
 enum {
   BT_AUTOWRAP = 1u << 0, BT_ORIGIN = 1u << 1, BT_CURSOR_VISIBLE = 1u << 2,
@@ -24,11 +25,23 @@ typedef struct {
   bmouse_mode mouse_mode; bmouse_format mouse_format;
   unsigned kitty_flags;
   bool backarrow, ignore_keypad_numlock, alt_prefix, modify_other_keys_2;
+  bool bracketed_paste, focus_reporting, focused;
 } bterm_input_status;
 bterm_input_status bterm_input_state(const bterm *terminal);
 bkey_options bterm_key_options(const bterm *terminal, bool macos, bkey_option option_as_alt);
 bool bterm_key(const bterm *terminal, const bkey_event *event, bool macos, bkey_option option_as_alt,
                 uint8_t *output, size_t capacity, size_t *length);
+/* Paste transforms bytes for the child using negotiated mode 2004; empty text
+ * emits nothing. It does not consult the optional safety heuristic or any
+ * clipboard policy. The host decides whether/when to send the returned bytes. */
+bool bterm_paste(const bterm *terminal, const uint8_t *data, size_t size,
+                  uint8_t *output, size_t capacity, size_t *length);
+bool bterm_paste_safe(const bterm *terminal, const uint8_t *data, size_t size);
+/* Focus is host state and survives RIS. Successful calls update it even with
+ * mode 1004 off; with reporting on they return CSI I/O (3 bytes). Capacity
+ * failure changes neither output nor focus. Enabling 1004 emits current host
+ * focus through the reply sink. Calls never infer/deduplicate OS transitions. */
+bool bterm_focus(bterm *terminal, bool focused, uint8_t *output, size_t capacity, size_t *length);
 /* Uses current negotiated mouse modes and terminal geometry. Output is input
  * for the child PTY, distinct from the reply sink. Failure does not fail feed. */
 bool bterm_mouse(bterm *terminal, const bmouse_event *event, uint32_t cell_width, uint32_t cell_height,

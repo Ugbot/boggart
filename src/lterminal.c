@@ -11,6 +11,7 @@
 #define REPLY_CAPACITY 65536
 #define EVENT_CAPACITY 256
 #define EVENT_BYTES 65536
+#define PASTE_LIMIT (32u * 1024u * 1024u)
 typedef struct { size_t count, used; bterm_event events[EVENT_CAPACITY]; uint8_t bytes[EVENT_BYTES]; } event_queue;
 typedef struct {
   bterm *term; size_t reply_length; uint8_t replies[REPLY_CAPACITY];
@@ -247,11 +248,36 @@ static int l_input_state(lua_State *L) {
   bterm_input_status s=bterm_input_state(check(L)->term);
   static const char *modes[]={"none","x10","normal","button","any"};
   static const char *formats[]={"x10","utf8","sgr","urxvt","pixels"};
-  lua_createtable(L,0,7); lua_pushstring(L,modes[s.mouse_mode]); lua_setfield(L,-2,"mouse_mode");
+  lua_createtable(L,0,10); lua_pushstring(L,modes[s.mouse_mode]); lua_setfield(L,-2,"mouse_mode");
   lua_pushstring(L,formats[s.mouse_format]); lua_setfield(L,-2,"mouse_format");
   integer(L,"kitty_flags",s.kitty_flags); boolean(L,"backarrow",s.backarrow);
   boolean(L,"ignore_keypad_numlock",s.ignore_keypad_numlock); boolean(L,"alt_prefix",s.alt_prefix);
-  boolean(L,"modify_other_keys_2",s.modify_other_keys_2); return 1;
+  boolean(L,"modify_other_keys_2",s.modify_other_keys_2);
+  boolean(L,"bracketed_paste",s.bracketed_paste); boolean(L,"focus_reporting",s.focus_reporting);
+  boolean(L,"focused",s.focused); return 1;
+}
+static const uint8_t *paste_text(lua_State *L,size_t *length) {
+  luaL_checktype(L,2,LUA_TSTRING);const uint8_t *data=(const uint8_t *)luaL_checklstring(L,2,length);
+  luaL_argcheck(L,*length<=PASTE_LIMIT,2,"paste exceeds 32 MiB");return data;
+}
+static int l_paste_safe(lua_State *L) {
+  check(L);size_t n;const uint8_t *data=paste_text(L,&n);
+  bool safe=bterm_paste_safe(check(L)->term,data,n);lua_pushboolean(L,safe);return 1;
+}
+static int l_paste(lua_State *L) {
+  check(L);size_t n;const uint8_t *data=paste_text(L,&n);
+  if(!n){lua_pushliteral(L,"");return 1;}
+  luaL_Buffer buffer;size_t capacity=n+BPASTE_FRAME_SIZE;
+  uint8_t *output=(uint8_t *)luaL_buffinitsize(L,&buffer,capacity);size_t length;
+  /* Allocation can run finalizers; reacquire the live core afterward. */
+  if(!bterm_paste(check(L)->term,data,n,output,capacity,&length))return luaL_error(L,"invalid paste");
+  luaL_pushresultsize(&buffer,length);return 1;
+}
+static int l_focus(lua_State *L) {
+  check(L);luaL_checktype(L,2,LUA_TBOOLEAN);bool focused=lua_toboolean(L,2);
+  uint8_t output[3];size_t length;
+  if(!bterm_focus(check(L)->term,focused,output,sizeof output,&length))return luaL_error(L,"invalid focus event");
+  lua_pushlstring(L,(const char *)output,length);return 1;
 }
 static bool event_boolean(lua_State *L,const char *name) {
   event_field(L,name);bool value=false;
@@ -323,6 +349,7 @@ int luaopen_boggart_terminal(lua_State *L) {
   const luaL_Reg methods[] = { {"feed", l_feed}, {"finish", l_finish}, {"reset", l_reset}, {"state", l_state},
     {"row", l_row}, {"snapshot", l_snapshot}, {"damage", l_damage}, {"ack_damage", l_ack},
     {"replies", l_replies}, {"key", l_key}, {"mouse", l_mouse}, {"input_state", l_input_state}, {"events", l_events}, {"clipboard_policy", l_clipboard_policy},
+    {"paste", l_paste}, {"paste_safe", l_paste_safe}, {"focus", l_focus},
     {"clipboard_reply", l_clipboard_reply}, {"usage", l_usage}, {"close", l_close}, {"__gc", l_close}, {"__close", l_close}, {NULL, NULL} };
   luaL_newmetatable(L, TERMINAL_MT); luaL_setfuncs(L, methods, 0); lua_pushvalue(L, -1); lua_setfield(L, -2, "__index"); lua_pop(L, 1);
   lua_newtable(L); lua_pushcfunction(L, l_new); lua_setfield(L, -2, "new");

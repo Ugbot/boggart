@@ -32,6 +32,9 @@ the port boundary; it is not a correctness or completeness claim.
 | `src/input/mouse_encode.zig` | ported | `src/bmouse.c/h`; normalized events/options, five formats and atomic writes; no renderer types |
 | `src/termio/stream_handler.zig` | ported (selected cases) | Mouse-mode negotiation in `src/bterm_dispatch.c`; no message/PTY/app glue |
 | `src/terminal/Terminal.zig` | studied | Pinned input-state interface and last-set mouse semantics |
+| `src/input/paste.zig` | ported | `src/bpaste.c/h`; binary transforms, bracketed framing, optional safety heuristic and atomic/overlapping buffers |
+| `src/terminal/focus.zig` | ported | `src/bterm.c`; negotiated focus reports. Mode enable reports adapt the existing stream-handler path |
+| `src/terminal/paste.zig`, `src/termio/Termio.zig` | studied | Paste/focus call boundaries only; no clipboard readers, Kitty OTP grants, app/backend or PTY glue copied |
 | `src/unicode/grapheme.zig`, `props.zig`, `props_table.zig` | studied | BMUX-19; generated Unicode data, stream segmentation and width effects; review data licences separately |
 | `src/renderer`, `src/font` | skipped for P1 | Study shaping, atlas and damage handling before BMUX-24/25; keep Boggart's renderer |
 | `src/apprt`, `src/config`, `build.zig` | skipped | No platform app glue, config subsystem or Zig product build |
@@ -123,3 +126,11 @@ verified by the ledger checker. Kitty functional numbers come from the primary
 protocol and the raw `kitty.zig` table remains studied. `kitty/key.zig` supplies
 bounded per-screen stack behavior; `modes.zig` supplies selected DEC options and
 defaults. No platform app, key binding, configuration or IME glue is copied.
+
+Paste encoding ports the transform and heuristic in `input/paste.zig` to
+`bpaste.c/h`, with capacity validation before mutation and support for overlapping
+caller-owned buffers. `terminal/focus.zig` supplies the three-byte focus reports
+in `bterm.c`. The studied higher-level paste/termio files provide boundary
+context, not application/clipboard/PTY implementations. Boggart's host focus
+survives RIS rather than returning to the pinned reset's default focus flag;
+the view owns that state. See [terminal-core.md](terminal-core.md).

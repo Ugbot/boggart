@@ -2,6 +2,7 @@
  * ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/terminal/stream.zig
  * ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/input/key_encode.zig
  * ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/terminal/modes.zig
+ * ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/terminal/focus.zig
  * Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
  * SPDX-License-Identifier: MIT; see THIRD_PARTY/ghostty-LICENSE.
  * Adaptation: fixed geometry and scalar cells; Unicode/reflow follow separately.
@@ -195,6 +196,7 @@ bterm *bterm_create(size_t columns, size_t rows, size_t history_limit, bterm_rep
   t->columns = columns; t->rows = rows; t->reply = reply; t->reply_context = context;
   t->bottom = rows - 1; t->modes = BT_AUTOWRAP | BT_CURSOR_VISIBLE;
   t->ignore_keypad_numlock = t->alt_prefix = true;
+  t->focused = true;
   for (size_t x = 8; x < columns; x += 8) t->tabs[x] = true;
   lvt_init(&t->parser); return t;
 }
@@ -241,7 +243,7 @@ void bterm_ack_damage(bterm *t) { lpage_ack_damage(bt_active(t)->screen); }
 const lvt_parser *bterm_parser(const bterm *t) { return &t->parser; }
 bterm_input_status bterm_input_state(const bterm *t) {
   const bt_buffer *b=&t->buffers[t->active];
-  return (bterm_input_status){t->mouse_mode,t->mouse_format,b->kitty_flags[b->kitty_index],t->backarrow,t->ignore_keypad_numlock,t->alt_prefix,t->modify_other_keys_2};
+  return (bterm_input_status){t->mouse_mode,t->mouse_format,b->kitty_flags[b->kitty_index],t->backarrow,t->ignore_keypad_numlock,t->alt_prefix,t->modify_other_keys_2,(t->modes&BT_BRACKETED_PASTE)!=0,(t->modes&BT_FOCUS)!=0,t->focused};
 }
 bkey_options bterm_key_options(const bterm *t, bool macos, bkey_option option) {
   bterm_input_status s=bterm_input_state(t);
@@ -249,6 +251,21 @@ bkey_options bterm_key_options(const bterm *t, bool macos, bkey_option option) {
 }
 bool bterm_key(const bterm *t,const bkey_event *event,bool macos,bkey_option option,uint8_t *output,size_t capacity,size_t *length){
   bkey_options o=bterm_key_options(t,macos,option);return bkey_encode(event,&o,output,capacity,length);
+}
+bool bterm_paste(const bterm *t,const uint8_t *data,size_t size,uint8_t *output,size_t capacity,size_t *length) {
+  if(!size){*length=0;return true;}
+  return bpaste_encode(data,size,(t->modes&BT_BRACKETED_PASTE)!=0,output,capacity,length);
+}
+bool bterm_paste_safe(const bterm *t,const uint8_t *data,size_t size) {
+  return bpaste_safe(data,size,(t->modes&BT_BRACKETED_PASTE)!=0);
+}
+bool bterm_focus(bterm *t,bool focused,uint8_t *output,size_t capacity,size_t *length) {
+  *length=0;
+  if(t->modes&BT_FOCUS) {
+    if(!output || capacity<3)return false;
+    memcpy(output,focused ? "\033[I" : "\033[O",3);*length=3;
+  }
+  t->focused=focused;return true;
 }
 bool bterm_mouse(bterm *t, const bmouse_event *event, uint32_t width, uint32_t height,
                   uint8_t *output, size_t capacity, size_t *length) {

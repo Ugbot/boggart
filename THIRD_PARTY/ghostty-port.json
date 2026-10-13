@@ -283,12 +283,41 @@
         "src/bterm.c",
         "src/bterm_dispatch.c"
       ]
+    },
+    {
+      "upstream_path": "src/input/paste.zig",
+      "sha256": "81cc2943b84787062afcc72547471252dde929038eb32b3c61be235309198bc4",
+      "status": "ported",
+      "ported_files": [
+        "src/bpaste.c",
+        "src/bpaste.h"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/focus.zig",
+      "sha256": "150d78d10d25a065384a7e20630c50df29f1e9ecee40843c88ea21f14da9c40b",
+      "status": "ported",
+      "ported_files": [
+        "src/bterm.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/paste.zig",
+      "sha256": "99442289e7941e5a3944a957f9a1055ee1e086f9144d0c2a8c66309a11c3e0b9",
+      "status": "studied",
+      "ported_files": []
+    },
+    {
+      "upstream_path": "src/termio/Termio.zig",
+      "sha256": "d80ea8fdecd3da3a9eeefec9a87b92edfc0f2f6db92d23953a7e2003976ffbc7",
+      "status": "studied",
+      "ported_files": []
     }
   ],
   "nested_licenses": [
     {
       "component": "Foot function-key mappings via Ghostty src/input/function_keys.zig",
-      "copyright": "Copyright (c) 2019 Daniel Eklöf",
+      "copyright": "Copyright (c) 2019 Daniel Ekl\u00f6f",
       "source": "https://codeberg.org/dnkl/foot/raw/branch/master/LICENSE",
       "license_file": "THIRD_PARTY/foot-LICENSE",
       "sha256": "d534a23a31500a0ac958d9634b84f532bd73ff1aca1bb8f7debbcbebc16ff39a",
