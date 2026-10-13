@@ -1,5 +1,7 @@
 /* ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/terminal/stream.zig
  * ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/termio/stream_handler.zig
+ * ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/terminal/kitty/key.zig
+ * ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/terminal/modes.zig
  * Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
  * SPDX-License-Identifier: MIT; see THIRD_PARTY/ghostty-LICENSE.
  * Adaptation: focused CSI commands, C screen operations and an explicit reply
@@ -7,6 +9,7 @@
  */
 #include "bterm_internal.h"
 #include <stdio.h>
+#include <string.h>
 static size_t parameter(const lvt_event *e, size_t i, size_t fallback) {
   return i < e->nparams && e->params[i] ? e->params[i] : fallback;
 }
@@ -20,6 +23,10 @@ static void mode(bterm *t, unsigned p, bool private_mode, bool enabled) {
       t->mouse_format = enabled ? (p == 1005 ? BM_UTF8 : p == 1006 ? BM_SGR : p == 1015 ? BM_URXVT : BM_PIXELS) : BM_FORMAT_X10;
       t->mouse_motion.valid = false; return;
     case 1: bit = BT_APP_CURSOR; break;
+    case 66: bit = BT_APP_KEYPAD; break;
+    case 67: t->backarrow = enabled; return;
+    case 1035: t->ignore_keypad_numlock = enabled; return;
+    case 1036: t->alt_prefix = enabled; return;
     case 5: bit = BT_REVERSE_VIDEO; lpage_damage_all(bt_active(t)->screen); break;
     case 6: bit = BT_ORIGIN; break;
     case 7: bit = BT_AUTOWRAP; bt_active(t)->cursor.pending_wrap = false; break;
@@ -68,12 +75,34 @@ static void device_reply(bterm *t, const lvt_event *e, uint8_t prefix) {
 void bt_csi(bterm *t, const lvt_event *e) {
   uint8_t prefix = e->nintermediates == 1 ? e->intermediates[0] : 0;
   if (e->nintermediates > 1) return;
+  if (e->final == 'u' && prefix) {
+    if (e->separators) return;
+    bt_buffer *b=bt_active(t); unsigned p=e->nparams ? e->params[0] : 0;
+    if (prefix=='?' && !e->nparams) {
+      char reply[16]; int n=snprintf(reply,sizeof reply,"\033[?%uu",b->kitty_flags[b->kitty_index]);
+      if(n>0 && (size_t)n<sizeof reply)bt_reply(t,reply,(size_t)n);
+    } else if (prefix=='>' && e->nparams<=1 && p<=31) {
+      b->kitty_index=(uint8_t)((b->kitty_index+1)&7);b->kitty_flags[b->kitty_index]=(uint8_t)p;
+    } else if (prefix=='<' && e->nparams<=1) {
+      size_t n=e->nparams ? p : 1;
+      if(n>=8){memset(b->kitty_flags,0,sizeof b->kitty_flags);b->kitty_index=0;}
+      else while(n--){b->kitty_flags[b->kitty_index]=0;b->kitty_index=(uint8_t)((b->kitty_index+7)&7);}
+    } else if (prefix=='=' && e->nparams<=2 && p<=31) {
+      unsigned action=e->nparams>=2 ? e->params[1] : 1;uint8_t *f=&b->kitty_flags[b->kitty_index];
+      if(action==1)*f=(uint8_t)p;else if(action==2)*f|=(uint8_t)p;else if(action==3)*f&=(uint8_t)~p;
+    }
+    return;
+  }
   if (e->final == 'h' || e->final == 'l') {
     if (e->nintermediates && prefix != '?') return;
     for (size_t i = 0; i < e->nparams && !t->failed; i++) mode(t, e->params[i], prefix == '?', e->final == 'h');
     return;
   }
-  if (e->final == 'm') { if (!e->nintermediates) bt_sgr(t, e); return; }
+  if (e->final == 'm') {
+    if (!e->nintermediates) bt_sgr(t, e);
+    else if(prefix=='>' && !e->separators && e->nparams>=1 && e->nparams<=2 && e->params[0]==4 && (e->nparams==1 || e->params[1]<=2))t->modify_other_keys_2=e->nparams==2 && e->params[1]==2;
+    return;
+  }
   if (e->final == 'c' || e->final == 'n') {
     if (e->nparams <= 1 && (!e->nintermediates || prefix == '?' || prefix == '>')) device_reply(t, e, prefix);
     return;

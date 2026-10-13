@@ -923,8 +923,8 @@ enable_testing()
 # Embed the sources actually compiled into this terminal backend. Benchmarks
 # reject a stale executable instead of attributing it to current disk contents.
 set(BMUX_TERMINAL_SOURCE_FILES src/lvt.c src/vt_table.h src/lstyle.c src/llink.c src/lpage.c
-  src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bterm_osc.c src/lterminal.c
-  src/lvt.h src/lstyle.h src/llink.h src/lpage.h src/bosc.h src/bmouse.h src/bterm.h src/bterm_internal.h)
+  src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bterm_osc.c src/lterminal.c
+  src/lvt.h src/lstyle.h src/llink.h src/lpage.h src/bosc.h src/bmouse.h src/bkey.h src/bterm.h src/bterm_internal.h)
 set(_terminal_source_header "/* Generated build identity; do not edit. */\nstatic const struct { const char *path, *sha256; } terminal_source_files[] = {\n")
 foreach(_source IN LISTS BMUX_TERMINAL_SOURCE_FILES)
   file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${_source}" _sha)
@@ -938,7 +938,7 @@ if(TARGET boggart-studio)
   target_include_directories(boggart-studio PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 endif()
 add_library(boggart_vt STATIC src/lvt.c src/lstyle.c src/llink.c src/lpage.c
-  src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bterm_osc.c)
+  src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bterm_osc.c)
 target_include_directories(boggart_vt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(boggart PRIVATE boggart_vt)
 if(TARGET boggart-studio)
@@ -968,6 +968,12 @@ add_test(NAME mouse_encode COMMAND mouse_encode_test)
 add_executable(terminal_mouse_test tests/c/terminal_mouse.c)
 target_link_libraries(terminal_mouse_test PRIVATE boggart_vt)
 add_test(NAME terminal_mouse COMMAND terminal_mouse_test)
+add_executable(key_encode_test tests/c/key.c)
+target_link_libraries(key_encode_test PRIVATE boggart_vt)
+add_test(NAME key_encode COMMAND key_encode_test)
+add_executable(terminal_key_test tests/c/terminal_key.c)
+target_link_libraries(terminal_key_test PRIVATE boggart_vt)
+add_test(NAME terminal_key COMMAND terminal_key_test)
 
 # Headless native parse/grid throughput. Performance budgets are supplied
 # explicitly after baseline measurement.
@@ -1028,4 +1034,4 @@ endif()
 # interpreter and JSON lib too, so a misuse inside them is attributed.
 boggart_apply_sanitizer(boggart boggart-studio auth_threads_test assert_trap_test crash_handler_test
                         termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt vt_parser_test page_storage_test
-                        terminal_dispatch_test osc_commands_test terminal_events_test terminal_links_test mouse_encode_test terminal_mouse_test)
+                        terminal_dispatch_test osc_commands_test terminal_events_test terminal_links_test mouse_encode_test terminal_mouse_test key_encode_test terminal_key_test)

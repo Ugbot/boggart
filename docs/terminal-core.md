@@ -187,7 +187,7 @@ return no values. `finish()` belongs at EOF, never at a read boundary.
 rows, live styles/links, link capacity bytes and queued reply bytes/capacity. Its screen byte count is not
 whole-terminal RSS or Lua allocation accounting. C grid allocations belong to
 the native core; snapshots and the userdata belong to Lua. `source()` returns
-the 20 source/header hashes embedded during CMake configuration. Changes to
+the 22 source/header hashes embedded during CMake configuration. Changes to
 those files trigger regeneration; the native benchmark compares them with the
 checkout and rejects a stale executable.
 
@@ -357,6 +357,81 @@ cell-size changes and failed writes. Lua tests cover strict validation,
 raw-field reads, dimensions, motion and separation from replies; parity checks
 encode mouse bytes and input state in both front ends.
 
-Keyboard/Kitty negotiation and studio routing are subsequent BMUX-18 increments.
-The studio still has its fixed key table and old parser; this native capability
-is not a claim that live studio mouse reporting is integrated.
+## Native keyboard input (BMUX-18 increment)
+
+`src/bkey.c/h` translates the pinned keyboard encoder and legacy function-key
+behavior into normalized C99 events. It supports press/repeat/release, application
+cursor/keypad modes, DEC backarrow/NumLock handling, modifyOtherKeys mode 2,
+legacy C0/fixterms and all five Kitty flags. Functional keys cover the pinned
+Ghostty set (F1–F25, navigation, keypad, locks and left/right modifiers). Their
+Kitty numeric ranges derive from the [primary protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/#functional-key-definitions);
+`kitty.zig` remains studied. The Foot-based legacy mappings retain Daniel
+Eklöf's copyright and the full `THIRD_PARTY/foot-LICENSE` notice, whose hash and
+derivative headers are checked alongside the Ghostty ledger.
+
+Physical printable keys use `key="text"` plus explicit `base_layout` and
+`unshifted` Unicode scalars. The host supplies the physical PC-layout character
+and the unshifted character in the active layout separately; text contains the
+actual UTF-8 produced by the event. Modifiers are held-state bits after the
+event, with separate consumed modifiers and right-side bits. Consumed modifiers
+affect text-bearing binding decisions, while Kitty reports the original held
+state. Lock bits are excluded from legacy bindings. Shift/Alt/Ctrl/Super match
+the pinned behavior; Hyper/Meta additionally encode their primary Kitty bits.
+The host supplies post-event modifier state, including releases with the other
+side still held; the encoder does not infer the OS's key state.
+
+Text is valid UTF-8, at most 4096 bytes per event. Unshifted/base scalars must be
+valid Unicode (zero means absent). Unlike the pinned writer's invalid-UTF-8
+fallbacks, invalid input is rejected before any bytes are written. A sizing pass
+and an emission pass produce atomic output without allocation, including at
+insufficient capacity. Associated text skips C0/DEL as in the pinned encoder,
+and also excludes C1 controls as required by the primary protocol. The maximum
+output bound is `BKEY_CAPACITY` (32864 bytes); output must not alias input.
+
+Composing/preedit events are suppressed, except Kitty modifier events in
+all-key mode. IME confirmation on Enter sends committed text directly and
+Backspace with preedit text emits nothing, preserving the pinned behavior.
+An unidentified pure text event also retains the pinned direct-text fallback,
+even with Kitty flags set. The host must submit each committed text event once;
+text delivery and physical key callbacks need coordinated routing in Studio.
+
+```lua
+local terminal = require "terminal"
+local t <close> = terminal.new(80, 24)
+t:feed(child_output)
+local bytes = t:key { key = "text", action = "press", text = "A",
+  unshifted = 97, base_layout = 97, modifiers = terminal.SHIFT,
+  consumed_modifiers = terminal.SHIFT }
+-- Host writes bytes once to the child PTY.
+```
+
+`key` reads raw fields and validates action/key names, scalars, UTF-8, modifiers,
+sizes and booleans. Action defaults to press, key to text, and absent fields to
+zero/empty/false. `option_as_alt` is `none` (default), `all`, `left` or `right`.
+On macOS the side and policy govern Option text translation, Alt prefixes and
+associated text. Elsewhere Alt always represents a modifier. C callers can
+explicitly select macOS behavior for portable tests using `bterm_key_options`
+or `bterm_key`. Input output remains separate from automatic terminal replies.
+
+Native DEC modes 1/66/67/1035/1036 and ESC keypad mode select keyboard options;
+1035/1036 default on. CSI `>4;2m` enables modifyOtherKeys mode 2 and `>4m` or
+`>4;0/1m` disables it. Each screen owns a fixed eight-entry Kitty flag ring:
+CSI `>flags u` pushes, `<number u` pops, `=flags;mode u` replaces/sets/clears
+bits, and `?u` emits `?flags u` through the reply sink. Missing push flags mean
+zero, missing pop count means one, explicit zero count does nothing. As in the
+pinned stack, large pops clear the ring and overflowing pushes evict old state.
+Unknown flags/modes, colon parameters and excess parameters leave state alone.
+The main and alternate screen stacks remain independent and RIS clears both.
+`input_state()` now also copies `kitty_flags`, `backarrow`, `ignore_keypad_numlock`,
+`alt_prefix` and `modify_other_keys_2`; application modes remain in `state().modes`.
+
+`tests/c/key.c` covers exact legacy/application/Kitty sequences, C0 ambiguity,
+non-Latin and Unicode input, modifier sides, IME, capacity atomicity and UTF-8
+bounds, plus every functional-key/flag/modifier combination. Native tests cover
+query replies, bounded stack overflow/pop, invalid negotiations, alternate
+screens, RIS and 1–17-byte chunks. Lua tests cover the full negotiated path,
+raw fields and validation; parity also fingerprints encoded keyboard bytes.
+
+Studio key/mouse routing and paste/focus helpers are subsequent BMUX-18 work.
+The studio still has its fixed key table and old parser; these native APIs do
+not claim that live Studio keyboard or mouse reporting is integrated.

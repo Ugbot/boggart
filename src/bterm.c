@@ -1,5 +1,7 @@
 /* ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/terminal/Screen.zig
  * ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/terminal/stream.zig
+ * ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/input/key_encode.zig
+ * ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/terminal/modes.zig
  * Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
  * SPDX-License-Identifier: MIT; see THIRD_PARTY/ghostty-LICENSE.
  * Adaptation: fixed geometry and scalar cells; Unicode/reflow follow separately.
@@ -192,6 +194,7 @@ bterm *bterm_create(size_t columns, size_t rows, size_t history_limit, bterm_rep
   if (!t->buffers[0].screen) { free(t); return NULL; }
   t->columns = columns; t->rows = rows; t->reply = reply; t->reply_context = context;
   t->bottom = rows - 1; t->modes = BT_AUTOWRAP | BT_CURSOR_VISIBLE;
+  t->ignore_keypad_numlock = t->alt_prefix = true;
   for (size_t x = 8; x < columns; x += 8) t->tabs[x] = true;
   lvt_init(&t->parser); return t;
 }
@@ -208,6 +211,7 @@ bool bterm_reset(bterm *t) {
   t->failed = false; bt_set_pen(t, (lpage_style){0, 0, 0, 0});
   for (unsigned i = 0; i < 2; i++) {
     bt_buffer *b = &t->buffers[i];
+    memset(b->kitty_flags, 0, sizeof b->kitty_flags); b->kitty_index = 0;
     if (!b->screen) continue;
     if (b->hyperlink_id) llink_release(lpage_links(b->screen), b->hyperlink_id);
     b->hyperlink_id = 0;
@@ -220,6 +224,8 @@ bool bterm_reset(bterm *t) {
   t->modes = BT_AUTOWRAP | BT_CURSOR_VISIBLE; t->last_printed = t->cursor_style = 0;
   t->mouse_mode = BM_NONE; t->mouse_format = BM_FORMAT_X10;
   t->mouse_motion.valid = false; t->mouse_cell_width = t->mouse_cell_height = 0;
+  t->backarrow = t->modify_other_keys_2 = false;
+  t->ignore_keypad_numlock = t->alt_prefix = true;
   memset(t->tabs, 0, sizeof t->tabs);
   for (size_t x = 8; x < t->columns; x += 8) t->tabs[x] = true;
   lvt_init(&t->parser); return !t->failed;
@@ -233,7 +239,17 @@ const llink_value *bterm_link(const bterm *t, uint32_t id) { return lpage_link(b
 const lpage_style *bterm_style(const bterm *t, uint32_t id) { return lstyle_get(lpage_styles(t->buffers[t->active].screen), id); }
 void bterm_ack_damage(bterm *t) { lpage_ack_damage(bt_active(t)->screen); }
 const lvt_parser *bterm_parser(const bterm *t) { return &t->parser; }
-bterm_input_status bterm_input_state(const bterm *t) { return (bterm_input_status){t->mouse_mode, t->mouse_format}; }
+bterm_input_status bterm_input_state(const bterm *t) {
+  const bt_buffer *b=&t->buffers[t->active];
+  return (bterm_input_status){t->mouse_mode,t->mouse_format,b->kitty_flags[b->kitty_index],t->backarrow,t->ignore_keypad_numlock,t->alt_prefix,t->modify_other_keys_2};
+}
+bkey_options bterm_key_options(const bterm *t, bool macos, bkey_option option) {
+  bterm_input_status s=bterm_input_state(t);
+  return (bkey_options){(t->modes&BT_APP_CURSOR)!=0,(t->modes&BT_APP_KEYPAD)!=0,s.backarrow,s.ignore_keypad_numlock,s.alt_prefix,s.modify_other_keys_2,macos,option,s.kitty_flags};
+}
+bool bterm_key(const bterm *t,const bkey_event *event,bool macos,bkey_option option,uint8_t *output,size_t capacity,size_t *length){
+  bkey_options o=bterm_key_options(t,macos,option);return bkey_encode(event,&o,output,capacity,length);
+}
 bool bterm_mouse(bterm *t, const bmouse_event *event, uint32_t width, uint32_t height,
                   uint8_t *output, size_t capacity, size_t *length) {
   bmouse_options options = { t->mouse_mode, t->mouse_format, (uint32_t)t->columns, (uint32_t)t->rows, width, height };

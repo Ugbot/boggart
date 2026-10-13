@@ -1,4 +1,5 @@
 /* ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/terminal/Screen.zig
+ * ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/terminal/kitty/key.zig
  * Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
  * SPDX-License-Identifier: MIT; see THIRD_PARTY/ghostty-LICENSE.
  * Private state shared by terminal lifecycle, CSI dispatch and SGR parsing.
@@ -16,6 +17,7 @@ typedef struct {
   uint32_t pen_id;
   uint32_t hyperlink_id;
   bool pen_valid;
+  uint8_t kitty_flags[8], kitty_index;
 } bt_buffer;
 typedef struct bt_notifications bt_notifications;
 struct bterm {
@@ -29,6 +31,7 @@ struct bterm {
   bmouse_format mouse_format;
   bmouse_motion mouse_motion;
   uint32_t mouse_cell_width, mouse_cell_height;
+  bool backarrow, ignore_keypad_numlock, alt_prefix, modify_other_keys_2;
   lpage_style pen;
   bool tabs[4096], failed;
   bterm_reply reply;

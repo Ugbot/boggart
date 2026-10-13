@@ -240,15 +240,52 @@ static int l_events(lua_State *L) {
 static void event_field(lua_State *L, const char *key) { lua_pushstring(L,key); lua_rawget(L,2); }
 static lua_Integer event_integer(lua_State *L, const char *key, lua_Integer fallback, lua_Integer low, lua_Integer high) {
   event_field(L,key); lua_Integer value=luaL_optinteger(L,-1,fallback); lua_pop(L,1);
-  if (value < low || value > high) luaL_error(L,"mouse %s out of range",key);
+  if (value < low || value > high) luaL_error(L,"input %s out of range",key);
   return value;
 }
 static int l_input_state(lua_State *L) {
   bterm_input_status s=bterm_input_state(check(L)->term);
   static const char *modes[]={"none","x10","normal","button","any"};
   static const char *formats[]={"x10","utf8","sgr","urxvt","pixels"};
-  lua_createtable(L,0,2); lua_pushstring(L,modes[s.mouse_mode]); lua_setfield(L,-2,"mouse_mode");
-  lua_pushstring(L,formats[s.mouse_format]); lua_setfield(L,-2,"mouse_format"); return 1;
+  lua_createtable(L,0,7); lua_pushstring(L,modes[s.mouse_mode]); lua_setfield(L,-2,"mouse_mode");
+  lua_pushstring(L,formats[s.mouse_format]); lua_setfield(L,-2,"mouse_format");
+  integer(L,"kitty_flags",s.kitty_flags); boolean(L,"backarrow",s.backarrow);
+  boolean(L,"ignore_keypad_numlock",s.ignore_keypad_numlock); boolean(L,"alt_prefix",s.alt_prefix);
+  boolean(L,"modify_other_keys_2",s.modify_other_keys_2); return 1;
+}
+static bool event_boolean(lua_State *L,const char *name) {
+  event_field(L,name);bool value=false;
+  if(!lua_isnil(L,-1)){luaL_checktype(L,-1,LUA_TBOOLEAN);value=lua_toboolean(L,-1);}
+  lua_pop(L,1);return value;
+}
+static int l_key(lua_State *L) {
+  check(L);luaL_checktype(L,2,LUA_TTABLE);bkey_event event={0};size_t n;
+  event_field(L,"key");const char *key=luaL_optlstring(L,-1,"text",&n);
+  if(!bkey_from_name(key,n,&event.key))return luaL_error(L,"unknown terminal key");lua_pop(L,1);
+  static const char *actions[]={"press","repeat","release",NULL};
+  event_field(L,"action");const char *action=luaL_optlstring(L,-1,"press",&n);
+  if(memchr(action,0,n))return luaL_error(L,"invalid key action");
+  event.action=(bkey_action)luaL_checkoption(L,-1,"press",actions);lua_pop(L,1);
+  event.modifiers=(unsigned)event_integer(L,"modifiers",0,0,255);
+  event.consumed_modifiers=(unsigned)event_integer(L,"consumed_modifiers",0,0,255);
+  event.right_modifiers=(unsigned)event_integer(L,"right_modifiers",0,0,15);
+  event.unshifted=(uint32_t)event_integer(L,"unshifted",0,0,0x10ffff);
+  event.base_layout=(uint32_t)event_integer(L,"base_layout",0,0,0x10ffff);
+  event.composing=event_boolean(L,"composing");
+  static const char *options[]={"none","all","left","right",NULL};
+  event_field(L,"option_as_alt");const char *option=luaL_optlstring(L,-1,"none",&n);
+  if(memchr(option,0,n))return luaL_error(L,"invalid Option policy");
+  bkey_option alt=(bkey_option)luaL_checkoption(L,-1,"none",options);lua_pop(L,1);
+  /* Keep text rooted on the stack, including a coerced Lua number. */
+  event_field(L,"text");event.text=(const uint8_t *)luaL_optlstring(L,-1,"",&event.text_length);
+  uint8_t output[BKEY_CAPACITY];size_t length;
+#ifdef __APPLE__
+  bool macos=true;
+#else
+  bool macos=false;
+#endif
+  if(!bterm_key(check(L)->term,&event,macos,alt,output,sizeof output,&length))return luaL_error(L,"invalid key event");
+  lua_pushlstring(L,(const char *)output,length);return 1;
 }
 static int l_mouse(lua_State *L) {
   check(L); luaL_checktype(L,2,LUA_TTABLE);
@@ -285,7 +322,7 @@ static int l_source(lua_State *L) {
 int luaopen_boggart_terminal(lua_State *L) {
   const luaL_Reg methods[] = { {"feed", l_feed}, {"finish", l_finish}, {"reset", l_reset}, {"state", l_state},
     {"row", l_row}, {"snapshot", l_snapshot}, {"damage", l_damage}, {"ack_damage", l_ack},
-    {"replies", l_replies}, {"mouse", l_mouse}, {"input_state", l_input_state}, {"events", l_events}, {"clipboard_policy", l_clipboard_policy},
+    {"replies", l_replies}, {"key", l_key}, {"mouse", l_mouse}, {"input_state", l_input_state}, {"events", l_events}, {"clipboard_policy", l_clipboard_policy},
     {"clipboard_reply", l_clipboard_reply}, {"usage", l_usage}, {"close", l_close}, {"__gc", l_close}, {"__close", l_close}, {NULL, NULL} };
   luaL_newmetatable(L, TERMINAL_MT); luaL_setfuncs(L, methods, 0); lua_pushvalue(L, -1); lua_setfield(L, -2, "__index"); lua_pop(L, 1);
   lua_newtable(L); lua_pushcfunction(L, l_new); lua_setfield(L, -2, "new");
@@ -294,5 +331,9 @@ int luaopen_boggart_terminal(lua_State *L) {
   integer(L, "AUTOWRAP", BT_AUTOWRAP); integer(L, "ORIGIN", BT_ORIGIN); integer(L, "CURSOR_VISIBLE", BT_CURSOR_VISIBLE);
   integer(L, "BRACKETED_PASTE", BT_BRACKETED_PASTE); integer(L, "FOCUS", BT_FOCUS);
   integer(L, "SHIFT", BI_SHIFT); integer(L, "ALT", BI_ALT); integer(L, "CTRL", BI_CTRL);
+  integer(L, "SUPER", BI_SUPER); integer(L, "HYPER", BI_HYPER); integer(L, "META", BI_META);
+  integer(L, "CAPS_LOCK", BI_CAPS_LOCK); integer(L, "NUM_LOCK", BI_NUM_LOCK);
+  integer(L, "KITTY_DISAMBIGUATE", BK_DISAMBIGUATE); integer(L, "KITTY_EVENTS", BK_EVENTS);
+  integer(L, "KITTY_ALTERNATES", BK_ALTERNATES); integer(L, "KITTY_ALL", BK_ALL); integer(L, "KITTY_ASSOCIATED", BK_ASSOCIATED);
   return 1;
 }
