@@ -14,7 +14,7 @@ the optional differential oracle, whose build will need that pinned toolchain.
 `THIRD_PARTY/ghostty-LICENSE` is the exact upstream MIT notice. The machine
 ledger in `THIRD_PARTY/ghostty-port.json` records the source SHA-256 hashes,
 review status and destination files. The parser mechanism and transition table
-are now ported; grid operations, typed CSI/OSC handling and PTY integration remain
+and page/style storage are now ported; typed CSI/OSC handling and PTY integration remain
 separate BMUX work.
 “Studied” below means its interface and dependencies have been reviewed for
 the port boundary; it is not a correctness or completeness claim.
@@ -25,7 +25,7 @@ the port boundary; it is not a correctness or completeness claim.
 | `src/terminal/UTF8Decoder.zig` | studied | Streaming replacement behaviour verified; Boggart uses original scalar-range checks instead of copying third-party DFA tables |
 | `src/terminal/osc.zig` | studied | BMUX-17; bounded OSC payloads; title/cwd/link/notification/shell-mark events go to the owning session |
 | `src/terminal/stream.zig`, `sgr.zig` | studied | BMUX-16/17; dispatch and SGR attributes adapted to C grid operations; no renderer calls from the parser |
-| `src/terminal/PageList.zig`, `page.zig`, `Screen.zig`, `style.zig` | studied | BMUX-15/20; page pools, row metadata, style IDs/refcounts, screen and history ownership, reflow and tracked positions |
+| `src/terminal/PageList.zig`, `page.zig`, `Screen.zig`, `style.zig` | ported | BMUX-15; `src/lpage.c/h`, `src/lstyle.c/h`; portable 16-row pages, visible/history rings, style IDs/refcounts and damage. Reflow and tracked positions remain BMUX-20 |
 | `src/input/key_encode.zig`, `kitty.zig`, `mouse_encode.zig` | studied | BMUX-18; explicit normalized events/options; no AppKit/SDL types in the C interface |
 | `src/unicode/grapheme.zig`, `props.zig`, `props_table.zig` | studied | BMUX-19; generated Unicode data, stream segmentation and width effects; review data licences separately |
 | `src/renderer`, `src/font` | skipped for P1 | Study shaping, atlas and damage handling before BMUX-24/25; keep Boggart's renderer |

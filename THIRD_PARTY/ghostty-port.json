@@ -42,26 +42,38 @@
     {
       "upstream_path": "src/terminal/PageList.zig",
       "sha256": "c7008280a3dafdcafb48779540faa5605544587b92cbef32b2e52eec678506b0",
-      "status": "studied",
-      "ported_files": []
+      "status": "ported",
+      "ported_files": [
+        "src/lpage.c",
+        "src/lpage.h"
+      ]
     },
     {
       "upstream_path": "src/terminal/page.zig",
       "sha256": "f5fba3771276655beef524f0c291d1438c005b8be5db5e09ba00446bd546dcd4",
-      "status": "studied",
-      "ported_files": []
+      "status": "ported",
+      "ported_files": [
+        "src/lpage.c",
+        "src/lpage.h"
+      ]
     },
     {
       "upstream_path": "src/terminal/Screen.zig",
       "sha256": "eafa0ea0e161ad9e4d004ee6c418f679663b0d342c57c8d90be94922a1ba3f4a",
-      "status": "studied",
-      "ported_files": []
+      "status": "ported",
+      "ported_files": [
+        "src/lpage.c",
+        "src/lpage.h"
+      ]
     },
     {
       "upstream_path": "src/terminal/style.zig",
       "sha256": "b26507489473b7b2158adf3e70c9aac2665417e582eb5c3cab5a491e6d2cf5c9",
-      "status": "studied",
-      "ported_files": []
+      "status": "ported",
+      "ported_files": [
+        "src/lstyle.c",
+        "src/lstyle.h"
+      ]
     },
     {
       "upstream_path": "src/input/key_encode.zig",

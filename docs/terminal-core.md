@@ -1,10 +1,10 @@
-# C terminal parser (BMUX-14)
+# C terminal core (BMUX-14/15)
 
 `src/lvt.c` owns byte parsing, not a window, PTY, screen or Lua state. Its
 `lvt_parser` contains all mutable storage for one stream; the transition table
 is immutable. The module requires C99, calls no allocator and has no global
 mutable state. `boggart_vt` is compiled with both front ends; consumers will
-land with grid dispatch and PTY integration in BMUX-15/16/21. The studio still
+land with grid dispatch and PTY integration in BMUX-16/21. The studio still
 uses its Lua parser until that integration is verified.
 
 ```c
@@ -54,3 +54,42 @@ the parser for sanitizer coverage. ASan/UBSan and TSan are supported by the
 existing `BOGGART_SANITIZER` build option and apply to both the parser library
 and its test executable. This suite verifies the parser mechanism; it does not
 claim that vim or a multiplexer renders correctly yet.
+
+## Page and style storage (BMUX-15)
+
+`src/lpage.c` stores fixed-geometry screens in contiguous allocations of 16
+rows. Visible rows and bounded history use pointer rings; full-screen upward
+scroll rotates visible pointers and, once history fills, recycles its oldest
+row. Region scrolling moves only pointers within that region. History pointer
+capacity grows lazily to its configured limit. Clearing history releases cell
+styles and frees empty pages. `lpage_usage` reports owned capacity bytes, not
+process RSS or allocator overhead. Geometry is limited to 1–4096 rows/columns;
+resize/reflow belongs to BMUX-20.
+
+Cells preserve codepoint, style ID, hyperlink ID and width/flags; wide-cell
+pair integrity and grapheme storage remain BMUX-19. Rows expose wrapped and
+damage state. `lpage_ack_damage` acknowledges visible damage after a renderer
+consumes it; scrolling conservatively damages the whole visible screen.
+Borrowed rows/cells can move or recycle on any mutation, so renderers must not
+retain their pointers across terminal updates.
+
+`src/lstyle.c` interns default, indexed and RGB colours plus attributes in a
+screen-owned hash table. Acquiring a style owns one reference; each cell owns
+its own reference, including cells in history. Cell edits transfer references
+with their cells. Last release removes the hash entry and reuses its ID.
+Default ID 0 is permanent. Retain an ID while holding it outside a cell; it
+cannot be shared between screens, and a borrowed style value can be invalidated
+by the next pool mutation.
+
+```sh
+ctest --test-dir build -R '^page_storage$' --output-on-failure
+```
+
+The storage suite checks style deduplication and reuse, history eviction,
+stable owned bytes after history fills, cell insert/delete reference transfer,
+region scrolling and damage. It compares 30,000 mixed operations against a
+simple shifting reference screen with exact cell, wrap, history and reference
+counts, including multiple page allocations, ring growth and history clearing.
+The test and library use the existing sanitizer build option. Dispatch and
+Lua/PTY consumers remain subsequent work; this storage API does not establish
+terminal compatibility by itself.

@@ -918,7 +918,7 @@ endif()
 # rule itself under test -- it still resolves %LOCALAPPDATA%, that just now
 # points somewhere disposable.
 enable_testing()
-add_library(boggart_vt STATIC src/lvt.c)
+add_library(boggart_vt STATIC src/lvt.c src/lstyle.c src/lpage.c)
 target_include_directories(boggart_vt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(boggart PRIVATE boggart_vt)
 if(TARGET boggart-studio)
@@ -927,6 +927,9 @@ endif()
 add_executable(vt_parser_test tests/c/vt_parser.c)
 target_link_libraries(vt_parser_test PRIVATE boggart_vt)
 add_test(NAME vt_parser COMMAND vt_parser_test)
+add_executable(page_storage_test tests/c/page.c)
+target_link_libraries(page_storage_test PRIVATE boggart_vt)
+add_test(NAME page_storage COMMAND page_storage_test)
 
 # Headless parse/grid throughput; the adapter is replaced when the C VT core
 # lands. Performance budgets are supplied explicitly after baseline measurement.
@@ -986,4 +989,4 @@ endif()
 # Sanitizers on boggart's own code and the C tests (BOG-10); the vendored
 # interpreter and JSON lib too, so a misuse inside them is attributed.
 boggart_apply_sanitizer(boggart boggart-studio auth_threads_test assert_trap_test crash_handler_test
-                        termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt vt_parser_test)
+                        termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt vt_parser_test page_storage_test)
