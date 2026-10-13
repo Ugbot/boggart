@@ -8,7 +8,7 @@ and terminal grapheme widths. The immutable property table is compiled once into
 CLI, Studio, termctl and the terminal backend share this library through CMake.
 `src/utf8width.h` retains compatibility names without embedding another table;
 `tc_wcwidth` delegates to the same lookup. Terminal build identity includes the
-kernel, interface and generated table (27 compiled source/header hashes).
+kernel, interface, generated table and cell grapheme pool (29 compiled source/header hashes).
 
 The version is deliberately Unicode **16.0.0**, matching the existing Boggart
 width table. `THIRD_PARTY/unicode/manifest.json` records the official source URL
@@ -53,8 +53,8 @@ before claiming parity. No uucode source or tables are copied.
 `bunicode_grapheme_width` measures the first complete cluster in a scalar slice
 and returns its consumed scalar count. It supports unbounded cluster length
 without storing the text. A streaming terminal still needs cell ownership for
-that text. Native grid wide-pair repair and grapheme storage remain required for
-BMUX-19 completion; resize/reflow is BMUX-20. Renderer and string measurement
+that text. Native grid wide-pair repair and bounded grapheme storage are now
+implemented, with printer integration still pending. Resize/reflow is BMUX-20. Renderer and string measurement
 must switch to cluster units together so text layout agrees with painting.
 
 The shared UTF-8 decoder accepts an explicit end pointer or a NUL-terminated
@@ -68,4 +68,6 @@ and `sys.wtake` continue to measure scalar units, matching the current Studio
 renderer. A ZWJ emoji still measures four cells there; the explicit grapheme API
 measures two. The renderer, native cells and consumers must migrate together.
 
-Integration verification: full serial CTest passed 116/116 (110.93 s); focused normal and ASan/UBSan tests passed 18/18; CLI/Studio parity passed with 31 identical fields, including width and prefix vectors. Generator reproducibility, malformed-input checks and pinned Ghostty attribution passed. BMUX-19 remains in progress for native cell and renderer integration.
+Initial Unicode integration verification: full serial CTest passed 116/116 (110.93 s); focused normal and ASan/UBSan tests passed 18/18; CLI/Studio parity passed with 31 identical fields, including width and prefix vectors. Generator reproducibility, malformed-input checks and pinned Ghostty attribution passed. BMUX-19 remains in progress for printer and renderer integration.
+
+Page ownership integration verification: full serial CTest passed 118/118 (111.43 s), focused normal and ASan/UBSan checks passed 20/20, CLI/Studio parity passed with 31 identical fields, and pinned attribution passed for 40 modules / 26 ported files. Tests exercise copy-on-write, the 64-suffix cap, exact refs after 30,000 mutations and steady memory through history recycling. Native printing and copied cluster text remain pending.

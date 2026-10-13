@@ -72,11 +72,22 @@ now owns wide pairs: putting a width-two glyph creates a width-zero tail;
 overwriting or erasing either half clears the pair, and insert/delete repairs
 glyphs crossing a cut or the right edge. Whole pairs move with their references.
 A WIDE_HEAD blank at a wrapped row's right edge records a wide glyph that starts
-on the next row. Native printing and grapheme storage remain BMUX-19. Rows expose wrapped and
+on the next row. Native printing remains BMUX-19. Rows expose wrapped and
 damage state. `lpage_ack_damage` acknowledges visible damage after a renderer
 consumes it; scrolling conservatively damages the whole visible screen.
 Borrowed rows/cells can move or recycle on any mutation, so renderers must not
 retain their pointers across terminal updates.
+
+`src/lgrapheme.c/h` owns cluster slots per screen. A flagged 16-byte cell stores
+its pool ID in `codepoint`; C consumers use `lpage_codepoint` for the base scalar
+and `lpage_grapheme` for the full borrowed scalar slice. Only the glyph base owns
+that reference; continuation cells own their style/link references. Appending
+copies shared clusters before mutation. Slots and scalar storage recycle/free
+on last release, including erase, clipping and history eviction. The pinned
+Ghostty limit of one base plus 64 suffix scalars bounds each slot. Pool capacity
+follows peak live cells, not the number of scroll operations. `usage()` includes
+`graphemes` and `grapheme_bytes`; screen bytes include the pool. The native printer
+and Lua row text have not yet switched to these accessors.
 
 `src/lstyle.c` interns default, indexed and RGB colours plus attributes in a
 screen-owned hash table. Acquiring a style owns one reference; each cell owns

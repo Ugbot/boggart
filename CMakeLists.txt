@@ -931,7 +931,7 @@ add_test(NAME unicode COMMAND unicode_test
 set(BMUX_TERMINAL_SOURCE_FILES src/lvt.c src/vt_table.h src/lstyle.c src/llink.c src/lpage.c
   src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c src/lterminal.c
   src/lvt.h src/lstyle.h src/llink.h src/lpage.h src/bosc.h src/bmouse.h src/bkey.h src/bpaste.h src/bterm.h src/bterm_internal.h
-  src/bunicode.c src/bunicode.h src/bunicode_data.h)
+  src/bunicode.c src/bunicode.h src/bunicode_data.h src/lgrapheme.c src/lgrapheme.h)
 set(_terminal_source_header "/* Generated build identity; do not edit. */\nstatic const struct { const char *path, *sha256; } terminal_source_files[] = {\n")
 foreach(_source IN LISTS BMUX_TERMINAL_SOURCE_FILES)
   file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${_source}" _sha)
@@ -944,7 +944,7 @@ target_include_directories(boggart PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 if(TARGET boggart-studio)
   target_include_directories(boggart-studio PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 endif()
-add_library(boggart_vt STATIC src/lvt.c src/lstyle.c src/llink.c src/lpage.c
+add_library(boggart_vt STATIC src/lvt.c src/lstyle.c src/llink.c src/lpage.c src/lgrapheme.c
   src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c)
 target_include_directories(boggart_vt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(boggart_vt PUBLIC boggart_unicode)
@@ -961,6 +961,9 @@ add_test(NAME page_storage COMMAND page_storage_test)
 add_executable(wide_cells_test tests/c/wide_cells.c)
 target_link_libraries(wide_cells_test PRIVATE boggart_vt)
 add_test(NAME wide_cells COMMAND wide_cells_test)
+add_executable(grapheme_cells_test tests/c/grapheme_cells.c)
+target_link_libraries(grapheme_cells_test PRIVATE boggart_vt)
+add_test(NAME grapheme_cells COMMAND grapheme_cells_test)
 add_executable(terminal_dispatch_test tests/c/terminal.c)
 target_link_libraries(terminal_dispatch_test PRIVATE boggart_vt)
 add_test(NAME terminal_dispatch COMMAND terminal_dispatch_test)
@@ -1051,4 +1054,4 @@ endif()
 # interpreter and JSON lib too, so a misuse inside them is attributed.
 boggart_apply_sanitizer(boggart boggart-studio auth_threads_test assert_trap_test crash_handler_test
                         termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt vt_parser_test page_storage_test
-                        terminal_dispatch_test osc_commands_test terminal_events_test terminal_links_test mouse_encode_test terminal_mouse_test key_encode_test terminal_key_test paste_encode_test terminal_input_test boggart_unicode unicode_test wide_cells_test)
+                        terminal_dispatch_test osc_commands_test terminal_events_test terminal_links_test mouse_encode_test terminal_mouse_test key_encode_test terminal_key_test paste_encode_test terminal_input_test boggart_unicode unicode_test wide_cells_test grapheme_cells_test)

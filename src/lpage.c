@@ -32,12 +32,14 @@ struct lpage_screen {
   bool damage_all;
   lstyle_pool *styles;
   llink_pool *links;
+  lgrapheme_pool *graphemes;
 };
 static row *at(const lpage_screen *s, size_t y) { return s->visible[(s->head + y) % s->rows]; }
 static void set(lpage_screen *s, size_t y, row *r) { s->visible[(s->head + y) % s->rows] = r; }
 static void release_cell(lpage_screen *s, lpage_cell cell) {
   lstyle_release(s->styles, cell.style);
   if (cell.hyperlink) llink_release(s->links, cell.hyperlink);
+  if (cell.flags & LP_CELL_GRAPHEME) lgrapheme_release(s->graphemes, cell.codepoint);
 }
 static row *new_row(lpage_screen *s) {
   page *p = s->available;
@@ -77,8 +79,8 @@ lpage_screen *lpage_create(size_t columns, size_t rows, size_t history_limit) {
   if (!s) return NULL;
   s->columns = columns; s->rows = rows; s->history_limit = history_limit;
   s->styles = lstyle_create(); s->visible = calloc(rows, sizeof *s->visible);
-  s->links = llink_create();
-  if (!s->styles || !s->links || !s->visible) { lpage_destroy(s); return NULL; }
+  s->links = llink_create(); s->graphemes = lgrapheme_create();
+  if (!s->styles || !s->links || !s->graphemes || !s->visible) { lpage_destroy(s); return NULL; }
   for (size_t y = 0; y < rows; y++) {
     if (!(s->visible[y] = new_row(s))) { lpage_destroy(s); return NULL; }
   }
@@ -89,12 +91,21 @@ void lpage_destroy(lpage_screen *s) {
   if (!s) return;
   page *p = s->pages;
   while (p) { page *next = p->next; free(p); p = next; }
-  free(s->visible); free(s->history); lstyle_destroy(s->styles); llink_destroy(s->links); free(s);
+  free(s->visible); free(s->history); lstyle_destroy(s->styles); llink_destroy(s->links); lgrapheme_destroy(s->graphemes); free(s);
 }
 size_t lpage_columns(const lpage_screen *s) { return s->columns; }
 size_t lpage_rows(const lpage_screen *s) { return s->rows; }
 lstyle_pool *lpage_styles(lpage_screen *s) { return s->styles; }
 llink_pool *lpage_links(lpage_screen *s) { return s->links; }
+lgrapheme_pool *lpage_graphemes(lpage_screen *s) { return s->graphemes; }
+lgrapheme_value lpage_grapheme(const lpage_screen *s, const lpage_cell *cell) {
+  if (!cell) return (lgrapheme_value){0};
+  if (cell->flags & LP_CELL_GRAPHEME) return lgrapheme_get(s->graphemes, cell->codepoint);
+  return cell->codepoint ? (lgrapheme_value){&cell->codepoint,1} : (lgrapheme_value){0};
+}
+uint32_t lpage_codepoint(const lpage_screen *s, const lpage_cell *cell) {
+  lgrapheme_value v=lpage_grapheme(s,cell); return v.length ? v.codepoints[0] : 0;
+}
 const llink_value *lpage_link(const lpage_screen *s, uint32_t id) { return llink_get(s->links, id); }
 const lpage_row *lpage_visible(const lpage_screen *s, size_t y) { return y < s->rows ? &at(s, y)->view : NULL; }
 const lpage_cell *lpage_get(const lpage_screen *s, size_t y, size_t x) {
@@ -111,25 +122,45 @@ static bool retain_cell(lpage_screen *s, lpage_cell cell) {
   if (cell.hyperlink && !llink_retain(s->links, cell.hyperlink)) {
     lstyle_release(s->styles, cell.style); return false;
   }
+  if ((cell.flags & LP_CELL_GRAPHEME) && !lgrapheme_retain(s->graphemes,cell.codepoint)) {
+    lstyle_release(s->styles,cell.style);
+    if (cell.hyperlink) llink_release(s->links,cell.hyperlink);
+    return false;
+  }
   return true;
 }
 bool lpage_put(lpage_screen *s, size_t y, size_t x, lpage_cell cell) {
   if (y >= s->rows || x >= s->columns || cell.width < 1 || cell.width > 2
-      || (cell.flags & ~(LP_CELL_PROTECTED | LP_CELL_WIDE_HEAD))
+      || (cell.flags & ~(LP_CELL_PROTECTED | LP_CELL_WIDE_HEAD | LP_CELL_GRAPHEME))
       || (cell.width == 2 && x + 1 == s->columns)) return false;
   row *r = at(s, y);
   if ((cell.flags & LP_CELL_WIDE_HEAD) && (cell.width != 1 || cell.codepoint || x + 1 != s->columns || !r->view.wrapped)) return false;
   if (!retain_cell(s, cell)) return false;
-  if (cell.width == 2 && !retain_cell(s, cell)) { release_cell(s, cell); return false; }
+  lpage_cell tail={0,cell.style,cell.hyperlink,0,LP_CELL_WIDE_TAIL | (cell.flags & LP_CELL_PROTECTED),0};
+  if (cell.width == 2 && !retain_cell(s, tail)) { release_cell(s, cell); return false; }
   if (!break_pair(s, r, x, cell.style) || (cell.width == 2 && !break_pair(s, r, x + 1, cell.style))) {
-    release_cell(s, cell); if (cell.width == 2) release_cell(s, cell); return false;
+    release_cell(s, cell); if (cell.width == 2) release_cell(s, tail); return false;
   }
   release_cell(s, r->cells[x]); r->cells[x] = cell; r->dirty = true;
   if (cell.width == 2) {
     release_cell(s, r->cells[x + 1]);
-    r->cells[x + 1] = (lpage_cell){0, cell.style, cell.hyperlink, 0, LP_CELL_WIDE_TAIL | (cell.flags & LP_CELL_PROTECTED), 0};
+    r->cells[x + 1] = tail;
   }
   return true;
+}
+bool lpage_append_grapheme(lpage_screen *s,size_t y,size_t x,uint32_t cp,unsigned width) {
+  const lpage_cell *old=lpage_get(s,y,x);
+  if (!old || !lpage_codepoint(s,old) || (old->flags & LP_CELL_WIDE_TAIL) || width<1 || width>2
+      || (width==2 && x+1==s->columns)) return false;
+  lpage_cell cell=*old; uint32_t id;
+  if (cell.flags & LP_CELL_GRAPHEME) {
+    if (!lgrapheme_append(s->graphemes,cell.codepoint,cp,&id)) return false;
+  } else {
+    uint32_t cps[]={cell.codepoint,cp};
+    if (!lgrapheme_acquire(s->graphemes,cps,2,&id)) return false;
+  }
+  cell.codepoint=id; cell.flags|=LP_CELL_GRAPHEME; cell.width=(uint8_t)width;
+  bool ok=lpage_put(s,y,x,cell); lgrapheme_release(s->graphemes,id); return ok;
 }
 static bool fill(lpage_screen *s, row *r, size_t x, size_t n, uint32_t style, bool release_old) {
   for (size_t i = x; i < x + n; i++) {
@@ -265,8 +296,8 @@ void lpage_ack_damage(lpage_screen *s) {
 }
 lpage_stats lpage_usage(const lpage_screen *s) {
   lpage_stats stats = { s->page_count, s->page_count * PAGE_ROWS, s->history_count, lstyle_count(s->styles), 0,
-    llink_count(s->links), llink_bytes(s->links) };
+    llink_count(s->links), llink_bytes(s->links), lgrapheme_count(s->graphemes), lgrapheme_bytes(s->graphemes) };
   stats.bytes = sizeof *s + (s->rows + s->history_capacity) * sizeof(row *)
-    + s->page_count * (sizeof(page) + PAGE_ROWS * s->columns * sizeof(lpage_cell)) + lstyle_bytes(s->styles) + stats.link_bytes;
+    + s->page_count * (sizeof(page) + PAGE_ROWS * s->columns * sizeof(lpage_cell)) + lstyle_bytes(s->styles) + stats.link_bytes + stats.grapheme_bytes;
   return stats;
 }

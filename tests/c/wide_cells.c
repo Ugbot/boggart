@@ -51,11 +51,16 @@ static void vectors(void) {
 }
 static uint32_t seed = 0x31415926;
 static uint32_t random_value(void) { seed ^= seed << 13; seed ^= seed >> 17; return seed ^= seed << 5; }
-static void inspect(lpage_screen *s, const lpage_row *r, size_t *styles, size_t *links) {
+static void inspect(lpage_screen *s, const lpage_row *r, size_t *styles, size_t *links, size_t *graphemes) {
   CHECK(r);
   for (size_t x = 0; x < r->columns; x++) {
     const lpage_cell *c = &r->cells[x];
     CHECK(c->style < 4 && c->hyperlink < 4); styles[c->style]++; links[c->hyperlink]++;
+    if (c->flags & LP_CELL_GRAPHEME) {
+      CHECK(c->codepoint<256); graphemes[c->codepoint]++;
+      lgrapheme_value v=lpage_grapheme(s,c);
+      CHECK(v.length==2 && v.codepoints[0]==0x65e5 && v.codepoints[1]==0x301);
+    }
     if (c->flags & LP_CELL_WIDE_TAIL) {
       CHECK(x && !c->codepoint && !c->width && r->cells[x-1].width == 2);
       CHECK(c->style == r->cells[x-1].style && c->hyperlink == r->cells[x-1].hyperlink);
@@ -63,7 +68,6 @@ static void inspect(lpage_screen *s, const lpage_row *r, size_t *styles, size_t 
     else CHECK(c->width == 1);
     if (c->flags & LP_CELL_WIDE_HEAD) CHECK(x+1 == r->columns && r->wrapped && !c->codepoint);
   }
-  (void)s;
 }
 static void lifetime(void) {
   lpage_screen *s = lpage_create(9, 3, 5); CHECK(s);
@@ -79,16 +83,22 @@ static void lifetime(void) {
     uint32_t style = styles[random_value()%4];
     switch (random_value()%6) {
       case 0: { unsigned w = 1 + random_value()%2; if (w==2 && x==8) w=1;
-        CHECK(lpage_put(s,y,x,(lpage_cell){0x65e5,style,links[random_value()%4],(uint8_t)w,0,0})); break; }
+        CHECK(lpage_put(s,y,x,(lpage_cell){0x65e5,style,links[random_value()%4],(uint8_t)w,0,0}));
+        if (random_value()&1) CHECK(lpage_append_grapheme(s,y,x,0x301,w)); break; }
       case 1: CHECK(lpage_erase(s,y,x,n,style)); break;
       case 2: CHECK(lpage_insert_cells(s,y,x,n,style)); break;
       case 3: CHECK(lpage_delete_cells(s,y,x,n,style)); break;
       case 4: CHECK(lpage_scroll(s,0,2,random_value()&1 ? 1 : -1,true,style)); break;
       case 5: lpage_clear_history(s); break;
     }
-    size_t style_refs[4]={0}, link_refs[4]={0};
-    for (size_t row=0;row<3;row++) inspect(s,lpage_visible(s,row),style_refs,link_refs);
-    for (size_t row=0;row<lpage_history_count(s);row++) inspect(s,lpage_history(s,row),style_refs,link_refs);
+    size_t style_refs[4]={0}, link_refs[4]={0}, grapheme_refs[256]={0}, count=0;
+    for (size_t row=0;row<3;row++) inspect(s,lpage_visible(s,row),style_refs,link_refs,grapheme_refs);
+    for (size_t row=0;row<lpage_history_count(s);row++) inspect(s,lpage_history(s,row),style_refs,link_refs,grapheme_refs);
+    for (unsigned j=1;j<256;j++) {
+      CHECK(lgrapheme_refs(lpage_graphemes(s),j)==grapheme_refs[j]);
+      if(grapheme_refs[j]) count++;
+    }
+    CHECK(lgrapheme_count(lpage_graphemes(s))==count);
     for (unsigned j=1;j<4;j++) {
       CHECK(lstyle_refs(lpage_styles(s),styles[j]) == style_refs[j]+1);
       CHECK(llink_refs(lpage_links(s),links[j]) == link_refs[j]+1);
