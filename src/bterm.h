@@ -68,6 +68,12 @@ void bterm_destroy(bterm *terminal);
 bool bterm_feed(bterm *terminal, const uint8_t *bytes, size_t length);
 bool bterm_finish(bterm *terminal);
 bool bterm_reset(bterm *terminal);
+/* Resize both allocated screens, reflowing primary when autowrap is enabled.
+ * Dimensions are in 1..4096; same geometry is a no-op. Allocation/validation
+ * failure preserves both screens and all state, and does not poison feed.
+ * Success resets margins and width-dependent tabs, damages both screens, and
+ * invalidates mouse motion. Parser fragments, queues and modes survive. */
+bool bterm_resize(bterm *terminal, size_t columns, size_t rows);
 bterm_status bterm_state(const bterm *terminal);
 /* Screen/style borrows expire on mutation. IDs belong to the active screen. */
 const lpage_screen *bterm_screen(const bterm *terminal);

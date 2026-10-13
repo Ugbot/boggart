@@ -23,7 +23,7 @@ for _, case in ipairs(cases) do
 end
 check(native.features.alt_screen and native.features.truecolor and native.features.wide and native.features.graphemes,
   "native feature boundary is explicit")
-check(#native.source.files == 29, "native identifies the compiled core, Unicode table, grapheme pool and binding")
+check(#native.source.files == 31, "native identifies the compiled core, Unicode table, grapheme pool, resize and binding")
 local terminal = require "terminal"
 local saved_source = terminal.source
 terminal.source = function()

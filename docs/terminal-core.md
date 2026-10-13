@@ -185,7 +185,18 @@ for _, y in ipairs(t:damage()) do
 end
 t:ack_damage()                             -- after consuming the rows
 local reply_bytes = t:replies()             -- consume queued DA/DSR replies
+t:resize(100, 30)                          -- transaction across both screens
 ```
+
+`resize(columns, rows)` accepts dimensions in 1..4096. Same-size calls preserve
+all state; allocation failure preserves both screens and raises a recoverable
+error. Success reflows primary text when autowrap is enabled, crops alternate
+text, remaps cursor/save positions, resets margins and width-dependent tabs,
+damages all rows, and invalidates mouse motion. Parser fragments, replies/events,
+input modes and host policies survive. Shared pools preserve held style/link IDs
+while unpublished geometry retains copied cells. See
+[terminal-resize.md](terminal-resize.md) for verified ownership and the remaining
+cached-width nowrap regrow mismatch; BMUX-20 acceptance is still pending.
 
 Rows and cursor/margin coordinates are one-based in Lua. Each copied cell has
 base `codepoint`, complete UTF-8 `text`, `width`, `flags`, `hyperlink` and a copied

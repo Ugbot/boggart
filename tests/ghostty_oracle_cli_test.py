@@ -47,6 +47,18 @@ class AdapterTests(unittest.TestCase):
                     self.assertEqual(cell, {'cps': [], 'width': 1, 'head': False,
                                             'protected': False, 'style': [0, 0, 0, 0], 'uri': []})
 
+    def test_background_only_cells_resolve_palette_and_rgb(self):
+        for sgr, background in [('31;1;44', 0x01000004), ('31;1;48;2;1;2;3', 0x02010203)]:
+            with self.subTest(sgr=sgr):
+                data = ('\x1b[' + sgr + 'm\x1b[2J').encode().hex()
+                result = self.run_adapter('2', '2', 'feed', data, 'snapshot')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                snapshot = json.loads(result.stdout)
+                for row in snapshot['screen']:
+                    for cell in row['cells']:
+                        self.assertEqual(cell['cps'], [])
+                        self.assertEqual(cell['style'], [0, background, 0, 0])
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, required=True)

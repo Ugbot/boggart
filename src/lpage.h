@@ -21,6 +21,22 @@ typedef struct {
 } lpage_cell;
 typedef struct { const lpage_cell *cells; size_t columns; bool wrapped; } lpage_row;
 typedef struct lpage_screen lpage_screen;
+typedef struct { size_t x, y; bool pending_wrap; } lpage_position;
+typedef struct {
+  size_t columns, rows;
+  bool reflow, pull_scrollback;
+  lpage_position cursor, saved;
+  bool saved_valid;
+} lpage_resize_options;
+typedef struct lpage_resize lpage_resize;
+/* Prepare retains candidate cell references without publishing geometry.
+ * The source must not mutate before commit/abort. Both consume the candidate;
+ * commit cannot allocate. Failure leaves the source and its refs unchanged. */
+lpage_resize *lpage_resize_prepare(lpage_screen *screen, lpage_resize_options options);
+lpage_position lpage_resize_cursor(const lpage_resize *resize);
+lpage_position lpage_resize_saved(const lpage_resize *resize);
+void lpage_resize_commit(lpage_resize *resize);
+void lpage_resize_abort(lpage_resize *resize);
 typedef struct { size_t pages, row_capacity, history_rows, styles, bytes, links, link_bytes, graphemes, grapheme_bytes; } lpage_stats;
 lpage_screen *lpage_create(size_t columns, size_t rows, size_t history_limit);
 void lpage_destroy(lpage_screen *screen);

@@ -106,7 +106,9 @@ static const lpage_cell *previous_cell(bterm *t, size_t *x, bool legacy) {
 static void after_glyph(bterm *t, size_t x, unsigned width) {
   bt_cursor *c = &bt_active(t)->cursor;
   c->x = x + width < t->columns ? x + width : t->columns - 1;
-  c->pending_wrap = x + width >= t->columns && (t->modes & BT_AUTOWRAP);
+  /* Pending wrap records the last printed cell even in nowrap mode. The next
+   * print consults AUTOWRAP before deciding whether to advance a row. */
+  c->pending_wrap = x + width >= t->columns;
 }
 static bool append_cluster(bterm *t, uint32_t cp) {
   size_t x; const lpage_cell *previous = previous_cell(t,&x,false);
@@ -194,6 +196,7 @@ void bt_restore(bterm *t) {
 }
 void bt_alternate(bterm *t, bool enabled, unsigned mode) {
   if (enabled == (t->active != 0)) return;
+  bt_cursor previous=bt_active(t)->cursor;
   if (enabled) {
     if (!t->buffers[1].screen) {
       t->buffers[1].screen = lpage_create(t->columns, t->rows, 0);
@@ -204,13 +207,14 @@ void bt_alternate(bterm *t, bool enabled, unsigned mode) {
     t->active = 1;
     if (mode == 1049) {
       for (size_t y = 0; y < t->rows; y++) bt_erase(t, y, 0, t->columns);
-      bt_home(t);
     }
+    bt_active(t)->cursor=previous;
   } else {
     bt_end_link(t);
     if (mode == 1047) for (size_t y = 0; y < t->rows; y++) bt_erase(t, y, 0, t->columns);
     t->active = 0;
     if (mode == 1049) bt_restore(t);
+    else bt_active(t)->cursor=previous;
   }
   lpage_damage_all(bt_active(t)->screen);
   t->mouse_motion.valid = false;
@@ -304,6 +308,36 @@ bool bterm_reset(bterm *t) {
 bterm_status bterm_state(const bterm *t) {
   const bt_cursor *c = &t->buffers[t->active].cursor;
   return (bterm_status){ c->x, c->y, t->top, t->bottom, t->modes, t->cursor_style, t->active != 0, c->pending_wrap, t->pen };
+}
+bool bterm_resize(bterm *t,size_t columns,size_t rows) {
+  if (!t || !columns || !rows || columns>4096 || rows>4096) return false;
+  if (columns==t->columns && rows==t->rows) return true;
+  lpage_resize *plans[2]={NULL,NULL};
+  for (unsigned i=0;i<2;i++) {
+    bt_buffer *b=&t->buffers[i]; if (!b->screen) continue;
+    lpage_resize_options opts={columns,rows,i==0 && (t->modes&BT_AUTOWRAP),i==0,
+      {b->cursor.x,b->cursor.y,b->cursor.pending_wrap},
+      {b->saved.cursor.x,b->saved.cursor.y,b->saved.cursor.pending_wrap},b->saved.valid};
+    if (!(plans[i]=lpage_resize_prepare(b->screen,opts))) {
+      for (unsigned n=0;n<2;n++) lpage_resize_abort(plans[n]);
+      return false;
+    }
+  }
+  for (unsigned i=0;i<2;i++) if (plans[i]) {
+    bt_buffer *b=&t->buffers[i]; lpage_position p=lpage_resize_cursor(plans[i]);
+    b->cursor=(bt_cursor){p.x,p.y,p.pending_wrap};
+    if (b->saved.valid) {
+      p=lpage_resize_saved(plans[i]); b->saved.cursor=(bt_cursor){p.x,p.y,p.pending_wrap};
+    }
+    lpage_resize_commit(plans[i]);
+  }
+  if (columns!=t->columns) {
+    memset(t->tabs,0,sizeof t->tabs);
+    for (size_t x=8;x<columns;x+=8) t->tabs[x]=true;
+  }
+  t->columns=columns; t->rows=rows; t->top=0; t->bottom=rows-1;
+  t->mouse_motion.valid=false; t->mouse_cell_width=t->mouse_cell_height=0;
+  return true;
 }
 const lpage_screen *bterm_screen(const bterm *t) { return t->buffers[t->active].screen; }
 const llink_value *bterm_link(const bterm *t, uint32_t id) { return lpage_link(bterm_screen(t), id); }

@@ -4,9 +4,11 @@
  * Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
  * SPDX-License-Identifier: MIT; see THIRD_PARTY/ghostty-LICENSE.
  * Adaptation: portable contiguous row pages, screen-owned style IDs, visible
- * and history pointer rings. Reflow and tracked selections are separate work.
+ * and history pointer rings. Reflow uses shared pools and candidate geometry;
+ * tracked selections are separate work.
  */
 #include "lpage.h"
+#include "lpage_internal.h"
 #include <stdlib.h>
 #include <string.h>
 #define PAGE_ROWS 16
@@ -93,6 +95,34 @@ void lpage_destroy(lpage_screen *s) {
   while (p) { page *next = p->next; free(p); p = next; }
   free(s->visible); free(s->history); lstyle_destroy(s->styles); llink_destroy(s->links); lgrapheme_destroy(s->graphemes); free(s);
 }
+/* Unlike whole-screen destruction, retiring geometry must release each live
+ * cell because the pools survive. Unused page slots own no references. */
+static void geometry_free(lpage_screen *s) {
+  page *p=s->pages;
+  while (p) {
+    page *next=p->next;
+    for (unsigned slot=0;slot<PAGE_ROWS;slot++) if (!(p->free_bits & (1u<<slot)))
+      for (size_t x=0;x<s->columns;x++) lpage_release_cell(s,p->rows[slot].cells[x]);
+    free(p); p=next;
+  }
+  free(s->visible); free(s->history);
+}
+lpage_screen *lp_geometry_new(const lpage_screen *source,size_t columns,size_t rows) {
+  if (!columns || !rows || columns>4096 || rows>4096) return NULL;
+  lpage_screen *s=calloc(1,sizeof *s); if (!s) return NULL;
+  s->columns=columns; s->rows=rows; s->history_limit=source->history_limit;
+  s->styles=source->styles; s->links=source->links; s->graphemes=source->graphemes;
+  s->visible=calloc(rows,sizeof *s->visible);
+  if (!s->visible) { free(s); return NULL; }
+  for (size_t y=0;y<rows;y++) if (!(s->visible[y]=new_row(s))) {
+    geometry_free(s); free(s); return NULL;
+  }
+  s->damage_all=true; return s;
+}
+void lp_geometry_destroy(lpage_screen *s) { if (s) { geometry_free(s); free(s); } }
+void lp_geometry_replace(lpage_screen *s,lpage_screen *geometry) {
+  geometry_free(s); *s=*geometry; free(geometry);
+}
 size_t lpage_columns(const lpage_screen *s) { return s->columns; }
 size_t lpage_rows(const lpage_screen *s) { return s->rows; }
 lstyle_pool *lpage_styles(lpage_screen *s) { return s->styles; }
@@ -112,7 +142,14 @@ const lpage_cell *lpage_get(const lpage_screen *s, size_t y, size_t x) {
   return y < s->rows && x < s->columns ? &at(s, y)->cells[x] : NULL;
 }
 static bool fill(lpage_screen *s, row *r, size_t x, size_t n, uint32_t style, bool release_old);
-static bool break_pair(lpage_screen *s, row *r, size_t x, uint32_t style) {
+static bool clear_previous_head(lpage_screen *s,size_t y,uint32_t style) {
+  row *previous=y ? at(s,y-1) : s->history_count
+    ? s->history[(s->history_head+s->history_count-1)%s->history_capacity] : NULL;
+  if (previous && (previous->cells[s->columns-1].flags&LP_CELL_WIDE_HEAD))
+    return fill(s,previous,s->columns-1,1,style,true);
+  return true;
+}
+static bool break_pair(lpage_screen *s, row *r,size_t x, uint32_t style) {
   if (r->cells[x].flags & LP_CELL_WIDE_TAIL) return fill(s, r, x - 1, 2, style, true);
   if (r->cells[x].width == 2) return fill(s, r, x, 2, style, true);
   return true;
@@ -131,7 +168,7 @@ bool lpage_retain_cell(lpage_screen *s, lpage_cell cell) {
   }
   return true;
 }
-bool lpage_put(lpage_screen *s, size_t y, size_t x, lpage_cell cell) {
+static bool put_cell(lpage_screen *s, size_t y, size_t x, lpage_cell cell,bool repair_head) {
   if (y >= s->rows || x >= s->columns || cell.width < 1 || cell.width > 2
       || (cell.flags & ~(LP_CELL_PROTECTED | LP_CELL_WIDE_HEAD | LP_CELL_GRAPHEME))
       || (cell.width == 2 && x + 1 == s->columns)) return false;
@@ -140,7 +177,8 @@ bool lpage_put(lpage_screen *s, size_t y, size_t x, lpage_cell cell) {
   if (!lpage_retain_cell(s, cell)) return false;
   lpage_cell tail={0,cell.style,cell.hyperlink,0,LP_CELL_WIDE_TAIL | (cell.flags & LP_CELL_PROTECTED),0};
   if (cell.width == 2 && !lpage_retain_cell(s, tail)) { lpage_release_cell(s, cell); return false; }
-  if (!break_pair(s, r, x, cell.style) || (cell.width == 2 && !break_pair(s, r, x + 1, cell.style))) {
+  if ((repair_head && x<=1 && r->cells[0].width==2 && !clear_previous_head(s,y,cell.style))
+      || !break_pair(s, r, x, cell.style) || (cell.width == 2 && !break_pair(s, r, x + 1, cell.style))) {
     lpage_release_cell(s, cell); if (cell.width == 2) lpage_release_cell(s, tail); return false;
   }
   lpage_release_cell(s, r->cells[x]); r->cells[x] = cell; r->dirty = true;
@@ -150,6 +188,7 @@ bool lpage_put(lpage_screen *s, size_t y, size_t x, lpage_cell cell) {
   }
   return true;
 }
+bool lpage_put(lpage_screen *s,size_t y,size_t x,lpage_cell cell) { return put_cell(s,y,x,cell,true); }
 bool lpage_append_grapheme(lpage_screen *s,size_t y,size_t x,uint32_t cp,unsigned width) {
   const lpage_cell *old=lpage_get(s,y,x);
   if (!old || !lpage_codepoint(s,old) || (old->flags & LP_CELL_WIDE_TAIL) || width<1 || width>2
@@ -162,7 +201,7 @@ bool lpage_append_grapheme(lpage_screen *s,size_t y,size_t x,uint32_t cp,unsigne
     if (!lgrapheme_acquire(s->graphemes,cps,2,&id)) return false;
   }
   cell.codepoint=id; cell.flags|=LP_CELL_GRAPHEME; cell.width=(uint8_t)width;
-  bool ok=lpage_put(s,y,x,cell); lgrapheme_release(s->graphemes,id); return ok;
+  bool ok=put_cell(s,y,x,cell,width!=old->width); lgrapheme_release(s->graphemes,id); return ok;
 }
 static bool fill(lpage_screen *s, row *r, size_t x, size_t n, uint32_t style, bool release_old) {
   for (size_t i = x; i < x + n; i++) {
@@ -182,6 +221,9 @@ bool lpage_erase(lpage_screen *s, size_t y, size_t x, size_t n, uint32_t style) 
     if (r->cells[x].flags & LP_CELL_WIDE_TAIL) x--;
     if (end < s->columns && r->cells[end].flags & LP_CELL_WIDE_TAIL) end++;
     n = end - x;
+    if (x==0 && r->cells[0].width==2 && !clear_previous_head(s,y,style)) {
+      lstyle_release(s->styles,style); return false;
+    }
   }
   bool ok = fill(s, r, x, n, style, true);
   if (x == 0 && n == s->columns) r->view.wrapped = false;
@@ -194,7 +236,8 @@ static bool edit(lpage_screen *s, size_t y, size_t x, size_t n, uint32_t style, 
   /* Splitting a glyph at either cut boundary erases that whole glyph before
    * ownership is transferred by memmove. Internal whole pairs move intact. */
   size_t boundary = insert ? s->columns - n : x + n;
-  if (n && ((x < s->columns && r->cells[x].flags & LP_CELL_WIDE_TAIL && !break_pair(s, r, x, style))
+  if (n && ((x<=1 && r->cells[0].width==2 && !clear_previous_head(s,y,style))
+       || (x < s->columns && r->cells[x].flags & LP_CELL_WIDE_TAIL && !break_pair(s, r, x, style))
        || (boundary < s->columns && r->cells[boundary].flags & LP_CELL_WIDE_TAIL && !break_pair(s, r, boundary, style)))) {
     lstyle_release(s->styles, style); return false;
   }

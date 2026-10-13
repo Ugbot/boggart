@@ -53,7 +53,8 @@
       "status": "ported",
       "ported_files": [
         "src/lpage.c",
-        "src/lpage.h"
+        "src/lpage.h",
+        "src/lpage_resize.c"
       ]
     },
     {
@@ -64,7 +65,8 @@
         "src/lpage.c",
         "src/lpage.h",
         "src/lgrapheme.c",
-        "src/lgrapheme.h"
+        "src/lgrapheme.h",
+        "src/lpage_resize.c"
       ]
     },
     {
@@ -77,7 +79,8 @@
         "src/bterm.c",
         "src/bterm_internal.h",
         "src/llink.c",
-        "src/llink.h"
+        "src/llink.h",
+        "src/lpage_resize.c"
       ]
     },
     {
