@@ -115,8 +115,11 @@
     {
       "upstream_path": "src/unicode/grapheme.zig",
       "sha256": "34a5d773605b41fd77850b5731bf4e11c36fea737ae4456d2a2cc84fd712727c",
-      "status": "studied",
-      "ported_files": []
+      "status": "ported",
+      "ported_files": [
+        "src/bunicode.c",
+        "src/bunicode.h"
+      ]
     },
     {
       "upstream_path": "src/unicode/props.zig",

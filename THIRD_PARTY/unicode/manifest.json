@@ -1,0 +1,44 @@
+{
+  "version": "16.0.0",
+  "specification": "https://www.unicode.org/reports/tr29/tr29-45.html",
+  "license_file": "THIRD_PARTY/unicode-LICENSE",
+  "license_source": "https://www.unicode.org/license.txt",
+  "license_sha256": "e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96",
+  "files": [
+    {
+      "path": "16.0.0/DerivedCoreProperties.txt",
+      "source": "https://www.unicode.org/Public/16.0.0/ucd/DerivedCoreProperties.txt",
+      "sha256": "39d35161f2954497f69e08bdb9e701493f476a3d30222de20028feda36c1dabd"
+    },
+    {
+      "path": "16.0.0/EastAsianWidth.txt",
+      "source": "https://www.unicode.org/Public/16.0.0/ucd/EastAsianWidth.txt",
+      "sha256": "43adc76c0686a42cb370764eb8cfe2b2a45b10b855e5572a2db4a0eecce15d5b"
+    },
+    {
+      "path": "16.0.0/UnicodeData.txt",
+      "source": "https://www.unicode.org/Public/16.0.0/ucd/UnicodeData.txt",
+      "sha256": "ff58e5823bd095166564a006e47d111130813dcf8bf234ef79fa51a870edb48f"
+    },
+    {
+      "path": "16.0.0/auxiliary/GraphemeBreakProperty.txt",
+      "source": "https://www.unicode.org/Public/16.0.0/ucd/auxiliary/GraphemeBreakProperty.txt",
+      "sha256": "c29360bd6f7132811d701d29069541e827eb44bfc4c8fbde8c370d6982689dc1"
+    },
+    {
+      "path": "16.0.0/auxiliary/GraphemeBreakTest.txt",
+      "source": "https://www.unicode.org/Public/16.0.0/ucd/auxiliary/GraphemeBreakTest.txt",
+      "sha256": "ee2b9354d270ac061b29f09662cafea06341d77e704b8cc6bd72aaeeda363cb5"
+    },
+    {
+      "path": "16.0.0/emoji/emoji-data.txt",
+      "source": "https://www.unicode.org/Public/16.0.0/ucd/emoji/emoji-data.txt",
+      "sha256": "f1365a5173eee18e1f98b240cdc492e84a25f1ce7e0c9d1094eb29c41a22696a"
+    },
+    {
+      "path": "16.0.0/emoji/emoji-variation-sequences.txt",
+      "source": "https://www.unicode.org/Public/16.0.0/ucd/emoji/emoji-variation-sequences.txt",
+      "sha256": "71d93ec015011371a027ba2bc0a63155d381c6e0b94a586c1a88a49400cd6864"
+    }
+  ]
+}

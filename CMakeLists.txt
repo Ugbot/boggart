@@ -920,6 +920,12 @@ endif()
 # rule itself under test -- it still resolves %LOCALAPPDATA%, that just now
 # points somewhere disposable.
 enable_testing()
+add_library(boggart_unicode STATIC src/bunicode.c)
+target_include_directories(boggart_unicode PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_executable(unicode_test tests/c/unicode.c)
+target_link_libraries(unicode_test PRIVATE boggart_unicode)
+add_test(NAME unicode COMMAND unicode_test
+  ${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY/unicode/16.0.0/auxiliary/GraphemeBreakTest.txt)
 # Embed the sources actually compiled into this terminal backend. Benchmarks
 # reject a stale executable instead of attributing it to current disk contents.
 set(BMUX_TERMINAL_SOURCE_FILES src/lvt.c src/vt_table.h src/lstyle.c src/llink.c src/lpage.c
@@ -1040,4 +1046,4 @@ endif()
 # interpreter and JSON lib too, so a misuse inside them is attributed.
 boggart_apply_sanitizer(boggart boggart-studio auth_threads_test assert_trap_test crash_handler_test
                         termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt vt_parser_test page_storage_test
-                        terminal_dispatch_test osc_commands_test terminal_events_test terminal_links_test mouse_encode_test terminal_mouse_test key_encode_test terminal_key_test paste_encode_test terminal_input_test)
+                        terminal_dispatch_test osc_commands_test terminal_events_test terminal_links_test mouse_encode_test terminal_mouse_test key_encode_test terminal_key_test paste_encode_test terminal_input_test boggart_unicode unicode_test)

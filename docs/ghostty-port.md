@@ -35,7 +35,8 @@ the port boundary; it is not a correctness or completeness claim.
 | `src/input/paste.zig` | ported | `src/bpaste.c/h`; binary transforms, bracketed framing, optional safety heuristic and atomic/overlapping buffers |
 | `src/terminal/focus.zig` | ported | `src/bterm.c`; negotiated focus reports. Mode enable reports adapt the existing stream-handler path |
 | `src/terminal/paste.zig`, `src/termio/Termio.zig` | studied | Paste/focus call boundaries only; no clipboard readers, Kitty OTP grants, app/backend or PTY glue copied |
-| `src/unicode/grapheme.zig`, `props.zig`, `props_table.zig` | studied | BMUX-19; generated Unicode data, stream segmentation and width effects; review data licences separately |
+| `src/unicode/grapheme.zig` | ported (width kernel) | BMUX-19; `src/bunicode.c/h` preserves valid emoji selector width changes, invalid-selector state restoration, and terminal cluster width effects. UAX #29 segmentation is independently implemented |
+| `src/unicode/props.zig`, `props_table.zig` | studied | Boggart generates its own Unicode 16.0.0 properties from official data; no uucode source or generated table is copied |
 | `src/renderer`, `src/font` | skipped for P1 | Study shaping, atlas and damage handling before BMUX-24/25; keep Boggart's renderer |
 | `src/apprt`, `src/config`, `build.zig` | skipped | No platform app glue, config subsystem or Zig product build |
 

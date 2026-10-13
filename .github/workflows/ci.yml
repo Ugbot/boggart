@@ -69,6 +69,11 @@ jobs:
       - name: Check terminal port attribution
         run: python3 tools/check_ghostty_port.py
 
+      - name: Check generated Unicode data
+        run: |
+          python3 tools/genwidth.py --check
+          python3 tests/genwidth_test.py
+
       # ---- toolchain -------------------------------------------------------
       # The newest released CMake and Ninja, rather than whatever each runner
       # image ships. The images drift apart by years, and CI that builds with
