@@ -1,0 +1,11 @@
+{
+  "source": "Venus src/core/venus_ds.h",
+  "revision": "bb6a1e1a3703d8a7a6e90711c626a73452092e63",
+  "source_sha256": "c892c21c1b290ae7fdaeb5e93efddbc7dec3c35da08b0ef37be0abe79d177eaa",
+  "source_range": "Swiss table section from VENUS_MAP_GROUP through venus_map_erase",
+  "ported_files": [
+    "src/lidmap.c",
+    "src/lidmap.h"
+  ],
+  "bolt_license_sha256": "1952b115f9e90e71d1b80c4c9c25e4fd179f3e3b25851cc4774e36f0e10dde73"
+}
