@@ -103,8 +103,11 @@
     {
       "upstream_path": "src/input/mouse_encode.zig",
       "sha256": "71ea58fed0566cf5f7b56bff429d487e10b2add9e6c1aa368eec43f546677d9a",
-      "status": "studied",
-      "ported_files": []
+      "status": "ported",
+      "ported_files": [
+        "src/bmouse.c",
+        "src/bmouse.h"
+      ]
     },
     {
       "upstream_path": "src/unicode/grapheme.zig",
@@ -218,6 +221,20 @@
       "status": "ported",
       "ported_files": [
         "src/bosc.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/Terminal.zig",
+      "sha256": "bbe10662c020e4fd79043341ec1d5061f06dc000798b5140601eba446f169687",
+      "status": "studied",
+      "ported_files": []
+    },
+    {
+      "upstream_path": "src/termio/stream_handler.zig",
+      "sha256": "25b77318b27367acc0b3588ebae5314da163b8b7add718d85259d2afd535eaa6",
+      "status": "ported",
+      "ported_files": [
+        "src/bterm_dispatch.c"
       ]
     }
   ]

@@ -26,7 +26,10 @@ the port boundary; it is not a correctness or completeness claim.
 | `src/terminal/osc.zig` and eight `osc/parsers/*.zig` modules in the manifest | ported | `src/bosc.c/h`, `src/bterm_osc.c`; bounded typed payloads, host events and notification chunks; screen-owned link references and copied URI snapshots complete BMUX-17 |
 | `src/terminal/stream.zig`, `sgr.zig` | ported | BMUX-16; `src/bterm.c`, `src/bterm_dispatch.c`, `src/bterm_sgr.c`; selected CSI/ESC commands and SGR adapted to C grid operations/reply sink. OSC, key/mouse extensions and application parity remain separate gates |
 | `src/terminal/PageList.zig`, `page.zig`, `Screen.zig`, `style.zig` | ported | BMUX-15; `src/lpage.c/h`, `src/lstyle.c/h`, `src/bterm.c`, `src/bterm_internal.h`; portable 16-row pages, visible/history rings, style IDs/refcounts and damage. Reflow and tracked positions remain BMUX-20 |
-| `src/input/key_encode.zig`, `kitty.zig`, `mouse_encode.zig` | studied | BMUX-18; explicit normalized events/options; no AppKit/SDL types in the C interface |
+| `src/input/key_encode.zig`, `kitty.zig` | studied | BMUX-18 keyboard increment; review nested table notices before copying |
+| `src/input/mouse_encode.zig` | ported | `src/bmouse.c/h`; normalized events/options, five formats and atomic writes; no renderer types |
+| `src/termio/stream_handler.zig` | ported (selected cases) | Mouse-mode negotiation in `src/bterm_dispatch.c`; no message/PTY/app glue |
+| `src/terminal/Terminal.zig` | studied | Pinned input-state interface and last-set mouse semantics |
 | `src/unicode/grapheme.zig`, `props.zig`, `props_table.zig` | studied | BMUX-19; generated Unicode data, stream segmentation and width effects; review data licences separately |
 | `src/renderer`, `src/font` | skipped for P1 | Study shaping, atlas and damage handling before BMUX-24/25; keep Boggart's renderer |
 | `src/apprt`, `src/config`, `build.zig` | skipped | No platform app glue, config subsystem or Zig product build |
@@ -102,3 +105,14 @@ keeping zero-reference page entries until pruning, and owns pools per screen
 rather than per page. This preserves links during row-pointer scrolling while
 bounding strings by live cells/cursors. It does not copy the unlisted
 `hyperlink.zig` implementation or import Ghostty's page-memory dependency graph.
+
+
+Mouse input now ports `src/input/mouse_encode.zig` to `bmouse.c/h`, replacing
+renderer coordinate dependencies with normalized integer terminal pixels and
+atomic output/deduplication updates. `src/termio/stream_handler.zig` supplies only
+mouse-mode/format negotiation in `bterm_dispatch.c`; its application message and
+PTY glue are excluded. `src/terminal/Terminal.zig` is studied for the input-state
+contract, with its pinned hash recorded; no terminal application glue is copied.
+See [terminal-core.md](terminal-core.md) for bounds and deliberate adaptations.
+Keyboard sources remain studied until their implementation and nested notices
+are handled.
