@@ -2,6 +2,11 @@
 #ifndef BOGGART_LPAGE_INTERNAL_H
 #define BOGGART_LPAGE_INTERNAL_H
 #include "lpage.h"
+#include "lpage_layout.h"
+typedef struct { lp_capacity capacity; size_t first, rows; } lp_group_span;
+bool lp_row_group(const lpage_screen *screen, size_t absolute_row, lp_group_span *out);
+bool lp_geometry_crop_groups(lpage_screen *geometry, const lpage_screen *source,
+                             size_t end, size_t padding);
 lpage_screen *lp_geometry_new(const lpage_screen *source, size_t columns, size_t rows);
 /* Borrow retained rows and reserve unused source slots without mutation;
  * own only separately allocated padding pages. Source stays alive and
