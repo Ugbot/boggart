@@ -35,13 +35,18 @@ typedef struct {
   lpage_style style_values[64];
   uint32_t grapheme_values[64][LG_LIMIT]; size_t grapheme_lengths[64],key_lengths[64],uri_lengths[64];
   char keys[64][64],uris[64][64];
-  lpage_stats stats; lpage_screen private_screen; uint64_t page_bytes;
+  lpage_stats stats; lpage_screen private_screen; uint64_t page_bytes,group_bytes;
   lpage_cell cells[4096]; size_t capacities[128]; bool wrapped[128],dirty[128];
 } image;
 static void capture(lpage_screen *s,image *out) {
   memset(out,0,sizeof *out);
   out->columns=lpage_columns(s); out->rows=lpage_rows(s); out->history=lpage_history_count(s);
   out->stats=lpage_usage(s); memcpy(&out->private_screen,s,sizeof *s);
+  out->group_bytes=UINT64_C(14695981039346656037);
+  const unsigned char *group_data=(const unsigned char *)s->groups;
+  for (size_t i=0;i<s->group_capacity*sizeof *s->groups;i++) {
+    out->group_bytes^=group_data[i]; out->group_bytes*=UINT64_C(1099511628211);
+  }
   out->page_bytes=UINT64_C(14695981039346656037);
   for (const page *p=s->pages;p;p=p->next) {
     const unsigned char *bytes=(const unsigned char *)p;

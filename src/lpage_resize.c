@@ -62,12 +62,15 @@ static lpage_screen *crop(const lpage_screen *s,size_t columns,size_t rows,
     }
   }
   lpage_screen *dst=lp_geometry_new(s,columns,rows); if (!dst) return NULL;
-  output out={dst,0,0};
+  output out={dst,0,0}; size_t group_end=0,capacity=0; bool rebuild=false;
   for (size_t y=0;y<end;y++) {
     const lpage_row *row=source_row(s,y);
-    size_t capacity=lp_row_capacity(s,y);
-    bool rebuild=columns>row->columns && (columns>capacity || lp_row_page_has_head(s,y));
-    if (rebuild) capacity=columns;
+    if (y>=group_end) {
+      lp_group_span g; if (!lp_row_group(s,y,&g)) goto fail;
+      group_end=g.first+g.rows; capacity=g.capacity.cols;
+      rebuild=columns>row->columns && (columns>capacity || lp_row_page_has_head(s,y));
+      if (rebuild) capacity=columns;
+    }
     if (!next_row_capacity(&out,capacity)) goto fail;
     lpage_wrap(dst,out.y,rebuild ? false : row->wrapped);
     size_t n=columns<row->columns ? columns : row->columns;
@@ -82,6 +85,7 @@ static lpage_screen *crop(const lpage_screen *s,size_t columns,size_t rows,
     for (size_t y=old_rows;y<rows;y++) if (!next_row(&out)) goto fail;
   while (out.count<rows) if (!next_row(&out)) goto fail;
   for (unsigned i=0;i<3;i++) if (pins[i].x>=columns) pins[i].x=columns-1;
+  if (!lp_geometry_crop_groups(dst,s,end,out.count-end)) goto fail;
   prune_pins(&out,pins); lp_geometry_trim(dst); return dst;
 fail:
   lp_geometry_destroy(dst); return NULL;

@@ -101,3 +101,36 @@ allocation failures and allocation-free operation checks pass. Full suite
 ASan/UBSan 3/3 (41.07s): both soaks and `page_layout`. Compiled native source
 identity verifies 35 files/17 C11 compilation units. Page ownership integration
 remains the next step.
+
+## Logical spans connected
+
+Native screens now own ordered SDK page spans independently of physical
+16-row storage chunks. History append/drop/clear, partial row shifts, crops,
+slow-growth splitting/previous-page fill and height transactions preserve
+span ownership. Candidate span rings are unpublished; commit transfers them
+without allocation and abort preserves the source. Cached-grow head scans
+use logical spans and are computed once per page during crop.
+
+The original page-head spill is fixed: all 43 small cases/203 snapshots pass.
+Six focused normal and sanitizer resize gates pass, including 9,000 mixed
+resizes and 424 injected allocation failures/52 cases. Fault images include
+raw span-ring bytes as well as source screen fields and physical pages.
+
+A new registered full-state digest gate captures 11 large cases/79 snapshots
+through the independent verified SDK adapter. Eight complete cases/68 snapshots
+match. Eleven mismatches are preserved: final managed-style and ASCII-grapheme
+growth steps, and mixed-script grapheme feed/resize steps 1–9. The latter
+already diverges during feed around U+05C8, before resizing. The same failures
+reproduce under ASan/UBSan without sanitizer diagnostics.
+
+Full suite: 127/129 (133.82s). The additional mining_jobs foreground-latency
+failure at 100.499ms passes an isolated rerun; its 100ms bound stays unchanged.
+Seven original benchmark corpora preserve all 29 state digests in two rounds.
+Current native height medians remain below 1us in this run, with no controlled
+speedup claim. Details: docs/benchmarks/2026-10-13-logical-page-resize.md.
+
+Next: attach page-local managed reference accounting using the Venus map,
+translate managed growth/projection and copy-time reservation policies, then
+resolve the mixed-script feed width behavior. Capture large boundary
+expectations per SDK target profile. Keep BMUX-20 failed until the entire
+extended gate and rollback/performance checks pass.

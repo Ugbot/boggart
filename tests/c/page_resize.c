@@ -156,4 +156,31 @@ static void bounded(void) {
     lpage_destroy(s);
   }
 }
-int main(void) { ownership(); cached_capacity(); height_transfer(); heads(); bounded(); puts("resize ownership, wide heads, bounded history and 9000 mixed resizes passed"); return 0; }
+static void group_boundaries(void) {
+  lpage_screen *s=lpage_create(215,300,2000); CHECK(s);
+  lp_group_span first,second; CHECK(lp_row_group(s,0,&first));
+  CHECK(first.first==0 && first.rows==first.capacity.rows && first.capacity.rows>16 && first.capacity.rows<300);
+  CHECK(lp_row_group(s,first.rows,&second) && second.first==first.rows && first.rows+second.rows==300);
+  size_t boundary=first.rows;
+  CHECK(lpage_put(s,0,0,(lpage_cell){'a',0,0,1,0,0})); lpage_wrap(s,0,true);
+  CHECK(lpage_put(s,boundary+1,0,(lpage_cell){'b',0,0,1,0,0})); lpage_wrap(s,boundary+1,true);
+  lpage_resize *r=lpage_resize_prepare(s,(lpage_resize_options){213,300,false,true,{0,299,false},{0,0,false},false});
+  CHECK(r); lpage_resize_commit(r);
+  CHECK(lp_row_group(s,0,&first) && first.capacity.cols==215 && first.rows==boundary);
+  lpage_wrap(s,boundary, true);
+  CHECK(lpage_put(s,boundary,212,(lpage_cell){0,0,0,1,LP_CELL_WIDE_HEAD,0}));
+  CHECK(!lp_row_page_has_head(s,0) && lp_row_page_has_head(s,boundary+1));
+  r=lpage_resize_prepare(s,(lpage_resize_options){215,300,false,true,{0,299,false},{0,0,false},false});
+  CHECK(r); lpage_resize_commit(r);
+  CHECK(lpage_visible(s,0)->wrapped && !lpage_visible(s,boundary+1)->wrapped);
+  CHECK(lp_row_group(s,boundary,&second) && second.first==boundary);
+  /* Partial row shifts preserve page positions; full history growth appends. */
+  CHECK(lpage_scroll(s,boundary-1,boundary+2,1,false,0));
+  CHECK(lp_row_group(s,boundary,&second) && second.first==boundary);
+  for (unsigned i=0;i<25;i++) CHECK(lpage_scroll(s,0,299,1,true,0));
+  CHECK(lp_row_group(s,0,&first) && first.rows==boundary);
+  CHECK(lp_row_group(s,boundary,&second) && first.rows+second.rows==325);
+  lpage_clear_history(s); CHECK(lp_row_group(s,0,&first) && first.rows==boundary-25);
+  lpage_destroy(s);
+}
+int main(void) { ownership(); cached_capacity(); height_transfer(); heads(); bounded(); group_boundaries(); puts("resize ownership, logical page boundaries, wide heads, bounded history and 9000 mixed resizes passed"); return 0; }
