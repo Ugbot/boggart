@@ -62,8 +62,7 @@ static void style(lua_State *L, const lpage_style *s) {
   lua_createtable(L, 0, 4); integer(L, "fg", s->fg); integer(L, "bg", s->bg);
   integer(L, "underline", s->underline); integer(L, "attrs", s->attrs);
 }
-static void state(lua_State *L, bterm *t) {
-  bterm_status s = bterm_state(t);
+static void state(lua_State *L, bterm_status s) {
   lua_createtable(L, 0, 10);
   integer(L, "row", (lua_Integer)s.y + 1); integer(L, "col", (lua_Integer)s.x + 1);
   integer(L, "top", (lua_Integer)s.top + 1); integer(L, "bottom", (lua_Integer)s.bottom + 1);
@@ -71,24 +70,103 @@ static void state(lua_State *L, bterm *t) {
   boolean(L, "alternate", s.alternate); boolean(L, "pending_wrap", s.pending_wrap);
   style(L, &s.pen); lua_setfield(L, -2, "pen");
 }
-static void row(lua_State *L, bterm *t, const lpage_row *r) {
-  lua_createtable(L, 0, 2); boolean(L, "wrapped", r->wrapped);
-  lua_createtable(L, (int)r->columns, 0);
-  for (size_t x = 0; x < r->columns; x++) {
-    const lpage_cell *c = &r->cells[x];
-    lua_createtable(L, 0, 5); integer(L, "codepoint", c->codepoint);
-    integer(L, "width", c->width); integer(L, "flags", c->flags); integer(L, "hyperlink", c->hyperlink);
-    const llink_value *link = bterm_link(t, c->hyperlink);
-    if (link) {
-      lua_createtable(L, 0, 2);
-      lua_pushlstring(L, link->key, link->key_length); lua_setfield(L, -2, "id");
-      lua_pushlstring(L, link->uri, link->uri_length); lua_setfield(L, -2, "uri");
-      lua_setfield(L, -2, "link");
+/* The userdata roots an immutable image before any table/string allocation.
+ * Lua finalizers may close or mutate the terminal at allocation boundaries. */
+typedef struct {
+  uint32_t codepoint, hyperlink; lpage_style style;
+  uint8_t width, flags;
+  size_t text, text_length, key, key_length, uri, uri_length;
+} snapshot_cell;
+typedef struct {
+  bterm_status state; lvt_parser parser;
+  size_t columns, rows, history, count;
+  snapshot_cell cells[];
+} snapshot_image;
+static size_t utf8(uint32_t cp, char bytes[4]) {
+  if (cp>0x10ffff || (cp>=0xd800 && cp<=0xdfff)) cp=0xfffd;
+  if (cp<0x80) { bytes[0]=(char)cp; return 1; }
+  if (cp<0x800) { bytes[0]=(char)(0xc0|(cp>>6)); bytes[1]=(char)(0x80|(cp&63)); return 2; }
+  if (cp<0x10000) { bytes[0]=(char)(0xe0|(cp>>12)); bytes[1]=(char)(0x80|((cp>>6)&63)); bytes[2]=(char)(0x80|(cp&63)); return 3; }
+  bytes[0]=(char)(0xf0|(cp>>18)); bytes[1]=(char)(0x80|((cp>>12)&63)); bytes[2]=(char)(0x80|((cp>>6)&63)); bytes[3]=(char)(0x80|(cp&63)); return 4;
+}
+static size_t snapshot_add(lua_State *L,size_t a,size_t b) {
+  if (b>SIZE_MAX-a) luaL_error(L,"terminal snapshot too large"); return a+b;
+}
+static const lpage_row *snapshot_source(const lpage_screen *s,bool single,size_t index,bool history,size_t y) {
+  return single ? (history ? lpage_history(s,index) : lpage_visible(s,index))
+    : (y<lpage_rows(s) ? lpage_visible(s,y) : lpage_history(s,y-lpage_rows(s)));
+}
+static size_t snapshot_size(lua_State *L,bterm *t,bool single,size_t index,bool history) {
+  const lpage_screen *s=bterm_screen(t);
+  if (single) luaL_argcheck(L,index<(history ? lpage_history_count(s) : lpage_rows(s)),2,"row out of range");
+  size_t rows=single ? 1 : snapshot_add(L,lpage_rows(s),history ? lpage_history_count(s) : 0);
+  size_t columns=lpage_columns(s), n;
+  if (rows>SIZE_MAX/columns) return (size_t)luaL_error(L,"terminal snapshot too large");
+  n=rows*columns;
+  if (n>(SIZE_MAX-sizeof(snapshot_image))/sizeof(snapshot_cell)) return (size_t)luaL_error(L,"terminal snapshot too large");
+  size_t bytes=snapshot_add(L,sizeof(snapshot_image)+n*sizeof(snapshot_cell),rows);
+  for (size_t y=0;y<rows;y++) {
+    const lpage_row *r=snapshot_source(s,single,index,history,y);
+    for (size_t x=0;x<columns;x++) {
+      lgrapheme_value g=lpage_grapheme(s,&r->cells[x]); char encoded[4];
+      for (size_t i=0;i<g.length;i++) bytes=snapshot_add(L,bytes,utf8(g.codepoints[i],encoded));
+      const llink_value *link=lpage_link(s,r->cells[x].hyperlink);
+      if (link) bytes=snapshot_add(L,snapshot_add(L,bytes,link->key_length),link->uri_length);
     }
-    style(L, bterm_style(t, c->style)); lua_setfield(L, -2, "style");
-    lua_rawseti(L, -2, (lua_Integer)x + 1);
   }
-  lua_setfield(L, -2, "cells");
+  return bytes;
+}
+static snapshot_image *snapshot_copy(lua_State *L,bool single,size_t index,bool history) {
+  size_t capacity=snapshot_size(L,check(L)->term,single,index,history);
+  snapshot_image *image=lua_newuserdatauv(L,capacity,0);
+  /* Allocating the image can itself run finalizers. Revalidate lifetime and
+   * size before copying. No Lua allocation occurs while the core is borrowed. */
+  bterm *t=check(L)->term;
+  if (snapshot_size(L,t,single,index,history)>capacity) luaL_error(L,"terminal changed while creating snapshot");
+  const lpage_screen *s=bterm_screen(t);
+  image->state=bterm_state(t); image->parser=*bterm_parser(t);
+  image->columns=lpage_columns(s); image->rows=single ? 1 : lpage_rows(s);
+  image->history=!single && history ? lpage_history_count(s) : 0;
+  image->count=(image->rows+image->history)*image->columns;
+  char *wrapped=(char *)(image->cells+image->count), *bytes=wrapped+image->rows+image->history;
+  for (size_t y=0;y<image->rows+image->history;y++) {
+    const lpage_row *r=snapshot_source(s,single,index,history,y); wrapped[y]=r->wrapped;
+    for (size_t x=0;x<image->columns;x++) {
+      const lpage_cell *c=&r->cells[x]; snapshot_cell *out=&image->cells[y*image->columns+x];
+      *out=(snapshot_cell){0}; out->codepoint=lpage_codepoint(s,c);
+      out->hyperlink=c->hyperlink; out->style=*bterm_style(t,c->style);out->width=c->width;out->flags=c->flags;
+      out->text=(size_t)(bytes-(char *)image);
+      lgrapheme_value g=lpage_grapheme(s,c);
+      for (size_t i=0;i<g.length;i++) bytes+=utf8(g.codepoints[i],bytes);
+      out->text_length=(size_t)(bytes-(char *)image)-out->text;
+      const llink_value *link=lpage_link(s,c->hyperlink);
+      if (link) {
+        out->key=(size_t)(bytes-(char *)image);out->key_length=link->key_length;
+        memcpy(bytes,link->key,link->key_length);bytes+=link->key_length;
+        out->uri=(size_t)(bytes-(char *)image);out->uri_length=link->uri_length;
+        memcpy(bytes,link->uri,link->uri_length);bytes+=link->uri_length;
+      }
+    }
+  }
+  return image;
+}
+static void row(lua_State *L,const snapshot_image *image,size_t y) {
+  const char *wrapped=(const char *)(image->cells+image->count), *bytes=(const char *)image;
+  lua_createtable(L,0,2); boolean(L,"wrapped",wrapped[y]);
+  lua_createtable(L,(int)image->columns,0);
+  for (size_t x=0;x<image->columns;x++) {
+    const snapshot_cell *c=&image->cells[y*image->columns+x];
+    lua_createtable(L,0,7);integer(L,"codepoint",c->codepoint);
+    integer(L,"width",c->width);integer(L,"flags",c->flags);integer(L,"hyperlink",c->hyperlink);
+    lua_pushlstring(L,bytes+c->text,c->text_length);lua_setfield(L,-2,"text");
+    if (c->hyperlink) {
+      lua_createtable(L,0,2);
+      lua_pushlstring(L,bytes+c->key,c->key_length);lua_setfield(L,-2,"id");
+      lua_pushlstring(L,bytes+c->uri,c->uri_length);lua_setfield(L,-2,"uri");lua_setfield(L,-2,"link");
+    }
+    style(L,&c->style);lua_setfield(L,-2,"style");lua_rawseti(L,-2,(lua_Integer)x+1);
+  }
+  lua_setfield(L,-2,"cells");
 }
 static void pending(lua_State *L, const lvt_parser *p) {
   lua_createtable(L, 0, 13);
@@ -137,33 +215,27 @@ static int l_reset(lua_State *L) {
   if (t->events) t->events->count = t->events->used = 0; t->dropped = 0;
   if (!bterm_reset(t->term)) return luaL_error(L, "terminal reset failed"); return 0;
 }
-static int l_state(lua_State *L) { state(L, check(L)->term); return 1; }
+static int l_state(lua_State *L) { state(L, bterm_state(check(L)->term)); return 1; }
 static int l_row(lua_State *L) {
-  terminal *t = check(L); lua_Integer index = luaL_checkinteger(L, 2);
-  bool history = lua_toboolean(L, 3); const lpage_screen *s = bterm_screen(t->term);
-  size_t count = history ? lpage_history_count(s) : lpage_rows(s);
-  luaL_argcheck(L, index > 0 && (lua_Unsigned)index <= count, 2, "row out of range");
-  row(L, t->term, history ? lpage_history(s, (size_t)index - 1) : lpage_visible(s, (size_t)index - 1)); return 1;
+  lua_Integer index=luaL_checkinteger(L,2);luaL_argcheck(L,index>0,2,"row out of range");
+  snapshot_image *image=snapshot_copy(L,true,(size_t)index-1,lua_toboolean(L,3));
+  row(L,image,0);lua_remove(L,-2);return 1;
 }
 static int l_snapshot(lua_State *L) {
-  terminal *t = check(L); const lpage_screen *s = bterm_screen(t->term);
-  bool history = lua_toboolean(L, 2);
-  lua_createtable(L, 0, 6); integer(L, "cols", (lua_Integer)lpage_columns(s)); integer(L, "rows", (lua_Integer)lpage_rows(s));
-  state(L, t->term); lua_setfield(L, -2, "state");
-  pending(L, bterm_parser(t->term)); lua_setfield(L, -2, "pending");
-  lua_createtable(L, (int)lpage_rows(s), 0);
-  for (size_t y = 0; y < lpage_rows(s); y++) { row(L, t->term, lpage_visible(s, y)); lua_rawseti(L, -2, y + 1); }
-  lua_setfield(L, -2, "screen");
-  size_t count = history ? lpage_history_count(s) : 0;
-  lua_createtable(L, (int)count, 0);
-  for (size_t y = 0; y < count; y++) { row(L, t->term, lpage_history(s, y)); lua_rawseti(L, -2, y + 1); }
-  lua_setfield(L, -2, "scrollback"); return 1;
+  snapshot_image *image=snapshot_copy(L,false,0,lua_toboolean(L,2));
+  lua_createtable(L,0,6);integer(L,"cols",(lua_Integer)image->columns);integer(L,"rows",(lua_Integer)image->rows);
+  state(L,image->state);lua_setfield(L,-2,"state");pending(L,&image->parser);lua_setfield(L,-2,"pending");
+  lua_createtable(L,(int)image->rows,0);
+  for(size_t y=0;y<image->rows;y++){row(L,image,y);lua_rawseti(L,-2,y+1);}lua_setfield(L,-2,"screen");
+  lua_createtable(L,(int)image->history,0);
+  for(size_t y=0;y<image->history;y++){row(L,image,image->rows+y);lua_rawseti(L,-2,y+1);}lua_setfield(L,-2,"scrollback");
+  lua_remove(L,-2);return 1;
 }
 static int l_damage(lua_State *L) {
-  const lpage_screen *s = bterm_screen(check(L)->term); lua_createtable(L, 0, 0);
-  lua_Integer i = 0;
-  for (size_t y = 0; y < lpage_rows(s); y++) if (lpage_dirty(s, y)) { lua_pushinteger(L, y + 1); lua_rawseti(L, -2, ++i); }
-  return 1;
+  const lpage_screen *s=bterm_screen(check(L)->term);lua_Integer rows[4096],count=0;
+  for(size_t y=0;y<lpage_rows(s);y++)if(lpage_dirty(s,y))rows[count++]=(lua_Integer)y+1;
+  lua_createtable(L,(int)count,0);
+  for(lua_Integer i=0;i<count;i++){lua_pushinteger(L,rows[i]);lua_rawseti(L,-2,i+1);}return 1;
 }
 static int l_ack(lua_State *L) { bterm_ack_damage(check(L)->term); return 0; }
 static int l_replies(lua_State *L) {
@@ -356,7 +428,7 @@ int luaopen_boggart_terminal(lua_State *L) {
   lua_newtable(L); lua_pushcfunction(L, l_new); lua_setfield(L, -2, "new");
   lua_pushcfunction(L, l_source); lua_setfield(L, -2, "source");
   integer(L, "COLOR_INDEXED", LP_COLOR_INDEXED); integer(L, "COLOR_RGB", LP_COLOR_RGB);
-  integer(L, "AUTOWRAP", BT_AUTOWRAP); integer(L, "ORIGIN", BT_ORIGIN); integer(L, "CURSOR_VISIBLE", BT_CURSOR_VISIBLE);
+  integer(L, "GRAPHEME", BT_GRAPHEME); integer(L, "AUTOWRAP", BT_AUTOWRAP); integer(L, "ORIGIN", BT_ORIGIN); integer(L, "CURSOR_VISIBLE", BT_CURSOR_VISIBLE);
   integer(L, "BRACKETED_PASTE", BT_BRACKETED_PASTE); integer(L, "FOCUS", BT_FOCUS);
   integer(L, "SHIFT", BI_SHIFT); integer(L, "ALT", BI_ALT); integer(L, "CTRL", BI_CTRL);
   integer(L, "SUPER", BI_SUPER); integer(L, "HYPER", BI_HYPER); integer(L, "META", BI_META);

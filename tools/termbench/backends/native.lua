@@ -2,7 +2,7 @@ local terminal = require "terminal"
 local hash = require "hash_c"
 local M = { name = "boggart-c", features = {
   alt_screen = true, scroll_regions = true, truecolor = true, color256 = true,
-  wide = false, graphemes = false,
+  wide = true, graphemes = true,
 } }
 local here = debug.getinfo(1, "S").source:sub(2):gsub("\\", "/")
 local root = assert(here:match("^(.*)tools/termbench/backends/native%.lua$"))

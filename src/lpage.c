@@ -36,7 +36,7 @@ struct lpage_screen {
 };
 static row *at(const lpage_screen *s, size_t y) { return s->visible[(s->head + y) % s->rows]; }
 static void set(lpage_screen *s, size_t y, row *r) { s->visible[(s->head + y) % s->rows] = r; }
-static void release_cell(lpage_screen *s, lpage_cell cell) {
+void lpage_release_cell(lpage_screen *s, lpage_cell cell) {
   lstyle_release(s->styles, cell.style);
   if (cell.hyperlink) llink_release(s->links, cell.hyperlink);
   if (cell.flags & LP_CELL_GRAPHEME) lgrapheme_release(s->graphemes, cell.codepoint);
@@ -67,7 +67,7 @@ static row *new_row(lpage_screen *s) {
 }
 static void free_row(lpage_screen *s, row *r) {
   for (size_t x = 0; x < s->columns; x++) {
-    release_cell(s, r->cells[x]); r->cells[x].style = r->cells[x].hyperlink = 0;
+    lpage_release_cell(s, r->cells[x]); r->cells[x].style = r->cells[x].hyperlink = 0;
   }
   page *p = r->owner;
   if (!p->free_bits) { p->available = s->available; s->available = p; }
@@ -117,7 +117,7 @@ static bool break_pair(lpage_screen *s, row *r, size_t x, uint32_t style) {
   if (r->cells[x].width == 2) return fill(s, r, x, 2, style, true);
   return true;
 }
-static bool retain_cell(lpage_screen *s, lpage_cell cell) {
+bool lpage_retain_cell(lpage_screen *s, lpage_cell cell) {
   if (!lstyle_retain(s->styles, cell.style)) return false;
   if (cell.hyperlink && !llink_retain(s->links, cell.hyperlink)) {
     lstyle_release(s->styles, cell.style); return false;
@@ -135,15 +135,15 @@ bool lpage_put(lpage_screen *s, size_t y, size_t x, lpage_cell cell) {
       || (cell.width == 2 && x + 1 == s->columns)) return false;
   row *r = at(s, y);
   if ((cell.flags & LP_CELL_WIDE_HEAD) && (cell.width != 1 || cell.codepoint || x + 1 != s->columns || !r->view.wrapped)) return false;
-  if (!retain_cell(s, cell)) return false;
+  if (!lpage_retain_cell(s, cell)) return false;
   lpage_cell tail={0,cell.style,cell.hyperlink,0,LP_CELL_WIDE_TAIL | (cell.flags & LP_CELL_PROTECTED),0};
-  if (cell.width == 2 && !retain_cell(s, tail)) { release_cell(s, cell); return false; }
+  if (cell.width == 2 && !lpage_retain_cell(s, tail)) { lpage_release_cell(s, cell); return false; }
   if (!break_pair(s, r, x, cell.style) || (cell.width == 2 && !break_pair(s, r, x + 1, cell.style))) {
-    release_cell(s, cell); if (cell.width == 2) release_cell(s, tail); return false;
+    lpage_release_cell(s, cell); if (cell.width == 2) lpage_release_cell(s, tail); return false;
   }
-  release_cell(s, r->cells[x]); r->cells[x] = cell; r->dirty = true;
+  lpage_release_cell(s, r->cells[x]); r->cells[x] = cell; r->dirty = true;
   if (cell.width == 2) {
-    release_cell(s, r->cells[x + 1]);
+    lpage_release_cell(s, r->cells[x + 1]);
     r->cells[x + 1] = tail;
   }
   return true;
@@ -165,7 +165,7 @@ bool lpage_append_grapheme(lpage_screen *s,size_t y,size_t x,uint32_t cp,unsigne
 static bool fill(lpage_screen *s, row *r, size_t x, size_t n, uint32_t style, bool release_old) {
   for (size_t i = x; i < x + n; i++) {
     if (!lstyle_retain(s->styles, style)) return false;
-    if (release_old) release_cell(s, r->cells[i]);
+    if (release_old) lpage_release_cell(s, r->cells[i]);
     r->cells[i] = (lpage_cell){ 0, style, 0, 1, 0, 0 };
   }
   r->dirty = true;
@@ -197,7 +197,7 @@ static bool edit(lpage_screen *s, size_t y, size_t x, size_t n, uint32_t style, 
     lstyle_release(s->styles, style); return false;
   }
   size_t discard = insert ? s->columns - n : x;
-  for (size_t i = discard; i < discard + n; i++) release_cell(s, r->cells[i]);
+  for (size_t i = discard; i < discard + n; i++) lpage_release_cell(s, r->cells[i]);
   size_t tail = s->columns - x - n;
   if (insert) memmove(r->cells + x + n, r->cells + x, tail * sizeof(lpage_cell));
   else memmove(r->cells + x, r->cells + x + n, tail * sizeof(lpage_cell));

@@ -54,7 +54,9 @@ before claiming parity. No uucode source or tables are copied.
 and returns its consumed scalar count. It supports unbounded cluster length
 without storing the text. A streaming terminal still needs cell ownership for
 that text. Native grid wide-pair repair and bounded grapheme storage are now
-implemented, with printer integration still pending. Resize/reflow is BMUX-20. Renderer and string measurement
+implemented and used by the native printer and copied Lua snapshots. Mode 2027
+defaults on; its legacy mode retains scalar printing and zero-width attachment.
+Resize/reflow is BMUX-20. Renderer and string measurement
 must switch to cluster units together so text layout agrees with painting.
 
 The shared UTF-8 decoder accepts an explicit end pointer or a NUL-terminated
@@ -70,4 +72,14 @@ measures two. The renderer, native cells and consumers must migrate together.
 
 Initial Unicode integration verification: full serial CTest passed 116/116 (110.93 s); focused normal and ASan/UBSan tests passed 18/18; CLI/Studio parity passed with 31 identical fields, including width and prefix vectors. Generator reproducibility, malformed-input checks and pinned Ghostty attribution passed. BMUX-19 remains in progress for printer and renderer integration.
 
-Page ownership integration verification: full serial CTest passed 118/118 (111.43 s), focused normal and ASan/UBSan checks passed 20/20, CLI/Studio parity passed with 31 identical fields, and pinned attribution passed for 40 modules / 26 ported files. Tests exercise copy-on-write, the 64-suffix cap, exact refs after 30,000 mutations and steady memory through history recycling. Native printing and copied cluster text remain pending.
+Page ownership integration verification: full serial CTest passed 118/118 (111.43 s), focused normal and ASan/UBSan checks passed 20/20, CLI/Studio parity passed with 31 identical fields, and pinned attribution passed for 40 modules / 26 ported files. Tests exercise copy-on-write, the 64-suffix cap, exact refs after 30,000 mutations and steady memory through history recycling. This checkpoint preceded native printing and copied cluster text.
+
+Native printer and copied-text integration verification: full serial CTest
+passed 120/120 (113.95 s); focused normal checks passed 21/21 before the final
+REP boundary correction, which the full suite covers; final ASan/UBSan checks
+passed 21/21 (15.59 s). CLI/Studio parity passed with 32 identical fields.
+Generator reproducibility and four validation tests passed; attribution passed
+for 40 modules / 26 ported files; strict C99 warning and diff checks passed.
+The original GC-close snapshot probe failed under ASan before the immutable
+image change and passed afterward. Compiled identity remains 29 files.
+BMUX-19 remains in progress for renderer/measurement agreement.

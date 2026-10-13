@@ -62,9 +62,11 @@ size_t bunicode_str_take(const char *s, size_t length, int columns, int *used);
 
 - [x] Add screen-owned, bounded grapheme storage with explicit references through put, clear, copy, scroll, history eviction, and destruction; retain the 16-byte cell layout.
 - [x] Test width-two continuation repair on overwrite, insert/delete/erase and scroll boundaries before switching the printer to shared widths.
-- [ ] Track grapheme state across feed chunks, append marks/ZWJ sequences, apply VS width changes, and break the association on cursor operations or control dispatch. Test all byte split points against an unsplit snapshot.
-- [ ] Expose complete cluster text in copied snapshots and draw it as a unit. Update width/prefix consumers and their rendering in the same increment so layout and painting agree.
-- [ ] Add long-running cluster lifetime/eviction tests and native/Lua parity vectors before closing BMUX-19. Use the existing termbench Unicode workload to detect regressions; do not claim Ghostty speed parity.
+- [x] Derive association from the previous cursor cell and replay its bounded grapheme, following the pinned printer; append marks/ZWJ sequences and apply VS width changes. Cursor operations can associate with existing text, and SGR preserves association. Test all byte split points against an unsplit snapshot.
+- [x] Expose complete cluster text in copied snapshots, with an immutable rooted image before Lua allocations.
+- [ ] Draw clusters as units. Update width/prefix consumers and their rendering in the same increment so layout and painting agree.
+- [x] Add long-running native cluster lifetime/eviction tests and copied Lua byte-split vectors.
+- [ ] Verify renderer/measurement parity before closing BMUX-19. Use the existing termbench Unicode workload to detect regressions; do not claim Ghostty speed parity.
 
 ## Review checkpoints
 
@@ -77,3 +79,13 @@ Task 2 verification: both builds succeeded; normal focused tests 18/18 (10.87 s)
 Task 3 wide-pair storage checkpoint: the initially failing continuation test now passes; normal and ASan/UBSan page/wide/dispatch/link checks passed 4/4. `tests/c/wide_cells.c` covers overwrite of either half, adjacent-pair collisions, erase expansion, insertion/deletion cuts, clipping, no-op ranges, history transfer, WIDE_HEAD placement/removal, rejected geometry/style IDs, and 30,000 mixed operations with exact style/link refs. Cell size remains 16 bytes. Printer/cluster integration follows; BMUX-19 stays in progress.
 
 Task 3 grapheme ownership checkpoint: both builds succeeded; normal focused tests 20/20 (12.64 s), ASan/UBSan focused tests 20/20 (16.36 s), full serial suite 118/118 (111.43 s), and CLI/Studio parity 31 identical fields. `tests/c/grapheme_cells.c` verifies shared-cell copy-on-write, unique append, the base + 64 suffix cap, dead IDs, scalar validation, width growth/shrink, edits, eviction, and stable bytes through recycling. The 30,000-operation wide-cell test now checks exact grapheme refs too. Pinned attribution passed for 40 modules / 26 ported files; compiled identity now contains 29 files. Next: wire the native printer and copied snapshots to these accessors, then switch rendering and measurement together.
+
+Native printer and copied-text integration verification: full serial CTest
+passed 120/120 (113.95 s); focused normal checks passed 21/21 before the final
+REP boundary correction, which the full suite covers; final ASan/UBSan checks
+passed 21/21 (15.59 s). CLI/Studio parity passed with 32 identical fields.
+Generator reproducibility and four validation tests passed; attribution passed
+for 40 modules / 26 ported files; strict C99 warning and diff checks passed.
+The original GC-close snapshot probe failed under ASan before the immutable
+image change and passed afterward. Compiled identity remains 29 files.
+BMUX-19 remains in progress for renderer/measurement agreement.

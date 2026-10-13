@@ -87,7 +87,8 @@ on last release, including erase, clipping and history eviction. The pinned
 Ghostty limit of one base plus 64 suffix scalars bounds each slot. Pool capacity
 follows peak live cells, not the number of scroll operations. `usage()` includes
 `graphemes` and `grapheme_bytes`; screen bytes include the pool. The native printer
-and Lua row text have not yet switched to these accessors.
+and Lua row text use these accessors. A copied C cell can hold its style, link and
+grapheme across mutations using `lpage_retain_cell` / `lpage_release_cell`.
 
 `src/lstyle.c` interns default, indexed and RGB colours plus attributes in a
 screen-owned hash table. Acquiring a style owns one reference; each cell owns
@@ -153,10 +154,13 @@ identical grids/state/replies; 131,072 deterministic adversarial bytes also
 match whole versus one-byte feeds and release styles on reset. The standalone
 suite is included in sanitizer builds.
 
-Cells currently hold one scalar with width 1: grapheme/wide-cell behaviour is
-BMUX-19, and geometry/reflow is BMUX-20. A shared generated Unicode 16.0.0
-kernel now supplies scalar widths and streaming grapheme boundaries; see
-[unicode.md](unicode.md). Cell integration remains pending. Character-set designation, soft reset,
+Native cells now preserve graphemes and width-two pairs using the generated
+Unicode 16.0.0 kernel; see [unicode.md](unicode.md). Mode 2027 defaults on and
+supports DECSET/DECRST and `CSI ? 2027 $ p` queries (1 = set, 2 = reset). RIS
+restores the default. Width effects can grow or shrink an existing cell. A wide
+glyph at the last column writes a spacer head before wrapping; a one-column
+terminal writes a blank. Disabled autowrap ignores a wide glyph that cannot fit.
+Resize/reflow remains BMUX-20. Character-set designation, soft reset,
 selective erasure, DCS/APC extensions and live PTY
 consumers are not yet implemented. The pinned Ghostty differential suite is
 BMUX-23. Keep BMUX-16 open until vim, htop, less and tmux rendering is verified
@@ -182,14 +186,21 @@ local reply_bytes = t:replies()             -- consume queued DA/DSR replies
 ```
 
 Rows and cursor/margin coordinates are one-based in Lua. Each copied cell has
-`codepoint`, `width`, `flags`, `hyperlink` and a copied `style` with tagged
-`fg`, `bg`, `underline` colours and `attrs`. Blank codepoint is zero. The module
+base `codepoint`, complete UTF-8 `text`, `width`, `flags`, `hyperlink` and a copied
+`style` with tagged `fg`, `bg`, `underline` colours and `attrs`. Blank codepoint
+is zero and blank/tail text is empty. Pool IDs never appear as Lua codepoints.
+The module
 exports colour tags and commonly consumed mode bits. `state()` copies cursor,
 margins, modes, alternate/pending-wrap state, cursor style and pen.
 
 `snapshot()` copies the active screen, state and diagnostic parser fields;
 `snapshot(true)` includes active scrollback. `row(index, true)` copies history
-oldest first. Snapshots/rows stay independent after later feeds. Raw pending
+oldest first. Snapshots/rows first copy a complete immutable image into rooted
+Lua userdata, then allocate tables/strings. A Lua finalizer can close or mutate
+the terminal without invalidating that image; closure during image allocation
+raises a closed-terminal error, and growth beyond the allocated capacity raises
+a changed-terminal error. Copies stay independent after feeds, reset and close.
+Raw pending
 intermediate/OSC bytes use numeric arrays so snapshots remain JSON-compatible
 even during invalid UTF-8 or NUL-containing strings. Snapshot and damage queries
 do not acknowledge damage or drain replies. Full persisted session/attach state
@@ -508,3 +519,22 @@ its fixed key table and old parser; native resize/reflow and the libuv PTY path
 must replace that path before negotiated input can become authoritative without
 duplicating parsing or grid ownership. These native APIs do not claim live
 Studio input integration.
+
+### Unicode printing and copied text (BMUX-19)
+
+Combining is determined from the cell preceding the cursor, including a wide
+tail or a cell awaiting wrap. Replaying its bounded slice reconstructs break
+state, so feed chunk boundaries and intervening SGR have no effect. Moving the
+cursor can associate a new mark with an existing cell; there is no separate
+stream-local attachment pointer. Mode 2027 off attaches zero-width marks without
+segmentation and otherwise prints scalar widths. Emoji selectors change width
+only in Unicode mode and only after a valid selector base. REP repeats the last
+separately printed base scalar. A cluster moved by widening preserves its
+original style and hyperlink even when scrolling recycles the original row.
+
+`tests/c/terminal_unicode.c` covers cursor/wrap rules, Hangul, Indic, flags, ZWJ,
+VS15/16, legacy mode, all byte split points, the suffix cap, and 10,000 history
+recycles. `tests/terminal_graphemes.lua` checks complete UTF-8 text, links, JSON
+copies, mode queries, fragmentation, and finalizers closing/mutating the terminal
+inside row/snapshot allocation. Studio's existing terminal view and scalar
+width/prefix renderer still require integration before BMUX-19 can close.

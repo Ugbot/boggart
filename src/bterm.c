@@ -3,11 +3,13 @@
  * ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/input/key_encode.zig
  * ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/terminal/modes.zig
  * ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/terminal/focus.zig
+ * ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/terminal/Terminal.zig
  * Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
  * SPDX-License-Identifier: MIT; see THIRD_PARTY/ghostty-LICENSE.
- * Adaptation: fixed geometry and scalar cells; Unicode/reflow follow separately.
+ * Adaptation: fixed geometry, generated Unicode 16 widths and owned C cells.
  */
 #include "bterm_internal.h"
+#include "bunicode.h"
 #include <stdlib.h>
 #include <string.h>
 static void require(bterm *t, bool ok) { if (!ok) t->failed = true; }
@@ -87,19 +89,86 @@ void bt_index(bterm *t, bool reverse) {
     else if (c->y + 1 < t->rows) c->y++;
   }
 }
+static const lpage_cell *previous_cell(bterm *t, size_t *x, bool legacy) {
+  bt_buffer *b = bt_active(t); bt_cursor c = b->cursor;
+  size_t left = (t->modes & BT_AUTOWRAP) && c.pending_wrap ? 0 : 1;
+  if (!legacy && !(t->modes & BT_AUTOWRAP) && c.x + 1 == t->columns
+      && lpage_codepoint(b->screen, lpage_get(b->screen,c.y,c.x))) left = 0;
+  if (c.x < left) return NULL;
+  *x = c.x - left;
+  const lpage_cell *cell = lpage_get(b->screen,c.y,*x);
+  if (cell->flags & LP_CELL_WIDE_TAIL) {
+    if (!*x) return NULL;
+    cell = lpage_get(b->screen,c.y,--*x);
+  }
+  return lpage_codepoint(b->screen,cell) ? cell : NULL;
+}
+static void after_glyph(bterm *t, size_t x, unsigned width) {
+  bt_cursor *c = &bt_active(t)->cursor;
+  c->x = x + width < t->columns ? x + width : t->columns - 1;
+  c->pending_wrap = x + width >= t->columns && (t->modes & BT_AUTOWRAP);
+}
+static bool append_cluster(bterm *t, uint32_t cp) {
+  size_t x; const lpage_cell *previous = previous_cell(t,&x,false);
+  if (!previous) return false;
+  bt_buffer *b = bt_active(t); bt_cursor *c = &b->cursor;
+  lgrapheme_value v = lpage_grapheme(b->screen,previous);
+  bunicode_grapheme_state state = {0};
+  for (size_t i=0; i<v.length; i++) (void)bunicode_grapheme_break(&state,v.codepoints[i]);
+  if (bunicode_grapheme_break(&state,cp)) return false;
+  bunicode_width_effect effect = bunicode_grapheme_width_effect(v.codepoints[v.length-1],cp);
+  if (effect == BU_WIDTH_IGNORE) return true;
+  unsigned old_width=previous->width, width=old_width;
+  if (effect == BU_WIDTH_WIDE) width=2;
+  else if (effect == BU_WIDTH_NARROW) width=1;
+  if (width == 2 && x + 1 == t->columns) {
+    if (t->columns == 1 || !(t->modes & BT_AUTOWRAP)) return true;
+    /* Keep every referenced object alive even if scrolling evicts the source
+     * row. Preserve its style/link rather than applying the current pen. */
+    lpage_cell held=*previous;
+    if (!lpage_retain_cell(b->screen,held)) { t->failed=true; return true; }
+    lpage_wrap(b->screen,c->y,true);
+    require(t,lpage_put(b->screen,c->y,x,(lpage_cell){0,held.style,0,1,LP_CELL_WIDE_HEAD,0}));
+    if (!t->failed) {
+      bt_index(t,false); c->x=0; x=0; held.width=2;
+      if (!t->failed) require(t,lpage_put(b->screen,c->y,x,held));
+    }
+    lpage_release_cell(b->screen,held);
+  }
+  if (!t->failed) require(t,lpage_append_grapheme(b->screen,c->y,x,cp,width));
+  if (width != old_width) after_glyph(t,x,width);
+  return true;
+}
 void bt_print(bterm *t, uint32_t cp) {
   bt_buffer *b = bt_active(t); bt_cursor *c = &b->cursor;
+  if (cp > 255 && (t->modes & BT_GRAPHEME) && append_cluster(t,cp)) return;
+  unsigned width=(unsigned)bunicode_width(cp);
+  if (!width) {
+    if (t->modes & BT_GRAPHEME) return;
+    size_t x; const lpage_cell *previous=previous_cell(t,&x,true);
+    if (!previous) return;
+    if ((cp==0xfe0e || cp==0xfe0f) && !(bunicode_properties(lpage_codepoint(b->screen,previous)) & BU_PICTOGRAPHIC)) return;
+    require(t,lpage_append_grapheme(b->screen,c->y,x,cp,previous->width)); return;
+  }
+  t->last_printed = cp;
   if (c->pending_wrap) {
     if (t->modes & BT_AUTOWRAP) {
       lpage_wrap(b->screen, c->y, true); bt_index(t, false); c->x = 0;
     } else c->pending_wrap = false;
   }
-  if (t->modes & BT_INSERT) bt_edit(t, 1, true);
   uint32_t id; if (t->failed || !pen_id(t, &id)) return;
-  require(t, lpage_put(b->screen, c->y, c->x, (lpage_cell){cp, id, b->hyperlink_id, 1, 0, 0}));
-  t->last_printed = cp;
-  if (c->x + 1 == t->columns) c->pending_wrap = (t->modes & BT_AUTOWRAP) != 0;
-  else c->x++;
+  if (width==2 && t->columns==1) { cp=0; width=1; }
+  if (width==2 && c->x+1==t->columns) {
+    if (!(t->modes & BT_AUTOWRAP)) return;
+    lpage_wrap(b->screen,c->y,true);
+    require(t,lpage_put(b->screen,c->y,c->x,(lpage_cell){0,id,0,1,LP_CELL_WIDE_HEAD,0}));
+    if (t->failed) return;
+    bt_index(t,false); c->x=0;
+  }
+  if (t->modes & BT_INSERT) bt_edit(t,width,true);
+  if (t->failed) return;
+  require(t, lpage_put(b->screen, c->y, c->x, (lpage_cell){cp, id, b->hyperlink_id, (uint8_t)width, 0, 0}));
+  after_glyph(t,c->x,width);
 }
 void bt_tab(bterm *t, size_t n, bool backward) {
   bt_cursor *c = &bt_active(t)->cursor; c->pending_wrap = false;
@@ -194,7 +263,7 @@ bterm *bterm_create(size_t columns, size_t rows, size_t history_limit, bterm_rep
   t->buffers[0].screen = lpage_create(columns, rows, history_limit);
   if (!t->buffers[0].screen) { free(t); return NULL; }
   t->columns = columns; t->rows = rows; t->reply = reply; t->reply_context = context;
-  t->bottom = rows - 1; t->modes = BT_AUTOWRAP | BT_CURSOR_VISIBLE;
+  t->bottom = rows - 1; t->modes = BT_AUTOWRAP | BT_CURSOR_VISIBLE | BT_GRAPHEME;
   t->ignore_keypad_numlock = t->alt_prefix = true;
   t->focused = true;
   for (size_t x = 8; x < columns; x += 8) t->tabs[x] = true;
@@ -223,7 +292,7 @@ bool bterm_reset(bterm *t) {
     lpage_damage_all(b->screen);
   }
   t->active = 0; t->top = 0; t->bottom = t->rows - 1;
-  t->modes = BT_AUTOWRAP | BT_CURSOR_VISIBLE; t->last_printed = t->cursor_style = 0;
+  t->modes = BT_AUTOWRAP | BT_CURSOR_VISIBLE | BT_GRAPHEME; t->last_printed = t->cursor_style = 0;
   t->mouse_mode = BM_NONE; t->mouse_format = BM_FORMAT_X10;
   t->mouse_motion.valid = false; t->mouse_cell_width = t->mouse_cell_height = 0;
   t->backarrow = t->modify_other_keys_2 = false;

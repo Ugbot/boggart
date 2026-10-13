@@ -55,8 +55,8 @@ BMUX gates.
 The default `termbench.backends.native` adapter uses `require("terminal")` in
 both front ends. Its feed call goes directly to the C parser/grid, with no Lua
 callbacks per byte. It supports the tested alternate screen, scroll regions
-and 256/RGB SGR paths; wide-cell and grapheme layout remain unsupported. Its
-snapshot copies the active screen, styles, cursor/modes, scrollback and pending
+and 256/RGB SGR paths, wide-cell pairs and bounded grapheme layout. Its
+snapshot copies complete cluster text, the active screen, styles, cursor/modes, scrollback and pending
 parser diagnostics. Both adapters use a 2000-row history limit. The native
 report records 29 source/header hashes compiled into the current executable, and the
 adapter rejects a checkout that differs from those hashes before timing.
@@ -147,7 +147,28 @@ and parity runs, uses the same 1 MiB scenario targets, 4096-byte chunks and 80x2
 geometry with five samples. The source-identified
 [link ownership report](benchmarks/2026-10-13-terminal-links.json) records plain
 117.913 MB/s, dense-SGR 126.271, Unicode 142.233, scroll 96.685 and alternate screen
-24.822. Whole/fragmented grids agree. Unicode width/graphemes remain unsupported;
+24.822. Whole/fragmented grids agree. At that checkpoint Unicode width/graphemes
+were unsupported;
 these measurements describe native parse/grid work, with no cmux/Ghostty or
 live-rendering speed claim. The earlier native artifact retains its original
 13-file build identity; it is a historical measurement, not the current source.
+
+
+Native Unicode printing checkpoint (BMUX-19): the
+[Unicode report](benchmarks/2026-10-13-terminal-unicode.json) uses five samples,
+1 MiB scenario targets, 4096-byte chunks, 80x24 geometry and 29 compiled source
+hashes. All five workloads pass `--require-features` and whole/fragmented grids
+agree. Mode 2027 is enabled and snapshots preserve complete cluster text.
+
+| Scenario | MB/s |
+| --- | ---: |
+| plain | 49.223 |
+| dense-sgr | 57.821 |
+| unicode | 41.121 |
+| scroll | 26.339 |
+| alt-screen | 9.744 |
+
+This is a headless parse/grid baseline after wide-pair and grapheme ownership
+integration. Throughput is lower than the earlier link-ownership report; no
+performance improvement or cmux/Ghostty speed parity is claimed. Studio still
+needs the native PTY/parser and renderer integration.

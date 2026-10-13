@@ -68,6 +68,8 @@ put("terminal_key", require("hash_c").sha256(probe:key{text="A",unshifted=97,bas
 probe:feed("\27[?2004;1004h")
 put("terminal_paste", require("hash_c").sha256(probe:paste("hello\nworld")))
 put("terminal_focus", require("hash_c").sha256(probe:focus(false)..probe:replies()))
+probe:reset();probe:feed("é👩‍💻🇬🇧❤️⌚︎日\r\n\27[?2027$p")
+put("terminal_unicode", require("hash_c").sha256(require("json").encode({probe:snapshot(true),probe:replies()})))
 
 -- ---- the tools the model is offered ----------------------------------------
 -- The one place asymmetry is legitimate: the studio registers panel-drawing

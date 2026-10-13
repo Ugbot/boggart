@@ -21,7 +21,7 @@ end
 for _, case in ipairs(cases) do
   check(runner.check_stream(native, case, { cols = 80, rows = 24 }, 1), "native stream: " .. case.name)
 end
-check(native.features.alt_screen and native.features.truecolor and not native.features.wide,
+check(native.features.alt_screen and native.features.truecolor and native.features.wide and native.features.graphemes,
   "native feature boundary is explicit")
 check(#native.source.files == 29, "native identifies the compiled core, Unicode table, grapheme pool and binding")
 local terminal = require "terminal"

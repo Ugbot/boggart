@@ -31,6 +31,10 @@ llink_pool *lpage_links(lpage_screen *screen);
 lgrapheme_pool *lpage_graphemes(lpage_screen *screen);
 uint32_t lpage_codepoint(const lpage_screen *screen, const lpage_cell *cell);
 lgrapheme_value lpage_grapheme(const lpage_screen *screen, const lpage_cell *cell);
+/* Hold a copied cell across mutations of its screen. Release exactly once
+ * after a successful retain. lpage_put retains its own copy, not this hold. */
+bool lpage_retain_cell(lpage_screen *screen, lpage_cell cell);
+void lpage_release_cell(lpage_screen *screen, lpage_cell cell);
 /* Attach one scalar and update the glyph's width; only bases own graphemes. */
 bool lpage_append_grapheme(lpage_screen *screen, size_t row, size_t column, uint32_t cp, unsigned width);
 const llink_value *lpage_link(const lpage_screen *screen, uint32_t id);

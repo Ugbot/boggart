@@ -31,7 +31,7 @@ the port boundary; it is not a correctness or completeness claim.
 | `src/terminal/kitty/key.zig`, `modes.zig` | ported (selected cases) | Fixed per-screen eight-entry flag rings, bounded negotiation/query and keyboard DEC mode defaults |
 | `src/input/mouse_encode.zig` | ported | `src/bmouse.c/h`; normalized events/options, five formats and atomic writes; no renderer types |
 | `src/termio/stream_handler.zig` | ported (selected cases) | Mouse-mode negotiation in `src/bterm_dispatch.c`; no message/PTY/app glue |
-| `src/terminal/Terminal.zig` | studied | Pinned input-state interface and last-set mouse semantics |
+| `src/terminal/Terminal.zig` | ported (selected printer behavior) | `src/bterm.c`; previous-cell association, Unicode/legacy printing, width changes and wide wrap spacers. Fixed C geometry, own Unicode data, original style/link preserved on widening. Input-state interface and last-set mouse semantics also studied |
 | `src/input/paste.zig` | ported | `src/bpaste.c/h`; binary transforms, bracketed framing, optional safety heuristic and atomic/overlapping buffers |
 | `src/terminal/focus.zig` | ported | `src/bterm.c`; negotiated focus reports. Mode enable reports adapt the existing stream-handler path |
 | `src/terminal/paste.zig`, `src/termio/Termio.zig` | studied | Paste/focus call boundaries only; no clipboard readers, Kitty OTP grants, app/backend or PTY glue copied |

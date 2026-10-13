@@ -12,7 +12,7 @@ enum {
   BT_AUTOWRAP = 1u << 0, BT_ORIGIN = 1u << 1, BT_CURSOR_VISIBLE = 1u << 2,
   BT_INSERT = 1u << 3, BT_NEWLINE = 1u << 4, BT_APP_CURSOR = 1u << 5,
   BT_APP_KEYPAD = 1u << 6, BT_BRACKETED_PASTE = 1u << 7, BT_FOCUS = 1u << 8,
-  BT_REVERSE_VIDEO = 1u << 9
+  BT_REVERSE_VIDEO = 1u << 9, BT_GRAPHEME = 1u << 10
 };
 typedef struct {
   size_t x, y, top, bottom;
