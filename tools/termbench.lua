@@ -13,7 +13,7 @@ local function read_json(path)
   return value
 end
 local function main(args)
-  local opts, backend_name, output, as_json = {}, "termbench.backends.lua", nil, false
+  local opts, backend_name, output, as_json = {}, "termbench.backends.native", nil, false
   local number_options = { ["--bytes"] = "bytes", ["--samples"] = "samples",
     ["--chunk"] = "chunk", ["--cols"] = "cols", ["--rows"] = "rows" }
   local i = 1
@@ -26,7 +26,7 @@ local function main(args)
         "  --chunk N       feed chunk bytes (default 4096)\n",
         "  --cols N --rows N  terminal dimensions (default 80 x 24)\n",
         "  --scenario NAME plain|dense-sgr|unicode|scroll|alt-screen\n",
-        "  --backend MODULE  Lua backend adapter (default termbench.backends.lua)\n",
+        "  --backend MODULE  Lua backend adapter (default termbench.backends.native)\n",
         "  --json          JSON on stdout\n",
         "  --output PATH   also save the JSON report\n",
         "  --budgets PATH  JSON object: {scenario: {min_mbps: number}}\n",

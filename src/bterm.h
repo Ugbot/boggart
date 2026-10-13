@@ -2,6 +2,7 @@
 #ifndef BOGGART_BTERM_H
 #define BOGGART_BTERM_H
 #include "lpage.h"
+#include "lvt.h"
 typedef struct bterm bterm;
 enum {
   BT_AUTOWRAP = 1u << 0, BT_ORIGIN = 1u << 1, BT_CURSOR_VISIBLE = 1u << 2,
@@ -31,5 +32,7 @@ bterm_status bterm_state(const bterm *terminal);
 /* Screen/style borrows expire on mutation. IDs belong to the active screen. */
 const lpage_screen *bterm_screen(const bterm *terminal);
 const lpage_style *bterm_style(const bterm *terminal, uint32_t id);
+/* Diagnostic stream state, borrowed until the next feed/reset. */
+const lvt_parser *bterm_parser(const bterm *terminal);
 void bterm_ack_damage(bterm *terminal);
 #endif

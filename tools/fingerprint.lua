@@ -42,6 +42,12 @@ put("events", tostring(bog.events ~= nil))
 -- git is a C capability registered by both front ends; a missing registration on
 -- one side must fail parity, so its surface is part of the fingerprint.
 put("git", sorted_keys(git))
+local terminal = require "terminal"
+put("terminal", sorted_keys(terminal))
+local probe <close> = terminal.new(8, 3, 2)
+probe:feed("\27[38;2;1;2;3mX\27[?1049hALT\27[?1049l\27[6n")
+put("terminal_grid", require("hash_c").sha256(require("json").encode(probe:snapshot(true))))
+put("terminal_replies", require("hash_c").sha256(probe:replies()))
 
 -- ---- the tools the model is offered ----------------------------------------
 -- The one place asymmetry is legitimate: the studio registers panel-drawing

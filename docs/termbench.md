@@ -1,8 +1,8 @@
 # Terminal performance ledger
 
 BMUX targets a terminal multiplexer with cmux capabilities and lower overhead.
-`termbench` establishes repeatable parse/grid throughput workloads before the C
-terminal core lands. BMUX-9 supplies this harness; the other measurements and
+`termbench` measures repeatable parse/grid throughput in the native C terminal
+core and the previous Lua reference. BMUX-9 supplies this harness; the other measurements and
 comparative baselines remain BMUX-10 and BMUX-11 work.
 
 ```sh
@@ -10,6 +10,7 @@ ninja -C build termbench
 ctest --test-dir build -R '^termbench$' --output-on-failure
 BOGGART_HOME=build/termbench-home ./boggart --eval tools/termbench.lua -- --json --output build/termbench.json
 BOGGART_HOME=build/termbench-home ./boggart --eval tools/termbench.lua -- --bytes 4194304 --samples 5 --chunk 4096
+BOGGART_HOME=build/termbench-home ./boggart --eval tools/termbench.lua -- --backend termbench.backends.lua --output build/termbench-lua-comparison.json
 ```
 
 Run from the repository root. `--help` lists all options. The Ninja target needs
@@ -50,6 +51,15 @@ Ghostty differential oracle and application conformance tests have their own
 BMUX gates.
 
 ## Backend interface and budgets
+
+The default `termbench.backends.native` adapter uses `require("terminal")` in
+both front ends. Its feed call goes directly to the C parser/grid, with no Lua
+callbacks per byte. It supports the tested alternate screen, scroll regions
+and 256/RGB SGR paths; wide-cell and grapheme layout remain unsupported. Its
+snapshot copies the active screen, styles, cursor/modes, scrollback and pending
+parser diagnostics. Both adapters use a 2000-row history limit. The native
+report records 13 source/header hashes compiled into the executable, and the
+adapter rejects a checkout that differs from those hashes before timing.
 
 `--backend MODULE` selects a Lua adapter loaded from `tools/?.lua` or the normal
 module path. Its interface is:
@@ -104,3 +114,29 @@ cold start below 100 ms, idle RSS below one quarter of cmux, control RTT below
 100 µs, and renderer p99 below 8 ms with 120 fps flood scrolling. BMUX-11 sets
 final numeric budgets from comparable measurements; later phase gates must
 also prove features, terminal correctness and detach/reattach behaviour.
+
+## Native C development measurement
+
+Measured sequentially on 2026-10-13 on the same Mac/configuration described
+above, after full tests and sanitizer jobs finished: 80×24, 4096-byte chunks,
+three samples, approximately 1 MiB per scenario, normal GC. Construction,
+snapshots and encoding remain outside the timing interval. The Lua reference
+and native core were measured with the same rebuilt executable. Corpus hashes,
+byte counts and harness options were checked for equality before comparison.
+Complete reports, including all samples and compiled source hashes, are saved
+in [native report](benchmarks/2026-10-13-terminal-c.json) and
+[Lua reference report](benchmarks/2026-10-13-terminal-lua.json).
+
+| Scenario | Native median ms | Native MB/s | Lua MB/s | Scope |
+| --- | ---: | ---: | ---: | --- |
+| plain | 8.45 | 124.050 | 2.150 | text/grid; native 57.7× reference throughput |
+| dense-sgr | 8.04 | 130.416 | 2.589 | native 256/RGB supported; Lua lacks them |
+| unicode | 6.03 | 173.866 | 2.505 | both lack wide/grapheme layout |
+| scroll | 12.25 | 85.658 | 1.533 | grid/history; native 55.9× reference throughput |
+| alt-screen | 46.59 | 22.512 | 1.063 | native alt-screen/regions supported; Lua lacks them |
+
+Plain and scrolling show a substantial improvement over the previous Lua
+byte path. Other rows record workload timings with their differing feature
+coverage. These are parse/grid measurements, not shell-to-pixel performance or
+a comparison with cmux/Ghostty. The studio still uses its Lua parser until
+BMUX-21 integration; no live-terminal speed improvement is claimed here.

@@ -3,6 +3,7 @@ package.path = "tools/?.lua;tools/?/init.lua;" .. package.path
 local runner = require "termbench.runner"
 local scenarios = require "termbench.scenarios"
 local backend = require "termbench.backends.lua"
+local native = require "termbench.backends.native"
 local json = require "json"
 local passed = 0
 local function check(c, name) assert(c, name); passed = passed + 1 end
@@ -17,6 +18,21 @@ for i, case in ipairs(cases) do
   check(runner.check_stream(backend, case, { cols = 80, rows = 24 }, 7),
     "fragmentation preserves all state: " .. case.name)
 end
+for _, case in ipairs(cases) do
+  check(runner.check_stream(native, case, { cols = 80, rows = 24 }, 1), "native stream: " .. case.name)
+end
+check(native.features.alt_screen and native.features.truecolor and not native.features.wide,
+  "native feature boundary is explicit")
+check(#native.source.files == 13, "native identifies the compiled core and binding")
+local terminal = require "terminal"
+local saved_source = terminal.source
+terminal.source = function()
+  return { files = { { path = "src/lvt.c", sha256 = ("0"):rep(64) } } }
+end
+package.loaded["termbench.backends.native"] = nil
+rejects(function() require "termbench.backends.native" end, "stale executable must not produce a speed claim")
+terminal.source = saved_source
+package.loaded["termbench.backends.native"] = native
 local t = backend.new { cols = 8, rows = 3 }
 t:feed("abc\r\n\27[31mX\27[0m\27[1;2HZ")
 local s = t:snapshot()
