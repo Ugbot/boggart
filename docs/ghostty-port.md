@@ -15,7 +15,7 @@ the optional differential oracle, whose build will need that pinned toolchain.
 ledger in `THIRD_PARTY/ghostty-port.json` records the source SHA-256 hashes,
 review status and destination files. The parser mechanism and transition table
 and page/style storage plus selected CSI/SGR dispatch and typed OSC are now ported.
-OSC 8 cell ownership and PTY integration remain separate BMUX work.
+OSC 8 cell/history ownership is implemented; live PTY integration remains BMUX-21.
 “Studied” below means its interface and dependencies have been reviewed for
 the port boundary; it is not a correctness or completeness claim.
 
@@ -23,7 +23,7 @@ the port boundary; it is not a correctness or completeness claim.
 | --- | --- | --- |
 | `src/terminal/Parser.zig`, `parse_table.zig` | ported | BMUX-14; `src/lvt.c`, `src/lvt.h`, `src/vt_table.h`; 14-state parser, ordered entry/exit actions, 4 intermediates, 24 parameters, colon separators |
 | `src/terminal/UTF8Decoder.zig` | studied | Streaming replacement behaviour verified; Boggart uses original scalar-range checks instead of copying third-party DFA tables |
-| `src/terminal/osc.zig` and eight `osc/parsers/*.zig` modules in the manifest | ported | `src/bosc.c/h`, `src/bterm_osc.c`; bounded typed payloads, host events and notification chunks; OSC 8 cell ownership remains BMUX-17 |
+| `src/terminal/osc.zig` and eight `osc/parsers/*.zig` modules in the manifest | ported | `src/bosc.c/h`, `src/bterm_osc.c`; bounded typed payloads, host events and notification chunks; screen-owned link references and copied URI snapshots complete BMUX-17 |
 | `src/terminal/stream.zig`, `sgr.zig` | ported | BMUX-16; `src/bterm.c`, `src/bterm_dispatch.c`, `src/bterm_sgr.c`; selected CSI/ESC commands and SGR adapted to C grid operations/reply sink. OSC, key/mouse extensions and application parity remain separate gates |
 | `src/terminal/PageList.zig`, `page.zig`, `Screen.zig`, `style.zig` | ported | BMUX-15; `src/lpage.c/h`, `src/lstyle.c/h`, `src/bterm.c`, `src/bterm_internal.h`; portable 16-row pages, visible/history rings, style IDs/refcounts and damage. Reflow and tracked positions remain BMUX-20 |
 | `src/input/key_encode.zig`, `kitty.zig`, `mouse_encode.zig` | studied | BMUX-18; explicit normalized events/options; no AppKit/SDL types in the C interface |
@@ -92,3 +92,13 @@ transitive dependencies. Unicode properties use uucode at the revision in
 cmux source is excluded from this port. Implement its requested behaviour and
 control verbs from public interface documentation. No copying of cmux app code
 or platform glue is part of the BMUX plan.
+
+
+The hyperlink storage adaptation in `src/llink.c/h` follows `Screen.zig`'s
+cursor/cell ownership and implicit versus explicit IDs. Its indexed pool also
+uses the translated style pool's refcount/hash/free-list machinery; both source
+markers are recorded for `llink.c`. It frees strings on last release instead of
+keeping zero-reference page entries until pruning, and owns pools per screen
+rather than per page. This preserves links during row-pointer scrolling while
+bounding strings by live cells/cursors. It does not copy the unlisted
+`hyperlink.zig` implementation or import Ghostty's page-memory dependency graph.

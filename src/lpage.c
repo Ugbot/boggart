@@ -31,9 +31,14 @@ struct lpage_screen {
   size_t page_count;
   bool damage_all;
   lstyle_pool *styles;
+  llink_pool *links;
 };
 static row *at(const lpage_screen *s, size_t y) { return s->visible[(s->head + y) % s->rows]; }
 static void set(lpage_screen *s, size_t y, row *r) { s->visible[(s->head + y) % s->rows] = r; }
+static void release_cell(lpage_screen *s, lpage_cell cell) {
+  lstyle_release(s->styles, cell.style);
+  if (cell.hyperlink) llink_release(s->links, cell.hyperlink);
+}
 static row *new_row(lpage_screen *s) {
   page *p = s->available;
   if (!p) {
@@ -60,7 +65,7 @@ static row *new_row(lpage_screen *s) {
 }
 static void free_row(lpage_screen *s, row *r) {
   for (size_t x = 0; x < s->columns; x++) {
-    lstyle_release(s->styles, r->cells[x].style); r->cells[x].style = 0;
+    release_cell(s, r->cells[x]); r->cells[x].style = r->cells[x].hyperlink = 0;
   }
   page *p = r->owner;
   if (!p->free_bits) { p->available = s->available; s->available = p; }
@@ -72,7 +77,8 @@ lpage_screen *lpage_create(size_t columns, size_t rows, size_t history_limit) {
   if (!s) return NULL;
   s->columns = columns; s->rows = rows; s->history_limit = history_limit;
   s->styles = lstyle_create(); s->visible = calloc(rows, sizeof *s->visible);
-  if (!s->styles || !s->visible) { lpage_destroy(s); return NULL; }
+  s->links = llink_create();
+  if (!s->styles || !s->links || !s->visible) { lpage_destroy(s); return NULL; }
   for (size_t y = 0; y < rows; y++) {
     if (!(s->visible[y] = new_row(s))) { lpage_destroy(s); return NULL; }
   }
@@ -83,25 +89,28 @@ void lpage_destroy(lpage_screen *s) {
   if (!s) return;
   page *p = s->pages;
   while (p) { page *next = p->next; free(p); p = next; }
-  free(s->visible); free(s->history); lstyle_destroy(s->styles); free(s);
+  free(s->visible); free(s->history); lstyle_destroy(s->styles); llink_destroy(s->links); free(s);
 }
 size_t lpage_columns(const lpage_screen *s) { return s->columns; }
 size_t lpage_rows(const lpage_screen *s) { return s->rows; }
 lstyle_pool *lpage_styles(lpage_screen *s) { return s->styles; }
+llink_pool *lpage_links(lpage_screen *s) { return s->links; }
+const llink_value *lpage_link(const lpage_screen *s, uint32_t id) { return llink_get(s->links, id); }
 const lpage_row *lpage_visible(const lpage_screen *s, size_t y) { return y < s->rows ? &at(s, y)->view : NULL; }
 const lpage_cell *lpage_get(const lpage_screen *s, size_t y, size_t x) {
   return y < s->rows && x < s->columns ? &at(s, y)->cells[x] : NULL;
 }
 bool lpage_put(lpage_screen *s, size_t y, size_t x, lpage_cell cell) {
   if (y >= s->rows || x >= s->columns || cell.width > 2 || !lstyle_retain(s->styles, cell.style)) return false;
+  if (cell.hyperlink && !llink_retain(s->links, cell.hyperlink)) { lstyle_release(s->styles, cell.style); return false; }
   row *r = at(s, y);
-  lstyle_release(s->styles, r->cells[x].style); r->cells[x] = cell; r->dirty = true;
+  release_cell(s, r->cells[x]); r->cells[x] = cell; r->dirty = true;
   return true;
 }
 static bool fill(lpage_screen *s, row *r, size_t x, size_t n, uint32_t style, bool release_old) {
   for (size_t i = x; i < x + n; i++) {
     if (!lstyle_retain(s->styles, style)) return false;
-    if (release_old) lstyle_release(s->styles, r->cells[i].style);
+    if (release_old) release_cell(s, r->cells[i]);
     r->cells[i] = (lpage_cell){ 0, style, 0, 1, 0, 0 };
   }
   r->dirty = true;
@@ -120,7 +129,7 @@ static bool edit(lpage_screen *s, size_t y, size_t x, size_t n, uint32_t style, 
   if (n > s->columns - x) n = s->columns - x;
   row *r = at(s, y);
   size_t discard = insert ? s->columns - n : x;
-  for (size_t i = discard; i < discard + n; i++) lstyle_release(s->styles, r->cells[i].style);
+  for (size_t i = discard; i < discard + n; i++) release_cell(s, r->cells[i]);
   size_t tail = s->columns - x - n;
   if (insert) memmove(r->cells + x + n, r->cells + x, tail * sizeof(lpage_cell));
   else memmove(r->cells + x, r->cells + x + n, tail * sizeof(lpage_cell));
@@ -213,8 +222,9 @@ void lpage_ack_damage(lpage_screen *s) {
   s->damage_all = false; for (size_t y = 0; y < s->rows; y++) at(s, y)->dirty = false;
 }
 lpage_stats lpage_usage(const lpage_screen *s) {
-  lpage_stats stats = { s->page_count, s->page_count * PAGE_ROWS, s->history_count, lstyle_count(s->styles), 0 };
+  lpage_stats stats = { s->page_count, s->page_count * PAGE_ROWS, s->history_count, lstyle_count(s->styles), 0,
+    llink_count(s->links), llink_bytes(s->links) };
   stats.bytes = sizeof *s + (s->rows + s->history_capacity) * sizeof(row *)
-    + s->page_count * (sizeof(page) + PAGE_ROWS * s->columns * sizeof(lpage_cell)) + lstyle_bytes(s->styles);
+    + s->page_count * (sizeof(page) + PAGE_ROWS * s->columns * sizeof(lpage_cell)) + lstyle_bytes(s->styles) + stats.link_bytes;
   return stats;
 }

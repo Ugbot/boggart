@@ -73,7 +73,9 @@
         "src/lpage.c",
         "src/lpage.h",
         "src/bterm.c",
-        "src/bterm_internal.h"
+        "src/bterm_internal.h",
+        "src/llink.c",
+        "src/llink.h"
       ]
     },
     {
@@ -82,7 +84,8 @@
       "status": "ported",
       "ported_files": [
         "src/lstyle.c",
-        "src/lstyle.h"
+        "src/lstyle.h",
+        "src/llink.c"
       ]
     },
     {

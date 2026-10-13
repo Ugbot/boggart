@@ -14,6 +14,7 @@ typedef struct {
   bt_cursor cursor;
   bt_saved saved;
   uint32_t pen_id;
+  uint32_t hyperlink_id;
   bool pen_valid;
 } bt_buffer;
 typedef struct bt_notifications bt_notifications;
@@ -35,6 +36,8 @@ struct bterm {
 };
 static inline bt_buffer *bt_active(bterm *t) { return &t->buffers[t->active]; }
 void bt_set_pen(bterm *t, lpage_style pen);
+void bt_set_link(bterm *t, llink_value value);
+void bt_end_link(bterm *t);
 void bt_print(bterm *t, uint32_t codepoint);
 void bt_index(bterm *t, bool reverse);
 void bt_home(bterm *t);

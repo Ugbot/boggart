@@ -15,21 +15,28 @@ static void blank(reference_row *r, uint32_t style) {
   r->wrapped = false;
   for (size_t x = 0; x < 9; x++) r->cells[x] = (lpage_cell){0, style, 0, 1, 0, 0};
 }
-static void compare_row(const lpage_row *actual, const reference_row *expected, size_t refs[9]) {
+static void compare_row(const lpage_row *actual, const reference_row *expected, size_t refs[9], size_t link_refs[9]) {
   CHECK(actual && actual->columns == 9 && actual->wrapped == expected->wrapped);
   for (size_t x = 0; x < 9; x++) {
     CHECK(!memcmp(&actual->cells[x], &expected->cells[x], sizeof(lpage_cell)));
     CHECK(actual->cells[x].style < 9); refs[actual->cells[x].style]++;
+    CHECK(actual->cells[x].hyperlink < 9); link_refs[actual->cells[x].hyperlink]++;
   }
 }
 static void model_test(size_t rows, size_t limit) {
   lpage_screen *s = lpage_create(9, rows, limit);
   CHECK(s);
   lstyle_pool *styles = lpage_styles(s);
-  uint32_t ids[9] = {0};
+  uint32_t ids[9] = {0}, links[9] = {0};
+  llink_pool *pool = lpage_links(s);
   for (uint32_t i = 1; i < 9; i++) {
     lpage_style style = { LP_COLOR_RGB | i, 0, 0, i & 1 ? LP_BOLD : LP_ITALIC };
     CHECK(lstyle_acquire(styles, &style, &ids[i]) && ids[i] == i);
+  }
+  for (uint32_t i = 1; i < 9; i++) {
+    char key[2] = {(char)('a' + i), 0};
+    llink_value link = {key, "https://example.com", 1, 19};
+    CHECK(llink_acquire(pool, &link, &links[i]) && links[i] == i);
   }
   reference_row visible[20], history[37]; size_t history_count = 0;
   for (size_t y = 0; y < rows; y++) blank(&visible[y], 0);
@@ -39,7 +46,7 @@ static void model_test(size_t rows, size_t limit) {
     uint32_t style = ids[random_next() % 9];
     size_t count = n > 9 - x ? 9 - x : n;
     if (op == 0 && x < 9) {
-      lpage_cell cell = { random_next(), style, random_next(), 1, 0, 0 };
+      lpage_cell cell = { random_next(), style, links[random_next() % 9], 1, 0, 0 };
       CHECK(lpage_put(s, y, x, cell)); visible[y].cells[x] = cell;
     } else if (op == 1) {
       CHECK(lpage_erase(s, y, x, n, style));
@@ -82,13 +89,16 @@ static void model_test(size_t rows, size_t limit) {
     } else if (op == 7) {
       lpage_clear_history(s); history_count = 0;
     }
-    size_t refs[9] = {0};
+    size_t refs[9] = {0}, link_refs[9] = {0};
     CHECK(lpage_history_count(s) == history_count);
-    for (size_t i = 0; i < rows; i++) compare_row(lpage_visible(s, i), &visible[i], refs);
-    for (size_t i = 0; i < history_count; i++) compare_row(lpage_history(s, i), &history[i], refs);
-    for (size_t i = 1; i < 9; i++) CHECK(lstyle_refs(styles, ids[i]) == refs[i] + 1);
+    for (size_t i = 0; i < rows; i++) compare_row(lpage_visible(s, i), &visible[i], refs, link_refs);
+    for (size_t i = 0; i < history_count; i++) compare_row(lpage_history(s, i), &history[i], refs, link_refs);
+    for (size_t i = 1; i < 9; i++) {
+      CHECK(lstyle_refs(styles, ids[i]) == refs[i] + 1);
+      CHECK(llink_refs(pool, links[i]) == link_refs[i] + 1);
+    }
   }
-  for (size_t i = 1; i < 9; i++) lstyle_release(styles, ids[i]);
+  for (size_t i = 1; i < 9; i++) { lstyle_release(styles, ids[i]); llink_release(pool, links[i]); }
   lpage_destroy(s);
 }
 int main(void) {
