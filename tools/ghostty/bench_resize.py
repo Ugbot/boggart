@@ -95,7 +95,7 @@ def main():
     report = {'schema':1,'ticket':'BMUX-20','created_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
         'host':{'system':platform.system(),'release':platform.release(),'machine':platform.machine()},
         'compiler':run([compiler,'--version']).splitlines()[0],
-        'harness_sha256':sha(HARNESS),'driver_sha256':sha(__file__),'validation_test_sha256':sha(ROOT/'tests/resize_bench_cli_test.py'),'oracle':metadata,'native':native_identity,
+        'harness_sha256':sha(HARNESS),'driver_sha256':sha(__file__),'validation_test_sha256':sha(ROOT/'tests/resize_bench_cli_test.py'),'validation_fixture_sha256':sha(ROOT/'tests/fixtures/ghostty-resize.json'),'oracle':metadata,'native':native_identity,
         'samples_per_round':args.samples,'warmups_per_round':args.warmups,'rounds':args.rounds,
         'timer':'mach_absolute_time' if sys.platform=='darwin' else 'clock_gettime(CLOCK_MONOTONIC)',
         'method':'Fresh terminal and identical feed per sample; only each C resize call is timed. Complete resolved-value FNV-1a digests and memory queries run in a separate verification terminal before warmup. Backend order alternates across rounds. Digests cover geometry, cursor, wrap, visible/history cells, full scalars, widths/flags, resolved styles and URIs; they do not cover parser, queues or pool ownership.',

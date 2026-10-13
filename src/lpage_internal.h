@@ -3,6 +3,10 @@
 #define BOGGART_LPAGE_INTERNAL_H
 #include "lpage.h"
 lpage_screen *lp_geometry_new(const lpage_screen *source, size_t columns, size_t rows);
+/* Borrow retained rows and reserve unused source slots without mutation;
+ * own only separately allocated padding pages. Source stays alive and
+ * unmodified until commit/abort. Reserved slots initialize only at commit. */
+lpage_screen *lp_geometry_height(lpage_screen *source, size_t rows, size_t end, size_t padding);
 /* Candidate rows are populated lazily. Capacity 0 chooses ordinary available
  * storage; a nonzero capacity preserves a copied page's allocated width. */
 bool lp_geometry_row(lpage_screen *geometry, size_t row, size_t capacity);

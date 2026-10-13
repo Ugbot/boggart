@@ -35,13 +35,19 @@ typedef struct {
   lpage_style style_values[64];
   uint32_t grapheme_values[64][LG_LIMIT]; size_t grapheme_lengths[64],key_lengths[64],uri_lengths[64];
   char keys[64][64],uris[64][64];
-  lpage_stats stats;
+  lpage_stats stats; lpage_screen private_screen; uint64_t page_bytes;
   lpage_cell cells[4096]; size_t capacities[128]; bool wrapped[128],dirty[128];
 } image;
 static void capture(lpage_screen *s,image *out) {
   memset(out,0,sizeof *out);
   out->columns=lpage_columns(s); out->rows=lpage_rows(s); out->history=lpage_history_count(s);
-  out->stats=lpage_usage(s);
+  out->stats=lpage_usage(s); memcpy(&out->private_screen,s,sizeof *s);
+  out->page_bytes=UINT64_C(14695981039346656037);
+  for (const page *p=s->pages;p;p=p->next) {
+    const unsigned char *bytes=(const unsigned char *)p;
+    size_t n=sizeof *p+PAGE_ROWS*p->columns*sizeof(lpage_cell);
+    for (size_t i=0;i<n;i++) { out->page_bytes^=bytes[i]; out->page_bytes*=UINT64_C(1099511628211); }
+  }
   CHECK(out->rows+out->history<=128);
   for (size_t y=0;y<out->rows+out->history;y++) {
     const lpage_row *r=y<out->history ? lpage_history(s,y) : lpage_visible(s,y-out->history);
@@ -84,12 +90,13 @@ static bterm *make(callbacks *c,bool alternate) {
   for (unsigned i=0;i<2;i++) if (t->buffers[i].screen) lpage_ack_damage(t->buffers[i].screen);
   return t;
 }
-static void failures(size_t columns,size_t rows,bool alternate,bool wrap,bool cached) {
+static void failures(size_t columns,size_t rows,bool alternate,bool wrap,bool cached,unsigned cursor_case) {
   size_t failures=0;
   for (size_t index=1;index<200;index++) {
     fail_at=0; callbacks c={0}; bterm *t=make(&c,alternate);
     if (cached) { t->modes&=~BT_AUTOWRAP; CHECK(bterm_resize(t,4,4)); }
     if (wrap) t->modes|=BT_AUTOWRAP; else t->modes&=~BT_AUTOWRAP;
+    if (cursor_case) feed(t,cursor_case==1 ? "\033[?6l\033[H\0337" : "\033[?6l\033[H\0337\033[4;1H");
     bterm before; memcpy(&before,t,sizeof before); callbacks old_callbacks=c;
     image images[2],after;
     for (unsigned i=0;i<2;i++) if (t->buffers[i].screen) capture(t->buffers[i].screen,&images[i]);
@@ -111,7 +118,7 @@ static void failures(size_t columns,size_t rows,bool alternate,bool wrap,bool ca
         for (size_t y=0;y<rows;y++) CHECK(lpage_dirty(t->buffers[i].screen,y));
       }
       bterm_destroy(t); CHECK(failures>=4);
-      printf("resize %zux%zu alt=%d wrap=%d cached=%d: %zu allocation failures rolled back\n",columns,rows,alternate,wrap,cached,failures);
+      printf("resize %zux%zu alt=%d wrap=%d cached=%d cursor=%u: %zu allocation failures rolled back\n",columns,rows,alternate,wrap,cached,cursor_case,failures);
       return;
     }
     bterm_destroy(t);
@@ -128,6 +135,9 @@ static void no_op_and_commit(void) {
   lpage_resize *r=lpage_resize_prepare(s,(lpage_resize_options){12,6,true,true,{0,0,false},{0,0,false},false}); CHECK(r);
   size_t allocated=allocations; fail_at=allocated+1;
   lpage_resize_commit(r); CHECK(allocations==allocated);
+  fail_at=0;
+  r=lpage_resize_prepare(s,(lpage_resize_options){12,7,false,true,{0,0,false},{0,0,false},false}); CHECK(r);
+  allocated=allocations; fail_at=allocated+1; lpage_resize_commit(r); CHECK(allocations==allocated);
   fail_at=0; bterm_destroy(t);
   t=bterm_create(6,4,1,reject_reply,NULL); CHECK(t);
   CHECK(!bterm_feed(t,(const uint8_t *)"\033[5n",4) && t->failed);
@@ -137,8 +147,15 @@ static void no_op_and_commit(void) {
 int main(void) {
   no_op_and_commit();
   for (unsigned alt=0;alt<2;alt++) for (unsigned wrap=0;wrap<2;wrap++) {
-    failures(3,2,alt!=0,wrap!=0,false); failures(12,6,alt!=0,wrap!=0,false);
-    failures(6,4,alt!=0,wrap!=0,true);
+    failures(3,2,alt!=0,wrap!=0,false,0); failures(12,6,alt!=0,wrap!=0,false,0);
+    failures(6,4,alt!=0,wrap!=0,true,0);
+    /* Force padding past all unused source slots, including cached physical
+     * widths: fault every separately owned new-page allocation as well. */
+    failures(6,21,alt!=0,wrap!=0,false,1); failures(4,21,alt!=0,wrap!=0,true,1);
+    for (unsigned cursor=1;cursor<=2;cursor++) {
+      failures(6,2,alt!=0,wrap!=0,false,cursor); failures(6,7,alt!=0,wrap!=0,false,cursor);
+      failures(4,2,alt!=0,wrap!=0,true,cursor); failures(4,7,alt!=0,wrap!=0,true,cursor);
+    }
   }
   puts("all resize allocations preserve both screens, refs, callbacks and terminal state"); return 0;
 }

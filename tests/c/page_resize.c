@@ -48,6 +48,45 @@ static void cached_capacity(void) {
   }
   lpage_destroy(s);
 }
+static void height_transfer(void) {
+  const size_t limits[]={0,1,17};
+  for (unsigned i=0;i<3;i++) {
+    lpage_screen *s=lpage_create(6,3,limits[i]); CHECK(s);
+    uint32_t style,link,gp,cps[]={'e',0x301};
+    CHECK(lstyle_acquire(lpage_styles(s),&(lpage_style){LP_COLOR_INDEXED|2,0,0,LP_BOLD},&style));
+    CHECK(llink_acquire(lpage_links(s),&(llink_value){"height","https://height",6,14},&link));
+    CHECK(lgrapheme_acquire(lpage_graphemes(s),cps,2,&gp));
+    for (unsigned line=0;line<12;line++) {
+      CHECK(lpage_put(s,2,0,(lpage_cell){gp,style,link,1,LP_CELL_GRAPHEME,0}));
+      CHECK(lpage_scroll(s,0,2,1,true,0));
+    }
+    const lpage_cell *kept=lpage_visible(s,1)->cells;
+    size_t refs=lgrapheme_refs(lpage_graphemes(s),gp);
+    lpage_resize_options opts={6,2,false,true,{0,1,false},{0,0,false},true};
+    lpage_resize *r=lpage_resize_prepare(s,opts); CHECK(r);
+    CHECK(lpage_visible(s,1)->cells==kept && lgrapheme_refs(lpage_graphemes(s),gp)==refs);
+    lpage_resize_abort(r); CHECK(lpage_visible(s,1)->cells==kept && lgrapheme_refs(lpage_graphemes(s),gp)==refs);
+    r=lpage_resize_prepare(s,opts); CHECK(r); lpage_resize_commit(r);
+    CHECK(lpage_visible(s,1)->cells==kept && lpage_get(s,1,0)->codepoint==gp);
+    refs=lgrapheme_refs(lpage_graphemes(s),gp); size_t pages=lpage_usage(s).pages;
+    r=lpage_resize_prepare(s,(lpage_resize_options){6,4,false,false,{0,1,false},{0,0,false},false}); CHECK(r);
+    CHECK(lgrapheme_refs(lpage_graphemes(s),gp)==refs); lpage_resize_commit(r);
+    CHECK(lpage_visible(s,1)->cells==kept && !lpage_get(s,2,0)->codepoint && !lpage_get(s,3,0)->codepoint);
+    CHECK(lgrapheme_refs(lpage_graphemes(s),gp)==refs && lpage_usage(s).pages==pages);
+    /* Width changes still copy independently after the ownership transfer. */
+    r=lpage_resize_prepare(s,(lpage_resize_options){4,4,false,true,{0,1,false},{0,0,false},false}); CHECK(r);
+    lpage_resize_commit(r); CHECK(lpage_get(s,1,0)->codepoint==gp && lp_row_capacity(s,lpage_history_count(s)+1)==6);
+    lpage_clear_history(s);
+    for (size_t y=0;y<4;y++) CHECK(lpage_erase(s,y,0,4,0));
+    /* Erased/free slots may contain stale grapheme flags; a loan commit must
+     * release only live ownership, never those stale values. */
+    r=lpage_resize_prepare(s,(lpage_resize_options){4,2,false,true,{0,0,false},{0,0,false},false}); CHECK(r);
+    lpage_resize_commit(r);
+    CHECK(lgrapheme_refs(lpage_graphemes(s),gp)==1 && lstyle_refs(lpage_styles(s),style)==1 && llink_refs(lpage_links(s),link)==1);
+    lgrapheme_release(lpage_graphemes(s),gp); lstyle_release(lpage_styles(s),style); llink_release(lpage_links(s),link);
+    lpage_destroy(s);
+  }
+}
 static void heads(void) {
   for (unsigned op=0;op<6;op++) {
     lpage_screen *s=lpage_create(4,2,2); CHECK(s);
@@ -117,4 +156,4 @@ static void bounded(void) {
     lpage_destroy(s);
   }
 }
-int main(void) { ownership(); cached_capacity(); heads(); bounded(); puts("resize ownership, wide heads, bounded history and 9000 mixed resizes passed"); return 0; }
+int main(void) { ownership(); cached_capacity(); height_transfer(); heads(); bounded(); puts("resize ownership, wide heads, bounded history and 9000 mixed resizes passed"); return 0; }

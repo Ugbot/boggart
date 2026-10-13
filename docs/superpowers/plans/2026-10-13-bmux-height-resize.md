@@ -91,3 +91,42 @@ boundaries. A constant larger group or a global head flag cannot reproduce
 that lifecycle in general. Keep `cached_page_head_spill` and broaden boundary
 probes while designing a faithful solution. The height-only optimization is
 independent of that unresolved page-model question and does not close BMUX-20.
+
+
+## Implementation checkpoint
+
+The unchanged-width path is implemented in `lpage.c/lpage_internal.h` and
+selected only by the complete request in `lpage_resize_prepare`. Source rows
+are borrowed; unused source slots are reserved by reading free bits and are
+initialized only at commit. Candidate-owned pages are allocated only after
+that free storage is exhausted. Commit marks kept rows, releases discarded
+live rows, transfers page ownership, retires empty pages and rebuilds
+availability without allocation. Abort never releases borrowed ownership.
+
+Lifecycle tests pass for histories 0/1/17, retained addresses, pool refs,
+unused-slot reuse, blank growth, later width resize, stale free-slot flags and
+final release. The existing 9,000 mixed cases pass. Fault injection covers
+340 allocations in 52 cases and includes whole private screen/raw page state
+in addition to resolved values, refs and callbacks. Four new SDK vectors bring
+the fixture to 43 cases / 203 snapshots; 42 cases / 202 snapshots match, with
+only the existing page-grouping observation failing.
+
+The original baseline remains unchanged. A controlled alternating native
+before/after comparison rebuilds the before core from verified baseline Git
+blobs and identical optimization flags. Height-only medians fall from
+183.6–187.9 µs to 1.04–1.29 µs (145–176×) in that workload. The separate SDK
+follow-up still shows native slower than the SDK for height changes. All seven
+corpora and 29 states match on every round in both comparisons. See
+`docs/benchmarks/2026-10-13-height-transfer-resize.md` and its raw artifacts.
+No whole-app or transaction-peak memory claim is made; the failed page-grouping
+criterion remains open.
+
+
+Latest verification: both products build; strict C99 and attribution checks pass;
+CLI/Studio fingerprints match on all 33 fields. The full registered suite is
+124/125 (99.86 s), and ASan/UBSan focused checks are 23/24 (6.32 s). Both fail
+only the unchanged `cached_page_head_spill` observation in `terminal_resize`.
+After those runs, eight additional fault-injection combinations force padding
+past unused slots into separately owned pages; the expanded 52-case / 340-failure
+`resize_failure` test passes again in normal and sanitizer builds. Product code
+is unchanged between the broad runs and this final test expansion.
