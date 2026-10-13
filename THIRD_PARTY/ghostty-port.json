@@ -30,14 +30,19 @@
     {
       "upstream_path": "src/terminal/stream.zig",
       "sha256": "7b1503e59e09b47e382ae35041e9e0575de409977198c70e569293d7cbcd6f6d",
-      "status": "studied",
-      "ported_files": []
+      "status": "ported",
+      "ported_files": [
+        "src/bterm.c",
+        "src/bterm_dispatch.c"
+      ]
     },
     {
       "upstream_path": "src/terminal/sgr.zig",
       "sha256": "6d33d0bb999f1388e8c7313368c36d7cb4a6a5579bc21e2219d080122634ad8e",
-      "status": "studied",
-      "ported_files": []
+      "status": "ported",
+      "ported_files": [
+        "src/bterm_sgr.c"
+      ]
     },
     {
       "upstream_path": "src/terminal/PageList.zig",
@@ -63,7 +68,9 @@
       "status": "ported",
       "ported_files": [
         "src/lpage.c",
-        "src/lpage.h"
+        "src/lpage.h",
+        "src/bterm.c",
+        "src/bterm_internal.h"
       ]
     },
     {
