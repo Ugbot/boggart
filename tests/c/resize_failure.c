@@ -36,7 +36,7 @@ typedef struct {
   uint32_t grapheme_values[64][LG_LIMIT]; size_t grapheme_lengths[64],key_lengths[64],uri_lengths[64];
   char keys[64][64],uris[64][64];
   lpage_stats stats;
-  lpage_cell cells[4096]; bool wrapped[128],dirty[128];
+  lpage_cell cells[4096]; size_t capacities[128]; bool wrapped[128],dirty[128];
 } image;
 static void capture(lpage_screen *s,image *out) {
   memset(out,0,sizeof *out);
@@ -45,6 +45,7 @@ static void capture(lpage_screen *s,image *out) {
   CHECK(out->rows+out->history<=128);
   for (size_t y=0;y<out->rows+out->history;y++) {
     const lpage_row *r=y<out->history ? lpage_history(s,y) : lpage_visible(s,y-out->history);
+    out->capacities[y]=lp_row_capacity(s,y);
     out->wrapped[y]=r->wrapped;
     if (y>=out->history) out->dirty[y]=lpage_dirty(s,y-out->history);
     CHECK(out->count+r->columns<=4096);
@@ -83,11 +84,12 @@ static bterm *make(callbacks *c,bool alternate) {
   for (unsigned i=0;i<2;i++) if (t->buffers[i].screen) lpage_ack_damage(t->buffers[i].screen);
   return t;
 }
-static void failures(size_t columns,size_t rows,bool alternate,bool wrap) {
+static void failures(size_t columns,size_t rows,bool alternate,bool wrap,bool cached) {
   size_t failures=0;
   for (size_t index=1;index<200;index++) {
     fail_at=0; callbacks c={0}; bterm *t=make(&c,alternate);
-    if (!wrap) t->modes&=~BT_AUTOWRAP;
+    if (cached) { t->modes&=~BT_AUTOWRAP; CHECK(bterm_resize(t,4,4)); }
+    if (wrap) t->modes|=BT_AUTOWRAP; else t->modes&=~BT_AUTOWRAP;
     bterm before; memcpy(&before,t,sizeof before); callbacks old_callbacks=c;
     image images[2],after;
     for (unsigned i=0;i<2;i++) if (t->buffers[i].screen) capture(t->buffers[i].screen,&images[i]);
@@ -109,7 +111,7 @@ static void failures(size_t columns,size_t rows,bool alternate,bool wrap) {
         for (size_t y=0;y<rows;y++) CHECK(lpage_dirty(t->buffers[i].screen,y));
       }
       bterm_destroy(t); CHECK(failures>=4);
-      printf("resize %zux%zu alt=%d wrap=%d: %zu allocation failures rolled back\n",columns,rows,alternate,wrap,failures);
+      printf("resize %zux%zu alt=%d wrap=%d cached=%d: %zu allocation failures rolled back\n",columns,rows,alternate,wrap,cached,failures);
       return;
     }
     bterm_destroy(t);
@@ -135,7 +137,8 @@ static void no_op_and_commit(void) {
 int main(void) {
   no_op_and_commit();
   for (unsigned alt=0;alt<2;alt++) for (unsigned wrap=0;wrap<2;wrap++) {
-    failures(3,2,alt!=0,wrap!=0); failures(12,6,alt!=0,wrap!=0);
+    failures(3,2,alt!=0,wrap!=0,false); failures(12,6,alt!=0,wrap!=0,false);
+    failures(6,4,alt!=0,wrap!=0,true);
   }
   puts("all resize allocations preserve both screens, refs, callbacks and terminal state"); return 0;
 }

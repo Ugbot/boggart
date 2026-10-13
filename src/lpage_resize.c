@@ -20,7 +20,7 @@ static const lpage_row *source_row(const lpage_screen *s,size_t y) {
   size_t history=lpage_history_count(s);
   return y<history ? lpage_history(s,y) : lpage_visible(s,y-history);
 }
-static bool next_row(output *o) {
+static bool next_row_capacity(output *o,size_t capacity) {
   size_t rows=lpage_rows(o->screen);
   if (o->count==SIZE_MAX) return false;
   if (o->count<rows) o->y=o->count;
@@ -28,8 +28,10 @@ static bool next_row(output *o) {
     if (!lpage_scroll(o->screen,0,rows-1,1,true,0)) return false;
     o->y=rows-1;
   }
+  if (!lp_geometry_row(o->screen,o->y,capacity)) return false;
   o->count++; return true;
 }
+static bool next_row(output *o) { return next_row_capacity(o,0); }
 static void prune_pins(const output *o,pin pins[3]) {
   size_t dropped=o->count-total(o->screen);
   for (unsigned i=0;i<3;i++) if (pins[i].valid) {
@@ -62,9 +64,12 @@ static lpage_screen *crop(const lpage_screen *s,size_t columns,size_t rows,
   lpage_screen *dst=lp_geometry_new(s,columns,rows); if (!dst) return NULL;
   output out={dst,0,0};
   for (size_t y=0;y<end;y++) {
-    if (!next_row(&out)) goto fail;
     const lpage_row *row=source_row(s,y);
-    lpage_wrap(dst,out.y,columns>row->columns ? false : row->wrapped);
+    size_t capacity=lp_row_capacity(s,y);
+    bool rebuild=columns>row->columns && (columns>capacity || lp_row_page_has_head(s,y));
+    if (rebuild) capacity=columns;
+    if (!next_row_capacity(&out,capacity)) goto fail;
+    lpage_wrap(dst,out.y,rebuild ? false : row->wrapped);
     size_t n=columns<row->columns ? columns : row->columns;
     for (size_t x=0;x<n;x++) {
       lpage_cell c=row->cells[x];
@@ -77,7 +82,7 @@ static lpage_screen *crop(const lpage_screen *s,size_t columns,size_t rows,
     for (size_t y=old_rows;y<rows;y++) if (!next_row(&out)) goto fail;
   while (out.count<rows) if (!next_row(&out)) goto fail;
   for (unsigned i=0;i<3;i++) if (pins[i].x>=columns) pins[i].x=columns-1;
-  prune_pins(&out,pins); return dst;
+  prune_pins(&out,pins); lp_geometry_trim(dst); return dst;
 fail:
   lp_geometry_destroy(dst); return NULL;
 }
@@ -170,7 +175,7 @@ static lpage_screen *reflow(const lpage_screen *s,size_t columns,pin pins[3],
       prune_pins(&out,mapped);
     }
   }
-  pins[0]=mapped[0]; pins[1]=mapped[1]; pins[2]=mapped[2]; return dst;
+  pins[0]=mapped[0]; pins[1]=mapped[1]; pins[2]=mapped[2]; lp_geometry_trim(dst); return dst;
 fail:
   lp_geometry_destroy(dst); return NULL;
 }

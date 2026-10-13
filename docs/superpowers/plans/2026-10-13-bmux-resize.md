@@ -140,7 +140,8 @@ reported and fixed rather than masked in the comparison.
 - [x] Run focused native/Lua tests and the same set under ASan/UBSan, then the full serial CTest suite. Run CLI/Studio native fingerprints to verify the same API, ownership, and snapshots in both binaries.
 - [x] Run strict C99 warning checks and attribution verification; document the actual public contract, ownership and failure-policy adaptations, and verification evidence.
 - [ ] Measure native resize latency and memory under the same screen/history and feed corpora.
-- [ ] Fix the observed cached-width nowrap regrow mismatch in `tests/terminal_resize_cached.lua`, add it to `tools/ghostty/resize_cases.py`, and recapture through the verified SDK. The failing input is 6x3, feed `abcdefghij` plus `CSI ?7l`, shrink to 4x3, regrow to 6x3; Ghostty retains row 0 wrapped while Boggart clears it. Check cyclic crop/reflow transitions beyond the initial vectors before acceptance.
+- [x] Fix the original cached-width nowrap regrow mismatch, register the standalone regression, and recapture cached cycles, alternate screens, owned history, and reflow transitions through the verified SDK.
+- [ ] Match SDK page-wide wide-head slow-path metadata across native page boundaries. `cached_page_head_spill` remains in the 39-case / 182-snapshot fixture and fails the registered `terminal_resize` gate; do not mark criterion 1446 passed.
 - [ ] Commit and link evidence to BMUX-20; record criterion 1446 only after all curated native comparisons and lifecycle checks pass. Keep broader renderer, PTY, differential fuzzing, and application gates in their existing tickets.
 
 ```sh
@@ -181,3 +182,38 @@ confirmed failing regrow regression excluded from the passing registered
 suite. Paired snapshots/provenance are saved in
 `docs/benchmarks/2026-10-13-resize-cached-width.json`. Fix it, expand cyclic
 coverage, and record resize measurements before criterion 1446 passes.
+
+
+## Cached-capacity follow-up and plan adjustment
+
+Cyclic crop/grow requires allocated page width to survive a crop. The private
+geometry constructor now allocates row storage lazily; crop requests the source
+row's capacity, reflow requests the new width, and discarded text never revives.
+`lp_geometry_trim` retires unused candidate pages; `lpage_usage` sums real
+allocated widths. This extends the existing private ownership interface without
+changing public signatures or the 16-row storage layout.
+
+All 39-case observations were compared, not just the original repaired case:
+181/182 snapshots and 38/39 complete cases match. The cross-page spacer-head
+case exposes a second metadata dependency on SDK page grouping. That failure
+is kept in the registered differential gate and recorded with complete paired
+snapshots in `docs/benchmarks/2026-10-13-resize-cached-capacity.json`. The earlier
+red artifact is immutable historical evidence. Exact source hashes match the
+31 compiled files. An approximate global spacer-head rule would only hide this
+input and is not a verified replacement for the SDK page model.
+
+`terminal_resize_api` runs API/lifecycle checks independently so the red
+compatibility gate does not prevent their execution. Native cached-width tests
+assert physical capacity, allocation-byte reporting, cleared clipped text and
+wrap flags. Fault injection covers 108 allocations across 12 combinations,
+including cached regrowth; all rollback checks pass. Both products build,
+strict C99 and the six offline oracle guards pass, and CLI/Studio fingerprints
+agree on 33 fields. Criterion 1446 remains failed pending page-grouping parity
+and the planned latency/memory measurement.
+
+Latest cached-capacity verification: the full registered suite is **124/125
+(125.82 s)** and the focused ASan/UBSan suite is **23/24 (12.29 s)**. Both fail
+only `terminal_resize` at the documented page-grouping observation. The
+independent cached-width, API/lifecycle, page ownership and 108-allocation
+rollback tests pass in both builds. The suite is intentionally reported as
+failing; this checkpoint does not satisfy BMUX-20 acceptance.

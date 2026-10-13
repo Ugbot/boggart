@@ -1,9 +1,9 @@
 # Terminal resize and reference oracle
 
 The native `bterm_resize` and Lua `t:resize(columns, rows)` APIs now prepare
-and commit both screens transactionally. All 30 curated oracle cases pass,
-but BMUX-20 acceptance remains pending: a cyclic nowrap resize exposes a
-cached-width soft-wrap metadata difference described below.
+and commit both screens transactionally. The current fixture has 39 cases /
+182 snapshots. A full comparison matches 181 snapshots; the wide-head
+page-grouping case fails. BMUX-20 acceptance remains open as described below.
 
 ## Reproduce the reference
 
@@ -43,7 +43,7 @@ resulting fixture diff with changes to the inputs, adapter, or upstream pin.
 
 ## Fixture contract
 
-`tools/ghostty/resize_cases.py` defines 30 cases and 123 snapshots in
+`tools/ghostty/resize_cases.py` defines 39 cases and 182 snapshots in
 `tests/fixtures/ghostty-resize.json`. Each case observes the initial state and
 every feed/resize operation. Grapheme mode 2027 is explicitly enabled before
 capture; the reference scrollback limit is 2,000 lines.
@@ -126,7 +126,7 @@ default column tabs on width change, and invalidates mouse motion geometry.
 Parser fragments, replies/events, modes, and host policies survive resize.
 
 Boggart retains its exact bounded history ring. Ghostty's history pruning uses
-page allocation; the 30 cases stay below eviction limits to isolate geometric
+page allocation; the curated cases stay below eviction limits to isolate geometric
 semantics. The native page tests verify Boggart's history limits 0/1/17 and release
 of evicted styles, links, and graphemes through 9,000 mixed resizes. Do not claim pruning-policy parity.
 
@@ -181,22 +181,56 @@ a combining scalar with unchanged width keeps that head. Repeated alternate
 mode sets retain the existing Boggart no-op policy; complete terminal protocol
 conformance remains BMUX-16/23 work.
 
-**Known failing acceptance probe:** with a 6x3 terminal, feed
-`abcdefghij` followed by `CSI ?7l`, resize to 4x3, then return to 6x3. Ghostty's
-`resizeWithoutReflowGrowCols` cached-capacity path preserves row 0's soft wrap;
-Boggart's fresh geometry currently clears it. The same-size/grow-to-larger-width
-fixtures do not cover that path. Reproduce the pending regression directly:
+## Cached-capacity checkpoint
 
-```sh
-BOGGART_HOME=/private/tmp/boggart-resize-cached ./boggart \
-  --eval tests/terminal_resize_cached.lua
-```
+The original 6x3 nowrap crop/regrow mismatch is fixed. Native pages now keep
+their allocated width separately from the exposed column count. Cropping
+discards clipped text and owned references; growth within capacity exposes
+blank cells and preserves wrap metadata. Growth beyond capacity, or a wide
+head in the source page, rebuilds rows and clears wrap metadata. Candidate
+rows allocate lazily; abort still releases all copied holds and commit
+allocates nothing. Memory accounting sums actual page capacities, including
+storage retained after a crop. Empty candidate pages are retired before commit.
 
-This command currently **fails** and is not included in the passing registered
-suite. Its exact inputs, oracle snapshots/provenance, native snapshots, and
-compiled source hashes are in
+The SDK captures **39 cases / 182 snapshots**, adding cached shrink/grow cycles,
+growth beyond capacity, wide-head slow cloning, owned clusters/styles/links in
+history, active/inactive alternate screens, reflow transitions, mixed page
+widths, and a wide head beyond the native page boundary. An exhaustive native
+comparison matches **38 cases / 181 snapshots**. One snapshot fails in
+`cached_page_head_spill`; it remains in the main fixture and the registered
+`terminal_resize` test fails. It has not been skipped or accepted as an override.
+
+The failing case starts at 6x20, feeds `abcdefghij\r\n` twelve times, disables
+autowrap, crops to 4x20, temporarily enables autowrap and prints `日` at row 18,
+column 4, then disables autowrap and grows to 6x20. Ghostty's page-wide spacer
+head check triggers slow cloning for earlier rows in the same SDK page, clearing
+scrollback row 0's wrap flag. Boggart's 16-row storage pages put that row and
+the spacer head in different pages and retain the flag. Matching the first
+small cached-width case does not establish page-grouping compatibility.
+
+The historical red evidence remains unchanged in
 [resize-cached-width.json](benchmarks/2026-10-13-resize-cached-width.json).
-Fix the cached-width metadata behavior and add the case to the main differential
-vectors before recording criterion 1446 as passed. Resize latency/memory
-measurements and broader cyclic-resize comparison also remain acceptance work;
-no renderer, PTY integration, or overall cmux parity is claimed by this checkpoint.
+The follow-up
+[resize-cached-capacity.json](benchmarks/2026-10-13-resize-cached-capacity.json)
+contains the corrected original case and the new failing case, full paired
+snapshots, all 39-case comparison results, verified SDK provenance, fixture
+hash, and 31 compiled native source hashes checked against the working tree.
+
+`terminal_resize_cached` is now a registered passing regression. API bounds,
+parser/policy/queues, damage, and allocation-time finalizer checks run separately
+in `terminal_resize_api`, so a failed differential gate cannot hide them. The
+API finalizer checks run in their own process, since retaining the large
+fixture graph changes when Lua starts collection. The native tests also verify physical
+capacity, allocated-byte accounting, blank regrowth, ownership, and 9,000 mixed
+resizes. Fault injection now covers **108 allocation failures in 12 cases**,
+including primary/alternate growth back to a previously cropped capacity.
+
+Page-grouping parity and resize latency/memory measurements remain acceptance
+work. No renderer, PTY integration, or overall cmux parity is claimed.
+
+Latest cached-capacity verification: the full registered suite is **124/125
+(125.82 s)** and the focused ASan/UBSan suite is **23/24 (12.29 s)**. Both fail
+only `terminal_resize` at the documented page-grouping observation. The
+independent cached-width, API/lifecycle, page ownership and 108-allocation
+rollback tests pass in both builds. The suite is intentionally reported as
+failing; this checkpoint does not satisfy BMUX-20 acceptance.

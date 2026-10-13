@@ -1,4 +1,5 @@
 #include "lpage.h"
+#include "lpage_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr,"line %d: %s\n",__LINE__,#x); exit(1); } } while (0)
@@ -29,6 +30,22 @@ static void ownership(void) {
   CHECK(lpage_codepoint(s,&lpage_history(s,0)->cells[0])=='e');
   CHECK(lpage_grapheme(s,lpage_get(s,1,0)).length==2);
   lstyle_release(lpage_styles(s),style); llink_release(lpage_links(s),link);
+  lpage_destroy(s);
+}
+static void cached_capacity(void) {
+  lpage_screen *s=lpage_create(6,3,0); CHECK(s);
+  for (size_t x=0;x<6;x++) CHECK(lpage_put(s,0,x,(lpage_cell){'a'+(uint32_t)x,0,0,1,0,0}));
+  lpage_wrap(s,0,true);
+  size_t original_bytes=lpage_usage(s).bytes;
+  const size_t widths[]={4,5,3,6,8};
+  for (size_t i=0;i<sizeof widths/sizeof *widths;i++) {
+    lpage_resize *r=lpage_resize_prepare(s,(lpage_resize_options){widths[i],3,false,true,{0,0,false},{0,0,false},false});
+    CHECK(r); lpage_resize_commit(r);
+    CHECK(lp_row_capacity(s,0)==(widths[i]<=6 ? 6 : 8));
+    CHECK(lpage_visible(s,0)->wrapped==(widths[i]<=6));
+    CHECK(lpage_usage(s).bytes==(widths[i]<=6 ? original_bytes : original_bytes+16*2*sizeof(lpage_cell)));
+    for (size_t x=(i<2 ? 4 : 3);x<widths[i];x++) CHECK(!lpage_get(s,0,x)->codepoint);
+  }
   lpage_destroy(s);
 }
 static void heads(void) {
@@ -100,4 +117,4 @@ static void bounded(void) {
     lpage_destroy(s);
   }
 }
-int main(void) { ownership(); heads(); bounded(); puts("resize ownership, wide heads, bounded history and 9000 mixed resizes passed"); return 0; }
+int main(void) { ownership(); cached_capacity(); heads(); bounded(); puts("resize ownership, wide heads, bounded history and 9000 mixed resizes passed"); return 0; }
