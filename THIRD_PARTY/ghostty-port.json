@@ -344,7 +344,9 @@
       "sha256": "bac61a65b5a3141ccfad2d9d0a6a452be7106a647182470fcf38e1289b5f86e1",
       "status": "ported",
       "ported_files": [
-        "src/lpage_layout.c"
+        "src/lpage_layout.c",
+        "src/lbitmap.c",
+        "src/lbitmap.h"
       ]
     },
     {
