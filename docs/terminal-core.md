@@ -92,7 +92,9 @@ grapheme across mutations using `lpage_retain_cell` / `lpage_release_cell`.
 
 `src/lstyle.c` interns default, indexed and RGB colours plus attributes in a
 screen-owned hash table. Acquiring a style owns one reference; each cell owns
-its own reference, including cells in history. Cell edits transfer references
+its own reference, including cells in history. Default style ID 0 is permanent
+and uncounted; cell writes and row clearing bypass its ref calls. Non-default
+styles keep normal validation and references. Cell edits transfer references
 with their cells. Last release removes the hash entry and reuses its ID.
 Default ID 0 is permanent. Retain an ID while holding it outside a cell; it
 cannot be shared between screens, and a borrowed style value can be invalidated

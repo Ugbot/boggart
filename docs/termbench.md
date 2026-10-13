@@ -172,3 +172,53 @@ This is a headless parse/grid baseline after wide-pair and grapheme ownership
 integration. Throughput is lower than the earlier link-ownership report; no
 performance improvement or cmux/Ghostty speed parity is claimed. Studio still
 needs the native PTY/parser and renderer integration.
+
+
+Default-style hot-path optimization (BMUX-60):
+[before](benchmarks/2026-10-13-default-style-before.json) and
+[after](benchmarks/2026-10-13-default-style-after.json) use seven samples with
+the same 1 MiB targets, 80x24 geometry, 2000 history rows, 4096-byte feeds and
+normal GC. The 29-file compiled identities differ only in `src/lpage.c`; every
+corpus hash, feature check and whole/fragmented equality check agrees.
+
+| Scenario | Before MB/s | After MB/s |
+| --- | ---: | ---: |
+| plain | 15.065 | 54.460 |
+| dense-sgr | 49.402 | 62.390 |
+| unicode | 35.375 | 51.526 |
+| scroll | 27.448 | 49.422 |
+| alt-screen | 9.611 | 19.600 |
+
+Default style ID 0 is permanent and uncounted. Cell retain/release and row
+clearing now bypass style-pool calls for that ID; non-default styles, links and
+graphemes retain their existing validation and ownership rules.
+
+The [profile and pilot evidence](benchmarks/2026-10-13-default-style-analysis.json)
+records a five-second macOS CPU sample (3,765 thread samples, 937 at style
+retain/release) and eleven-sample C comparisons. DTrace timed out without
+samples, so it supplies no performance evidence. The isolated C pilot improves
+every workload; the normal runner's pre-change plain-text samples are highly
+variable (21–119 ms), so its apparent plain-text gain is not a reliable estimate
+of the optimization. Scroll and alternate-screen gains also appear in the
+isolated pilot. Raw timings are retained in both sets of reports.
+
+To reproduce the C pilot, build the chosen revision normally, generate the
+1 MiB corpora using `tools/termbench/scenarios.lua`, and compile the
+[preserved harness](benchmarks/2026-10-13-default-style-harness.c) with:
+
+```sh
+clang -O2 -g -std=c99 -Isrc docs/benchmarks/2026-10-13-default-style-harness.c build/libboggart_vt.a build/libboggart_unicode.a -o /tmp/bmux-core-bench
+/tmp/bmux-core-bench /tmp/bmux-plain.bin 11 1
+```
+
+Each output line is one elapsed feed time in nanoseconds, after one unscored
+warmup. Screen creation and destruction are outside timing. The profile used
+the same harness with `plain.bin 1 300` and macOS `sample <pid> 5 1 -mayDie`.
+The temporary candidate replaced only the page object; the official after
+report uses the normal product build. This measures parse/grid work and does
+not establish PTY, GPU, cmux/Ghostty or keypress-to-pixel performance.
+
+Verification: full serial CTest 120/120 (122.32 s), ASan/UBSan focused 21/21
+(16.85 s), CLI/Studio parity 32 identical fields, strict C99 warnings and
+pinned attribution checks. Exact ownership, Unicode and GC snapshot tests
+remain unchanged and pass.
