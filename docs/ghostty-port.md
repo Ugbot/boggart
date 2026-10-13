@@ -14,7 +14,8 @@ the optional differential oracle, whose build will need that pinned toolchain.
 `THIRD_PARTY/ghostty-LICENSE` is the exact upstream MIT notice. The machine
 ledger in `THIRD_PARTY/ghostty-port.json` records the source SHA-256 hashes,
 review status and destination files. The parser mechanism and transition table
-and page/style storage are now ported; typed CSI/OSC handling and PTY integration remain
+and page/style storage plus selected CSI/SGR dispatch are now ported; typed OSC
+handling and PTY integration remain
 separate BMUX work.
 “Studied” below means its interface and dependencies have been reviewed for
 the port boundary; it is not a correctness or completeness claim.
@@ -24,8 +25,8 @@ the port boundary; it is not a correctness or completeness claim.
 | `src/terminal/Parser.zig`, `parse_table.zig` | ported | BMUX-14; `src/lvt.c`, `src/lvt.h`, `src/vt_table.h`; 14-state parser, ordered entry/exit actions, 4 intermediates, 24 parameters, colon separators |
 | `src/terminal/UTF8Decoder.zig` | studied | Streaming replacement behaviour verified; Boggart uses original scalar-range checks instead of copying third-party DFA tables |
 | `src/terminal/osc.zig` | studied | BMUX-17; bounded OSC payloads; title/cwd/link/notification/shell-mark events go to the owning session |
-| `src/terminal/stream.zig`, `sgr.zig` | studied | BMUX-16/17; dispatch and SGR attributes adapted to C grid operations; no renderer calls from the parser |
-| `src/terminal/PageList.zig`, `page.zig`, `Screen.zig`, `style.zig` | ported | BMUX-15; `src/lpage.c/h`, `src/lstyle.c/h`; portable 16-row pages, visible/history rings, style IDs/refcounts and damage. Reflow and tracked positions remain BMUX-20 |
+| `src/terminal/stream.zig`, `sgr.zig` | ported | BMUX-16; `src/bterm.c`, `src/bterm_dispatch.c`, `src/bterm_sgr.c`; selected CSI/ESC commands and SGR adapted to C grid operations/reply sink. OSC, key/mouse extensions and application parity remain separate gates |
+| `src/terminal/PageList.zig`, `page.zig`, `Screen.zig`, `style.zig` | ported | BMUX-15; `src/lpage.c/h`, `src/lstyle.c/h`, `src/bterm.c`, `src/bterm_internal.h`; portable 16-row pages, visible/history rings, style IDs/refcounts and damage. Reflow and tracked positions remain BMUX-20 |
 | `src/input/key_encode.zig`, `kitty.zig`, `mouse_encode.zig` | studied | BMUX-18; explicit normalized events/options; no AppKit/SDL types in the C interface |
 | `src/unicode/grapheme.zig`, `props.zig`, `props_table.zig` | studied | BMUX-19; generated Unicode data, stream segmentation and width effects; review data licences separately |
 | `src/renderer`, `src/font` | skipped for P1 | Study shaping, atlas and damage handling before BMUX-24/25; keep Boggart's renderer |

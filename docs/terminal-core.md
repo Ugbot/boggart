@@ -1,10 +1,11 @@
-# C terminal core (BMUX-14/15)
+# C terminal core (BMUX-14/15/16)
 
 `src/lvt.c` owns byte parsing, not a window, PTY, screen or Lua state. Its
 `lvt_parser` contains all mutable storage for one stream; the transition table
 is immutable. The module requires C99, calls no allocator and has no global
-mutable state. `boggart_vt` is compiled with both front ends; consumers will
-land with grid dispatch and PTY integration in BMUX-16/21. The studio still
+mutable state. `boggart_vt` is compiled with both front ends; its `bterm`
+consumer connects parser events directly to C grid dispatch. Lua and PTY
+integration are pending. The studio still
 uses its Lua parser until that integration is verified.
 
 ```c
@@ -90,6 +91,56 @@ stable owned bytes after history fills, cell insert/delete reference transfer,
 region scrolling and damage. It compares 30,000 mixed operations against a
 simple shifting reference screen with exact cell, wrap, history and reference
 counts, including multiple page allocations, ring growth and history clearing.
-The test and library use the existing sanitizer build option. Dispatch and
+The test and library use the existing sanitizer build option.
 Lua/PTY consumers remain subsequent work; this storage API does not establish
 terminal compatibility by itself.
+
+## Headless dispatch (BMUX-16, application gate pending)
+
+`src/bterm.h` exposes a terminal with one owner thread, fixed geometry, a
+primary screen with history, a lazily allocated alternate screen without
+history, and an optional synchronous reply sink. `bterm_feed` keeps parser
+state across reads; `bterm_finish` flushes incomplete UTF-8 at EOF. The callback
+must copy or consume replies immediately and must not re-enter the terminal.
+An allocation or reply failure makes feed/finish return false until reset;
+earlier mutations are retained. Reset clears both screens, history, saved
+cursors, modes and parser state while retaining geometry and the reply sink.
+
+`bterm_state` copies cursor position, delayed wrap, margins, pen, cursor shape
+and supported mode bits. Screen/style accessors borrow data until mutation;
+acknowledge damage through `bterm_ack_damage`. No Lua calls or renderer/PTY
+dependencies exist on the byte path.
+
+Dispatch includes cursor movement/position, tab stops, erase, insert/delete
+cells and lines, scrolling, top/bottom margins, saved cursors, alternate
+screen modes 47/1047/1048/1049 and primary/secondary DA plus DSR/CPR replies.
+Origin, autowrap, cursor visibility, insert/newline, application cursor/keypad,
+focus, bracketed paste and reverse-video modes are represented. Focus/paste
+and keyboard encoding consumers follow in BMUX-18/21. Reply bytes reach the
+provided sink; writing them to an actual PTY is BMUX-21 work.
+
+SGR preserves indexed colours and supports semicolon and colon RGB forms,
+optional colon colour-space fields, underline colour/styles, and standard
+attributes/reset codes. Components truncate to eight bits as in the pinned
+source. Malformed colon groups are ignored as a unit, a deliberate stricter
+boundary than interpreting leftover subparameters as separate attributes.
+Erase/insert/scroll blanks use the current background colour and default
+attributes.
+
+```sh
+ctest --test-dir build -R '^terminal_dispatch$' --output-on-failure
+```
+
+Tests assert grids, wrapped rows, margin clipping, history isolation, repeated
+alt-screen sets, cursor/style restoration, background erasure, exact reply
+bytes and failed-sink recovery. Whole feeds and chunks of 1–17 bytes produce
+identical grids/state/replies; 131,072 deterministic adversarial bytes also
+match whole versus one-byte feeds and release styles on reset. The standalone
+suite is included in sanitizer builds.
+
+Cells currently hold one scalar with width 1: grapheme/wide-cell behaviour is
+BMUX-19, and geometry/reflow is BMUX-20. Character-set designation, soft reset,
+selective erasure, mouse modes, typed OSC/DCS/APC extensions and live Lua/PTY
+consumers are not yet implemented. The pinned Ghostty differential suite is
+BMUX-23. Keep BMUX-16 open until vim, htop, less and tmux rendering is verified
+through the integrated terminal; these C tests do not satisfy that app gate.
