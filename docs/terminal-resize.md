@@ -1,8 +1,9 @@
 # Terminal resize and reference oracle
 
-BMUX-20 adds resize/reflow to the native terminal. The checked-in reference
-oracle is ready; the native `bterm_resize` and Lua `resize` APIs are not yet
-implemented. The tracker acceptance criterion remains pending.
+The native `bterm_resize` and Lua `t:resize(columns, rows)` APIs now prepare
+and commit both screens transactionally. All 30 curated oracle cases pass,
+but BMUX-20 acceptance remains pending: a cyclic nowrap resize exposes a
+cached-width soft-wrap metadata difference described below.
 
 ## Reproduce the reference
 
@@ -42,7 +43,7 @@ resulting fixture diff with changes to the inputs, adapter, or upstream pin.
 
 ## Fixture contract
 
-`tools/ghostty/resize_cases.py` defines 29 cases and 119 snapshots in
+`tools/ghostty/resize_cases.py` defines 30 cases and 123 snapshots in
 `tests/fixtures/ghostty-resize.json`. Each case observes the initial state and
 every feed/resize operation. Grapheme mode 2027 is explicitly enabled before
 capture; the reference scrollback limit is 2,000 lines.
@@ -77,7 +78,26 @@ and stale provenance rejection. CI and release workflows run them without
 building Ghostty or installing Zig. They do not exercise Boggart resize or
 satisfy BMUX-20 acceptance.
 
-## Native behavior to preserve
+## Native API and ownership
+
+```lua
+local t <close> = require("terminal").new(80, 24, 2000)
+t:feed("wrapped text")
+t:resize(100, 30)
+local image = t:snapshot(true)
+```
+
+Dimensions must be integers in 1..4096. Invalid arguments and closed terminals
+raise errors. Allocation failure raises a recoverable resize error while
+preserving both screens; a prior feed failure still requires reset. Same-size
+calls preserve state and damage exactly. Successful resize expires borrowed C
+row/cell views; copied Lua images remain valid.
+
+`lpage_resize.c` owns the streaming crop/reflow algorithm and cursor pins.
+`lpage.c` owns private geometry allocation/retirement through
+`lpage_internal.h`. Candidate geometry shares the existing pools and retains
+copied cells. Abort releases those holds; commit retires old geometry and
+publishes the candidate without changing screen or pool identities.
 
 The authoritative algorithms are the pinned `PageList.zig` `resize`,
 `resizeCols`, `reflowRow`, `writeCell`, and `resizeWithoutReflow`; `Screen.zig`
@@ -106,17 +126,17 @@ default column tabs on width change, and invalidates mouse motion geometry.
 Parser fragments, replies/events, modes, and host policies survive resize.
 
 Boggart retains its exact bounded history ring. Ghostty's history pruning uses
-page allocation; the 29 cases stay below eviction limits to isolate geometric
-semantics. Separate native tests must verify Boggart's history limit and release
-of evicted styles, links, and graphemes. Do not claim pruning-policy parity.
+page allocation; the 30 cases stay below eviction limits to isolate geometric
+semantics. The native page tests verify Boggart's history limits 0/1/17 and release
+of evicted styles, links, and graphemes through 9,000 mixed resizes. Do not claim pruning-policy parity.
 
-Resize should prepare both screen geometries before committing either. Failed
-allocation must leave both screens, cursor state, pool references, tabs, margins,
-damage, and parser state unchanged. Commit must not allocate. This stronger
+Resize prepares both screen geometries before committing either. Failed
+allocation leaves both screens, cursor state, pool references, tabs, margins,
+damage, and parser state unchanged. Commit does not allocate. This stronger
 transaction across both screens is a deliberate adaptation; it is not a claim
 that Ghostty has the same failure policy.
 
-## Oracle checkpoint evidence
+## Initial oracle checkpoint evidence
 
 The CMake target built and passed on arm64 macOS with Zig 0.16.0. It verified
 40 ledger modules / 26 attributed destination files and 176 ABI types, compiled
@@ -127,3 +147,56 @@ Both products build; six focused terminal tests pass (2.21 s), and CLI/Studio
 fingerprints agree on all 32 fields. Ninja dependency inspection confirms that
 the oracle target is excluded from the default `all` target.
 This checkpoint establishes the test reference, not implemented resize parity.
+
+
+## Native checkpoint evidence and remaining acceptance
+
+The updated optional target validates 176 SDK ABI types, compiles as strict
+C99, passes three adapter tests, and reproduces all 30 cases / 123 snapshots.
+The adapter now reads background-only palette/RGB content via the SDK cell
+getters; the style-ID lookup alone loses those colors. Palette and RGB
+regressions failed before that correction and now pass. The native fixture
+comparison includes complete resolved colors, not just style IDs.
+
+Both products build. The full registered suite passes **123/123 (130.45 s)**;
+focused ASan/UBSan checks pass **17/17 (9.14 s)**; CLI/Studio agree on **33**
+fingerprint fields, including a resize/save/restore snapshot. The source
+fingerprint contains 31 compiled files, and attribution verifies 40 modules /
+27 destination files. Strict C99 and Python guards pass.
+
+`resize_failure` fails each allocation in eight crop/reflow and primary/alternate
+combinations: **72** failures roll back geometry, cells, resolved pool contents,
+reference counts, cursor/save state, parser, tabs, margins, modes, damage,
+mouse state, replies, and event callbacks. It checks that commit allocates
+nothing and that resize preserves an existing feed-failure state.
+`terminal_resize` also tests dimension bounds, parser fragments, policy/queues,
+height-only tabs, and finalizers resizing a terminal during row/snapshot
+allocation. These checks run in normal and sanitizer builds.
+
+The comparison corrected two existing feed behaviors needed by the vectors:
+right-edge prints record pending wrap even in nowrap mode, and screen switches
+copy cursor positions. Overwriting either half of a wrapped wide glyph now
+clears its previous-row padding head (including a head in history); appending
+a combining scalar with unchanged width keeps that head. Repeated alternate
+mode sets retain the existing Boggart no-op policy; complete terminal protocol
+conformance remains BMUX-16/23 work.
+
+**Known failing acceptance probe:** with a 6x3 terminal, feed
+`abcdefghij` followed by `CSI ?7l`, resize to 4x3, then return to 6x3. Ghostty's
+`resizeWithoutReflowGrowCols` cached-capacity path preserves row 0's soft wrap;
+Boggart's fresh geometry currently clears it. The same-size/grow-to-larger-width
+fixtures do not cover that path. Reproduce the pending regression directly:
+
+```sh
+BOGGART_HOME=/private/tmp/boggart-resize-cached ./boggart \
+  --eval tests/terminal_resize_cached.lua
+```
+
+This command currently **fails** and is not included in the passing registered
+suite. Its exact inputs, oracle snapshots/provenance, native snapshots, and
+compiled source hashes are in
+[resize-cached-width.json](benchmarks/2026-10-13-resize-cached-width.json).
+Fix the cached-width metadata behavior and add the case to the main differential
+vectors before recording criterion 1446 as passed. Resize latency/memory
+measurements and broader cyclic-resize comparison also remain acceptance work;
+no renderer, PTY integration, or overall cmux parity is claimed by this checkpoint.

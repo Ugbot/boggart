@@ -210,6 +210,14 @@ static int l_feed(lua_State *L) {
   return 0;
 }
 static int l_finish(lua_State *L) { if (!bterm_finish(check(L)->term)) return luaL_error(L, "terminal failed; reset required"); return 0; }
+static int l_resize(lua_State *L) {
+  lua_Integer columns=luaL_checkinteger(L,2),rows=luaL_checkinteger(L,3);
+  luaL_argcheck(L,columns>0 && columns<=4096,2,"columns must be in 1..4096");
+  luaL_argcheck(L,rows>0 && rows<=4096,3,"rows must be in 1..4096");
+  if (!bterm_resize(check(L)->term,(size_t)columns,(size_t)rows))
+    return luaL_error(L,"terminal resize allocation failure; geometry preserved");
+  return 0;
+}
 static int l_reset(lua_State *L) {
   terminal *t = check(L); t->reply_length = 0;
   if (t->events) t->events->count = t->events->used = 0; t->dropped = 0;
@@ -419,7 +427,7 @@ static int l_source(lua_State *L) {
   lua_setfield(L, -2, "files"); return 1;
 }
 int luaopen_boggart_terminal(lua_State *L) {
-  const luaL_Reg methods[] = { {"feed", l_feed}, {"finish", l_finish}, {"reset", l_reset}, {"state", l_state},
+  const luaL_Reg methods[] = { {"feed", l_feed}, {"finish", l_finish}, {"reset", l_reset}, {"resize", l_resize}, {"state", l_state},
     {"row", l_row}, {"snapshot", l_snapshot}, {"damage", l_damage}, {"ack_damage", l_ack},
     {"replies", l_replies}, {"key", l_key}, {"mouse", l_mouse}, {"input_state", l_input_state}, {"events", l_events}, {"clipboard_policy", l_clipboard_policy},
     {"paste", l_paste}, {"paste_safe", l_paste_safe}, {"focus", l_focus},

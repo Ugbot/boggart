@@ -48,6 +48,16 @@ static void rows(GhosttyTerminal t,uint16_t columns,size_t count,GhosttyPointTag
       printf("],\"width\":%u,\"head\":%s,\"protected\":%s,\"style\":[",wide==GHOSTTY_CELL_WIDE_WIDE ? 2 : wide==GHOSTTY_CELL_WIDE_SPACER_TAIL ? 0 : 1,
         wide==GHOSTTY_CELL_WIDE_SPACER_HEAD ? "true" : "false",protected_cell ? "true" : "false");
       GhosttyStyle style=GHOSTTY_INIT_SIZED(GhosttyStyle);success(ghostty_grid_ref_style(&ref,&style));
+      /* Background-only cells have no style ID. Resolve their content color
+       * explicitly rather than losing it through the default style lookup. */
+      GhosttyCellContentTag content;success(ghostty_cell_get(cell,GHOSTTY_CELL_DATA_CONTENT_TAG,&content));
+      if(content==GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE) {
+        style.bg_color.tag=GHOSTTY_STYLE_COLOR_PALETTE;
+        success(ghostty_cell_get(cell,GHOSTTY_CELL_DATA_COLOR_PALETTE,&style.bg_color.value.palette));
+      } else if(content==GHOSTTY_CELL_CONTENT_BG_COLOR_RGB) {
+        style.bg_color.tag=GHOSTTY_STYLE_COLOR_RGB;
+        success(ghostty_cell_get(cell,GHOSTTY_CELL_DATA_COLOR_RGB,&style.bg_color.value.rgb));
+      }
       unsigned attrs=(style.bold ? 1u : 0) | (style.italic ? 2u : 0) | (style.faint ? 4u : 0) | (style.blink ? 8u : 0)
         | (style.inverse ? 16u : 0) | (style.invisible ? 32u : 0) | (style.strikethrough ? 64u : 0) | (style.overline ? 128u : 0) | ((unsigned)style.underline<<8);
       printf("%u,%u,%u,%u],\"uri\":[",color(style.fg_color),color(style.bg_color),color(style.underline_color),attrs);

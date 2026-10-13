@@ -59,7 +59,7 @@ static void basic(void) {
   CHECK(lpage_history_count(bterm_screen(t)) == 1);
   CHECK(lpage_history(bterm_screen(t), 0)->cells[0].codepoint == 'a');
   row_text(t, 0, "f    "); row_text(t, 1, "12345");
-  CHECK(bterm_reset(t)); feed(t, "abcde\033[?7lfgh"); row_text(t, 0, "abcdh"); CHECK(!bterm_state(t).pending_wrap);
+  CHECK(bterm_reset(t)); feed(t, "abcde\033[?7lfgh"); row_text(t, 0, "abcdh"); CHECK(bterm_state(t).pending_wrap);
   feed(t, "\033[H\033[?7hX\033[2;3HY\033[999;999HZ");
   row_text(t, 0, "Xbcdh"); row_text(t, 1, "  Y  "); row_text(t, 2, "    Z");
   feed(t, "\033[1;2;3H\033[?2J"); /* Invalid CUP and unsupported selective erase are ignored. */

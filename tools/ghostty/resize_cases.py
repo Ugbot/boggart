@@ -39,6 +39,7 @@ CASES = [
     case('reset_margins', 6, 4, ESC+'[2;3r'+ESC+'[?6h'+ESC+'[Habc', (4, 3), ESC+'[H\r\nZ'),
     case('reset_column_tabs', 12, 3, ESC+'[1;4H'+ESC+'H'+ESC+'[H', (14, 3), '\tZ'),
     case('background_blanks', 6, 3, ESC+'[44m'+ESC+'[2J'+ESC+'[Hab', (3, 3), (8, 3)),
+    case('rgb_background_blanks', 6, 3, ESC+'[48;2;1;2;3m'+ESC+'[2J'+ESC+'[Hab', (3, 3), (8, 3)),
     case('styles_and_links', 6, 3, ESC+'[31;1mABCDEF'+ESC+'[0m'+ESC+']8;id=resize;https://example.com\aabcde'+ESC+']8;;\a', (4, 4), (10, 3)),
     case('clear_active_preserves_position', 6, 3, 'a\r\nb\r\nc\r\nd\r\ne'+ESC+'[2J'+ESC+'[H', (4, 4)),
     case('partial_utf8_across_resize', 6, 3, b'\xf0\x9f', (4, 3), b'\x91\xa9\xe2\x80\x8d\xf0\x9f\x92\xbb', (8, 2)),

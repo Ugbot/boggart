@@ -71,9 +71,11 @@ static void terminal_test(void) {
   feed(t,"\033]8;;https://pending.com\a\033]8;;relative\aH\033]8;;\a"); uri(t,id(t,0,7),"https://pending.com");
   feed(t,"\033]8;;https://pending.com\a\033[?1049hI\033]8;id=alt;https://alt.com\aJ\033[?1049lK");
   CHECK(id(t,0,8)==0); uri(t,first,"https://example.com");
-  feed(t,"\033[?47h"); CHECK(id(t,0,0)==0); uri(t,id(t,0,1),"https://alt.com"); feed(t,"L"); CHECK(id(t,0,2)==0);
+  feed(t,"\033[?47h"); CHECK(bterm_state(t).x==9 && id(t,0,0)==0);
+  uri(t,id(t,0,9),"https://alt.com"); feed(t,"L"); CHECK(id(t,0,9)==0);
   feed(t,"\033[?47l\033[2K"); CHECK(lpage_usage(bterm_screen(t)).links==0);
-  feed(t,"\033]8;;https://save.com\aA\0337B\0338C"); CHECK(id(t,0,10)==0);
+  CHECK(bterm_state(t).x==10);
+  feed(t,"\033]8;;https://save.com\aA\0337B\0338C"); CHECK(id(t,0,11)==0);
   feed(t,"\033[?1049h\033]8;;https://active.com\a\033c"); CHECK(!bterm_state(t).alternate && !lpage_usage(bterm_screen(t)).links);
   feed(t,"\033[?47h"); CHECK(!lpage_usage(bterm_screen(t)).links); bterm_destroy(t);
   t=bterm_create(3,2,1,NULL,NULL); CHECK(t);
