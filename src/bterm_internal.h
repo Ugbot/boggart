@@ -25,6 +25,10 @@ struct bterm {
   size_t columns, rows, top, bottom;
   uint32_t modes, last_printed;
   unsigned cursor_style;
+  bmouse_mode mouse_mode;
+  bmouse_format mouse_format;
+  bmouse_motion mouse_motion;
+  uint32_t mouse_cell_width, mouse_cell_height;
   lpage_style pen;
   bool tabs[4096], failed;
   bterm_reply reply;

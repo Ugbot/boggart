@@ -141,6 +141,7 @@ void bt_alternate(bterm *t, bool enabled, unsigned mode) {
     if (mode == 1049) bt_restore(t);
   }
   lpage_damage_all(bt_active(t)->screen);
+  t->mouse_motion.valid = false;
 }
 void bt_reply(bterm *t, const char *bytes, size_t length) {
   if (t->reply) require(t, t->reply(t->reply_context, (const uint8_t *)bytes, length));
@@ -217,6 +218,8 @@ bool bterm_reset(bterm *t) {
   }
   t->active = 0; t->top = 0; t->bottom = t->rows - 1;
   t->modes = BT_AUTOWRAP | BT_CURSOR_VISIBLE; t->last_printed = t->cursor_style = 0;
+  t->mouse_mode = BM_NONE; t->mouse_format = BM_FORMAT_X10;
+  t->mouse_motion.valid = false; t->mouse_cell_width = t->mouse_cell_height = 0;
   memset(t->tabs, 0, sizeof t->tabs);
   for (size_t x = 8; x < t->columns; x += 8) t->tabs[x] = true;
   lvt_init(&t->parser); return !t->failed;
@@ -230,3 +233,13 @@ const llink_value *bterm_link(const bterm *t, uint32_t id) { return lpage_link(b
 const lpage_style *bterm_style(const bterm *t, uint32_t id) { return lstyle_get(lpage_styles(t->buffers[t->active].screen), id); }
 void bterm_ack_damage(bterm *t) { lpage_ack_damage(bt_active(t)->screen); }
 const lvt_parser *bterm_parser(const bterm *t) { return &t->parser; }
+bterm_input_status bterm_input_state(const bterm *t) { return (bterm_input_status){t->mouse_mode, t->mouse_format}; }
+bool bterm_mouse(bterm *t, const bmouse_event *event, uint32_t width, uint32_t height,
+                  uint8_t *output, size_t capacity, size_t *length) {
+  bmouse_options options = { t->mouse_mode, t->mouse_format, (uint32_t)t->columns, (uint32_t)t->rows, width, height };
+  bmouse_motion last = t->mouse_motion;
+  if (width != t->mouse_cell_width || height != t->mouse_cell_height) last.valid = false;
+  if (!bmouse_encode(event, &options, &last, output, capacity, length)) return false;
+  t->mouse_motion = last; t->mouse_cell_width = width; t->mouse_cell_height = height;
+  return true;
+}

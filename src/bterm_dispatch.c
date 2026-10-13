@@ -1,4 +1,5 @@
 /* ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/terminal/stream.zig
+ * ported from ghostty@05dcf887ef51ea27821f20979493306ec3a19149 src/termio/stream_handler.zig
  * Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
  * SPDX-License-Identifier: MIT; see THIRD_PARTY/ghostty-LICENSE.
  * Adaptation: focused CSI commands, C screen operations and an explicit reply
@@ -12,6 +13,12 @@ static size_t parameter(const lvt_event *e, size_t i, size_t fallback) {
 static void mode(bterm *t, unsigned p, bool private_mode, bool enabled) {
   uint32_t bit = 0;
   if (private_mode) switch (p) {
+    case 9: case 1000: case 1002: case 1003:
+      t->mouse_mode = enabled ? (p == 9 ? BM_X10 : p == 1000 ? BM_NORMAL : p == 1002 ? BM_BUTTON : BM_ANY) : BM_NONE;
+      t->mouse_motion.valid = false; return;
+    case 1005: case 1006: case 1015: case 1016:
+      t->mouse_format = enabled ? (p == 1005 ? BM_UTF8 : p == 1006 ? BM_SGR : p == 1015 ? BM_URXVT : BM_PIXELS) : BM_FORMAT_X10;
+      t->mouse_motion.valid = false; return;
     case 1: bit = BT_APP_CURSOR; break;
     case 5: bit = BT_REVERSE_VIDEO; lpage_damage_all(bt_active(t)->screen); break;
     case 6: bit = BT_ORIGIN; break;

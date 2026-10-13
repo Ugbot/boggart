@@ -53,6 +53,9 @@ local terminal_events = probe:events()
 put("terminal_events", require("hash_c").sha256(require("json").encode(terminal_events)))
 probe:feed("\27]8;id=parity;https://example.com\7linked text\27]8;;\7")
 put("terminal_links", require("hash_c").sha256(require("json").encode(probe:snapshot(true))))
+probe:feed("\27[?1003;1006h")
+put("terminal_mouse", require("hash_c").sha256(probe:mouse{action="motion",button=1,x=2,y=3}))
+put("terminal_input", require("hash_c").sha256(require("json").encode(probe:input_state())))
 
 -- ---- the tools the model is offered ----------------------------------------
 -- The one place asymmetry is legitimate: the studio registers panel-drawing

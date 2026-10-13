@@ -140,7 +140,7 @@ suite is included in sanitizer builds.
 
 Cells currently hold one scalar with width 1: grapheme/wide-cell behaviour is
 BMUX-19, and geometry/reflow is BMUX-20. Character-set designation, soft reset,
-selective erasure, mouse modes, DCS/APC extensions and live PTY
+selective erasure, DCS/APC extensions and live PTY
 consumers are not yet implemented. The pinned Ghostty differential suite is
 BMUX-23. Keep BMUX-16 open until vim, htop, less and tmux rendering is verified
 through the integrated terminal; these C tests do not satisfy that app gate.
@@ -187,7 +187,7 @@ return no values. `finish()` belongs at EOF, never at a read boundary.
 rows, live styles/links, link capacity bytes and queued reply bytes/capacity. Its screen byte count is not
 whole-terminal RSS or Lua allocation accounting. C grid allocations belong to
 the native core; snapshots and the userdata belong to Lua. `source()` returns
-the 18 source/header hashes embedded during CMake configuration. Changes to
+the 20 source/header hashes embedded during CMake configuration. Changes to
 those files trigger regeneration; the native benchmark compares them with the
 checkout and rejects a stale executable.
 
@@ -288,3 +288,75 @@ reference model now checks link reference counts across 30,000 operations.
 validation, ordering, fragmentation, interleaving, bounds, policy/revocation,
 reply encoding, queue lifetime and actual bus subscriber delivery. CLI/studio
 parity also fingerprints drained typed events.
+
+
+## Native mouse input (BMUX-18 increment)
+
+`src/bmouse.c/h` translates the pinned mouse encoder into allocation-free C99.
+It accepts a normalized action/button/modifier event, explicit reporting options
+and optional motion state, and returns complete encoded bytes. Its 64-byte
+maximum covers X10, UTF-8, SGR, urxvt and signed SGR pixels. Cells are clamped to
+visible geometry and encoded one-based; pixels follow the pinned encoder's
+signed terminal coordinate convention without clamping or adding one. The host
+subtracts pane origin/padding and applies scaling before calling. Hosts with
+fractional positions should floor for cell formats and round for pixel format
+before passing integer pixels; renderer-specific transforms stay outside C.
+
+Event policies are none/X10/normal/button/any. X10 reports only presses of buttons
+1–3 and omits modifiers; normal reports press/release; button tracking requires
+a button for motion; any reports all valid events. Buttons 4–7 encode wheel
+up/down/left/right and 8–9 encode extras. Legacy releases use button code 3;
+SGR releases preserve button identity. Shift/Alt/Ctrl add modifier bits. Outside
+press/motion needs a motion-capable mode and a held button; releases always
+report when the policy permits them. Cell motion suppresses repeated cells,
+while pixel motion keeps every event. Last-cell state updates only after emitted
+bytes, including successful press/release reports. Failed capacity checks leave
+output and motion state unchanged, unlike a partially written protocol report.
+
+Geometry is 1–4096 rows/columns with 1–65535 pixels per cell. Positions use signed
+32-bit normalized pixels. Invalid enum/button/modifier values or zero/oversized
+geometry return false; valid suppressed events return true with zero bytes.
+Buttons 0 are valid only for motion. No encoding call allocates or calls Lua,
+PTY, renderer or bus code.
+
+The native dispatcher negotiates DEC modes 9/1000/1002/1003 and formats
+1005/1006/1015/1016. This is last-set state, as in the pinned stream handler:
+enabling replaces the event/format, and resetting any corresponding mode disables
+reporting or resets its format to X10. RIS/reset disables reporting. Screen
+transitions preserve negotiated mouse modes and clear motion deduplication;
+repeating the existing screen mode leaves it alone. Cell-size changes invalidate
+the cached cell without changing state on a failed encoding call. C callers use
+`bterm_input_state` and `bterm_mouse`; these are separate from automatic DA/DSR
+reply emission and do not put mouse bytes in the reply queue.
+
+```lua
+local terminal = require "terminal"
+local t <close> = terminal.new(80, 24, 2000)
+t:feed(shell_output)
+local modes = t:input_state() -- mouse_mode / mouse_format names
+local bytes = t:mouse { action = "press", button = 1, x = 19, y = 39,
+  cell_width = 10, cell_height = 20, modifiers = terminal.SHIFT }
+-- Host sends bytes to the PTY; empty means the event was suppressed.
+```
+
+`mouse` accepts raw fields of one event table; it does not run `__index` getters.
+Action defaults to press; button defaults to zero (therefore required for press/
+release), position and modifiers default to zero, and cell dimensions default
+to one. `any_button_pressed` is an optional boolean; by default a button-bearing
+press/motion implies held state. Explicit false supports out-of-viewport events
+where no button is held. Modifiers use exported `SHIFT`, `ALT` and `CTRL` bits.
+Invalid Lua events raise an error without failing the parser. Coordinates and
+cell sizes must be integer values. `input_state()` is a copied input-mode view;
+full persisted attach/restore state remains server-model work.
+
+`tests/c/mouse.c` verifies exact byte vectors, every format, wheel/extras,
+modifiers, coordinate boundaries, atomic capacity failure, motion policies and
+100,000 adversarial normalized events. `tests/c/terminal_mouse.c` verifies the
+parser-to-encoder path across 1–17-byte chunks, reset/RIS, screen transitions,
+cell-size changes and failed writes. Lua tests cover strict validation,
+raw-field reads, dimensions, motion and separation from replies; parity checks
+encode mouse bytes and input state in both front ends.
+
+Keyboard/Kitty negotiation and studio routing are subsequent BMUX-18 increments.
+The studio still has its fixed key table and old parser; this native capability
+is not a claim that live studio mouse reporting is integrated.

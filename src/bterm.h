@@ -4,6 +4,7 @@
 #include "lpage.h"
 #include "lvt.h"
 #include "bosc.h"
+#include "bmouse.h"
 typedef struct bterm bterm;
 enum {
   BT_AUTOWRAP = 1u << 0, BT_ORIGIN = 1u << 1, BT_CURSOR_VISIBLE = 1u << 2,
@@ -18,6 +19,12 @@ typedef struct {
   bool alternate, pending_wrap;
   lpage_style pen;
 } bterm_status;
+typedef struct { bmouse_mode mouse_mode; bmouse_format mouse_format; } bterm_input_status;
+bterm_input_status bterm_input_state(const bterm *terminal);
+/* Uses current negotiated mouse modes and terminal geometry. Output is input
+ * for the child PTY, distinct from the reply sink. Failure does not fail feed. */
+bool bterm_mouse(bterm *terminal, const bmouse_event *event, uint32_t cell_width, uint32_t cell_height,
+                  uint8_t *output, size_t capacity, size_t *length);
 /* Consume/copy the borrowed reply synchronously. Never re-enter the terminal
  * from this callback. A NULL sink intentionally discards replies. */
 typedef bool (*bterm_reply)(void *context, const uint8_t *bytes, size_t length);

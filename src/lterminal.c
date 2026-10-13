@@ -237,6 +237,40 @@ static int l_events(lua_State *L) {
   if (q) q->count = q->used = 0;
   lua_pushinteger(L,(lua_Integer)t->dropped); t->dropped=0; return 2;
 }
+static void event_field(lua_State *L, const char *key) { lua_pushstring(L,key); lua_rawget(L,2); }
+static lua_Integer event_integer(lua_State *L, const char *key, lua_Integer fallback, lua_Integer low, lua_Integer high) {
+  event_field(L,key); lua_Integer value=luaL_optinteger(L,-1,fallback); lua_pop(L,1);
+  if (value < low || value > high) luaL_error(L,"mouse %s out of range",key);
+  return value;
+}
+static int l_input_state(lua_State *L) {
+  bterm_input_status s=bterm_input_state(check(L)->term);
+  static const char *modes[]={"none","x10","normal","button","any"};
+  static const char *formats[]={"x10","utf8","sgr","urxvt","pixels"};
+  lua_createtable(L,0,2); lua_pushstring(L,modes[s.mouse_mode]); lua_setfield(L,-2,"mouse_mode");
+  lua_pushstring(L,formats[s.mouse_format]); lua_setfield(L,-2,"mouse_format"); return 1;
+}
+static int l_mouse(lua_State *L) {
+  check(L); luaL_checktype(L,2,LUA_TTABLE);
+  static const char *actions[]={"press","release","motion",NULL};
+  event_field(L,"action");
+  if (!lua_isnil(L,-1)) {
+    size_t n; const char *value=luaL_checklstring(L,-1,&n);
+    if (memchr(value,0,n)) return luaL_error(L,"invalid mouse action");
+  }
+  bmouse_action action=(bmouse_action)luaL_checkoption(L,-1,"press",actions); lua_pop(L,1);
+  bmouse_event event={action,(unsigned)event_integer(L,"button",0,0,9),
+    (unsigned)event_integer(L,"modifiers",0,0,7),
+    (int32_t)event_integer(L,"x",0,INT32_MIN,INT32_MAX), (int32_t)event_integer(L,"y",0,INT32_MIN,INT32_MAX),false};
+  event_field(L,"any_button_pressed");
+  if (!lua_isnil(L,-1)) { luaL_checktype(L,-1,LUA_TBOOLEAN); event.any_button_pressed=lua_toboolean(L,-1); }
+  else event.any_button_pressed=event.button != 0 && event.action != BM_RELEASE;
+  lua_pop(L,1);
+  uint32_t width=(uint32_t)event_integer(L,"cell_width",1,1,65535), height=(uint32_t)event_integer(L,"cell_height",1,1,65535);
+  uint8_t output[BMOUSE_CAPACITY]; size_t length;
+  if (!bterm_mouse(check(L)->term,&event,width,height,output,sizeof output,&length)) return luaL_error(L,"invalid mouse event");
+  lua_pushlstring(L,(const char *)output,length); return 1;
+}
 static int l_source(lua_State *L) {
   lua_createtable(L, 0, 1);
   lua_createtable(L, (int)(sizeof terminal_source_files / sizeof terminal_source_files[0]), 0);
@@ -251,7 +285,7 @@ static int l_source(lua_State *L) {
 int luaopen_boggart_terminal(lua_State *L) {
   const luaL_Reg methods[] = { {"feed", l_feed}, {"finish", l_finish}, {"reset", l_reset}, {"state", l_state},
     {"row", l_row}, {"snapshot", l_snapshot}, {"damage", l_damage}, {"ack_damage", l_ack},
-    {"replies", l_replies}, {"events", l_events}, {"clipboard_policy", l_clipboard_policy},
+    {"replies", l_replies}, {"mouse", l_mouse}, {"input_state", l_input_state}, {"events", l_events}, {"clipboard_policy", l_clipboard_policy},
     {"clipboard_reply", l_clipboard_reply}, {"usage", l_usage}, {"close", l_close}, {"__gc", l_close}, {"__close", l_close}, {NULL, NULL} };
   luaL_newmetatable(L, TERMINAL_MT); luaL_setfuncs(L, methods, 0); lua_pushvalue(L, -1); lua_setfield(L, -2, "__index"); lua_pop(L, 1);
   lua_newtable(L); lua_pushcfunction(L, l_new); lua_setfield(L, -2, "new");
@@ -259,5 +293,6 @@ int luaopen_boggart_terminal(lua_State *L) {
   integer(L, "COLOR_INDEXED", LP_COLOR_INDEXED); integer(L, "COLOR_RGB", LP_COLOR_RGB);
   integer(L, "AUTOWRAP", BT_AUTOWRAP); integer(L, "ORIGIN", BT_ORIGIN); integer(L, "CURSOR_VISIBLE", BT_CURSOR_VISIBLE);
   integer(L, "BRACKETED_PASTE", BT_BRACKETED_PASTE); integer(L, "FOCUS", BT_FOCUS);
+  integer(L, "SHIFT", BI_SHIFT); integer(L, "ALT", BI_ALT); integer(L, "CTRL", BI_CTRL);
   return 1;
 }
