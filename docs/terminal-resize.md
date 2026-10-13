@@ -5,6 +5,12 @@ and commit both screens transactionally. The current fixture has 43 cases /
 203 snapshots. A full comparison matches 202 snapshots; the wide-head
 page-grouping case fails. BMUX-20 acceptance remains open as described below.
 
+The [SDK page diagnostic](benchmarks/2026-10-13-sdk-page-topology.md) records
+actual page boundaries and managed-capacity growth. Its 59 frames agree with
+the independent C ABI oracle for row count/order and wrap/head flags. The
+[boundary implementation plan](superpowers/plans/2026-10-13-bmux-page-boundaries.md)
+describes the remaining logical page model needed to fix that mismatch.
+
 ## Reproduce the reference
 
 The optional `ghostty-oracle` target builds the public libghostty-vt C SDK at
