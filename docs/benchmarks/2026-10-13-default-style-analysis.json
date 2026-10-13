@@ -1,0 +1,195 @@
+{
+  "schema": 1,
+  "baseline_commit": "af90ba9",
+  "candidate": "Skip default style 0 ref calls only; tested before applying to src/lpage.c",
+  "profile": {
+    "tool": "/usr/bin/sample",
+    "duration_seconds": 5,
+    "interval_ms": 1,
+    "total_thread_samples": 3765,
+    "self_samples": {
+      "bt_print": 680,
+      "lpage_put": 669,
+      "lstyle_retain": 628,
+      "fill": 385,
+      "lvt_feed": 316,
+      "lstyle_release": 309,
+      "lpage_retain_cell": 224,
+      "break_pair": 147,
+      "event": 127,
+      "bunicode_width": 111,
+      "lpage_release_cell": 92,
+      "lvt_next": 27,
+      "lpage_scroll": 18,
+      "action": 8,
+      "bt_scroll": 8,
+      "lstyle_acquire": 7,
+      "main": 6
+    },
+    "dtrace_run": "a3fd1059-4dab-499f-aba7-23438e9b72af",
+    "dtrace_result": "Timed out; no samples, not used as evidence"
+  },
+  "pilot": {
+    "compiler_flags": "clang -O2 -g -std=c99 -Isrc",
+    "clock": "CLOCK_MONOTONIC",
+    "phase": "bterm_feed only; create/destroy outside timing",
+    "columns": 80,
+    "rows": 24,
+    "history_limit": 2000,
+    "chunk_bytes": 4096,
+    "samples_per_scenario": 11,
+    "corpus_target_bytes": 1048576,
+    "harness_sha256": "64d5d74a3f77cfc349ed8d828b4f0265086d8049cae6511b8ca79f739276ca5a",
+    "baseline_binary_sha256": "9470c5c2f2f08ab9b984a9c7dde841398d8937c07857288128bb581e2ffe5fea",
+    "candidate_binary_sha256": "8e912dae2b34b9df5b38154a6a729decc862c1e87e2aa1b8ea87dbddaf4d31da",
+    "candidate_page_sha256": "e4d39bbac0c35f26c5db11066105e479d7031716f4d25961484f3266a237d59b",
+    "samples_ns": {
+      "plain": {
+        "baseline": [
+          19870000,
+          19823000,
+          20000000,
+          19943000,
+          19812000,
+          24836000,
+          21558000,
+          21451000,
+          17987000,
+          18360000,
+          23607000
+        ],
+        "candidate": [
+          23283000,
+          17940000,
+          17990000,
+          35107000,
+          18003000,
+          17940000,
+          17983000,
+          17570000,
+          17622000,
+          17537000,
+          17635000
+        ]
+      },
+      "scroll": {
+        "baseline": [
+          26975000,
+          32471000,
+          34405000,
+          28877000,
+          32750000,
+          36820000,
+          27114000,
+          44512000,
+          30136000,
+          35471000,
+          26965000
+        ],
+        "candidate": [
+          20393000,
+          20221000,
+          20346000,
+          25170000,
+          22315000,
+          21922000,
+          20847000,
+          20315000,
+          20576000,
+          20293000,
+          20462000
+        ]
+      },
+      "dense-sgr": {
+        "baseline": [
+          16072000,
+          15833000,
+          15954000,
+          16011000,
+          16246000,
+          16019000,
+          16117000,
+          16382000,
+          18000000,
+          16321000,
+          16646000
+        ],
+        "candidate": [
+          13580000,
+          15038000,
+          14276000,
+          18025000,
+          17643000,
+          15776000,
+          15132000,
+          14072000,
+          14062000,
+          14003000,
+          14112000
+        ]
+      },
+      "alt-screen": {
+        "baseline": [
+          101515000,
+          102956000,
+          105838000,
+          96166000,
+          95122000,
+          91635000,
+          88186000,
+          88230000,
+          91932000,
+          94212000,
+          105916000
+        ],
+        "candidate": [
+          57256000,
+          59856000,
+          56344000,
+          57582000,
+          62411000,
+          55580000,
+          53768000,
+          60221000,
+          55023000,
+          59522000,
+          57560000
+        ]
+      },
+      "unicode": {
+        "baseline": [
+          24196000,
+          26031000,
+          24360000,
+          24699000,
+          26965000,
+          26454000,
+          33813000,
+          25474000,
+          27253000,
+          25694000,
+          24119000
+        ],
+        "candidate": [
+          21553000,
+          22712000,
+          20520000,
+          27020000,
+          19279000,
+          19099000,
+          19231000,
+          19141000,
+          21163000,
+          21328000,
+          20772000
+        ]
+      }
+    },
+    "one_unscored_warmup": true
+  },
+  "notes": [
+    "CPU samples identify cost, not elapsed time.",
+    "Canonical source-identified before/after runner reports are recorded separately.",
+    "No GPU, PTY, shell-to-pixel, cmux or Ghostty performance claim."
+  ]
+}

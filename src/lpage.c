@@ -37,7 +37,7 @@ struct lpage_screen {
 static row *at(const lpage_screen *s, size_t y) { return s->visible[(s->head + y) % s->rows]; }
 static void set(lpage_screen *s, size_t y, row *r) { s->visible[(s->head + y) % s->rows] = r; }
 void lpage_release_cell(lpage_screen *s, lpage_cell cell) {
-  lstyle_release(s->styles, cell.style);
+  if (cell.style) lstyle_release(s->styles, cell.style);
   if (cell.hyperlink) llink_release(s->links, cell.hyperlink);
   if (cell.flags & LP_CELL_GRAPHEME) lgrapheme_release(s->graphemes, cell.codepoint);
 }
@@ -118,9 +118,11 @@ static bool break_pair(lpage_screen *s, row *r, size_t x, uint32_t style) {
   return true;
 }
 bool lpage_retain_cell(lpage_screen *s, lpage_cell cell) {
-  if (!lstyle_retain(s->styles, cell.style)) return false;
+  /* ID 0 is immortal; keep default-cell writes out of the style pool. */
+  if (cell.style && !lstyle_retain(s->styles, cell.style)) return false;
   if (cell.hyperlink && !llink_retain(s->links, cell.hyperlink)) {
-    lstyle_release(s->styles, cell.style); return false;
+    if (cell.style) lstyle_release(s->styles, cell.style);
+    return false;
   }
   if ((cell.flags & LP_CELL_GRAPHEME) && !lgrapheme_retain(s->graphemes,cell.codepoint)) {
     lstyle_release(s->styles,cell.style);
@@ -164,7 +166,7 @@ bool lpage_append_grapheme(lpage_screen *s,size_t y,size_t x,uint32_t cp,unsigne
 }
 static bool fill(lpage_screen *s, row *r, size_t x, size_t n, uint32_t style, bool release_old) {
   for (size_t i = x; i < x + n; i++) {
-    if (!lstyle_retain(s->styles, style)) return false;
+    if (style && !lstyle_retain(s->styles, style)) return false;
     if (release_old) lpage_release_cell(s, r->cells[i]);
     r->cells[i] = (lpage_cell){ 0, style, 0, 1, 0, 0 };
   }
