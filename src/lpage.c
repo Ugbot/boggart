@@ -100,11 +100,35 @@ const lpage_row *lpage_visible(const lpage_screen *s, size_t y) { return y < s->
 const lpage_cell *lpage_get(const lpage_screen *s, size_t y, size_t x) {
   return y < s->rows && x < s->columns ? &at(s, y)->cells[x] : NULL;
 }
+static bool fill(lpage_screen *s, row *r, size_t x, size_t n, uint32_t style, bool release_old);
+static bool break_pair(lpage_screen *s, row *r, size_t x, uint32_t style) {
+  if (r->cells[x].flags & LP_CELL_WIDE_TAIL) return fill(s, r, x - 1, 2, style, true);
+  if (r->cells[x].width == 2) return fill(s, r, x, 2, style, true);
+  return true;
+}
+static bool retain_cell(lpage_screen *s, lpage_cell cell) {
+  if (!lstyle_retain(s->styles, cell.style)) return false;
+  if (cell.hyperlink && !llink_retain(s->links, cell.hyperlink)) {
+    lstyle_release(s->styles, cell.style); return false;
+  }
+  return true;
+}
 bool lpage_put(lpage_screen *s, size_t y, size_t x, lpage_cell cell) {
-  if (y >= s->rows || x >= s->columns || cell.width > 2 || !lstyle_retain(s->styles, cell.style)) return false;
-  if (cell.hyperlink && !llink_retain(s->links, cell.hyperlink)) { lstyle_release(s->styles, cell.style); return false; }
+  if (y >= s->rows || x >= s->columns || cell.width < 1 || cell.width > 2
+      || (cell.flags & ~(LP_CELL_PROTECTED | LP_CELL_WIDE_HEAD))
+      || (cell.width == 2 && x + 1 == s->columns)) return false;
   row *r = at(s, y);
+  if ((cell.flags & LP_CELL_WIDE_HEAD) && (cell.width != 1 || cell.codepoint || x + 1 != s->columns || !r->view.wrapped)) return false;
+  if (!retain_cell(s, cell)) return false;
+  if (cell.width == 2 && !retain_cell(s, cell)) { release_cell(s, cell); return false; }
+  if (!break_pair(s, r, x, cell.style) || (cell.width == 2 && !break_pair(s, r, x + 1, cell.style))) {
+    release_cell(s, cell); if (cell.width == 2) release_cell(s, cell); return false;
+  }
   release_cell(s, r->cells[x]); r->cells[x] = cell; r->dirty = true;
+  if (cell.width == 2) {
+    release_cell(s, r->cells[x + 1]);
+    r->cells[x + 1] = (lpage_cell){0, cell.style, cell.hyperlink, 0, LP_CELL_WIDE_TAIL | (cell.flags & LP_CELL_PROTECTED), 0};
+  }
   return true;
 }
 static bool fill(lpage_screen *s, row *r, size_t x, size_t n, uint32_t style, bool release_old) {
@@ -120,6 +144,12 @@ bool lpage_erase(lpage_screen *s, size_t y, size_t x, size_t n, uint32_t style) 
   if (y >= s->rows || x > s->columns || !lstyle_retain(s->styles, style)) return false;
   if (n > s->columns - x) n = s->columns - x;
   row *r = at(s, y);
+  if (n) {
+    size_t end = x + n;
+    if (r->cells[x].flags & LP_CELL_WIDE_TAIL) x--;
+    if (end < s->columns && r->cells[end].flags & LP_CELL_WIDE_TAIL) end++;
+    n = end - x;
+  }
   bool ok = fill(s, r, x, n, style, true);
   if (x == 0 && n == s->columns) r->view.wrapped = false;
   lstyle_release(s->styles, style); return ok;
@@ -128,12 +158,21 @@ static bool edit(lpage_screen *s, size_t y, size_t x, size_t n, uint32_t style, 
   if (y >= s->rows || x > s->columns || !lstyle_retain(s->styles, style)) return false;
   if (n > s->columns - x) n = s->columns - x;
   row *r = at(s, y);
+  /* Splitting a glyph at either cut boundary erases that whole glyph before
+   * ownership is transferred by memmove. Internal whole pairs move intact. */
+  size_t boundary = insert ? s->columns - n : x + n;
+  if (n && ((x < s->columns && r->cells[x].flags & LP_CELL_WIDE_TAIL && !break_pair(s, r, x, style))
+       || (boundary < s->columns && r->cells[boundary].flags & LP_CELL_WIDE_TAIL && !break_pair(s, r, boundary, style)))) {
+    lstyle_release(s->styles, style); return false;
+  }
   size_t discard = insert ? s->columns - n : x;
   for (size_t i = discard; i < discard + n; i++) release_cell(s, r->cells[i]);
   size_t tail = s->columns - x - n;
   if (insert) memmove(r->cells + x + n, r->cells + x, tail * sizeof(lpage_cell));
   else memmove(r->cells + x, r->cells + x + n, tail * sizeof(lpage_cell));
   bool ok = fill(s, r, insert ? x : s->columns - n, n, style, false);
+  if (!insert && tail) r->cells[s->columns - n - 1].flags &= (uint8_t)~LP_CELL_WIDE_HEAD;
+  r->cells[s->columns - 1].flags &= (uint8_t)~LP_CELL_WIDE_HEAD;
   r->view.wrapped = false;
   lstyle_release(s->styles, style); return ok;
 }
@@ -214,7 +253,10 @@ void lpage_clear_history(lpage_screen *s) {
   }
 }
 void lpage_wrap(lpage_screen *s, size_t y, bool wrapped) {
-  if (y < s->rows) { row *r = at(s, y); r->view.wrapped = wrapped; r->dirty = true; }
+  if (y < s->rows) {
+    row *r = at(s, y); r->view.wrapped = wrapped; r->dirty = true;
+    if (!wrapped) r->cells[s->columns - 1].flags &= (uint8_t)~LP_CELL_WIDE_HEAD;
+  }
 }
 bool lpage_dirty(const lpage_screen *s, size_t y) { return y < s->rows && (s->damage_all || at(s, y)->dirty); }
 void lpage_damage_all(lpage_screen *s) { s->damage_all = true; }
