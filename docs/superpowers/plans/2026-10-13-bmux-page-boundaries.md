@@ -36,7 +36,7 @@ Observed constraints:
 
 ## Implementation sequence
 
-1. Translate pinned SDK page-layout/capacity arithmetic into private C99:
+1. Translate pinned SDK page-layout/capacity arithmetic into private C:
    row/cell sizes, metadata set/map layouts, alignment, rounded allocation
    sizes and growth. Verify against independently captured SDK layout samples.
 2. Track logical SDK page ownership separately from native storage chunks.
@@ -79,3 +79,25 @@ Final full suite: 125/126 (77.36s), only the existing page-grouping mismatch.
 ASan/UBSan `page_layout`, four fixture guards, four benchmark identity guards,
 seven topology guards and six oracle guards pass. The unchanged resize
 fixture checks at 43 cases/203 snapshots; attribution is 44 modules/29 files.
+
+## Venus lookup primitive
+
+The user permits C11 or newer and identified `~/venus` as a source of useful
+C data structures. `src/lidmap.c/.h` now adapt Venus's u64→u32 Swiss table
+for page-local style/GP/link reference counters. It preserves SSE2, NEON and
+scalar probes, mirrored control groups and allocation-free tombstone cleanup.
+The release-only overfill hazard noted in Venus's DS map is addressed with
+explicit insertion refusal; existing-key updates still work at the limit.
+The project now requests C11 for aligned allocation and test timing.
+
+The primitive is compiled in the native library. Connecting it to page-local
+utilization and logical page ownership remains required. Import provenance
+and retained Apache attribution are in `THIRD_PARTY/venus-map.md`.
+
+Verification: C11 release build with warnings treated as errors, both product
+builds, native and scalar 20-second reference-model soaks, SIMD/scalar masks,
+allocation failures and allocation-free operation checks pass. Full suite
+127/128 (111.11s), only the existing resize page-grouping mismatch.
+ASan/UBSan 3/3 (41.07s): both soaks and `page_layout`. Compiled native source
+identity verifies 35 files/17 C11 compilation units. Page ownership integration
+remains the next step.
