@@ -28,7 +28,9 @@ static void equal_row(bterm *a, bterm *b, const lpage_row *ra, const lpage_row *
   CHECK(ra && rb && ra->columns == rb->columns && ra->wrapped == rb->wrapped);
   for (size_t x = 0; x < ra->columns; x++) {
     const lpage_cell *ca = &ra->cells[x], *cb = &rb->cells[x];
-    CHECK(ca->codepoint == cb->codepoint && ca->width == cb->width && ca->flags == cb->flags && ca->hyperlink == cb->hyperlink);
+    lgrapheme_value ga=lpage_grapheme(bterm_screen(a),ca),gb=lpage_grapheme(bterm_screen(b),cb);
+    CHECK(ga.length==gb.length && (!ga.length || !memcmp(ga.codepoints,gb.codepoints,ga.length*sizeof(uint32_t))));
+    CHECK(ca->width == cb->width && ca->flags == cb->flags && ca->hyperlink == cb->hyperlink);
     equal_style(bterm_style(a, ca->style), bterm_style(b, cb->style));
     const llink_value *la = bterm_link(a, ca->hyperlink), *lb = bterm_link(b, cb->hyperlink);
     CHECK((la != NULL) == (lb != NULL));

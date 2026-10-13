@@ -35,6 +35,7 @@ static void mode(bterm *t, unsigned p, bool private_mode, bool enabled) {
     case 1048: if (enabled) bt_save(t); else bt_restore(t); return;
     case 1004: bit = BT_FOCUS; break;
     case 2004: bit = BT_BRACKETED_PASTE; break;
+    case 2027: bit = BT_GRAPHEME; break;
     default: return;
   } else switch (p) {
     case 4: bit = BT_INSERT; break;
@@ -74,6 +75,10 @@ static void device_reply(bterm *t, const lvt_event *e, uint8_t prefix) {
   }
 }
 void bt_csi(bterm *t, const lvt_event *e) {
+  if (e->final=='p' && e->nintermediates==2 && e->intermediates[0]=='?'
+      && e->intermediates[1]=='$' && e->nparams==1 && !e->separators && e->params[0]==2027) {
+    bt_reply(t,t->modes & BT_GRAPHEME ? "\033[?2027;1$y" : "\033[?2027;2$y",11); return;
+  }
   uint8_t prefix = e->nintermediates == 1 ? e->intermediates[0] : 0;
   if (e->nintermediates > 1) return;
   if (e->final == 'u' && prefix) {
