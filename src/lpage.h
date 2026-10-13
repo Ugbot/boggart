@@ -29,7 +29,8 @@ typedef struct {
   bool saved_valid;
 } lpage_resize_options;
 typedef struct lpage_resize lpage_resize;
-/* Prepare retains candidate cell references without publishing geometry.
+/* Prepare retains copied cell references, or borrows unchanged-width rows,
+ * without publishing geometry or changing source ownership.
  * The source must not mutate before commit/abort. Both consume the candidate;
  * commit cannot allocate. Failure leaves the source and its refs unchanged. */
 lpage_resize *lpage_resize_prepare(lpage_screen *screen, lpage_resize_options options);

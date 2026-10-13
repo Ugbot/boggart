@@ -86,6 +86,23 @@ static lpage_screen *crop(const lpage_screen *s,size_t columns,size_t rows,
 fail:
   lp_geometry_destroy(dst); return NULL;
 }
+/* Whole unchanged-width requests can transfer rows. Never borrow from the
+ * intermediate geometries used by width reflow: they die before commit. */
+static lpage_screen *height(lpage_screen *s,size_t rows,pin pins[3],bool pull,size_t cursor_y) {
+  size_t old_rows=lpage_rows(s),end=total(s);
+  if (rows<old_rows) {
+    size_t remaining=old_rows-rows;
+    while (remaining && !row_text(s,source_row(s,end-1),lpage_columns(s))) {
+      if ((pins[0].valid && pins[0].y==end-1) || (pins[1].valid && pins[1].y==end-1)) break;
+      end--; remaining--;
+    }
+  }
+  size_t padding=rows>old_rows && (!pull || cursor_y<old_rows-1) ? rows-old_rows : 0;
+  if (end+padding<rows) padding=rows-end;
+  lpage_screen *dst=lp_geometry_height(s,rows,end,padding);
+  if (!dst) return NULL;
+  output out={dst,end+padding,0}; prune_pins(&out,pins); return dst;
+}
 static size_t wrapped_before(const lpage_screen *s,size_t cursor) {
   size_t top=lpage_history_count(s),wraps=0;
   if (cursor<top || cursor>=total(s)) return 0;
@@ -196,7 +213,8 @@ lpage_resize *lpage_resize_prepare(lpage_screen *s,lpage_resize_options opts) {
   size_t history=lpage_history_count(s);
   pin pins[3]={{opts.cursor.x,history+opts.cursor.y,true},{opts.saved.x,history+opts.saved.y,opts.saved_valid},{0,0,false}};
   lpage_screen *first=NULL;
-  if (opts.reflow && opts.columns!=lpage_columns(s)) {
+  if (opts.columns==lpage_columns(s)) r->geometry=height(s,opts.rows,pins,opts.pull_scrollback,opts.cursor.y);
+  else if (opts.reflow) {
     if (opts.columns<lpage_columns(s)) {
       first=crop(s,lpage_columns(s),opts.rows,pins,opts.pull_scrollback,opts.cursor.y);
       if (first) r->geometry=reflow(first,opts.columns,pins,opts.pull_scrollback,opts.cursor.y);

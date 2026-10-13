@@ -18,7 +18,7 @@ typedef struct {
   lpage_cell *cells;
   page *owner;
   unsigned slot;
-  bool dirty;
+  bool dirty, kept; /* kept is used only during allocation-free transfer */
 } row;
 struct page {
   page *next, *available;
@@ -36,6 +36,7 @@ struct lpage_screen {
   lstyle_pool *styles;
   llink_pool *links;
   lgrapheme_pool *graphemes;
+  lpage_screen *borrow_source; /* candidate owns only its separately listed pages */
 };
 static row *at(const lpage_screen *s, size_t y) { return s->visible[(s->head + y) % s->rows]; }
 static void set(lpage_screen *s, size_t y, row *r) { s->visible[(s->head + y) % s->rows] = r; }
@@ -43,6 +44,10 @@ void lpage_release_cell(lpage_screen *s, lpage_cell cell) {
   if (cell.style) lstyle_release(s->styles, cell.style);
   if (cell.hyperlink) llink_release(s->links, cell.hyperlink);
   if (cell.flags & LP_CELL_GRAPHEME) lgrapheme_release(s->graphemes, cell.codepoint);
+}
+static void blank_row(lpage_screen *s,row *r) {
+  for (size_t x=0;x<r->owner->columns;x++) r->cells[x]=(lpage_cell){0,0,0,1,0,0};
+  r->view.columns=s->columns; r->view.wrapped=false; r->dirty=true; r->kept=false;
 }
 static row *new_row_capacity(lpage_screen *s,size_t capacity) {
   page **available=&s->available;
@@ -68,9 +73,7 @@ static row *new_row_capacity(lpage_screen *s,size_t capacity) {
   p->free_bits = (uint16_t)(p->free_bits & ~(1u << slot));
   if (!p->free_bits) *available = p->available;
   row *r = &p->rows[slot];
-  for (size_t x = 0; x < p->columns; x++) r->cells[x] = (lpage_cell){0, 0, 0, 1, 0, 0};
-  r->view.columns=s->columns;
-  r->view.wrapped = false; r->dirty = true;
+  blank_row(s,r);
   return r;
 }
 static row *new_row(lpage_screen *s) { return new_row_capacity(s,0); }
@@ -134,6 +137,37 @@ bool lp_geometry_row(lpage_screen *s,size_t y,size_t capacity) {
 static row *absolute_row(const lpage_screen *s,size_t y) {
   return y<s->history_count ? s->history[(s->history_head+y)%s->history_capacity] : at(s,y-s->history_count);
 }
+static row *next_free_row(page **p,unsigned *slot) {
+  while (*p) {
+    while (*slot<PAGE_ROWS) {
+      unsigned index=(*slot)++;
+      if ((*p)->free_bits&(1u<<index)) return &(*p)->rows[index];
+    }
+    *p=(*p)->next; *slot=0;
+  }
+  return NULL;
+}
+lpage_screen *lp_geometry_height(lpage_screen *source,size_t rows,size_t end,size_t padding) {
+  if (end>source->history_count+source->rows || padding>SIZE_MAX-end || end+padding<rows) return NULL;
+  lpage_screen *s=lp_geometry_new(source,source->columns,rows); if (!s) return NULL;
+  s->borrow_source=source;
+  size_t count=end+padding,history=count-rows;
+  if (history>s->history_limit) history=s->history_limit;
+  s->history_count=s->history_capacity=history;
+  if (history && !(s->history=calloc(history,sizeof *s->history))) goto fail;
+  size_t start=count-rows-history;
+  page *unused=source->pages; unsigned slot=0;
+  for (size_t i=0;i<history+rows;i++) {
+    size_t index=start+i;
+    row *r=index<end ? absolute_row(source,index) : next_free_row(&unused,&slot);
+    if (!r) r=new_row(s);
+    if (!r) goto fail;
+    if (i<history) s->history[i]=r; else s->visible[i-history]=r;
+  }
+  return s;
+fail:
+  lp_geometry_destroy(s); return NULL;
+}
 size_t lp_row_capacity(const lpage_screen *s,size_t y) { return absolute_row(s,y)->owner->columns; }
 bool lp_row_page_has_head(const lpage_screen *s,size_t y) {
   const page *p=absolute_row(s,y)->owner;
@@ -143,7 +177,28 @@ bool lp_row_page_has_head(const lpage_screen *s,size_t y) {
 }
 void lp_geometry_destroy(lpage_screen *s) { if (s) { geometry_free(s); free(s); } }
 void lp_geometry_replace(lpage_screen *s,lpage_screen *geometry) {
-  geometry_free(s); *s=*geometry; free(geometry);
+  if (geometry->borrow_source==s) {
+    /* No source metadata changes until both screen plans have succeeded. */
+    page **tail=&geometry->pages;
+    while (*tail) tail=&(*tail)->next;
+    *tail=s->pages; geometry->page_count+=s->page_count;
+    for (size_t y=0;y<geometry->history_count;y++) geometry->history[y]->kept=true;
+    for (size_t y=0;y<geometry->rows;y++) at(geometry,y)->kept=true;
+    for (page *p=geometry->pages;p;p=p->next) for (unsigned slot=0;slot<PAGE_ROWS;slot++) {
+        row *r=&p->rows[slot];
+        if (r->kept) {
+          if (p->free_bits&(1u<<slot)) {
+            /* Reserved source slots own no holds, even if stale cell flags
+             * remain. Initialize only now, after preparation has succeeded. */
+            p->free_bits=(uint16_t)(p->free_bits&~(1u<<slot)); blank_row(geometry,r);
+          }
+          r->kept=false;
+        } else if (!(p->free_bits&(1u<<slot))) free_row(geometry,r);
+    }
+    lp_geometry_trim(geometry);
+    free(s->visible); free(s->history); geometry->borrow_source=NULL;
+  } else geometry_free(s);
+  *s=*geometry; free(geometry);
 }
 size_t lpage_columns(const lpage_screen *s) { return s->columns; }
 size_t lpage_rows(const lpage_screen *s) { return s->rows; }

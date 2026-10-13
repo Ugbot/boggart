@@ -1,8 +1,8 @@
 # Terminal resize and reference oracle
 
 The native `bterm_resize` and Lua `t:resize(columns, rows)` APIs now prepare
-and commit both screens transactionally. The current fixture has 39 cases /
-182 snapshots. A full comparison matches 181 snapshots; the wide-head
+and commit both screens transactionally. The current fixture has 43 cases /
+203 snapshots. A full comparison matches 202 snapshots; the wide-head
 page-grouping case fails. BMUX-20 acceptance remains open as described below.
 
 ## Reproduce the reference
@@ -43,7 +43,7 @@ resulting fixture diff with changes to the inputs, adapter, or upstream pin.
 
 ## Fixture contract
 
-`tools/ghostty/resize_cases.py` defines 39 cases and 182 snapshots in
+`tools/ghostty/resize_cases.py` defines 43 cases and 203 snapshots in
 `tests/fixtures/ghostty-resize.json`. Each case observes the initial state and
 every feed/resize operation. Grapheme mode 2027 is explicitly enabled before
 capture; the reference scrollback limit is 2,000 lines.
@@ -255,3 +255,39 @@ there is no measurement of transient peak allocation inside a transaction or
 1/10/100-pane application workloads. The optional benchmark uses the already
 verified SDK, stays outside default builds/CI, and introduces no Zig product
 dependency. The known wide-head page-grouping gate remains failed.
+
+
+## Height-only ownership transfer
+
+Whole unchanged-width requests now prepare new row pointer rings while borrowing
+retained source rows. Free source slots can supply blank padding, but their
+contents and free bits are untouched until commit. Only overflow padding owns
+new pages. Abort retires only candidate-owned storage. Commit transfers retained
+pages, initializes reserved slots, releases discarded live rows and retires
+empty pages without allocation. It never releases stale ownership flags from
+unused slots. Width-changing intermediate geometries keep independent copying.
+
+The [follow-up measurement](benchmarks/2026-10-13-height-transfer-resize.md)
+records a controlled native before/after median improvement of 145–176× for
+height-only changes with 256 plain lines, from 184–188 µs to 1.04–1.29 µs.
+A separate SDK comparison still has faster SDK height changes. The seven
+benchmark corpora retain matching rendered-state digests; no whole-app or
+transaction-peak memory advantage is claimed.
+
+Ownership/property tests, retained cell identity, unused-slot reuse and
+allocation-free commit checks pass. Fault injection covers 340 allocations in
+52 primary/alternate and cursor/capacity combinations, comparing complete
+private screen/page state and exact pool refs/values. Four new SDK vectors bring
+the complete comparison to 43 cases / 203 snapshots: 42 cases / 202 match.
+The existing page-grouping observation remains the only mismatch and still
+fails the registered `terminal_resize` gate. BMUX-20 remains open.
+
+
+Latest verification: both products build; strict C99 and attribution checks pass;
+CLI/Studio fingerprints match on all 33 fields. The full registered suite is
+124/125 (99.86 s), and ASan/UBSan focused checks are 23/24 (6.32 s). Both fail
+only the unchanged `cached_page_head_spill` observation in `terminal_resize`.
+After those runs, eight additional fault-injection combinations force padding
+past unused slots into separately owned pages; the expanded 52-case / 340-failure
+`resize_failure` test passes again in normal and sanitizer builds. Product code
+is unchanged between the broad runs and this final test expansion.

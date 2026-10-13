@@ -53,5 +53,9 @@ CASES = [
     case('clear_active_preserves_position', 6, 3, 'a\r\nb\r\nc\r\nd\r\ne'+ESC+'[2J'+ESC+'[H', (4, 4)),
     case('partial_utf8_across_resize', 6, 3, b'\xf0\x9f', (4, 3), b'\x91\xa9\xe2\x80\x8d\xf0\x9f\x92\xbb', (8, 2)),
     case('partial_csi_across_resize', 6, 3, ESC+'[38;2;', (4, 3), '1;2;3mX', (8, 2)),
+    case('height_owned_then_width', 6, 4, ('é日👩‍💻\r\n'*6), (6, 2), (6, 6), (4, 3), (6, 4)),
+    case('height_cached_capacity_then_grow', 6, 3, 'abcdefghij'+ESC+'[?7l', (4, 3), (4, 5), (6, 5)),
+    case('height_wide_saved_pending', 6, 4, 'abcde日'+ESC+'7'+ESC+'[H', (6, 1), (6, 5), ESC+'8Z'),
+    case('height_alternate_owned', 6, 4, 'primary'+ESC+'[?1049h'+'é日👩‍💻', (6, 2), (6, 5), ESC+'[?1049lZ'),
     case('same_size_is_noop', 6, 3, ESC+'[2;3rabc'+ESC+'[38;5;9m', (6, 3), '\r\nZ'),
 ]

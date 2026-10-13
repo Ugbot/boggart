@@ -248,3 +248,24 @@ requests, never unpublished intermediate geometries. Preserve all rollback,
 GC, snapshot and page-grouping gates. Criterion 1446 still fails on the existing
 cross-page wide-head case; neither this measurement nor the future speed change
 overrides that requirement.
+
+
+## Height-only performance checkpoint
+
+The ownership-transfer plan is implemented: source rows and unused slots are
+borrowed/reserved without mutation during preparation, and page ownership is
+transferred at commit without allocation. Retained rows keep their cell identity
+and pool holds. Abort frees only separately owned candidate storage. Whole
+unchanged-width requests alone select the fast path; width intermediates remain
+independent copies.
+
+Four new SDK vectors bring the fixture to 43 cases / 203 snapshots. Only the
+existing cross-page wide-head observation fails; all other 202 snapshots match.
+Nine thousand mixed resizes and lifecycle checks pass. Fault injection covers
+340 allocations in 52 cases, now including full private screen/raw page state.
+The controlled alternating native before/after comparison shows height-only
+medians improving from 184–188 µs to 1.04–1.29 µs (145–176×) for 256 plain lines.
+The separate current-native/SDK comparison retains all seven input corpora and
+matching digests, but the SDK remains faster for height changes. Raw reports
+and scope limits are in `docs/benchmarks/2026-10-13-height-transfer-resize.md`.
+Criterion 1446 remains failed on page-grouping semantics.
