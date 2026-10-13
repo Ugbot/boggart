@@ -157,7 +157,8 @@ match whole versus one-byte feeds and release styles on reset. The standalone
 suite is included in sanitizer builds.
 
 Native cells now preserve graphemes and width-two pairs using the generated
-Unicode 16.0.0 kernel; see [unicode.md](unicode.md). Mode 2027 defaults on and
+Unicode kernel; see [unicode.md](unicode.md). The printer now selects the pinned
+SDK profile, while string helpers retain Unicode 16.0.0. Mode 2027 defaults on and
 supports DECSET/DECRST and `CSI ? 2027 $ p` queries (1 = set, 2 = reset). RIS
 restores the default. Width effects can grow or shrink an existing cell. A wide
 glyph at the last column writes a spacer head before wrapping; a one-column

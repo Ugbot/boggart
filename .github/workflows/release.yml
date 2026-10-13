@@ -84,6 +84,8 @@ jobs:
         run: |
           python3 tools/genwidth.py --check
           python3 tests/genwidth_test.py
+          python3 tools/ghostty/unicode_fixture.py --check
+          python3 tests/ghostty_unicode_profile_test.py
 
       - name: Check Ghostty oracle fixtures (offline)
         run: python3 tests/ghostty_oracle_test.py

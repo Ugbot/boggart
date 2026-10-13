@@ -931,7 +931,7 @@ add_test(NAME unicode COMMAND unicode_test
 set(BMUX_TERMINAL_SOURCE_FILES src/lvt.c src/vt_table.h src/lstyle.c src/llink.c src/lpage.c src/lpage_resize.c src/lpage_layout.c src/lpage_layout.h src/lidmap.c src/lidmap.h
   src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c src/lterminal.c
   src/lvt.h src/lstyle.h src/llink.h src/lpage.h src/lpage_internal.h src/bosc.h src/bmouse.h src/bkey.h src/bpaste.h src/bterm.h src/bterm_internal.h
-  src/bunicode.c src/bunicode.h src/bunicode_data.h src/lgrapheme.c src/lgrapheme.h)
+  src/bunicode.c src/bunicode.h src/bunicode_data.h src/btunicode.c src/btunicode.h src/btunicode_data.h src/lgrapheme.c src/lgrapheme.h)
 set(_terminal_source_header "/* Generated build identity; do not edit. */\nstatic const struct { const char *path, *sha256; } terminal_source_files[] = {\n")
 foreach(_source IN LISTS BMUX_TERMINAL_SOURCE_FILES)
   file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${_source}" _sha)
@@ -944,7 +944,7 @@ target_include_directories(boggart PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 if(TARGET boggart-studio)
   target_include_directories(boggart-studio PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 endif()
-add_library(boggart_vt STATIC src/lvt.c src/lstyle.c src/llink.c src/lpage.c src/lpage_resize.c src/lpage_layout.c src/lidmap.c src/lgrapheme.c
+add_library(boggart_vt STATIC src/lvt.c src/lstyle.c src/llink.c src/lpage.c src/lpage_resize.c src/lpage_layout.c src/lidmap.c src/lgrapheme.c src/btunicode.c
   src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c)
 target_include_directories(boggart_vt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(boggart_vt PUBLIC boggart_unicode)

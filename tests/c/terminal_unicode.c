@@ -65,7 +65,8 @@ static void vectors(void) {
 static void fragmentation(void) {
   const char *stream="abcde❤️\r\n👩‍💻🇬🇧é각\r\n\033[38;2;1;2;3m⌚︎\033[0m"
     "\033]8;id=unicode;https://example.com\aक्क👍🏿\033]8;;\a\033[?1049h👨‍👩‍👧‍👦\033[?1049l"
-    "\033[H\033[2@日\033[2P\033[?2027l👩‍💻\033[?2027hé\xff\xe2";
+    "\033[H\033[2@日\033[2P\033[?2027l👩‍💻\033[?2027hé\xff\xe2"
+    "\r\n\u05c6\u0301\u05c8\u05c9Z\u0995\u1cf5\u0995";
   size_t length=strlen(stream); bterm *full=bterm_create(6,3,4,NULL,NULL);CHECK(full);feed(full,stream);CHECK(bterm_finish(full));
   for(size_t cut=0;cut<=length;cut++) {
     bterm *t=bterm_create(6,3,4,NULL,NULL);CHECK(t);

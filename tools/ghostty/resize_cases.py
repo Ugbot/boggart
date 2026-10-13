@@ -15,6 +15,9 @@ def case(name, columns, rows, *operations):
     return {'name': name, 'columns': columns, 'rows': rows, 'operations': ops}
 
 CASES = [
+    case('sdk_unicode18_combining', 6, 3, '\u05c6\u0301\u05c7\u0301\u05c8\u0301\u05c9\u0301Z', (4, 3), (8, 3)),
+    case('sdk_unicode18_combining_legacy', 6, 3, ESC+'[?2027l'+'\u05c6\u05c8\u05c9Z', (4, 3), (8, 3)),
+    case('sdk_unicode18_indic_linker', 6, 3, '\u0995\u1cf5\u0995\u0995\u1cf6\u0995', (4, 3), (8, 3)),
     case('wrapped_plain', 6, 3, 'abcdefghij', (4, 3), (9, 4), 'Z'),
     case('pending_wrap_shrink', 6, 3, 'abcdef', (4, 3), 'Z'),
     case('pending_wrap_grow', 6, 3, 'abcdef', (9, 3), 'Z'),
