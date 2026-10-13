@@ -21,6 +21,9 @@ page-local managed-capacity accounting remains required. The
 [managed-growth diagnostic](benchmarks/2026-10-13-sdk-page-growth.md) now captures
 24 growth decisions, including density projection and fragmentation, and
 verifies the C growth calculation. Its capture and validation tools are Lua.
+The [bitmap allocator checkpoint](benchmarks/2026-10-13-sdk-bitmap.md) verifies
+1,581 exact SDK allocation operations and 400,000 independent mixed operations,
+providing the fragmentation state needed by live page accounting.
 
 ## Reproduce the reference
 
