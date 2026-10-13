@@ -225,8 +225,9 @@ capacity, allocated-byte accounting, blank regrowth, ownership, and 9,000 mixed
 resizes. Fault injection now covers **108 allocation failures in 12 cases**,
 including primary/alternate growth back to a previously cropped capacity.
 
-Page-grouping parity and resize latency/memory measurements remain acceptance
-work. No renderer, PTY integration, or overall cmux parity is claimed.
+Page-grouping parity remains acceptance work. Controlled C-API latency and
+backend-scoped memory have now been measured as described below. No renderer,
+PTY integration, or overall cmux parity is claimed.
 
 Latest cached-capacity verification: the full registered suite is **124/125
 (125.82 s)** and the focused ASan/UBSan suite is **23/24 (12.29 s)**. Both fail
@@ -234,3 +235,23 @@ only `terminal_resize` at the documented page-grouping observation. The
 independent cached-width, API/lifecycle, page ownership and 108-allocation
 rollback tests pass in both builds. The suite is intentionally reported as
 failing; this checkpoint does not satisfy BMUX-20 acceptance.
+
+
+## Paired C-API performance baseline
+
+The [resize measurement](benchmarks/2026-10-13-native-sdk-resize.md) records
+seven controlled corpora, four rounds and 124 samples per step. Both backends
+produce matching rendered-value digests at all 29 states in every round, with
+seven compiled harness tests validating full fixture fingerprints and rejected
+inputs. Native height-only resize takes about 267–272 µs with 256 plain lines;
+the SDK takes 0.17–0.29 µs. The native path currently copies retained cells even
+when only row count changes. This is the next ownership/performance target.
+Styled linked Unicode is faster in the native corpus; plain reflow and cached
+nowrap changes are slower. No uniform speed advantage is established.
+
+Raw samples, compiler/source/library hashes, full input bytes, backend-specific
+memory figures, and uniform peak process RSS are retained. Memory scopes differ;
+there is no measurement of transient peak allocation inside a transaction or
+1/10/100-pane application workloads. The optional benchmark uses the already
+verified SDK, stays outside default builds/CI, and introduces no Zig product
+dependency. The known wide-head page-grouping gate remains failed.

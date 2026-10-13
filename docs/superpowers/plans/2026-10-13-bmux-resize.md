@@ -139,10 +139,11 @@ reported and fixed rather than masked in the comparison.
 - [x] Add native bounded-eviction tests separate from the fixture: clusters/styles/links survive while retained and release when evicted; repeated resize/reset/destroy leaves no leaked IDs or dangling tails.
 - [x] Run focused native/Lua tests and the same set under ASan/UBSan, then the full serial CTest suite. Run CLI/Studio native fingerprints to verify the same API, ownership, and snapshots in both binaries.
 - [x] Run strict C99 warning checks and attribution verification; document the actual public contract, ownership and failure-policy adaptations, and verification evidence.
-- [ ] Measure native resize latency and memory under the same screen/history and feed corpora.
+- [x] Measure paired native/SDK C-API resize latency and backend-scoped memory on identical geometry/history/feed corpora: seven cases, four rounds, 124 samples per step. See `docs/benchmarks/2026-10-13-native-sdk-resize.md`. Whole-app/transaction-peak memory remains separate work.
 - [x] Fix the original cached-width nowrap regrow mismatch, register the standalone regression, and recapture cached cycles, alternate screens, owned history, and reflow transitions through the verified SDK.
 - [ ] Match SDK page-wide wide-head slow-path metadata across native page boundaries. `cached_page_head_spill` remains in the 39-case / 182-snapshot fixture and fails the registered `terminal_resize` gate; do not mark criterion 1446 passed.
-- [ ] Commit and link evidence to BMUX-20; record criterion 1446 only after all curated native comparisons and lifecycle checks pass. Keep broader renderer, PTY, differential fuzzing, and application gates in their existing tickets.
+- [x] Commit and link native/oracle checkpoint evidence to BMUX-20.
+- [ ] Record criterion 1446 only after all curated native comparisons and lifecycle checks pass. Keep broader renderer, PTY, differential fuzzing, and application gates in their existing tickets.
 
 ```sh
 python3 tools/check_ghostty_port.py --upstream /path/to/pinned/source
@@ -208,8 +209,9 @@ assert physical capacity, allocation-byte reporting, cleared clipped text and
 wrap flags. Fault injection covers 108 allocations across 12 combinations,
 including cached regrowth; all rollback checks pass. Both products build,
 strict C99 and the six offline oracle guards pass, and CLI/Studio fingerprints
-agree on 33 fields. Criterion 1446 remains failed pending page-grouping parity
-and the planned latency/memory measurement.
+agree on 33 fields. At that cached-capacity checkpoint, criterion 1446
+remained failed and latency/memory measurement was still planned. The baseline
+below completes measurement; page-grouping parity remains unresolved.
 
 Latest cached-capacity verification: the full registered suite is **124/125
 (125.82 s)** and the focused ASan/UBSan suite is **23/24 (12.29 s)**. Both fail
@@ -217,3 +219,32 @@ only `terminal_resize` at the documented page-grouping observation. The
 independent cached-width, API/lifecycle, page ownership and 108-allocation
 rollback tests pass in both builds. The suite is intentionally reported as
 failing; this checkpoint does not satisfy BMUX-20 acceptance.
+
+
+## Controlled latency/memory baseline
+
+The optional dual C-API harness and driver produce a source-identified paired
+baseline with seven corpora, four rounds, 31 samples and three warmups per
+round. All 29 rendered-state digests match in every round; seven compiled CLI
+tests check both harnesses against full pinned fixtures and invalid inputs.
+Native height-only changes take median 267–272 µs versus 0.17–0.29 µs in the
+SDK for 256 plain lines. The current native path clones cells and retains pool
+holds even when width is unchanged. Styled linked Unicode is faster in the
+native case; plain reflow and cached nowrap growth are slower. This is not a
+uniform native speed advantage.
+
+The raw report retains every timing, feed byte, memory query, peak process RSS,
+compiled command and source/library identity. Native allocated-screen bytes and
+SDK page resident/virtual bytes have different scopes; no transaction-peak or
+1/10/100-pane application memory claim is made. Timer-resolution-limited same
+size calls are excluded from ratios. See
+`docs/benchmarks/2026-10-13-native-sdk-resize.md` for reproduction and controls.
+
+The next performance change is detailed in
+`docs/superpowers/plans/2026-10-13-bmux-height-resize.md`: prepare new row rings,
+borrow retained source rows without mutation, and transfer/release page ownership
+only at allocation-free commit. Apply it only to complete unchanged-width
+requests, never unpublished intermediate geometries. Preserve all rollback,
+GC, snapshot and page-grouping gates. Criterion 1446 still fails on the existing
+cross-page wide-head case; neither this measurement nor the future speed change
+overrides that requirement.
