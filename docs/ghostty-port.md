@@ -26,7 +26,9 @@ the port boundary; it is not a correctness or completeness claim.
 | `src/terminal/osc.zig` and eight `osc/parsers/*.zig` modules in the manifest | ported | `src/bosc.c/h`, `src/bterm_osc.c`; bounded typed payloads, host events and notification chunks; screen-owned link references and copied URI snapshots complete BMUX-17 |
 | `src/terminal/stream.zig`, `sgr.zig` | ported | BMUX-16; `src/bterm.c`, `src/bterm_dispatch.c`, `src/bterm_sgr.c`; selected CSI/ESC commands and SGR adapted to C grid operations/reply sink. OSC, key/mouse extensions and application parity remain separate gates |
 | `src/terminal/PageList.zig`, `page.zig`, `Screen.zig`, `style.zig` | ported | BMUX-15; `src/lpage.c/h`, `src/lstyle.c/h`, `src/bterm.c`, `src/bterm_internal.h`; portable 16-row pages, visible/history rings, style IDs/refcounts and damage. Reflow and tracked positions remain BMUX-20 |
-| `src/input/key_encode.zig`, `kitty.zig` | studied | BMUX-18 keyboard increment; review nested table notices before copying |
+| `src/input/key_encode.zig`, `function_keys.zig`, `key.zig`, `key_mods.zig` | ported (selected interfaces/encoding) | `src/bkey.c/h`, `src/bterm.c`; normalized events, held/consumed/side modifiers, portable host policy, legacy and Kitty encoding. Foot legacy mapping notice retained separately |
+| `src/input/kitty.zig` | studied | Its Foot-derived raw table is not copied; numeric functional ranges derive from the primary Kitty protocol |
+| `src/terminal/kitty/key.zig`, `modes.zig` | ported (selected cases) | Fixed per-screen eight-entry flag rings, bounded negotiation/query and keyboard DEC mode defaults |
 | `src/input/mouse_encode.zig` | ported | `src/bmouse.c/h`; normalized events/options, five formats and atomic writes; no renderer types |
 | `src/termio/stream_handler.zig` | ported (selected cases) | Mouse-mode negotiation in `src/bterm_dispatch.c`; no message/PTY/app glue |
 | `src/terminal/Terminal.zig` | studied | Pinned input-state interface and last-set mouse semantics |
@@ -114,5 +116,10 @@ mouse-mode/format negotiation in `bterm_dispatch.c`; its application message and
 PTY glue are excluded. `src/terminal/Terminal.zig` is studied for the input-state
 contract, with its pinned hash recorded; no terminal application glue is copied.
 See [terminal-core.md](terminal-core.md) for bounds and deliberate adaptations.
-Keyboard sources remain studied until their implementation and nested notices
-are handled.
+Keyboard encoding now ports selected interfaces from `key.zig`/`key_mods.zig`
+and the behavior in `key_encode.zig`/`function_keys.zig`. The latter cites Foot;
+`THIRD_PARTY/foot-LICENSE` preserves its MIT notice, with hashes/derivative headers
+verified by the ledger checker. Kitty functional numbers come from the primary
+protocol and the raw `kitty.zig` table remains studied. `kitty/key.zig` supplies
+bounded per-screen stack behavior; `modes.zig` supplies selected DEC options and
+defaults. No platform app, key binding, configuration or IME glue is copied.

@@ -18,6 +18,15 @@ def check(upstream=None):
     notice = license_path.read_bytes()
     assert hashlib.sha256(notice).hexdigest() == manifest["license_sha256"], "licence notice changed"
     assert b"MIT License" in notice and b"Ghostty contributors" in notice, "missing attribution"
+    for nested in manifest.get("nested_licenses", []):
+        notice_path = (ROOT / nested["license_file"]).resolve()
+        assert notice_path.is_relative_to(ROOT), "nested notice escapes repository"
+        data = notice_path.read_bytes()
+        assert hashlib.sha256(data).hexdigest() == nested["sha256"], "nested licence changed"
+        assert nested["copyright"].encode() in data, "missing nested attribution"
+        for filename in nested["ported_files"]:
+            header = (ROOT / filename).read_text()[:4096]
+            assert nested["copyright"] in header and notice_path.name in header, "missing nested notice: " + filename
     sources, ports = set(), {}
     for module in manifest["modules"]:
         source = module["upstream_path"]

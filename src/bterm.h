@@ -5,6 +5,7 @@
 #include "lvt.h"
 #include "bosc.h"
 #include "bmouse.h"
+#include "bkey.h"
 typedef struct bterm bterm;
 enum {
   BT_AUTOWRAP = 1u << 0, BT_ORIGIN = 1u << 1, BT_CURSOR_VISIBLE = 1u << 2,
@@ -19,8 +20,15 @@ typedef struct {
   bool alternate, pending_wrap;
   lpage_style pen;
 } bterm_status;
-typedef struct { bmouse_mode mouse_mode; bmouse_format mouse_format; } bterm_input_status;
+typedef struct {
+  bmouse_mode mouse_mode; bmouse_format mouse_format;
+  unsigned kitty_flags;
+  bool backarrow, ignore_keypad_numlock, alt_prefix, modify_other_keys_2;
+} bterm_input_status;
 bterm_input_status bterm_input_state(const bterm *terminal);
+bkey_options bterm_key_options(const bterm *terminal, bool macos, bkey_option option_as_alt);
+bool bterm_key(const bterm *terminal, const bkey_event *event, bool macos, bkey_option option_as_alt,
+                uint8_t *output, size_t capacity, size_t *length);
 /* Uses current negotiated mouse modes and terminal geometry. Output is input
  * for the child PTY, distinct from the reply sink. Failure does not fail feed. */
 bool bterm_mouse(bterm *terminal, const bmouse_event *event, uint32_t cell_width, uint32_t cell_height,

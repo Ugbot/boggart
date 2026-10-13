@@ -25,7 +25,7 @@ remain separate so composed text cannot be sent twice.
    keys, all keys, associated text). Define unshifted/base-layout codepoints,
    modifier sides and consumed modifiers, composing/IME text and release/repeat
    actions explicitly. Read all nested key tables and notices before copying;
-   generate Kitty functional definitions from the primary protocol to avoid
+   derive compact Kitty functional definitions from the primary protocol to avoid
    importing Foot's table without its required notice. Record every translated
    source and source-derived file in the pinned ledger.
 4. Implement bounded per-screen Kitty push/pop/set/query state and modifyOtherKeys
@@ -55,7 +55,8 @@ press/release events with no button; motion may carry no button.
 
 Progress:
 - [x] Mouse encoding and native negotiated state + Lua API.
-- [ ] Keyboard encoding, notices, flags and native protocol negotiation.
+- [x] Keyboard encoding, notices, flags and native protocol negotiation.
+- [ ] Paste/focus helpers and host input integration.
 - [ ] Studio key/mouse routing and removal of the fixed table.
 - [ ] Story acceptance evidence and completion.
 
@@ -67,3 +68,13 @@ an existing mining settlement test's fixed 100 ms worker wait; a separate test
 fix polls for the actual locked settlement and asserts the database error before
 checking recovery. The foreground latency bound remains unchanged. No live
 studio mouse/keyboard integration or whole-story completion is claimed.
+
+Keyboard increment evidence (2026-10-13): both builds pass; focused terminal
+tests pass 12/12 (4.89 seconds), terminal ASan/UBSan checks pass 12/12 (5.85
+seconds), full serial CTest passes 113/113 (83.44 seconds), and CLI/studio core
+parity matches 28 fields. Attribution validates 36 pinned modules and 20 ported
+files, with the Foot notice hash and derivative header included. The compiled
+backend identity now includes 22 source/header files. Strict invalid UTF-8 and
+C1 associated-text filtering are documented adaptations. Kitty functional
+numbers derive from the primary protocol; `kitty.zig` stays studied. Studio
+still uses its old input/output path; paste/focus helpers and routing are pending.

@@ -91,8 +91,11 @@
     {
       "upstream_path": "src/input/key_encode.zig",
       "sha256": "b628b7d2877b1fac2ae789f394990ef934c3fbc5a0a0998ead28de34a0a76e66",
-      "status": "studied",
-      "ported_files": []
+      "status": "ported",
+      "ported_files": [
+        "src/bkey.c",
+        "src/bterm.c"
+      ]
     },
     {
       "upstream_path": "src/input/kitty.zig",
@@ -235,6 +238,62 @@
       "status": "ported",
       "ported_files": [
         "src/bterm_dispatch.c"
+      ]
+    },
+    {
+      "upstream_path": "src/input/function_keys.zig",
+      "sha256": "44867663fd3c67a470cd0315b5643e5353a309de6e816a210eccaca20a33de82",
+      "status": "ported",
+      "ported_files": [
+        "src/bkey.c"
+      ]
+    },
+    {
+      "upstream_path": "src/input/key.zig",
+      "sha256": "90278d384e354432b7977cc6d630235f7691ab40bd0ffc16e3db34171f033658",
+      "status": "ported",
+      "ported_files": [
+        "src/bkey.c",
+        "src/bkey.h"
+      ]
+    },
+    {
+      "upstream_path": "src/input/key_mods.zig",
+      "sha256": "3d4d36600b064c9ada53719b10a2b3a49d893d5c2532cfe2ba94ddbf96efb0de",
+      "status": "ported",
+      "ported_files": [
+        "src/bkey.c",
+        "src/bkey.h"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/kitty/key.zig",
+      "sha256": "c8a5697bb53acea9429aad6dd6ebeeef6e1e4d26665aada0184db88160d5a6f7",
+      "status": "ported",
+      "ported_files": [
+        "src/bterm_internal.h",
+        "src/bterm_dispatch.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/modes.zig",
+      "sha256": "304bc9130bb5b47b8ddc555536792b33438f2f9092c436318051050055f7ea60",
+      "status": "ported",
+      "ported_files": [
+        "src/bterm.c",
+        "src/bterm_dispatch.c"
+      ]
+    }
+  ],
+  "nested_licenses": [
+    {
+      "component": "Foot function-key mappings via Ghostty src/input/function_keys.zig",
+      "copyright": "Copyright (c) 2019 Daniel Eklöf",
+      "source": "https://codeberg.org/dnkl/foot/raw/branch/master/LICENSE",
+      "license_file": "THIRD_PARTY/foot-LICENSE",
+      "sha256": "d534a23a31500a0ac958d9634b84f532bd73ff1aca1bb8f7debbcbebc16ff39a",
+      "ported_files": [
+        "src/bkey.c"
       ]
     }
   ]
