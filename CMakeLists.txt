@@ -522,6 +522,7 @@ add_executable(boggart
   src/ljson.c
   src/lhash.c
   src/lview.c
+  src/lterminal.c
   src/lhttp.c
   src/lsys.c
   src/ldb.c
@@ -748,6 +749,7 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
     src/ljson.c
     src/lhash.c
     src/lview.c
+    src/lterminal.c
     ${STUDIO_ASSETS_C}
     src/lhttp.c
     src/lsys.c
@@ -918,6 +920,23 @@ endif()
 # rule itself under test -- it still resolves %LOCALAPPDATA%, that just now
 # points somewhere disposable.
 enable_testing()
+# Embed the sources actually compiled into this terminal backend. Benchmarks
+# reject a stale executable instead of attributing it to current disk contents.
+set(BMUX_TERMINAL_SOURCE_FILES src/lvt.c src/vt_table.h src/lstyle.c src/lpage.c
+  src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/lterminal.c
+  src/lvt.h src/lstyle.h src/lpage.h src/bterm.h src/bterm_internal.h)
+set(_terminal_source_header "/* Generated build identity; do not edit. */\nstatic const struct { const char *path, *sha256; } terminal_source_files[] = {\n")
+foreach(_source IN LISTS BMUX_TERMINAL_SOURCE_FILES)
+  file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${_source}" _sha)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${_source}")
+  string(APPEND _terminal_source_header "  {\"${_source}\", \"${_sha}\"},\n")
+endforeach()
+string(APPEND _terminal_source_header "};\n")
+file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/terminal-source.h" CONTENT "${_terminal_source_header}" @ONLY)
+target_include_directories(boggart PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+if(TARGET boggart-studio)
+  target_include_directories(boggart-studio PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+endif()
 add_library(boggart_vt STATIC src/lvt.c src/lstyle.c src/lpage.c
   src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c)
 target_include_directories(boggart_vt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -946,7 +965,7 @@ add_custom_target(termbench
   COMMENT "Measuring terminal parse throughput and stream fragmentation"
   USES_TERMINAL)
 
-foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable typesafe judge ladder toolroute ladder_sites harden policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast mining_recognition mining_compile mining_jobs learning_evaluate learning_promote learning_route learning_monitor workflow_slack workflow_novel workflow_triggers searchroute tracker story story_model story_geo story_geosql story_style auth_file looplag http_body json_c store_save hash_c fileview termbench)
+foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable typesafe judge ladder toolroute ladder_sites harden policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast mining_recognition mining_compile mining_jobs learning_evaluate learning_promote learning_route learning_monitor workflow_slack workflow_novel workflow_triggers searchroute tracker story story_model story_geo story_geosql story_style auth_file looplag http_body json_c store_save hash_c fileview termbench terminal)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home}

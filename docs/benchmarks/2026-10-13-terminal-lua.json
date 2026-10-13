@@ -1,0 +1,112 @@
+{
+  "backend": "studio-lua",
+  "backend_source": {
+    "path": "studio/data/core/terminalview.lua",
+    "sha256": "74b819186f68abd48ee7db85fbe12ef50cd9fcc148d11b022f35a020880a38b7"
+  },
+  "chunk_bytes": 4096,
+  "cols": 80,
+  "environment": {
+    "boggart": "0.2.0",
+    "libuv": "1.52.1",
+    "lua": "Lua 5.5",
+    "measured_at_utc": "2026-10-13T14:06:31Z",
+    "uname": {
+      "machine": "arm64",
+      "release": "25.6.0",
+      "sysname": "Darwin",
+      "version": "Darwin Kernel Version 25.6.0: Fri Jul 31 19:19:08 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6050"
+    }
+  },
+  "gc": "enabled",
+  "results": [
+    {
+      "bytes": 1048629,
+      "corpus_sha256": "993897b513a919d375b170578eafb6b46858c7974afd33271242caf80d7761d3",
+      "mbps": 2.1499586859938,
+      "median_ns": 487743791,
+      "missing_features": [],
+      "samples_ns": [
+        487743791,
+        475496750,
+        556402333
+      ],
+      "scenario": "plain",
+      "stream_equivalent": true,
+      "supported": true
+    },
+    {
+      "bytes": 1048608,
+      "corpus_sha256": "f7a28eacc70afedac1e76c7ccecfa76efdac636a1b834dd06ea17f228cd4304e",
+      "mbps": 2.5885837725538,
+      "median_ns": 405089459,
+      "missing_features": [
+        "truecolor",
+        "color256"
+      ],
+      "samples_ns": [
+        409543833,
+        404787833,
+        405089459
+      ],
+      "scenario": "dense-sgr",
+      "stream_equivalent": true,
+      "supported": false
+    },
+    {
+      "bytes": 1048600,
+      "corpus_sha256": "336898f9ba82dd94ac123fb1f6fb116d92d3232773599bf4a36bba65ed5e2609",
+      "mbps": 2.5050648488569,
+      "median_ns": 418591958,
+      "missing_features": [
+        "wide",
+        "graphemes"
+      ],
+      "samples_ns": [
+        418591958,
+        418689125,
+        403671708
+      ],
+      "scenario": "unicode",
+      "stream_equivalent": true,
+      "supported": false
+    },
+    {
+      "bytes": 1049152,
+      "corpus_sha256": "e2ca8e3a457316f269ec8a96a2c58fe4a877780f6d57a9ef4cf3fcc8b92f9b64",
+      "mbps": 1.533250474199,
+      "median_ns": 684266542,
+      "missing_features": [],
+      "samples_ns": [
+        635799375,
+        704644084,
+        684266542
+      ],
+      "scenario": "scroll",
+      "stream_equivalent": true,
+      "supported": true
+    },
+    {
+      "bytes": 1048750,
+      "corpus_sha256": "02913183f6243916ecc7f4d02bb7d6b7876a8f9c64ebe449b23e9319471d25d7",
+      "mbps": 1.0630386123965,
+      "median_ns": 986558708,
+      "missing_features": [
+        "alt_screen",
+        "scroll_regions"
+      ],
+      "samples_ns": [
+        986558708,
+        953695875,
+        1031182958
+      ],
+      "scenario": "alt-screen",
+      "stream_equivalent": true,
+      "supported": false
+    }
+  ],
+  "rows": 24,
+  "samples": 3,
+  "schema": 1,
+  "target_bytes": 1048576
+}

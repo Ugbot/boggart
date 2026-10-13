@@ -210,3 +210,4 @@ bterm_status bterm_state(const bterm *t) {
 const lpage_screen *bterm_screen(const bterm *t) { return t->buffers[t->active].screen; }
 const lpage_style *bterm_style(const bterm *t, uint32_t id) { return lstyle_get(lpage_styles(t->buffers[t->active].screen), id); }
 void bterm_ack_damage(bterm *t) { lpage_ack_damage(bt_active(t)->screen); }
+const lvt_parser *bterm_parser(const bterm *t) { return &t->parser; }

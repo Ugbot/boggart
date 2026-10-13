@@ -4,8 +4,8 @@
 `lvt_parser` contains all mutable storage for one stream; the transition table
 is immutable. The module requires C99, calls no allocator and has no global
 mutable state. `boggart_vt` is compiled with both front ends; its `bterm`
-consumer connects parser events directly to C grid dispatch. Lua and PTY
-integration are pending. The studio still
+consumer connects parser events directly to C grid dispatch. Both front ends
+expose it through `require("terminal")`; live PTY integration is pending. The studio still
 uses its Lua parser until that integration is verified.
 
 ```c
@@ -140,7 +140,59 @@ suite is included in sanitizer builds.
 
 Cells currently hold one scalar with width 1: grapheme/wide-cell behaviour is
 BMUX-19, and geometry/reflow is BMUX-20. Character-set designation, soft reset,
-selective erasure, mouse modes, typed OSC/DCS/APC extensions and live Lua/PTY
+selective erasure, mouse modes, typed OSC/DCS/APC extensions and live PTY
 consumers are not yet implemented. The pinned Ghostty differential suite is
 BMUX-23. Keep BMUX-16 open until vim, htop, less and tmux rendering is verified
 through the integrated terminal; these C tests do not satisfy that app gate.
+
+## Lua terminal object
+
+`src/lterminal.c` is registered as `terminal` in both front ends and worker
+states. It owns the C terminal through userdata; `close`, `__gc` and Lua's
+to-be-closed scope cleanup release it. All operations on a closed object fail
+except repeated close. The CLI's existing `term` completion API remains separate.
+
+```lua
+local terminal = require "terminal"
+local t <close> = terminal.new(80, 24, 2000) -- columns, rows, history limit
+t:feed(bytes)                              -- entire read goes straight to C
+for _, y in ipairs(t:damage()) do
+  local row = t:row(y)                      -- copy only the rows needed
+  -- render row.cells and row.wrapped
+end
+t:ack_damage()                             -- after consuming the rows
+local reply_bytes = t:replies()             -- consume queued DA/DSR replies
+```
+
+Rows and cursor/margin coordinates are one-based in Lua. Each copied cell has
+`codepoint`, `width`, `flags`, `hyperlink` and a copied `style` with tagged
+`fg`, `bg`, `underline` colours and `attrs`. Blank codepoint is zero. The module
+exports colour tags and commonly consumed mode bits. `state()` copies cursor,
+margins, modes, alternate/pending-wrap state, cursor style and pen.
+
+`snapshot()` copies the active screen, state and diagnostic parser fields;
+`snapshot(true)` includes active scrollback. `row(index, true)` copies history
+oldest first. Snapshots/rows stay independent after later feeds. Raw pending
+intermediate/OSC bytes use numeric arrays so snapshots remain JSON-compatible
+even during invalid UTF-8 or NUL-containing strings. Snapshot and damage queries
+do not acknowledge damage or drain replies. Full persisted session/attach state
+is subsequent server work.
+
+`replies()` returns and drains the bounded 64 KiB reply queue. Overflow raises
+a Lua error and leaves the core failed; `reset()` clears queued replies and
+recovers it. Feed/finish/reset throw on failure, and successful mutation calls
+return no values. `finish()` belongs at EOF, never at a read boundary.
+
+`usage()` reports active screen capacity bytes, pages, row capacity, history
+rows, live styles and queued reply bytes/capacity. Its screen byte count is not
+whole-terminal RSS or Lua allocation accounting. C grid allocations belong to
+the native core; snapshots and the userdata belong to Lua. `source()` returns
+the 13 source/header hashes embedded during CMake configuration. Changes to
+those files trigger regeneration; the native benchmark compares them with the
+checkout and rejects a stale executable.
+
+`tests/terminal.lua` covers copies, coordinates, colour tags, pending UTF-8/OSC,
+damage, alt-screen isolation, reply draining/overflow/reset, invalid inputs,
+explicit/scope close and garbage collection. `tools/fingerprint.lua` verifies
+the same API, grid snapshot and reply bytes in CLI and studio. Live shells and
+removing the Lua parser from studio's data path remain BMUX-21.
