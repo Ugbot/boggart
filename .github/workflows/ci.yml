@@ -66,6 +66,9 @@ jobs:
 
       - uses: actions/checkout@v5
 
+      - name: Check terminal port attribution
+        run: python3 tools/check_ghostty_port.py
+
       # ---- toolchain -------------------------------------------------------
       # The newest released CMake and Ninja, rather than whatever each runner
       # image ships. The images drift apart by years, and CI that builds with
