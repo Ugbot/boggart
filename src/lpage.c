@@ -22,6 +22,7 @@ typedef struct {
 } row;
 struct page {
   page *next, *available;
+  size_t columns; /* allocated width; a crop may expose fewer columns */
   uint16_t free_bits;
   row rows[PAGE_ROWS];
   lpage_cell cells[];
@@ -43,30 +44,36 @@ void lpage_release_cell(lpage_screen *s, lpage_cell cell) {
   if (cell.hyperlink) llink_release(s->links, cell.hyperlink);
   if (cell.flags & LP_CELL_GRAPHEME) lgrapheme_release(s->graphemes, cell.codepoint);
 }
-static row *new_row(lpage_screen *s) {
-  page *p = s->available;
+static row *new_row_capacity(lpage_screen *s,size_t capacity) {
+  page **available=&s->available;
+  if (capacity) while (*available && (*available)->columns!=capacity) available=&(*available)->available;
+  page *p = *available;
   if (!p) {
-    size_t bytes = sizeof *p + PAGE_ROWS * s->columns * sizeof(lpage_cell);
+    size_t columns=capacity ? capacity : s->columns;
+    size_t bytes = sizeof *p + PAGE_ROWS * columns * sizeof(lpage_cell);
     p = calloc(1, bytes);
     if (!p) return NULL;
+    p->columns=columns;
     p->free_bits = UINT16_MAX;
     for (unsigned slot = 0; slot < PAGE_ROWS; slot++) {
       row *r = &p->rows[slot];
-      r->cells = &p->cells[slot * s->columns];
+      r->cells = &p->cells[slot * columns];
       r->view.cells = r->cells; r->view.columns = s->columns;
       r->owner = p; r->slot = slot;
     }
-    p->next = s->pages; s->pages = p; s->available = p; s->page_count++;
+    p->next = s->pages; s->pages = p; *available = p; s->page_count++;
   }
   unsigned slot = 0;
   while (!(p->free_bits & (1u << slot))) slot++;
   p->free_bits = (uint16_t)(p->free_bits & ~(1u << slot));
-  if (!p->free_bits) s->available = p->available;
+  if (!p->free_bits) *available = p->available;
   row *r = &p->rows[slot];
-  for (size_t x = 0; x < s->columns; x++) r->cells[x] = (lpage_cell){0, 0, 0, 1, 0, 0};
+  for (size_t x = 0; x < p->columns; x++) r->cells[x] = (lpage_cell){0, 0, 0, 1, 0, 0};
+  r->view.columns=s->columns;
   r->view.wrapped = false; r->dirty = true;
   return r;
 }
+static row *new_row(lpage_screen *s) { return new_row_capacity(s,0); }
 static void free_row(lpage_screen *s, row *r) {
   for (size_t x = 0; x < s->columns; x++) {
     lpage_release_cell(s, r->cells[x]); r->cells[x].style = r->cells[x].hyperlink = 0;
@@ -114,10 +121,25 @@ lpage_screen *lp_geometry_new(const lpage_screen *source,size_t columns,size_t r
   s->styles=source->styles; s->links=source->links; s->graphemes=source->graphemes;
   s->visible=calloc(rows,sizeof *s->visible);
   if (!s->visible) { free(s); return NULL; }
-  for (size_t y=0;y<rows;y++) if (!(s->visible[y]=new_row(s))) {
-    geometry_free(s); free(s); return NULL;
-  }
   s->damage_all=true; return s;
+}
+bool lp_geometry_row(lpage_screen *s,size_t y,size_t capacity) {
+  if (y>=s->rows || (capacity && (capacity<s->columns || capacity>4096))) return false;
+  row *old=at(s,y);
+  if (old && (!capacity || old->owner->columns==capacity)) return true;
+  row *r=new_row_capacity(s,capacity); if (!r) return false;
+  if (old) free_row(s,old);
+  set(s,y,r); return true;
+}
+static row *absolute_row(const lpage_screen *s,size_t y) {
+  return y<s->history_count ? s->history[(s->history_head+y)%s->history_capacity] : at(s,y-s->history_count);
+}
+size_t lp_row_capacity(const lpage_screen *s,size_t y) { return absolute_row(s,y)->owner->columns; }
+bool lp_row_page_has_head(const lpage_screen *s,size_t y) {
+  const page *p=absolute_row(s,y)->owner;
+  for (unsigned slot=0;slot<PAGE_ROWS;slot++)
+    if (!(p->free_bits&(1u<<slot)) && (p->rows[slot].cells[s->columns-1].flags&LP_CELL_WIDE_HEAD)) return true;
+  return false;
 }
 void lp_geometry_destroy(lpage_screen *s) { if (s) { geometry_free(s); free(s); } }
 void lp_geometry_replace(lpage_screen *s,lpage_screen *geometry) {
@@ -312,11 +334,8 @@ size_t lpage_history_count(const lpage_screen *s) { return s->history_count; }
 const lpage_row *lpage_history(const lpage_screen *s, size_t i) {
   return i < s->history_count ? &s->history[(s->history_head + i) % s->history_capacity]->view : NULL;
 }
-void lpage_clear_history(lpage_screen *s) {
-  for (size_t i = 0; i < s->history_count; i++) free_row(s, s->history[(s->history_head + i) % s->history_capacity]);
-  s->history_count = s->history_head = 0;
-  /* Rebuild availability while removing empty pages; this is a history-clear
-   * operation, never a per-line scan of the page list on the scrolling path. */
+void lp_geometry_trim(lpage_screen *s) {
+  /* Cold geometry/history cleanup, never a per-line scan while scrolling. */
   s->available = NULL;
   page **link = &s->pages;
   while (*link) {
@@ -327,6 +346,10 @@ void lpage_clear_history(lpage_screen *s) {
       link = &p->next;
     }
   }
+}
+void lpage_clear_history(lpage_screen *s) {
+  for (size_t i=0;i<s->history_count;i++) free_row(s,s->history[(s->history_head+i)%s->history_capacity]);
+  s->history_count=s->history_head=0; lp_geometry_trim(s);
 }
 void lpage_wrap(lpage_screen *s, size_t y, bool wrapped) {
   if (y < s->rows) {
@@ -343,6 +366,7 @@ lpage_stats lpage_usage(const lpage_screen *s) {
   lpage_stats stats = { s->page_count, s->page_count * PAGE_ROWS, s->history_count, lstyle_count(s->styles), 0,
     llink_count(s->links), llink_bytes(s->links), lgrapheme_count(s->graphemes), lgrapheme_bytes(s->graphemes) };
   stats.bytes = sizeof *s + (s->rows + s->history_capacity) * sizeof(row *)
-    + s->page_count * (sizeof(page) + PAGE_ROWS * s->columns * sizeof(lpage_cell)) + lstyle_bytes(s->styles) + stats.link_bytes + stats.grapheme_bytes;
+    + lstyle_bytes(s->styles) + stats.link_bytes + stats.grapheme_bytes;
+  for (const page *p=s->pages;p;p=p->next) stats.bytes+=sizeof *p+PAGE_ROWS*p->columns*sizeof(lpage_cell);
   return stats;
 }

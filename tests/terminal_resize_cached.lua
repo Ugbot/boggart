@@ -1,6 +1,4 @@
--- Pending BMUX-20 acceptance regression. The pinned SDK preserves this wrap
--- through its cached-capacity crop/grow path; Boggart currently clears it.
--- Run directly until the compatibility fix joins the main resize vectors.
+-- BMUX-20 cached-capacity crop/grow regression, also in the full SDK vectors.
 local t <close> = require('terminal').new(6, 3, 2000)
 t:feed('abcdefghij\27[?7l')
 t:resize(4, 3)
