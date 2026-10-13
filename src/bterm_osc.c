@@ -83,6 +83,11 @@ static void notify(bterm *t, bosc_command *c) {
 void bt_osc(bterm *t, const lvt_event *event) {
   uint8_t scratch[BOSC_MAX_PAYLOAD]; bosc_command c;
   if (!bosc_parse(event->data, event->length, event->final == 7, scratch, &c)) return;
+  if (c.type == BOSC_HYPERLINK) {
+    bt_set_link(t, (llink_value){ (const char *)c.value.link.id.data, (const char *)c.value.link.uri.data,
+      c.value.link.id.length, c.value.link.uri.length });
+    if (t->failed) return;
+  }
   if (c.type == BOSC_CLIPBOARD && !(c.value.clipboard.query ? t->clipboard_read : t->clipboard_write)) return;
   if (c.type == BOSC_NOTIFY && c.code == 99) notify(t, &c); else bt_emit(t, &c);
 }

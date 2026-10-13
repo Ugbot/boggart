@@ -63,7 +63,7 @@ rows. Visible rows and bounded history use pointer rings; full-screen upward
 scroll rotates visible pointers and, once history fills, recycles its oldest
 row. Region scrolling moves only pointers within that region. History pointer
 capacity grows lazily to its configured limit. Clearing history releases cell
-styles and frees empty pages. `lpage_usage` reports owned capacity bytes, not
+styles/links and frees empty pages. `lpage_usage` reports owned capacity bytes, not
 process RSS or allocator overhead. Geometry is limited to 1–4096 rows/columns;
 resize/reflow belongs to BMUX-20.
 
@@ -184,10 +184,10 @@ recovers it. Feed/finish/reset throw on failure, and successful mutation calls
 return no values. `finish()` belongs at EOF, never at a read boundary.
 
 `usage()` reports active screen capacity bytes, pages, row capacity, history
-rows, live styles and queued reply bytes/capacity. Its screen byte count is not
+rows, live styles/links, link capacity bytes and queued reply bytes/capacity. Its screen byte count is not
 whole-terminal RSS or Lua allocation accounting. C grid allocations belong to
 the native core; snapshots and the userdata belong to Lua. `source()` returns
-the 16 source/header hashes embedded during CMake configuration. Changes to
+the 18 source/header hashes embedded during CMake configuration. Changes to
 those files trigger regeneration; the native benchmark compares them with the
 checkout and rejects a stale executable.
 
@@ -253,9 +253,37 @@ no arguments reads policy/generation; `clipboard_reply(selection, bel, text)`
 returns false for denied/invalid responses. No OS clipboard integration is
 claimed by these APIs.
 
-OSC 8 currently emits validated link metadata, but cells still store no owned
-link URI. Link interning, cell/history ownership and URI snapshots remain the
-next BMUX-17 increment; the story stays in progress until those are verified.
+OSC 8 also changes the active cursor's link. `src/llink.c/h` owns copied key/URI
+strings in a pool per screen. An explicit ID interns the (ID, URI) pair; each
+open without an ID creates a distinct identity, even for the same URI. One
+cursor reference keeps its link alive; printed cells independently retain it.
+Closing the link releases only the cursor reference. Insertion/deletion and
+scrolling transfer references with cells; overwrite, erasure, history eviction
+and reset release them. At zero references strings are freed immediately and
+numeric slots are reused, so memory does not grow with past OSC 8 activity.
+Tables retain capacity for the maximum concurrent links seen on that screen.
+
+Alternate-screen transitions and cursor restore end the active link without
+changing previously printed cells. Repeated mode sets which do not switch
+screens keep the active link. Reset/RIS clears links in both screens/history.
+Malformed OSC 8 is ignored and preserves current state. Cells continue to expose
+screen-local numeric `hyperlink` IDs; Lua rows/snapshots additionally copy
+`link = {id = explicit_id_or_empty_string, uri = uri}` for linked cells. These
+copies survive eviction and ID reuse. Consumers must not hold numeric IDs across
+mutations without owning a reference. C accessors `bterm_link` / `lpage_link`
+borrow the active screen's value; rendering follows BMUX-24/25, and opening a
+URI remains a separate host decision.
+
+`usage().links` counts live links in the active screen, including its cursor.
+`link_bytes` counts its pool metadata capacity and live string bytes, included
+in `screen_bytes`; neither is total process RSS. The link pool bounds source
+keys at 256 bytes and URIs at 4096, with parser validation at the OSC boundary.
+`lpage_put` retains its own style/link references and leaves the caller's
+acquired reference owned by the caller. It rejects dead link IDs and rolls back
+its retained style without changing the old cell. `tests/c/links.c` verifies pool identity/copies/growth,
+10,000 cycles of unique-link history eviction with stable capacity, insert/delete,
+wraps, alternate-screen separation, reset and invalid-ID rejection. The storage
+reference model now checks link reference counts across 30,000 operations.
 `tests/c/osc.c`, `tests/c/terminal_events.c` and `tests/terminal.lua` cover payload
 validation, ordering, fragmentation, interleaving, bounds, policy/revocation,
 reply encoding, queue lifetime and actual bus subscriber delivery. CLI/studio

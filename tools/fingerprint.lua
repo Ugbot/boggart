@@ -51,6 +51,8 @@ put("terminal_replies", require("hash_c").sha256(probe:replies()))
 probe:feed("\27]2;title\7\27]99;i=job:d=0;hello\7\27]99;i=job:p=body;body\7\7")
 local terminal_events = probe:events()
 put("terminal_events", require("hash_c").sha256(require("json").encode(terminal_events)))
+probe:feed("\27]8;id=parity;https://example.com\7linked text\27]8;;\7")
+put("terminal_links", require("hash_c").sha256(require("json").encode(probe:snapshot(true))))
 
 -- ---- the tools the model is offered ----------------------------------------
 -- The one place asymmetry is legitimate: the studio registers panel-drawing

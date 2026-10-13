@@ -58,7 +58,7 @@ callbacks per byte. It supports the tested alternate screen, scroll regions
 and 256/RGB SGR paths; wide-cell and grapheme layout remain unsupported. Its
 snapshot copies the active screen, styles, cursor/modes, scrollback and pending
 parser diagnostics. Both adapters use a 2000-row history limit. The native
-report records 13 source/header hashes compiled into the executable, and the
+report records 18 source/header hashes compiled into the current executable, and the
 adapter rejects a checkout that differs from those hashes before timing.
 
 `--backend MODULE` selects a Lua adapter loaded from `tools/?.lua` or the normal
@@ -140,3 +140,14 @@ byte path. Other rows record workload timings with their differing feature
 coverage. These are parse/grid measurements, not shell-to-pixel performance or
 a comparison with cmux/Ghostty. The studio still uses its Lua parser until
 BMUX-21 integration; no live-terminal speed improvement is claimed here.
+
+
+Link ownership verification (BMUX-17), measured separately after the full test
+and parity runs, uses the same 1 MiB scenario targets, 4096-byte chunks and 80x24
+geometry with five samples. The source-identified
+[link ownership report](benchmarks/2026-10-13-terminal-links.json) records plain
+117.913 MB/s, dense-SGR 126.271, Unicode 142.233, scroll 96.685 and alternate screen
+24.822. Whole/fragmented grids agree. Unicode width/graphemes remain unsupported;
+these measurements describe native parse/grid work, with no cmux/Ghostty or
+live-rendering speed claim. The earlier native artifact retains its original
+13-file build identity; it is a historical measurement, not the current source.

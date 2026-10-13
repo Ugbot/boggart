@@ -8,6 +8,16 @@
 #include <stdlib.h>
 #include <string.h>
 static void require(bterm *t, bool ok) { if (!ok) t->failed = true; }
+void bt_end_link(bterm *t) {
+  bt_buffer *b = bt_active(t);
+  if (b->hyperlink_id) llink_release(lpage_links(b->screen), b->hyperlink_id);
+  b->hyperlink_id = 0;
+}
+void bt_set_link(bterm *t, llink_value value) {
+  uint32_t id;
+  if (!llink_acquire(lpage_links(bt_active(t)->screen), &value, &id)) { t->failed = true; return; }
+  bt_end_link(t); bt_active(t)->hyperlink_id = id;
+}
 void bt_set_pen(bterm *t, lpage_style pen) {
   for (unsigned i = 0; i < 2; i++) {
     bt_buffer *b = &t->buffers[i];
@@ -83,7 +93,7 @@ void bt_print(bterm *t, uint32_t cp) {
   }
   if (t->modes & BT_INSERT) bt_edit(t, 1, true);
   uint32_t id; if (t->failed || !pen_id(t, &id)) return;
-  require(t, lpage_put(b->screen, c->y, c->x, (lpage_cell){cp, id, 0, 1, 0, 0}));
+  require(t, lpage_put(b->screen, c->y, c->x, (lpage_cell){cp, id, b->hyperlink_id, 1, 0, 0}));
   t->last_printed = cp;
   if (c->x + 1 == t->columns) c->pending_wrap = (t->modes & BT_AUTOWRAP) != 0;
   else c->x++;
@@ -104,6 +114,7 @@ void bt_save(bterm *t) {
   b->saved = (bt_saved){ b->cursor, t->pen, (t->modes & BT_ORIGIN) != 0, true };
 }
 void bt_restore(bterm *t) {
+  bt_end_link(t);
   bt_buffer *b = bt_active(t);
   if (!b->saved.valid) { bt_home(t); return; }
   b->cursor = b->saved.cursor; bt_set_pen(t, b->saved.pen);
@@ -117,12 +128,14 @@ void bt_alternate(bterm *t, bool enabled, unsigned mode) {
       if (!t->buffers[1].screen) { t->failed = true; return; }
     }
     if (mode == 1049) bt_save(t);
+    bt_end_link(t);
     t->active = 1;
     if (mode == 1049) {
       for (size_t y = 0; y < t->rows; y++) bt_erase(t, y, 0, t->columns);
       bt_home(t);
     }
   } else {
+    bt_end_link(t);
     if (mode == 1047) for (size_t y = 0; y < t->rows; y++) bt_erase(t, y, 0, t->columns);
     t->active = 0;
     if (mode == 1049) bt_restore(t);
@@ -195,6 +208,8 @@ bool bterm_reset(bterm *t) {
   for (unsigned i = 0; i < 2; i++) {
     bt_buffer *b = &t->buffers[i];
     if (!b->screen) continue;
+    if (b->hyperlink_id) llink_release(lpage_links(b->screen), b->hyperlink_id);
+    b->hyperlink_id = 0;
     b->cursor = (bt_cursor){0, 0, false}; b->saved.valid = false;
     lpage_clear_history(b->screen);
     for (size_t y = 0; y < t->rows; y++) require(t, lpage_erase(b->screen, y, 0, t->columns, 0));
@@ -211,6 +226,7 @@ bterm_status bterm_state(const bterm *t) {
   return (bterm_status){ c->x, c->y, t->top, t->bottom, t->modes, t->cursor_style, t->active != 0, c->pending_wrap, t->pen };
 }
 const lpage_screen *bterm_screen(const bterm *t) { return t->buffers[t->active].screen; }
+const llink_value *bterm_link(const bterm *t, uint32_t id) { return lpage_link(bterm_screen(t), id); }
 const lpage_style *bterm_style(const bterm *t, uint32_t id) { return lstyle_get(lpage_styles(t->buffers[t->active].screen), id); }
 void bterm_ack_damage(bterm *t) { lpage_ack_damage(bt_active(t)->screen); }
 const lvt_parser *bterm_parser(const bterm *t) { return &t->parser; }

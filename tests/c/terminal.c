@@ -30,6 +30,10 @@ static void equal_row(bterm *a, bterm *b, const lpage_row *ra, const lpage_row *
     const lpage_cell *ca = &ra->cells[x], *cb = &rb->cells[x];
     CHECK(ca->codepoint == cb->codepoint && ca->width == cb->width && ca->flags == cb->flags && ca->hyperlink == cb->hyperlink);
     equal_style(bterm_style(a, ca->style), bterm_style(b, cb->style));
+    const llink_value *la = bterm_link(a, ca->hyperlink), *lb = bterm_link(b, cb->hyperlink);
+    CHECK((la != NULL) == (lb != NULL));
+    if (la) CHECK(la->key_length == lb->key_length && la->uri_length == lb->uri_length
+      && !memcmp(la->key, lb->key, la->key_length) && !memcmp(la->uri, lb->uri, la->uri_length));
   }
 }
 static void equal_terminal(bterm *a, bterm *b) {
@@ -148,7 +152,9 @@ static void fragmentation(void) {
     "\xe2\x82\xac\xf0\x9f\x99\x82\033[2;4r\033[?6h\033[2;3HZ\033[?6l"
     "\033[?1049hALT\033[48:2::5:6:7m\033[2J\033[6n\033[?1049l\033[6n"
     "\033[r\033[H\033[2@X\033[2P\033[3b\033[5 q\033[?2004h\033[999:1:2m"
-    "\033]0;ignored title\007\033Pignored data\033\\\xff\xe2";
+    "\033]0;ignored title\007\033Pignored data\033\\"
+    "\033]8;id=explicit;https://example.com/%C3%A9\aLINK\033]8;;\a"
+    "\033]8;;https://implicit.com\aAB\033[2@\033[1P\033]8;;\a\xff\xe2";
   replies full_reply = {0}; bterm *full = bterm_create(9, 4, 3, reply, &full_reply); CHECK(full);
   CHECK(bterm_feed(full, (const uint8_t *)stream, sizeof stream - 1) && bterm_finish(full));
   for (size_t chunk = 1; chunk <= 17; chunk++) {
