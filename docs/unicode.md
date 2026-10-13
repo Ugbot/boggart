@@ -1,0 +1,53 @@
+# Shared Unicode data (BMUX-19)
+
+`src/bunicode.c/h` provides scalar widths, streaming extended grapheme boundaries,
+and terminal grapheme widths. The immutable property table is compiled once into
+`boggart_unicode`; lookup and segmentation allocate no memory. The table has
+122 unique 256-scalar pages and occupies 71,168 bytes.
+
+The version is deliberately Unicode **16.0.0**, matching the existing Boggart
+width table. `THIRD_PARTY/unicode/manifest.json` records the official source URL
+and SHA-256 for every input and conformance fixture. `THIRD_PARTY/unicode-LICENSE`
+contains Unicode License V3. Git attributes preserve these exact bytes on Windows.
+The generator reads vendored inputs, verifies hashes and reconstructs the
+compressed table for every code point before emitting it. Compile-only builds
+need neither Python, network access, nor Zig.
+
+```sh
+python3 tools/genwidth.py           # regenerate src/bunicode_data.h offline
+python3 tools/genwidth.py --check   # verify hashes and reproducible output
+python3 tests/genwidth_test.py      # malformed ranges, missing inputs, hash drift
+ctest --test-dir build -R '^unicode$' --output-on-failure
+```
+
+The native test reads all 1,093 official GraphemeBreakTest cases and checks 2,774
+boundaries. It also checks the width of every scalar, invalid values, emoji
+selectors/modifiers/flags/ZWJ sequences, Hangul, Indic conjuncts, controls, and
+10,000 regional indicators without state overflow. The normal and ASan/UBSan
+tests passed. A migration comparison across all 1,114,112 code points found no
+width differences from the old shared table.
+
+`bunicode_grapheme_break` implements Unicode 16 UAX #29 GB3–GB13, including InCB
+consonant/linker prefixes, extended-pictographic Extend/ZWJ prefixes, and RI parity.
+Zero-initialize its state and pass each scalar exactly once; it reports the
+boundary before the scalar. A logical end of text is always a boundary. Invalid
+scalars force boundaries and occupy one replacement cell. Standard segmentation
+does not discard variation selectors.
+
+The separate terminal width-effect kernel ports selected behavior from the pinned
+Ghostty `src/unicode/grapheme.zig`: valid VS16/VS15 request two/one cells; invalid
+selectors are consumed but ignored and preserve the prior break state and scalar.
+Other nonzero contributions request two cells. Boggart generates the contribution
+flag from scalar-zero width, Mc, and the Extend/ZWJ/SpacingMark/V/T break classes.
+The scalar policy uses Mn/Me/Cf (except U+00AD), medial/final Jamo and controls as
+zero; EAW W/F and default emoji presentation as two; ambiguous characters as one.
+This is an explicit Boggart policy, not an assertion that the pinned uucode data
+or every Ghostty width matches. An oracle must align Unicode versions and policy
+before claiming parity. No uucode source or tables are copied.
+
+`bunicode_grapheme_width` measures the first complete cluster in a scalar slice
+and returns its consumed scalar count. It supports unbounded cluster length
+without storing the text. A streaming terminal still needs cell ownership for
+that text. Native grid wide-pair repair and grapheme storage remain required for
+BMUX-19 completion; resize/reflow is BMUX-20. Renderer and string measurement
+must switch to cluster units together so text layout agrees with painting.
