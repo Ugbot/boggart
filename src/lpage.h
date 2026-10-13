@@ -10,6 +10,7 @@
 #include "llink.h"
 #define LP_CELL_WIDE_TAIL 1
 #define LP_CELL_PROTECTED 2
+#define LP_CELL_WIDE_HEAD 4
 typedef struct {
   uint32_t codepoint, style, hyperlink;
   uint8_t width, flags;
@@ -28,6 +29,11 @@ const llink_value *lpage_link(const lpage_screen *screen, uint32_t id);
 /* All rows/cells are borrowed, and may move/recycle on the next mutation. */
 const lpage_row *lpage_visible(const lpage_screen *screen, size_t row);
 const lpage_cell *lpage_get(const lpage_screen *screen, size_t row, size_t column);
+/* Writes a whole glyph. Width 2 creates its continuation atomically with
+ * respect to geometry/ID validation; callers cannot put a tail directly.
+ * Overwriting either half clears the old pair. Width 2 must fit the row.
+ * WIDE_HEAD is a blank at the last column of a wrapped row, preceding a wide
+ * glyph on the next row. Erase/edit repair every pair crossing their bounds. */
 bool lpage_put(lpage_screen *screen, size_t row, size_t column, lpage_cell cell);
 bool lpage_erase(lpage_screen *screen, size_t row, size_t column, size_t count, uint32_t blank_style);
 bool lpage_insert_cells(lpage_screen *screen, size_t row, size_t column, size_t count, uint32_t blank_style);

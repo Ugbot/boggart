@@ -61,7 +61,7 @@ size_t bunicode_str_take(const char *s, size_t length, int columns, int *used);
 **Files:** `src/lpage.c`, `src/lpage.h`, `src/bterm.c`, `src/bterm_internal.h`, `src/lterminal.c`, `studio/src/renderer.c`, `src/termctl.c`, `tests/c/page.c`, `tests/c/terminal.c`, `tests/terminal.lua`, `tests/studio.lua`.
 
 - [ ] Add screen-owned, bounded grapheme storage with explicit references through put, clear, copy, scroll, history eviction, and destruction; retain the 16-byte cell layout.
-- [ ] Test width-two continuation repair on overwrite, insert/delete/erase and scroll boundaries before switching the printer to shared widths.
+- [x] Test width-two continuation repair on overwrite, insert/delete/erase and scroll boundaries before switching the printer to shared widths.
 - [ ] Track grapheme state across feed chunks, append marks/ZWJ sequences, apply VS width changes, and break the association on cursor operations or control dispatch. Test all byte split points against an unsplit snapshot.
 - [ ] Expose complete cluster text in copied snapshots and draw it as a unit. Update width/prefix consumers and their rendering in the same increment so layout and painting agree.
 - [ ] Add long-running cluster lifetime/eviction tests and native/Lua parity vectors before closing BMUX-19. Use the existing termbench Unicode workload to detect regressions; do not claim Ghostty speed parity.
@@ -73,3 +73,5 @@ Task 1 and Task 2 are independently usable foundations. Task 3 is required for s
 Task 1 verification: normal Unicode CTest passed (0.41 s), ASan/UBSan Unicode CTest passed (0.52 s), four Python generator tests passed, attribution passed for 40 modules / 24 ported files, and strict C99 warning checks passed. Standard conformance: 1,093 cases / 2,774 boundaries. Exhaustive migration comparison: zero scalar-width changes.
 
 Task 2 verification: both builds succeeded; normal focused tests 18/18 (10.87 s), ASan/UBSan focused tests 18/18 (13.14 s), full serial suite 116/116 (110.93 s), CLI/Studio parity 31 identical fields, regeneration and four generator tests passed, pinned Ghostty attribution passed for 40 modules / 24 ported files, and strict C99/diff checks passed. Source identity now contains 27 compiled files. Native cell widths and cluster ownership are still pending; BMUX-19 remains in progress.
+
+Task 3 wide-pair storage checkpoint: the initially failing continuation test now passes; normal and ASan/UBSan page/wide/dispatch/link checks passed 4/4. `tests/c/wide_cells.c` covers overwrite of either half, adjacent-pair collisions, erase expansion, insertion/deletion cuts, clipping, no-op ranges, history transfer, WIDE_HEAD placement/removal, rejected geometry/style IDs, and 30,000 mixed operations with exact style/link refs. Cell size remains 16 bytes. Printer/cluster integration follows; BMUX-19 stays in progress.

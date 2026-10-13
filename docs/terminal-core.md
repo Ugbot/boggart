@@ -67,8 +67,12 @@ styles/links and frees empty pages. `lpage_usage` reports owned capacity bytes, 
 process RSS or allocator overhead. Geometry is limited to 1–4096 rows/columns;
 resize/reflow belongs to BMUX-20.
 
-Cells preserve codepoint, style ID, hyperlink ID and width/flags; wide-cell
-pair integrity and grapheme storage remain BMUX-19. Rows expose wrapped and
+Cells preserve codepoint, style ID, hyperlink ID and width/flags. The page layer
+now owns wide pairs: putting a width-two glyph creates a width-zero tail;
+overwriting or erasing either half clears the pair, and insert/delete repairs
+glyphs crossing a cut or the right edge. Whole pairs move with their references.
+A WIDE_HEAD blank at a wrapped row's right edge records a wide glyph that starts
+on the next row. Native printing and grapheme storage remain BMUX-19. Rows expose wrapped and
 damage state. `lpage_ack_damage` acknowledges visible damage after a renderer
 consumes it; scrolling conservatively damages the whole visible screen.
 Borrowed rows/cells can move or recycle on any mutation, so renderers must not
