@@ -4,10 +4,48 @@
 #include "lua.h"
 #include "lauxlib.h"
 #include <string.h>
+#include <stdlib.h>
+#include <limits.h>
 #include "terminal-source.h"
 #define TERMINAL_MT "boggart.terminal"
 #define REPLY_CAPACITY 65536
-typedef struct { bterm *term; size_t reply_length; uint8_t replies[REPLY_CAPACITY]; } terminal;
+#define EVENT_CAPACITY 256
+#define EVENT_BYTES 65536
+typedef struct { size_t count, used; bterm_event events[EVENT_CAPACITY]; uint8_t bytes[EVENT_BYTES]; } event_queue;
+typedef struct {
+  bterm *term; size_t reply_length; uint8_t replies[REPLY_CAPACITY];
+  event_queue *events; size_t dropped; lua_Integer clipboard_generation; bool clipboard_read, clipboard_write;
+} terminal;
+static void dropped(terminal *t) { if (t->dropped < (size_t)LLONG_MAX) t->dropped++; }
+static bosc_slice copy_slice(event_queue *q, bosc_slice s) {
+  bosc_slice result = {q->bytes + q->used, s.length};
+  if (s.length) memcpy(q->bytes + q->used, s.data, s.length);
+  q->used += s.length; return result;
+}
+static void capture_event(void *context, const bterm_event *event) {
+  terminal *t = context; bosc_command c = event->command;
+  size_t n = 0;
+  switch (c.type) {
+    case BOSC_TITLE: case BOSC_CWD: n = c.value.text.length; break;
+    case BOSC_HYPERLINK: n = c.value.link.id.length + c.value.link.uri.length; break;
+    case BOSC_NOTIFY: n = c.value.notify.id.length + c.value.notify.title.length + c.value.notify.body.length; break;
+    case BOSC_SHELL: n = c.value.shell.options.length; break;
+    case BOSC_CLIPBOARD: n = c.value.clipboard.text.length; break;
+    default: break;
+  }
+  if (!t->events) t->events = calloc(1, sizeof *t->events);
+  event_queue *q = t->events;
+  if (!q || q->count == EVENT_CAPACITY || n > EVENT_BYTES - q->used) { dropped(t); return; }
+  switch (c.type) {
+    case BOSC_TITLE: case BOSC_CWD: c.value.text = copy_slice(q,c.value.text); break;
+    case BOSC_HYPERLINK: c.value.link.id = copy_slice(q,c.value.link.id); c.value.link.uri = copy_slice(q,c.value.link.uri); break;
+    case BOSC_NOTIFY: c.value.notify.id = copy_slice(q,c.value.notify.id); c.value.notify.title = copy_slice(q,c.value.notify.title); c.value.notify.body = copy_slice(q,c.value.notify.body); break;
+    case BOSC_SHELL: c.value.shell.options = copy_slice(q,c.value.shell.options); break;
+    case BOSC_CLIPBOARD: c.value.clipboard.text = copy_slice(q,c.value.clipboard.text); break;
+    default: break;
+  }
+  q->events[q->count] = *event; q->events[q->count++].command = c;
+}
 static terminal *check(lua_State *L) {
   terminal *t = luaL_checkudata(L, 1, TERMINAL_MT);
   luaL_argcheck(L, t->term != NULL, 1, "closed terminal"); return t;
@@ -72,11 +110,12 @@ static int l_new(lua_State *L) {
   luaL_setmetatable(L, TERMINAL_MT);
   t->term = bterm_create((size_t)cols, (size_t)rows, (size_t)history, reply, t);
   if (!t->term) return luaL_error(L, "cannot allocate terminal");
+  bterm_set_event_sink(t->term, capture_event, t);
   return 1;
 }
 static int l_close(lua_State *L) {
   terminal *t = luaL_checkudata(L, 1, TERMINAL_MT);
-  bterm_destroy(t->term); t->term = NULL; t->reply_length = 0; return 0;
+  bterm_destroy(t->term); t->term = NULL; t->reply_length = 0; free(t->events); t->events = NULL; t->dropped = 0; return 0;
 }
 static int l_feed(lua_State *L) {
   terminal *t = check(L); luaL_checktype(L, 2, LUA_TSTRING);
@@ -87,6 +126,7 @@ static int l_feed(lua_State *L) {
 static int l_finish(lua_State *L) { if (!bterm_finish(check(L)->term)) return luaL_error(L, "terminal failed; reset required"); return 0; }
 static int l_reset(lua_State *L) {
   terminal *t = check(L); t->reply_length = 0;
+  if (t->events) t->events->count = t->events->used = 0; t->dropped = 0;
   if (!bterm_reset(t->term)) return luaL_error(L, "terminal reset failed"); return 0;
 }
 static int l_state(lua_State *L) { state(L, check(L)->term); return 1; }
@@ -126,7 +166,68 @@ static int l_usage(lua_State *L) {
   terminal *t = check(L); lpage_stats s = lpage_usage(bterm_screen(t->term));
   lua_createtable(L, 0, 7); integer(L, "pages", s.pages); integer(L, "row_capacity", s.row_capacity);
   integer(L, "history_rows", s.history_rows); integer(L, "styles", s.styles); integer(L, "screen_bytes", s.bytes);
-  integer(L, "reply_bytes", t->reply_length); integer(L, "reply_capacity", REPLY_CAPACITY); return 1;
+  integer(L, "reply_bytes", t->reply_length); integer(L, "reply_capacity", REPLY_CAPACITY);
+  integer(L, "event_count", t->events ? t->events->count : 0); integer(L, "event_bytes", t->events ? t->events->used : 0);
+  integer(L, "event_capacity", EVENT_CAPACITY); integer(L, "event_byte_capacity", EVENT_BYTES);
+  integer(L, "events_dropped", t->dropped); return 1;
+}
+static void string(lua_State *L, const char *key, bosc_slice s) {
+  lua_pushlstring(L, (const char *)s.data, s.length); lua_setfield(L,-2,key);
+}
+static int l_clipboard_policy(lua_State *L) {
+  terminal *t = check(L);
+  if (lua_gettop(L) == 1) {
+    lua_createtable(L,0,3); boolean(L,"read",t->clipboard_read); boolean(L,"write",t->clipboard_write);
+    integer(L,"generation",t->clipboard_generation); return 1;
+  }
+  luaL_checktype(L,2,LUA_TBOOLEAN); luaL_checktype(L,3,LUA_TBOOLEAN);
+  if (t->clipboard_generation == LUA_MAXINTEGER) return luaL_error(L,"clipboard policy generation exhausted");
+  t->clipboard_generation++;
+  t->clipboard_read = lua_toboolean(L,2); t->clipboard_write = lua_toboolean(L,3);
+  /* Revoke queued requests now, so granting later cannot resurrect them. */
+  if (t->events) for (size_t i=0; i<t->events->count; i++) {
+    bosc_command *c = &t->events->events[i].command;
+    if (c->type == BOSC_CLIPBOARD && !(c->value.clipboard.query ? t->clipboard_read : t->clipboard_write)) c->type = BOSC_NONE;
+  }
+  bterm_clipboard_policy(t->term,t->clipboard_read,t->clipboard_write); return 0;
+}
+static int l_clipboard_reply(lua_State *L) {
+  terminal *t = check(L); size_t n, selection_length;
+  const char *selection = luaL_checklstring(L,2,&selection_length);
+  luaL_argcheck(L,selection_length == 1,2,"single clipboard selection required");
+  luaL_checktype(L,3,LUA_TBOOLEAN); luaL_checktype(L,4,LUA_TSTRING);
+  const char *text = lua_tolstring(L,4,&n);
+  lua_pushboolean(L,bterm_clipboard_reply(t->term,selection[0],lua_toboolean(L,3),(const uint8_t *)text,n)); return 1;
+}
+static int l_events(lua_State *L) {
+  terminal *t = check(L); event_queue *q = t->events; size_t output = 0;
+  static const char *names[] = {"none","title","cwd","hyperlink","notification","shell","clipboard","bell"};
+  lua_createtable(L,q ? (int)q->count : 0,0);
+  if (q) for (size_t i=0;i<q->count;i++) {
+    bterm_event *e=&q->events[i]; bosc_command *c=&e->command;
+    if (c->type == BOSC_NONE || (c->type == BOSC_CLIPBOARD && !(c->value.clipboard.query ? t->clipboard_read : t->clipboard_write))) continue;
+    lua_createtable(L,0,10); lua_pushstring(L,names[c->type]); lua_setfield(L,-2,"type");
+    integer(L,"code",c->code); integer(L,"row",e->y+1); integer(L,"col",e->x+1); boolean(L,"alternate",e->alternate);
+    switch (c->type) {
+      case BOSC_TITLE: case BOSC_CWD: string(L,"text",c->value.text); break;
+      case BOSC_HYPERLINK: string(L,"id",c->value.link.id); string(L,"uri",c->value.link.uri); break;
+      case BOSC_NOTIFY:
+        string(L,"id",c->value.notify.id); string(L,"title",c->value.notify.title); string(L,"body",c->value.notify.body);
+        integer(L,"urgency",c->value.notify.urgency);
+        lua_pushstring(L,c->value.notify.payload == BOSC_NOTIFY_CLOSE ? "close" : c->value.notify.payload == BOSC_NOTIFY_QUERY ? "query" : "notify"); lua_setfield(L,-2,"action"); break;
+      case BOSC_SHELL:
+        string(L,"mark",(bosc_slice){(const uint8_t *)&c->value.shell.mark,1}); string(L,"options",c->value.shell.options);
+        if (c->value.shell.has_status) integer(L,"status",c->value.shell.status); break;
+      case BOSC_CLIPBOARD:
+        string(L,"selection",(bosc_slice){(const uint8_t *)&c->value.clipboard.selection,1});
+        integer(L,"clipboard_generation",t->clipboard_generation);
+        boolean(L,"query",c->value.clipboard.query); boolean(L,"bel",c->value.clipboard.bel); string(L,"text",c->value.clipboard.text); break;
+      default: break;
+    }
+    lua_rawseti(L,-2,++output);
+  }
+  if (q) q->count = q->used = 0;
+  lua_pushinteger(L,(lua_Integer)t->dropped); t->dropped=0; return 2;
 }
 static int l_source(lua_State *L) {
   lua_createtable(L, 0, 1);
@@ -142,7 +243,8 @@ static int l_source(lua_State *L) {
 int luaopen_boggart_terminal(lua_State *L) {
   const luaL_Reg methods[] = { {"feed", l_feed}, {"finish", l_finish}, {"reset", l_reset}, {"state", l_state},
     {"row", l_row}, {"snapshot", l_snapshot}, {"damage", l_damage}, {"ack_damage", l_ack},
-    {"replies", l_replies}, {"usage", l_usage}, {"close", l_close}, {"__gc", l_close}, {"__close", l_close}, {NULL, NULL} };
+    {"replies", l_replies}, {"events", l_events}, {"clipboard_policy", l_clipboard_policy},
+    {"clipboard_reply", l_clipboard_reply}, {"usage", l_usage}, {"close", l_close}, {"__gc", l_close}, {"__close", l_close}, {NULL, NULL} };
   luaL_newmetatable(L, TERMINAL_MT); luaL_setfuncs(L, methods, 0); lua_pushvalue(L, -1); lua_setfield(L, -2, "__index"); lua_pop(L, 1);
   lua_newtable(L); lua_pushcfunction(L, l_new); lua_setfield(L, -2, "new");
   lua_pushcfunction(L, l_source); lua_setfield(L, -2, "source");

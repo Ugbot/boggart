@@ -923,8 +923,8 @@ enable_testing()
 # Embed the sources actually compiled into this terminal backend. Benchmarks
 # reject a stale executable instead of attributing it to current disk contents.
 set(BMUX_TERMINAL_SOURCE_FILES src/lvt.c src/vt_table.h src/lstyle.c src/lpage.c
-  src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/lterminal.c
-  src/lvt.h src/lstyle.h src/lpage.h src/bterm.h src/bterm_internal.h)
+  src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bterm_osc.c src/lterminal.c
+  src/lvt.h src/lstyle.h src/lpage.h src/bosc.h src/bterm.h src/bterm_internal.h)
 set(_terminal_source_header "/* Generated build identity; do not edit. */\nstatic const struct { const char *path, *sha256; } terminal_source_files[] = {\n")
 foreach(_source IN LISTS BMUX_TERMINAL_SOURCE_FILES)
   file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${_source}" _sha)
@@ -938,7 +938,7 @@ if(TARGET boggart-studio)
   target_include_directories(boggart-studio PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 endif()
 add_library(boggart_vt STATIC src/lvt.c src/lstyle.c src/lpage.c
-  src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c)
+  src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bterm_osc.c)
 target_include_directories(boggart_vt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(boggart PRIVATE boggart_vt)
 if(TARGET boggart-studio)
@@ -953,9 +953,15 @@ add_test(NAME page_storage COMMAND page_storage_test)
 add_executable(terminal_dispatch_test tests/c/terminal.c)
 target_link_libraries(terminal_dispatch_test PRIVATE boggart_vt)
 add_test(NAME terminal_dispatch COMMAND terminal_dispatch_test)
+add_executable(osc_commands_test tests/c/osc.c)
+target_link_libraries(osc_commands_test PRIVATE boggart_vt)
+add_test(NAME osc_commands COMMAND osc_commands_test)
+add_executable(terminal_events_test tests/c/terminal_events.c)
+target_link_libraries(terminal_events_test PRIVATE boggart_vt)
+add_test(NAME terminal_events COMMAND terminal_events_test)
 
-# Headless parse/grid throughput; the adapter is replaced when the C VT core
-# lands. Performance budgets are supplied explicitly after baseline measurement.
+# Headless native parse/grid throughput. Performance budgets are supplied
+# explicitly after baseline measurement.
 add_custom_target(termbench
   COMMAND ${CMAKE_COMMAND} -E env
     BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/termbench-home
@@ -1013,4 +1019,4 @@ endif()
 # interpreter and JSON lib too, so a misuse inside them is attributed.
 boggart_apply_sanitizer(boggart boggart-studio auth_threads_test assert_trap_test crash_handler_test
                         termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt vt_parser_test page_storage_test
-                        terminal_dispatch_test)
+                        terminal_dispatch_test osc_commands_test terminal_events_test)

@@ -24,8 +24,11 @@
     {
       "upstream_path": "src/terminal/osc.zig",
       "sha256": "4becfd85af8b55e03f6fb273ce3e0badfc7d0f640435fd9e2c0fd132acf626a8",
-      "status": "studied",
-      "ported_files": []
+      "status": "ported",
+      "ported_files": [
+        "src/bosc.c",
+        "src/bosc.h"
+      ]
     },
     {
       "upstream_path": "src/terminal/stream.zig",
@@ -148,6 +151,71 @@
       "sha256": "834bae8f538cf0914fabbd16dc8184ce3ef8a5d412f4be6e80a44b93f3836794",
       "status": "studied",
       "ported_files": []
+    },
+    {
+      "upstream_path": "src/terminal/osc/parsers/change_window_title.zig",
+      "sha256": "a8f667f3ae75b21804af5d09bc162fd1db11002628475eff1a585cc7cf2dbe64",
+      "status": "ported",
+      "ported_files": [
+        "src/bosc.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/osc/parsers/clipboard_operation.zig",
+      "sha256": "70ccb60ae7aa4aec9aafea72c58bfe1ea8503b2a113772fd317dccfd8c0718d3",
+      "status": "ported",
+      "ported_files": [
+        "src/bosc.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/osc/parsers/hyperlink.zig",
+      "sha256": "444fb06dc81a9aa6e04b36ebd30b7c4389bc881c34edaf6d9a58d4b50fab2028",
+      "status": "ported",
+      "ported_files": [
+        "src/bosc.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/osc/parsers/kitty_desktop_notification.zig",
+      "sha256": "201ec9b0212eb6d3217ad775e7d09ed71940cbd430d2d29e0bfe51d77684feac",
+      "status": "ported",
+      "ported_files": [
+        "src/bosc.c",
+        "src/bterm_osc.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/osc/parsers/report_pwd.zig",
+      "sha256": "9a43c6d152a64e8e2b72cfca1b92db07b23da9909f96867ec90063dc43d93b0a",
+      "status": "ported",
+      "ported_files": [
+        "src/bosc.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/osc/parsers/rxvt_extension.zig",
+      "sha256": "b9948779c0813a636ae409ad24189a463eb8c7aa974a829de0d9fd563c1fef95",
+      "status": "ported",
+      "ported_files": [
+        "src/bosc.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/osc/parsers/semantic_prompt.zig",
+      "sha256": "5d70b90974ddb3abed9eaa28b5046de9b09cf3d1e6de9fd6515bb12f71a07e05",
+      "status": "ported",
+      "ported_files": [
+        "src/bosc.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/osc/parsers/osc9.zig",
+      "sha256": "6175870b19e2b74b894408b1014f2d7a765cfd3cd80e2d9adc6711ed0bc1e276",
+      "status": "ported",
+      "ported_files": [
+        "src/bosc.c"
+      ]
     }
   ]
 }

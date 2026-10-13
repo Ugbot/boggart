@@ -48,6 +48,9 @@ local probe <close> = terminal.new(8, 3, 2)
 probe:feed("\27[38;2;1;2;3mX\27[?1049hALT\27[?1049l\27[6n")
 put("terminal_grid", require("hash_c").sha256(require("json").encode(probe:snapshot(true))))
 put("terminal_replies", require("hash_c").sha256(probe:replies()))
+probe:feed("\27]2;title\7\27]99;i=job:d=0;hello\7\27]99;i=job:p=body;body\7\7")
+local terminal_events = probe:events()
+put("terminal_events", require("hash_c").sha256(require("json").encode(terminal_events)))
 
 -- ---- the tools the model is offered ----------------------------------------
 -- The one place asymmetry is legitimate: the studio registers panel-drawing

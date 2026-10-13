@@ -16,6 +16,7 @@ typedef struct {
   uint32_t pen_id;
   bool pen_valid;
 } bt_buffer;
+typedef struct bt_notifications bt_notifications;
 struct bterm {
   lvt_parser parser;
   bt_buffer buffers[2];
@@ -27,6 +28,10 @@ struct bterm {
   bool tabs[4096], failed;
   bterm_reply reply;
   void *reply_context;
+  bterm_event_sink event_sink;
+  void *event_context;
+  bool clipboard_read, clipboard_write;
+  bt_notifications *notifications;
 };
 static inline bt_buffer *bt_active(bterm *t) { return &t->buffers[t->active]; }
 void bt_set_pen(bterm *t, lpage_style pen);
@@ -45,4 +50,6 @@ void bt_tab(bterm *t, size_t count, bool backward);
 void bt_reply(bterm *t, const char *bytes, size_t length);
 void bt_csi(bterm *t, const lvt_event *event);
 void bt_sgr(bterm *t, const lvt_event *event);
+void bt_osc(bterm *t, const lvt_event *event);
+void bt_emit(bterm *t, const bosc_command *command);
 #endif
