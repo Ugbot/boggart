@@ -247,11 +247,8 @@ static int ft_ready(void) {
 }
 
 
-/* The decoder that used to live here now lives in src/utf8width.h next to the
- * width tables, because the studio and the terminal dashboard must agree
- * byte-for-byte on where one character ends and the next begins. Two lenient
- * decoders drifting apart is how a caret ends up half a codepoint away from
- * where the renderer thinks it drew. */
+/* The compatibility header delegates to the shared strict Unicode decoder.
+ * Studio and terminal layout agree on scalar boundaries and invalid input. */
 static const char* utf8_to_codepoint(const char *p, unsigned *dst) {
   uint32_t cp;
   const char *next = bog_utf8_next(p, NULL, &cp);

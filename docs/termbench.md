@@ -58,7 +58,7 @@ callbacks per byte. It supports the tested alternate screen, scroll regions
 and 256/RGB SGR paths; wide-cell and grapheme layout remain unsupported. Its
 snapshot copies the active screen, styles, cursor/modes, scrollback and pending
 parser diagnostics. Both adapters use a 2000-row history limit. The native
-report records 24 source/header hashes compiled into the current executable, and the
+report records 27 source/header hashes compiled into the current executable, and the
 adapter rejects a checkout that differs from those hashes before timing.
 
 `--backend MODULE` selects a Lua adapter loaded from `tools/?.lua` or the normal

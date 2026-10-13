@@ -50,11 +50,11 @@ int bunicode_str_width(const char *s, size_t length);
 size_t bunicode_str_take(const char *s, size_t length, int columns, int *used);
 ```
 
-- [ ] Test bounded and NUL-terminated UTF-8, truncated tails, overlong encodings, surrogates, invalid leaders, and one-byte progress on errors. Test prefix width at CJK boundaries and embedded NUL in explicitly sized strings.
-- [ ] Make `utf8width.h` a compatibility wrapper over the shared implementation; make `tc_wcwidth` delegate to `bunicode_width`. Preserve scalar string measurement until the corresponding renderers support clusters.
-- [ ] Link the Unicode library into CLI, Studio, terminal backend and standalone termctl; include generated table/kernel hashes in terminal build identity.
-- [ ] Run focused C and Lua terminal/Studio/transcript tests, full serial CTest, compiled CLI/Studio parity, and both attribution checks.
-- [ ] Record test evidence and commit.
+- [x] Test bounded and NUL-terminated UTF-8, truncated tails, overlong encodings, surrogates, invalid leaders, and one-byte progress on errors. Test prefix width at CJK boundaries and embedded NUL in explicitly sized strings.
+- [x] Make `utf8width.h` a compatibility wrapper over the shared implementation; make `tc_wcwidth` delegate to `bunicode_width`. Preserve scalar string measurement until the corresponding renderers support clusters.
+- [x] Link the Unicode library into CLI, Studio, terminal backend and standalone termctl; include generated table/kernel hashes in terminal build identity.
+- [x] Run focused C and Lua terminal/Studio/transcript tests, full serial CTest, compiled CLI/Studio parity, and both attribution checks.
+- [x] Record test evidence and commit.
 
 ### Task 3: Native cells and renderer integration
 
@@ -71,3 +71,5 @@ size_t bunicode_str_take(const char *s, size_t length, int columns, int *used);
 Task 1 and Task 2 are independently usable foundations. Task 3 is required for story completion and must be refined against the existing page ownership interfaces before cell changes. No tracker status may imply integrated grapheme rendering before these checks pass.
 
 Task 1 verification: normal Unicode CTest passed (0.41 s), ASan/UBSan Unicode CTest passed (0.52 s), four Python generator tests passed, attribution passed for 40 modules / 24 ported files, and strict C99 warning checks passed. Standard conformance: 1,093 cases / 2,774 boundaries. Exhaustive migration comparison: zero scalar-width changes.
+
+Task 2 verification: both builds succeeded; normal focused tests 18/18 (10.87 s), ASan/UBSan focused tests 18/18 (13.14 s), full serial suite 116/116 (110.93 s), CLI/Studio parity 31 identical fields, regeneration and four generator tests passed, pinned Ghostty attribution passed for 40 modules / 24 ported files, and strict C99/diff checks passed. Source identity now contains 27 compiled files. Native cell widths and cluster ownership are still pending; BMUX-19 remains in progress.

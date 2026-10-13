@@ -930,7 +930,8 @@ add_test(NAME unicode COMMAND unicode_test
 # reject a stale executable instead of attributing it to current disk contents.
 set(BMUX_TERMINAL_SOURCE_FILES src/lvt.c src/vt_table.h src/lstyle.c src/llink.c src/lpage.c
   src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c src/lterminal.c
-  src/lvt.h src/lstyle.h src/llink.h src/lpage.h src/bosc.h src/bmouse.h src/bkey.h src/bpaste.h src/bterm.h src/bterm_internal.h)
+  src/lvt.h src/lstyle.h src/llink.h src/lpage.h src/bosc.h src/bmouse.h src/bkey.h src/bpaste.h src/bterm.h src/bterm_internal.h
+  src/bunicode.c src/bunicode.h src/bunicode_data.h)
 set(_terminal_source_header "/* Generated build identity; do not edit. */\nstatic const struct { const char *path, *sha256; } terminal_source_files[] = {\n")
 foreach(_source IN LISTS BMUX_TERMINAL_SOURCE_FILES)
   file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${_source}" _sha)
@@ -946,6 +947,7 @@ endif()
 add_library(boggart_vt STATIC src/lvt.c src/lstyle.c src/llink.c src/lpage.c
   src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c)
 target_include_directories(boggart_vt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(boggart_vt PUBLIC boggart_unicode)
 target_link_libraries(boggart PRIVATE boggart_vt)
 if(TARGET boggart-studio)
   target_link_libraries(boggart-studio PRIVATE boggart_vt)
@@ -1018,7 +1020,7 @@ endforeach()
 # The smoke test degrades gracefully with no tty, so </dev/null it self-exits 0.
 add_executable(termctl_smoke src/termctl.c src/termctl_test.c)
 target_include_directories(termctl_smoke PRIVATE src ${VENDOR}/libuv/include)
-target_link_libraries(termctl_smoke PRIVATE uv_a)
+target_link_libraries(termctl_smoke PRIVATE uv_a boggart_unicode)
 add_test(NAME termctl COMMAND sh -c "$<TARGET_FILE:termctl_smoke> </dev/null")
 
 # BOG-6: the credential code under concurrency (8 threads reading headers while

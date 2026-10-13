@@ -82,6 +82,18 @@ static double now_ms(void) {
 }
 
 int main(void) {
+    /* Width regressions from the old partial termctl table, independent of
+     * tty availability: Hebrew/Kawi marks, a flag component and an unassigned
+     * character in a formerly blanket-wide emoji range. */
+    const struct { uint32_t cp; int width; } widths[] = {
+        {0x059f, 0}, {0x11f00, 0}, {0x1f1e6, 2}, {0x1f02c, 1}, {0x00ad, 1}
+    };
+    for (size_t i = 0; i < sizeof widths / sizeof *widths; i++) {
+        if (tc_wcwidth(widths[i].cp) != widths[i].width) {
+            fprintf(stderr, "width mismatch at U+%04X\n", (unsigned)widths[i].cp);
+            return 1;
+        }
+    }
     if (tc_init() != 0) {
         fprintf(stderr, "tc_init failed\n");
         return 1;

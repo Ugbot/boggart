@@ -279,6 +279,13 @@ if loaded then
       "width: %s is %d cells (got %d)", c[3], c[2], sys.width(c[1])))
   end
 
+  ok(sys.width("\192\128") == 2 and sys.width("\255\128") == 2,
+    "width: invalid UTF-8 consumes one replacement cell per bad byte")
+  ok(sys.width("a\0b") == 2, "width: explicitly sized strings preserve embedded NUL")
+  local large, large_used = sys.wtake("a日b", 0x7fffffff + 100)
+  ok(large == "a日b" and large_used == 4,
+    "wtake: large Lua column budgets clamp without integer wrap")
+
   -- The cut is on a character boundary, and a two-cell character straddling
   -- the limit is left out whole rather than halved -- which is why the columns
   -- taken are a separate return from the prefix.
