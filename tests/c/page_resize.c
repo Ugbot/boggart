@@ -183,4 +183,42 @@ static void group_boundaries(void) {
   lpage_clear_history(s); CHECK(lp_row_group(s,0,&first) && first.rows==boundary-25);
   lpage_destroy(s);
 }
-int main(void) { ownership(); cached_capacity(); height_transfer(); heads(); bounded(); group_boundaries(); puts("resize ownership, logical page boundaries, wide heads, bounded history and 9000 mixed resizes passed"); return 0; }
+static void managed_styles(void) {
+  /* The incoming style must be reserved before repairing a wide glyph
+   * retires its last style references at the set's exact load limit. */
+  lpage_screen *wide=lpage_create(215,300,0); CHECK(wide);
+  for (unsigned i=0;i<103;i++) {
+    uint32_t id; CHECK(lstyle_acquire(lpage_styles(wide),&(lpage_style){LP_COLOR_RGB|i,0,0,0},&id));
+    CHECK(lpage_put(wide,0,i ? i+1 : 0,(lpage_cell){i ? 'x' : 0x65e5,id,0,i ? 1 : 2,0,0})); lstyle_release(lpage_styles(wide),id);
+  }
+  lp_group_span before; CHECK(lp_row_group(wide,0,&before) && before.capacity.styles==128);
+  uint32_t replacement; CHECK(lstyle_acquire(lpage_styles(wide),&(lpage_style){LP_COLOR_RGB|104,0,0,0},&replacement));
+  CHECK(lpage_put(wide,0,0,(lpage_cell){'q',replacement,0,1,0,0})); lstyle_release(lpage_styles(wide),replacement);
+  CHECK(lp_row_group(wide,0,&before) && before.capacity.styles==256); lpage_destroy(wide);
+  lpage_screen *s=lpage_create(215,300,2000); CHECK(s);
+  lp_group_span first,second; CHECK(lp_row_group(s,0,&first)); size_t boundary=first.rows;
+  for (unsigned i=0;i<768;i++) {
+    uint32_t id; CHECK(lstyle_acquire(lpage_styles(s),&(lpage_style){LP_COLOR_RGB|i,0,0,0},&id));
+    CHECK(lpage_put(s,i/215,i%215,(lpage_cell){'x',id,0,1,0,0}));
+    lstyle_release(lpage_styles(s),id);
+  }
+  CHECK(lp_row_group(s,0,&first) && first.capacity.styles==1024 && first.rows==boundary);
+  CHECK(lp_row_group(s,boundary,&second) && second.capacity.styles==128);
+  lpage_resize *r=lpage_resize_prepare(s,(lpage_resize_options){217,300,false,true,{0,299,false},{0,0,false},false});
+  CHECK(r); lpage_resize_commit(r); CHECK(lp_row_group(s,0,&first) && first.capacity.styles==1024);
+  /* Erase/reuse invalidates cached ID counts. Recycled pool IDs must not
+   * keep an old style alive or create fictitious distinct entries. */
+  for (size_t y=0;y<300;y++) CHECK(lpage_erase(s,y,0,217,0));
+  CHECK(lstyle_count(lpage_styles(s))==1); /* immortal default */
+  for (unsigned i=0;i<2000;i++) {
+    uint32_t id; CHECK(lstyle_acquire(lpage_styles(s),&(lpage_style){LP_COLOR_RGB|i,0,0,0},&id));
+    CHECK(lpage_put(s,0,0,(lpage_cell){'y',id,0,1,0,0})); lstyle_release(lpage_styles(s),id);
+    CHECK(lpage_erase(s,0,0,1,0));
+  }
+  CHECK(lp_row_group(s,0,&first) && first.capacity.styles==1024 && lstyle_count(lpage_styles(s))==1);
+  CHECK(lpage_scroll(s,0,299,25,true,0)); lpage_clear_history(s);
+  uint32_t id; CHECK(lstyle_acquire(lpage_styles(s),&(lpage_style){LP_COLOR_INDEXED|3,0,0,0},&id));
+  CHECK(lpage_put(s,0,0,(lpage_cell){'z',id,0,1,0,0})); lstyle_release(lpage_styles(s),id);
+  lpage_destroy(s);
+}
+int main(void) { ownership(); cached_capacity(); height_transfer(); heads(); bounded(); group_boundaries(); managed_styles(); puts("resize ownership, live page style capacities, logical boundaries and 9000 mixed resizes passed"); return 0; }

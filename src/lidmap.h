@@ -21,6 +21,9 @@ bool lidmap_init(lidmap *m, uint32_t capacity_hint);
 void lidmap_free(lidmap *m);
 void lidmap_clear(lidmap *m);
 bool lidmap_find(const lidmap *m, uint64_t key, uint32_t *value_out);
+/* Writable existing value, or NULL. Borrow expires on insert, erase, rehash,
+ * clear or free. Updating the value does not change table placement. */
+uint32_t *lidmap_value(lidmap *m, uint64_t key);
 uint32_t lidmap_get(const lidmap *m, uint64_t key, uint32_t missing);
 void lidmap_rehash_in_place(lidmap *m);
 bool lidmap_insert(lidmap *m, uint64_t key, uint32_t value);

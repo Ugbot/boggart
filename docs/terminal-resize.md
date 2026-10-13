@@ -4,7 +4,8 @@ The native `bterm_resize` and Lua `t:resize(columns, rows)` APIs now prepare
 and commit both screens transactionally. The current fixture has 46 cases /
 215 snapshots, all passing after logical page spans replaced physical-chunk
 membership in the cached-grow head scan. The extended 11-case/79-snapshot
-gate has three managed-capacity growth failures. The separate pinned SDK
+gate has two grapheme-capacity growth failures. Live cell-backed style
+references fix the style-capacity case. The separate pinned SDK
 Unicode profile fixes the mixed-script feed mismatches.
 BMUX-20 acceptance remains open as described below.
 
@@ -24,6 +25,10 @@ verifies the C growth calculation. Its capture and validation tools are Lua.
 The [bitmap allocator checkpoint](benchmarks/2026-10-13-sdk-bitmap.md) verifies
 1,581 exact SDK allocation operations and 400,000 independent mixed operations,
 providing the fragmentation state needed by live page accounting.
+The [live style checkpoint](benchmarks/2026-10-14-live-style-feed.md) connects
+the Venus map to cell references and retained capacity. It records the remaining
+grapheme failures and measured feed cost rather than claiming full parity or
+a performance improvement.
 
 ## Reproduce the reference
 
@@ -326,3 +331,20 @@ tests and reproduce the same three `terminal_resize_large` capacity failures
 gate remains 76/79 snapshots matching. Live page-local ownership and allocator
 accounting are still required before this calculation can drive page growth.
 BMUX-20 remains in progress; these checks make no performance improvement claim.
+
+## Live cell-backed style checkpoint (2026-10-14)
+
+The Venus map now tracks style refs per logical page and updates retained SDK
+capacity before new unique cell styles are written. Cache rebuilds are owned
+and staged; candidate resize geometry defers them, preserving source rollback
+and allocation-free commit. Allocated-storage queries include aligned map
+buffers. `lidmap_value` supplies a borrowed writable value for hot ref updates.
+
+Small SDK parity passes 46/215 snapshots and large parity improves to 77/79:
+the style-capacity snapshot is fixed, while the two grapheme-capacity final
+steps remain. Full normal verification is 131/132 (115.15 s) and final focused
+ASan/UBSan is 7/8 (53.00 s), failing only the remaining large compatibility
+test without sanitizer diagnostics. Complete cursor/managed ownership and
+performance gates remain open. The
+[controlled feed report](benchmarks/2026-10-14-live-style-feed.md) records the
+current accounting overhead and excludes renderer/PTY/application claims.
