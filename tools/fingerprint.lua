@@ -58,6 +58,9 @@ put("terminal_mouse", require("hash_c").sha256(probe:mouse{action="motion",butto
 put("terminal_input", require("hash_c").sha256(require("json").encode(probe:input_state())))
 probe:feed("\27[>31u")
 put("terminal_key", require("hash_c").sha256(probe:key{text="A",unshifted=97,base_layout=97,modifiers=require("terminal").SHIFT,consumed_modifiers=require("terminal").SHIFT}))
+probe:feed("\27[?2004;1004h")
+put("terminal_paste", require("hash_c").sha256(probe:paste("hello\nworld")))
+put("terminal_focus", require("hash_c").sha256(probe:focus(false)..probe:replies()))
 
 -- ---- the tools the model is offered ----------------------------------------
 -- The one place asymmetry is legitimate: the studio registers panel-drawing

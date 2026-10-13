@@ -32,6 +32,7 @@ struct bterm {
   bmouse_motion mouse_motion;
   uint32_t mouse_cell_width, mouse_cell_height;
   bool backarrow, ignore_keypad_numlock, alt_prefix, modify_other_keys_2;
+  bool focused;
   lpage_style pen;
   bool tabs[4096], failed;
   bterm_reply reply;

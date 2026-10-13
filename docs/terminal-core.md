@@ -187,7 +187,7 @@ return no values. `finish()` belongs at EOF, never at a read boundary.
 rows, live styles/links, link capacity bytes and queued reply bytes/capacity. Its screen byte count is not
 whole-terminal RSS or Lua allocation accounting. C grid allocations belong to
 the native core; snapshots and the userdata belong to Lua. `source()` returns
-the 22 source/header hashes embedded during CMake configuration. Changes to
+the 24 source/header hashes embedded during CMake configuration. Changes to
 those files trigger regeneration; the native benchmark compares them with the
 checkout and rejects a stale executable.
 
@@ -432,6 +432,62 @@ query replies, bounded stack overflow/pop, invalid negotiations, alternate
 screens, RIS and 1–17-byte chunks. Lua tests cover the full negotiated path,
 raw fields and validation; parity also fingerprints encoded keyboard bytes.
 
-Studio key/mouse routing and paste/focus helpers are subsequent BMUX-18 work.
-The studio still has its fixed key table and old parser; these native APIs do
-not claim that live Studio keyboard or mouse reporting is integrated.
+## Native paste and focus (BMUX-18 increment)
+
+`src/bpaste.c/h` ports the pinned `src/input/paste.zig` transformation. It replaces
+NUL, BS, ENQ, EOT, ESC, DEL and the pinned terminal-control byte set with spaces.
+Other bytes are preserved, including UTF-8 text and tabs. Mode 2004 frames the
+result with CSI `200~` / `201~` and preserves newlines. Without that mode, LF
+becomes CR, so CRLF becomes CRCR as in the pinned implementation. The C encoder
+accepts binary input, allocates nothing, checks size overflow and output capacity
+before writing, and permits overlapping buffers through `memmove`. The maximum
+added frame size is 12 bytes. Low-level `bpaste_encode` frames even empty data;
+the terminal wrapper suppresses an empty paste, matching the higher-level paste
+request's behavior. Invalid input/capacity leaves output unchanged and length zero.
+
+```lua
+local bytes = t:paste(clipboard_text) -- host sends the returned bytes once
+local heuristic = t:paste_safe(clipboard_text) -- optional policy input
+local focus_bytes = t:focus(false) -- false = lost, true = gained
+```
+
+`paste` accepts a string of at most 32 MiB, independently of the 4096-byte keyboard
+event bound. Lua allocates a buffer and copies its encoded result to a string;
+the core never owns or modifies the original Lua string. The binding rechecks
+the live terminal after allocation, which can run finalizers. `paste_safe` is
+the pinned, mode-aware heuristic: LF is flagged in unbracketed mode, and the
+7-bit bracket terminator is flagged in either mode. It is separate from encoding
+and does not authorize PTY writes or introduce an approval flow. This port
+provides the encoder; clipboard readers, MIME selection, Kitty paste-event OTP
+grants and higher-level host policy are not imported from `terminal/paste.zig`.
+
+Mode 1004 enables [focus reports](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-FocusIn-FocusOut):
+`focus(true)` returns CSI `I`, `focus(false)` returns CSI `O`, and disabled
+reporting returns an empty string. Successful calls record host focus even when
+reporting is off; insufficient C output capacity changes neither focus nor bytes.
+The method accepts actual host transitions and does not infer or deduplicate
+them. Enabling 1004 sends the current focus through the automatic reply sink,
+as the pinned stream handler does, including repeated enables. Explicit focus
+calls return bytes separately from that sink. New terminals start focused;
+the embedder should set the actual pane/window state when attaching a view.
+
+Focus belongs to the host view, so Boggart preserves it across RIS while
+disabling focus reporting and bracketed paste. This deliberately differs from
+the pinned full reset's default focus flag: a child's reset must not turn an
+unfocused pane into a focused one. Mouse/input negotiation and keyboard stacks
+still reset as documented above. Paste/focus modes remain global across screen
+switches. `input_state()` additionally copies `focused`, `focus_reporting` and
+`bracketed_paste`.
+
+`tests/c/paste.c` verifies exact framing/newline/Unicode vectors, all byte values,
+overlap, size overflow, every insufficient frame capacity and the optional
+heuristic. Native tests verify mode enable replies, actual focus events, atomic
+capacity failure, alternate screens, reset and 1–17-byte stream chunks. Lua tests
+cover binary replacement, large pastes, strict validation and closed objects.
+CLI/studio parity fingerprints paste output and focus output/replies.
+
+Studio key/mouse/paste/focus routing remains BMUX-18 work. The studio still has
+its fixed key table and old parser; native resize/reflow and the libuv PTY path
+must replace that path before negotiated input can become authoritative without
+duplicating parsing or grid ownership. These native APIs do not claim live
+Studio input integration.

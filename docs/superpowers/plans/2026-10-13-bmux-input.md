@@ -56,7 +56,8 @@ press/release events with no button; motion may carry no button.
 Progress:
 - [x] Mouse encoding and native negotiated state + Lua API.
 - [x] Keyboard encoding, notices, flags and native protocol negotiation.
-- [ ] Paste/focus helpers and host input integration.
+- [x] Paste/focus helpers.
+- [ ] Host input integration on the native resize/PTY path.
 - [ ] Studio key/mouse routing and removal of the fixed table.
 - [ ] Story acceptance evidence and completion.
 
@@ -78,3 +79,13 @@ backend identity now includes 22 source/header files. Strict invalid UTF-8 and
 C1 associated-text filtering are documented adaptations. Kitty functional
 numbers derive from the primary protocol; `kitty.zig` stays studied. Studio
 still uses its old input/output path; paste/focus helpers and routing are pending.
+
+Paste/focus increment evidence (2026-10-13): both builds pass; focused terminal
+tests pass 14/14 (7.27 seconds), ASan/UBSan terminal checks pass 14/14 (8.67
+seconds), full serial CTest passes 115/115 (147.97 seconds), and CLI/studio core
+parity matches 30 fields. Attribution validates 40 pinned modules and 22 ported
+files; compiled identity includes 24 source/header files. Focus mode enables
+emit the current host focus, and host focus survives RIS. The paste transform
+and optional heuristic remain separate. These helpers complete native input
+encoding; live Studio routing still requires the single native parser/grid,
+Unicode width/graphemes (BMUX-19), resize/reflow (BMUX-20) and libuv PTY (BMUX-21).

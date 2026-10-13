@@ -42,6 +42,7 @@ static void mode(bterm *t, unsigned p, bool private_mode, bool enabled) {
     default: return;
   }
   if (enabled) t->modes |= bit; else t->modes &= ~bit;
+  if (bit == BT_FOCUS && enabled) bt_reply(t, t->focused ? "\033[I" : "\033[O", 3);
   if (bit == BT_ORIGIN) bt_home(t);
 }
 static void display_erase(bterm *t, unsigned p) {
