@@ -5,6 +5,11 @@ and terminal grapheme widths. The immutable property table is compiled once into
 `boggart_unicode`; lookup and segmentation allocate no memory. The table has
 122 unique 256-scalar pages and occupies 71,168 bytes.
 
+CLI, Studio, termctl and the terminal backend share this library through CMake.
+`src/utf8width.h` retains compatibility names without embedding another table;
+`tc_wcwidth` delegates to the same lookup. Terminal build identity includes the
+kernel, interface and generated table (27 compiled source/header hashes).
+
 The version is deliberately Unicode **16.0.0**, matching the existing Boggart
 width table. `THIRD_PARTY/unicode/manifest.json` records the official source URL
 and SHA-256 for every input and conformance fixture. `THIRD_PARTY/unicode-LICENSE`
@@ -51,3 +56,16 @@ without storing the text. A streaming terminal still needs cell ownership for
 that text. Native grid wide-pair repair and grapheme storage remain required for
 BMUX-19 completion; resize/reflow is BMUX-20. Renderer and string measurement
 must switch to cluster units together so text layout agrees with painting.
+
+The shared UTF-8 decoder accepts an explicit end pointer or a NUL-terminated
+string. It rejects overlong encodings, surrogates, values beyond U+10FFFF and
+truncated sequences, returning U+FFFD with one byte of progress per bad byte.
+Explicitly sized strings preserve embedded NUL scalars. This intentionally
+replaces the previous decoder's partial-codepoint/opaque-byte fallback.
+Scalar string widths saturate at INT_MAX, prefix arithmetic cannot overflow,
+and Lua column budgets clamp before conversion to C int. Existing `sys.width`
+and `sys.wtake` continue to measure scalar units, matching the current Studio
+renderer. A ZWJ emoji still measures four cells there; the explicit grapheme API
+measures two. The renderer, native cells and consumers must migrate together.
+
+Integration verification: full serial CTest passed 116/116 (110.93 s); focused normal and ASan/UBSan tests passed 18/18; CLI/Studio parity passed with 31 identical fields, including width and prefix vectors. Generator reproducibility, malformed-input checks and pinned Ghostty attribution passed. BMUX-19 remains in progress for native cell and renderer integration.

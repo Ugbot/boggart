@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <limits.h>
 
 /* POSIX regex + glob back the fast text/file helpers (sys.re_*, sys.glob) that
  * gold wraps. They are not in the Lua stdlib and Lua patterns are far weaker
@@ -594,7 +595,7 @@ static int l_add_history(lua_State *L) {
  * How many monospace cells `s` occupies. Not #s, which is bytes, and not
  * utf8.len(s), which is characters: a Japanese ideograph is one character,
  * three bytes and two columns, and Lua can compute the first two of those and
- * not the third. The tables are Unicode's and live in utf8width.h, which is
+ * not the third. The shared Unicode table lives in bunicode_data.h, which is
  * why this is here rather than in the harness -- both the studio's renderer
  * and lua/dash.lua's line arithmetic have to agree, and a table transcribed
  * into Lua would be a second copy to keep in step.
@@ -621,6 +622,7 @@ static int l_wtake(lua_State *L) {
   const char *s = luaL_checklstring(L, 1, &len);
   lua_Integer cols = luaL_checkinteger(L, 2);
   if (cols < 0) { cols = 0; }
+  if (cols > INT_MAX) { cols = INT_MAX; }
   int used = 0;
   size_t n = bog_str_take(s, len, (int) cols, &used);
   lua_pushlstring(L, s, n);

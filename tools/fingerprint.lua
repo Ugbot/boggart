@@ -44,6 +44,13 @@ put("events", tostring(bog.events ~= nil))
 put("git", sorted_keys(git))
 local terminal = require "terminal"
 put("terminal", sorted_keys(terminal))
+local width_vectors = {"é日😀", "e\u{301}", "👩‍💻", "\192\128", "a\0b"}
+local width_results = {}
+for _, text in ipairs(width_vectors) do
+  local prefix, used = sys.wtake(text, 3)
+  width_results[#width_results + 1] = {sys.width(text), prefix, used}
+end
+put("unicode_width", require("hash_c").sha256(require("json").encode(width_results)))
 local probe <close> = terminal.new(8, 3, 2)
 probe:feed("\27[38;2;1;2;3mX\27[?1049hALT\27[?1049l\27[6n")
 put("terminal_grid", require("hash_c").sha256(require("json").encode(probe:snapshot(true))))

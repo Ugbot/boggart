@@ -5,6 +5,7 @@
  */
 #include "bunicode.h"
 #include "bunicode_data.h"
+#include <limits.h>
 
 static bool valid(uint32_t cp) {
   return cp <= 0x10ffff && !(cp >= 0xd800 && cp <= 0xdfff);
@@ -83,4 +84,53 @@ int bunicode_grapheme_width(const uint32_t *cps, size_t length, size_t *consumed
   }
   if (consumed) *consumed = n;
   return width;
+}
+
+const char *bunicode_utf8_next(const char *p, const char *end, uint32_t *cp) {
+  *cp = 0;
+  if ((end && p == end) || (!end && !*p)) return p;
+  uint8_t first = (uint8_t)*p;
+  if (first < 0x80) { *cp = first; return p + 1; }
+  unsigned length;
+  uint32_t value, minimum;
+  if (first >= 0xc2 && first <= 0xdf) { length = 2; value = first & 0x1f; minimum = 0x80; }
+  else if (first >= 0xe0 && first <= 0xef) { length = 3; value = first & 0x0f; minimum = 0x800; }
+  else if (first >= 0xf0 && first <= 0xf4) { length = 4; value = first & 7; minimum = 0x10000; }
+  else goto invalid;
+  for (unsigned i = 1; i < length; i++) {
+    if (end && (size_t)(end - p) <= i) goto invalid;
+    uint8_t next = (uint8_t)p[i];
+    if ((next & 0xc0) != 0x80) goto invalid;
+    value = (value << 6) | (next & 0x3f);
+  }
+  if (value < minimum || !valid(value)) goto invalid;
+  *cp = value; return p + length;
+invalid:
+  *cp = 0xfffd; return p + 1;
+}
+
+int bunicode_str_width(const char *s, size_t length) {
+  if (!length) return 0;
+  const char *p = s, *end = s + length; int width = 0;
+  while (p < end) {
+    uint32_t cp; p = bunicode_utf8_next(p, end, &cp);
+    int cells = bunicode_width(cp);
+    if (width > INT_MAX - cells) return INT_MAX;
+    width += cells;
+  }
+  return width;
+}
+
+size_t bunicode_str_take(const char *s, size_t length, int columns, int *used) {
+  if (used) *used = 0;
+  if (!length || columns < 0) return 0;
+  const char *p = s, *end = s + length; int width = 0;
+  while (p < end) {
+    uint32_t cp; const char *next = bunicode_utf8_next(p, end, &cp);
+    int cells = bunicode_width(cp);
+    if (cells > columns - width) break;
+    width += cells; p = next;
+  }
+  if (used) *used = width;
+  return (size_t)(p - s);
 }

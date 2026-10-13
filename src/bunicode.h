@@ -50,4 +50,13 @@ bunicode_width_effect bunicode_grapheme_width_effect(uint32_t previous, uint32_t
 /* First complete cluster in a scalar array; no input mutation. Empty => 0/0.
  * consumes ignored selectors too. This measures terminal cells, not pixels. */
 int bunicode_grapheme_width(const uint32_t *cps, size_t length, size_t *consumed);
+
+/* Decode one scalar. end may be NULL for NUL-terminated input. An invalid or
+ * truncated encoding yields U+FFFD and consumes exactly one byte. At an empty
+ * bounded input (or a NUL terminator without end), returns p and sets cp to 0. */
+const char *bunicode_utf8_next(const char *p, const char *end, uint32_t *cp);
+/* Compatibility measurement: sum scalar widths, saturating at INT_MAX.
+ * These deliberately do not collapse clusters until the renderers do. */
+int bunicode_str_width(const char *s, size_t length);
+size_t bunicode_str_take(const char *s, size_t length, int columns, int *used);
 #endif

@@ -139,7 +139,9 @@ match whole versus one-byte feeds and release styles on reset. The standalone
 suite is included in sanitizer builds.
 
 Cells currently hold one scalar with width 1: grapheme/wide-cell behaviour is
-BMUX-19, and geometry/reflow is BMUX-20. Character-set designation, soft reset,
+BMUX-19, and geometry/reflow is BMUX-20. A shared generated Unicode 16.0.0
+kernel now supplies scalar widths and streaming grapheme boundaries; see
+[unicode.md](unicode.md). Cell integration remains pending. Character-set designation, soft reset,
 selective erasure, DCS/APC extensions and live PTY
 consumers are not yet implemented. The pinned Ghostty differential suite is
 BMUX-23. Keep BMUX-16 open until vim, htop, less and tmux rendering is verified
