@@ -9,6 +9,7 @@
  */
 #include "lpage.h"
 #include "lpage_internal.h"
+#include "lidmap.h"
 #include <stdlib.h>
 #include <string.h>
 #define PAGE_ROWS 16
@@ -27,13 +28,19 @@ struct page {
   row rows[PAGE_ROWS];
   lpage_cell cells[];
 };
-typedef struct { lp_capacity capacity; size_t rows; } logical_page;
+typedef struct {
+  lp_capacity capacity; size_t rows;
+  lidmap style_refs;
+  bool styles_dirty;
+} logical_page;
 struct lpage_screen {
   size_t columns, rows, head, history_limit, history_capacity, history_head, history_count;
   row **visible, **history;
   page *pages, *available;
   size_t page_count;
   bool damage_all;
+  bool defer_managed; /* unpublished resize geometry rebuilds caches lazily */
+  bool style_tracking;
   lstyle_pool *styles;
   llink_pool *links;
   lgrapheme_pool *graphemes;
@@ -50,6 +57,14 @@ static lp_layout_shape group_shape(void) {
 }
 static logical_page *group_at(const lpage_screen *s,size_t i) {
   return &s->groups[(s->group_head+i)%s->group_capacity];
+}
+static void group_destroy(logical_page *g) { lidmap_free(&g->style_refs); memset(g,0,sizeof *g); }
+static void groups_destroy(lpage_screen *s) {
+  for (size_t i=0;i<s->group_count;i++) group_destroy(group_at(s,i));
+  free(s->groups); s->groups=NULL; s->group_count=s->group_capacity=s->group_head=0;
+}
+static void styles_dirty(lpage_screen *s) {
+  for (size_t i=0;i<s->group_count;i++) group_at(s,i)->styles_dirty=true;
 }
 static bool group_reserve(lpage_screen *s) {
   if (s->group_count<s->group_capacity) return true;
@@ -71,7 +86,7 @@ static bool group_append(lpage_screen *s) {
   logical_page *last=s->group_count ? group_at(s,s->group_count-1) : NULL;
   if (!last || last->rows==last->capacity.rows) {
     lp_capacity cap; if (!lp_capacity_initial(group_shape(),(uint16_t)s->columns,&cap)) return false;
-    last=group_at(s,s->group_count++); *last=(logical_page){cap,0};
+    last=group_at(s,s->group_count++); *last=(logical_page){.capacity=cap};
   }
   last->rows++; return true;
 }
@@ -79,7 +94,7 @@ static void group_drop(lpage_screen *s,size_t n) {
   while (n && s->group_count) {
     logical_page *first=group_at(s,0);
     if (n<first->rows) { first->rows-=n; return; }
-    n-=first->rows; *first=(logical_page){0};
+    n-=first->rows; group_destroy(first);
     s->group_head=(s->group_head+1)%s->group_capacity; s->group_count--;
   }
 }
@@ -157,7 +172,7 @@ void lpage_destroy(lpage_screen *s) {
   if (!s) return;
   page *p = s->pages;
   while (p) { page *next = p->next; free(p); p = next; }
-  free(s->visible); free(s->history); free(s->groups); lstyle_destroy(s->styles); llink_destroy(s->links); lgrapheme_destroy(s->graphemes); free(s);
+  free(s->visible); free(s->history); groups_destroy(s); lstyle_destroy(s->styles); llink_destroy(s->links); lgrapheme_destroy(s->graphemes); free(s);
 }
 /* Unlike whole-screen destruction, retiring geometry must release each live
  * cell because the pools survive. Unused page slots own no references. */
@@ -169,12 +184,13 @@ static void geometry_free(lpage_screen *s) {
       for (size_t x=0;x<s->columns;x++) lpage_release_cell(s,p->rows[slot].cells[x]);
     free(p); p=next;
   }
-  free(s->visible); free(s->history); free(s->groups);
+  free(s->visible); free(s->history); groups_destroy(s);
 }
 lpage_screen *lp_geometry_new(const lpage_screen *source,size_t columns,size_t rows) {
   if (!columns || !rows || columns>4096 || rows>4096) return NULL;
   lpage_screen *s=calloc(1,sizeof *s); if (!s) return NULL;
   s->columns=columns; s->rows=rows; s->history_limit=source->history_limit;
+  s->defer_managed=true;
   s->styles=source->styles; s->links=source->links; s->graphemes=source->graphemes;
   s->visible=calloc(rows,sizeof *s->visible);
   if (!s->visible) { free(s); return NULL; }
@@ -192,6 +208,83 @@ bool lp_geometry_row(lpage_screen *s,size_t y,size_t capacity) {
 }
 static row *absolute_row(const lpage_screen *s,size_t y) {
   return y<s->history_count ? s->history[(s->history_head+y)%s->history_capacity] : at(s,y-s->history_count);
+}
+static size_t style_limit(uint32_t requested) {
+  if (!requested) return 0;
+  size_t table=1; while (table<requested) table*=2;
+  size_t items=table*13/16; return items ? items-1 : 0;
+}
+static bool style_grow(lp_capacity *cap,size_t count,size_t rows) {
+  while (count>style_limit(cap->styles)) {
+    lp_capacity next;
+    /* A set rejects the pending unique style before increasing capacity. */
+    if (!lp_capacity_grow(group_shape(),*cap,LP_GROW_STYLES,(uint32_t)(count-1),(uint16_t)rows,&next)) return false;
+    *cap=next;
+  }
+  return true;
+}
+static bool style_map_add(lidmap *map,uint32_t id) {
+  if (!id) return true;
+  uint32_t *refs=lidmap_value(map,id);
+  if (refs) { if (*refs==UINT32_MAX) return false; (*refs)++; return true; }
+  return lidmap_insert(map,id,1);
+}
+static bool style_prepare(lpage_screen *s,logical_page *g,size_t first,uint32_t incoming,uint32_t **refs_out) {
+  *refs_out=NULL;
+  bool rebuild=!g->style_refs.capacity || g->styles_dirty;
+  uint32_t *existing=incoming && g->style_refs.capacity ? lidmap_value(&g->style_refs,incoming) : NULL;
+  bool fresh=incoming && !existing;
+  if (!rebuild && !fresh) { *refs_out=existing; return true; }
+  lp_capacity cap=g->capacity;
+  if (!rebuild && !style_grow(&cap,g->style_refs.count+1,g->rows)) return false;
+  if (!rebuild && cap.styles==g->capacity.styles) return true;
+  uint32_t hint=cap.styles ? cap.styles : 16;
+  for (;;) {
+    /* Venus doubles its hint before rounding. The SDK's 13/16 item limit
+     * fits the Swiss map's 7/8 limit at the same bucket count. */
+    uint32_t buckets=16; while (buckets<hint) buckets*=2;
+    lidmap candidate={0}; if (!lidmap_init(&candidate,buckets/2)) return false;
+    bool ok=true;
+    for (size_t y=first;y<first+g->rows && ok;y++) {
+      row *r=absolute_row(s,y);
+      for (size_t x=0;x<s->columns && ok;x++) ok=style_map_add(&candidate,r->cells[x].style);
+    }
+    bool pending=incoming && !lidmap_find(&candidate,incoming,NULL);
+    size_t count=candidate.count+(pending ? 1 : 0);
+    if (ok && !style_grow(&cap,count,g->rows)) { lidmap_free(&candidate); return false; }
+    if (ok && hint>=cap.styles) {
+      lidmap_free(&g->style_refs); g->style_refs=candidate; g->capacity=cap; g->styles_dirty=false; s->style_tracking=true;
+      *refs_out=incoming ? lidmap_value(&g->style_refs,incoming) : NULL; return true;
+    }
+    lidmap_free(&candidate);
+    if (hint>=65536) return false;
+    hint=cap.styles>hint ? cap.styles : hint*2;
+  }
+}
+static logical_page *style_group(lpage_screen *s,size_t y,size_t *first_out) {
+  size_t first=0;
+  for (size_t i=0;i<s->group_count;i++) {
+    logical_page *g=group_at(s,i);
+    if (y-first<g->rows) { *first_out=first; return g; }
+    first+=g->rows;
+  }
+  return NULL;
+}
+static void styles_dirty_row(lpage_screen *s,const row *r) {
+  if (s->defer_managed) return;
+  size_t first=0;
+  for (size_t i=0;i<s->group_count;i++) {
+    logical_page *g=group_at(s,i);
+    for (size_t y=first;y<first+g->rows;y++) if (absolute_row(s,y)==r) { g->styles_dirty=true; return; }
+    first+=g->rows;
+  }
+  /* A newly allocated padding row joins its destination after fill. */
+  styles_dirty(s);
+}
+static void style_remove(lidmap *map,uint32_t id) {
+  if (!id) return;
+  uint32_t *refs=lidmap_value(map,id);
+  if (refs && *refs>1) (*refs)--; else (void)lidmap_erase(map,id);
 }
 static row *next_free_row(page **p,unsigned *slot) {
   while (*p) {
@@ -235,6 +328,7 @@ bool lp_row_page_has_head(const lpage_screen *s,size_t y) {
   return false;
 }
 bool lp_geometry_crop_groups(lpage_screen *dst,const lpage_screen *src,size_t end,size_t padding) {
+  for (size_t i=0;i<dst->group_count;i++) group_destroy(group_at(dst,i));
   dst->group_head=dst->group_count=0;
   size_t first=0;
   for (size_t i=0;i<src->group_count && first<end;i++) {
@@ -254,7 +348,7 @@ bool lp_geometry_crop_groups(lpage_screen *dst,const lpage_screen *src,size_t en
     while (n) {
       if (!group_reserve(dst)) return false;
       size_t take=n<cap.rows ? n : cap.rows;
-      *group_at(dst,dst->group_count++)=(logical_page){cap,take}; n-=take;
+      *group_at(dst,dst->group_count++)=(logical_page){.capacity=cap,.rows=take}; n-=take;
     }
     first+=source->rows;
   }
@@ -284,9 +378,9 @@ void lp_geometry_replace(lpage_screen *s,lpage_screen *geometry) {
         } else if (!(p->free_bits&(1u<<slot))) free_row(geometry,r);
     }
     lp_geometry_trim(geometry);
-    free(s->visible); free(s->history); free(s->groups); geometry->borrow_source=NULL;
+    free(s->visible); free(s->history); groups_destroy(s); geometry->borrow_source=NULL;
   } else geometry_free(s);
-  *s=*geometry; free(geometry);
+  geometry->defer_managed=false; *s=*geometry; free(geometry);
 }
 size_t lpage_columns(const lpage_screen *s) { return s->columns; }
 size_t lpage_rows(const lpage_screen *s) { return s->rows; }
@@ -342,9 +436,44 @@ static bool put_cell(lpage_screen *s, size_t y, size_t x, lpage_cell cell,bool r
   if (!lpage_retain_cell(s, cell)) return false;
   lpage_cell tail={0,cell.style,cell.hyperlink,0,LP_CELL_WIDE_TAIL | (cell.flags & LP_CELL_PROTECTED),0};
   if (cell.width == 2 && !lpage_retain_cell(s, tail)) { lpage_release_cell(s, cell); return false; }
+  bool managed=!s->defer_managed && (cell.style || (s->style_tracking && (r->cells[x].style || (cell.width==2 && r->cells[x+1].style))));
+  bool same_styles=!managed || (cell.style==r->cells[x].style && (cell.width!=2 || cell.style==r->cells[x+1].style));
+  if (managed && !same_styles && cell.style && (r->cells[x].width==2 || (r->cells[x].flags&LP_CELL_WIDE_TAIL)
+    || (cell.width==2 && (r->cells[x+1].width==2 || (r->cells[x+1].flags&LP_CELL_WIDE_TAIL))))) {
+    /* Reserve the new unique style while the old wide glyph still exists.
+     * Pair repair can retire its last refs before the replacement is written. */
+    size_t first; uint32_t *ignored;
+    logical_page *before=style_group(s,s->history_count+y,&first);
+    if (!before || !style_prepare(s,before,first,cell.style,&ignored)) {
+      lpage_release_cell(s,cell); if (cell.width==2) lpage_release_cell(s,tail); return false;
+    }
+  }
   if ((repair_head && x<=1 && r->cells[0].width==2 && !clear_previous_head(s,y,cell.style))
       || !break_pair(s, r, x, cell.style) || (cell.width == 2 && !break_pair(s, r, x + 1, cell.style))) {
     lpage_release_cell(s, cell); if (cell.width == 2) lpage_release_cell(s, tail); return false;
+  }
+  logical_page *g=NULL;
+  if (managed && !same_styles) {
+    size_t first; uint32_t *incoming_refs=NULL;
+    g=style_group(s,s->history_count+y,&first);
+    if (!g || !style_prepare(s,g,first,cell.style,&incoming_refs)) {
+      lpage_release_cell(s,cell); if (cell.width==2) lpage_release_cell(s,tail); return false;
+    }
+    if (incoming_refs) {
+      if (*incoming_refs>UINT32_MAX-cell.width) {
+        lpage_release_cell(s,cell); if (cell.width==2) lpage_release_cell(s,tail); return false;
+      }
+      *incoming_refs+=cell.width;
+    } else {
+      if (!style_map_add(&g->style_refs,cell.style)) {
+        lpage_release_cell(s,cell); if (cell.width==2) lpage_release_cell(s,tail); return false;
+      }
+      if (cell.width==2 && !style_map_add(&g->style_refs,cell.style)) {
+        style_remove(&g->style_refs,cell.style); lpage_release_cell(s,cell); lpage_release_cell(s,tail); return false;
+      }
+    }
+    style_remove(&g->style_refs,r->cells[x].style);
+    if (cell.width==2) style_remove(&g->style_refs,r->cells[x+1].style);
   }
   lpage_release_cell(s, r->cells[x]); r->cells[x] = cell; r->dirty = true;
   if (cell.width == 2) {
@@ -369,6 +498,9 @@ bool lpage_append_grapheme(lpage_screen *s,size_t y,size_t x,uint32_t cp,unsigne
   bool ok=put_cell(s,y,x,cell,width!=old->width); lgrapheme_release(s->graphemes,id); return ok;
 }
 static bool fill(lpage_screen *s, row *r, size_t x, size_t n, uint32_t style, bool release_old) {
+  if (s->style_tracking && release_old) {
+    for (size_t i=x;i<x+n;i++) if (r->cells[i].style!=style) { styles_dirty_row(s,r); break; }
+  }
   for (size_t i = x; i < x + n; i++) {
     if (style && !lstyle_retain(s->styles, style)) return false;
     if (release_old) lpage_release_cell(s, r->cells[i]);
@@ -398,6 +530,7 @@ static bool edit(lpage_screen *s, size_t y, size_t x, size_t n, uint32_t style, 
   if (y >= s->rows || x > s->columns || !lstyle_retain(s->styles, style)) return false;
   if (n > s->columns - x) n = s->columns - x;
   row *r = at(s, y);
+  if (n) styles_dirty(s);
   /* Splitting a glyph at either cut boundary erases that whole glyph before
    * ownership is transferred by memmove. Internal whole pairs move intact. */
   size_t boundary = insert ? s->columns - n : x + n;
@@ -464,6 +597,9 @@ static bool scroll_one(lpage_screen *s, size_t top, size_t bottom, bool up, bool
     for (size_t y = bottom; y > top; y--) set(s, y, at(s, y - 1));
     set(s, top, blank);
   }
+  /* Appending a default blank to history keeps every retained row in its
+   * logical group. fill already invalidated changed evicted style counts. */
+  if (!(up && history && s->history_limit && !style)) styles_dirty(s);
   return true;
 }
 bool lpage_scroll(lpage_screen *s, size_t top, size_t bottom, int count, bool history, uint32_t style) {
@@ -494,6 +630,7 @@ void lp_geometry_trim(lpage_screen *s) {
   }
 }
 void lpage_clear_history(lpage_screen *s) {
+  styles_dirty(s);
   for (size_t i=0;i<s->history_count;i++) free_row(s,s->history[(s->history_head+i)%s->history_capacity]);
   group_drop(s,s->history_count); s->history_count=s->history_head=0; lp_geometry_trim(s);
 }
@@ -514,5 +651,9 @@ lpage_stats lpage_usage(const lpage_screen *s) {
   stats.bytes = sizeof *s + (s->rows + s->history_capacity) * sizeof(row *)
     + lstyle_bytes(s->styles) + stats.link_bytes + stats.grapheme_bytes + s->group_capacity*sizeof *s->groups;
   for (const page *p=s->pages;p;p=p->next) stats.bytes+=sizeof *p+PAGE_ROWS*p->columns*sizeof(lpage_cell);
+  for (size_t i=0;i<s->group_count;i++) {
+    size_t n=group_at(s,i)->style_refs.capacity;
+    if (n) stats.bytes+=((n+16+63)&~(size_t)63)+((n*8+63)&~(size_t)63)+((n*4+63)&~(size_t)63);
+  }
   return stats;
 }

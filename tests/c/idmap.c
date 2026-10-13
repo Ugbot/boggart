@@ -124,4 +124,15 @@ static void churn(void) {
   lidmap_free(&m); CHECK(live==0);
   printf("idmap: %zu model-checked operations, 20-second soak, no operation allocations\n",operations);
 }
-int main(void) { failure(); masks(); limits(); churn(); return 0; }
+static void mutable_values(void) {
+  lidmap m={0}; CHECK(lidmap_init(&m,16));
+  CHECK(!lidmap_value(&m,UINT64_MAX)); CHECK(lidmap_insert(&m,UINT64_MAX,0));
+  uint32_t *value=lidmap_value(&m,UINT64_MAX); CHECK(value && !*value);
+  size_t before=allocations; uint32_t count=m.count,tombstones=m.tombstones;
+  *value=UINT32_MAX;
+  uint32_t actual=0; CHECK(lidmap_find(&m,UINT64_MAX,&actual) && actual==UINT32_MAX);
+  CHECK(lidmap_get(&m,UINT64_MAX,0)==UINT32_MAX && m.count==count && m.tombstones==tombstones);
+  *value=1; CHECK(lidmap_get(&m,UINT64_MAX,0)==1 && allocations==before); mirror(&m);
+  lidmap_free(&m);
+}
+int main(void) { failure(); masks(); limits(); mutable_values(); churn(); return 0; }

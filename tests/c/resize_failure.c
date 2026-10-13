@@ -14,6 +14,20 @@ static bool fail(void) {
 }
 static void *fault_malloc(size_t size) { return fail() ? NULL : malloc(size); }
 static void *fault_calloc(size_t n,size_t size) { return fail() ? NULL : calloc(n,size); }
+#if defined(_WIN32)
+#include <malloc.h>
+static void *fault_aligned_alloc(size_t size,size_t alignment) { return fail() ? NULL : _aligned_malloc(size,alignment); }
+#define _aligned_malloc fault_aligned_alloc
+#else
+static void *fault_aligned_alloc(size_t alignment,size_t size) { return fail() ? NULL : aligned_alloc(alignment,size); }
+#define aligned_alloc fault_aligned_alloc
+#endif
+#include "../../src/lidmap.c"
+#if defined(_WIN32)
+#undef _aligned_malloc
+#else
+#undef aligned_alloc
+#endif
 #define malloc fault_malloc
 #define calloc fault_calloc
 #include "../../src/lpage.c"
@@ -46,6 +60,17 @@ static void capture(lpage_screen *s,image *out) {
   const unsigned char *group_data=(const unsigned char *)s->groups;
   for (size_t i=0;i<s->group_capacity*sizeof *s->groups;i++) {
     out->group_bytes^=group_data[i]; out->group_bytes*=UINT64_C(1099511628211);
+  }
+  for (size_t i=0;i<s->group_count;i++) {
+    const lidmap *m=&group_at(s,i)->style_refs;
+    for (size_t j=0;m->capacity && j<m->capacity+16;j++) {
+      out->group_bytes^=m->ctrl[j]; out->group_bytes*=UINT64_C(1099511628211);
+    }
+    for (size_t j=0;j<m->capacity;j++) if (m->ctrl[j]<128) {
+      const unsigned char *key=(const unsigned char *)&m->keys[j],*value=(const unsigned char *)&m->values[j];
+      for (size_t k=0;k<sizeof m->keys[j];k++) { out->group_bytes^=key[k]; out->group_bytes*=UINT64_C(1099511628211); }
+      for (size_t k=0;k<sizeof m->values[j];k++) { out->group_bytes^=value[k]; out->group_bytes*=UINT64_C(1099511628211); }
+    }
   }
   out->page_bytes=UINT64_C(14695981039346656037);
   for (const page *p=s->pages;p;p=p->next) {

@@ -288,8 +288,7 @@ static inline uint32_t lidmap_ctz_(uint32_t x) {
 }
 
 /* Find. */
-bool lidmap_find(const lidmap *m, uint64_t key,
-                                  uint32_t *value_out) {
+static uint32_t *lidmap_find_value_(const lidmap *m, uint64_t key) {
     LIDMAP_ASSERT(m != NULL && m->ctrl != NULL);
     const uint64_t h = lidmap_hash_u64(key);
     const uint8_t tag = lidmap_tag_(h);
@@ -303,18 +302,23 @@ bool lidmap_find(const lidmap *m, uint64_t key,
             const uint32_t lane = lidmap_ctz_(tags);
             const uint32_t p = (base + lane) & m->mask;
             if (m->keys[p] == key) {
-                if (value_out != NULL) *value_out = m->values[p];
-                return true;
+                return &m->values[p];
             }
             tags &= tags - 1u;
         }
         if (gm.empty != 0u) {
-            return false;
+            return NULL;
         }
         base = (base + LIDMAP_GROUP) & m->mask;
     }
-    return false;
+    return NULL;
 }
+bool lidmap_find(const lidmap *m,uint64_t key,uint32_t *out) {
+    uint32_t *value=lidmap_find_value_(m,key);
+    if (value && out) *out=*value;
+    return value!=NULL;
+}
+uint32_t *lidmap_value(lidmap *m,uint64_t key) { return lidmap_find_value_(m,key); }
 
 uint32_t lidmap_get(const lidmap *m, uint64_t key,
                                      uint32_t missing) {
