@@ -54,7 +54,8 @@
       "ported_files": [
         "src/lpage.c",
         "src/lpage.h",
-        "src/lpage_resize.c"
+        "src/lpage_resize.c",
+        "src/lpage_layout.c"
       ]
     },
     {
@@ -66,7 +67,9 @@
         "src/lpage.h",
         "src/lgrapheme.c",
         "src/lgrapheme.h",
-        "src/lpage_resize.c"
+        "src/lpage_resize.c",
+        "src/lpage_layout.c",
+        "src/lpage_layout.h"
       ]
     },
     {
@@ -90,7 +93,8 @@
       "ported_files": [
         "src/lstyle.c",
         "src/lstyle.h",
-        "src/llink.c"
+        "src/llink.c",
+        "src/lpage_layout.c"
       ]
     },
     {
@@ -322,6 +326,38 @@
       "sha256": "d80ea8fdecd3da3a9eeefec9a87b92edfc0f2f6db92d23953a7e2003976ffbc7",
       "status": "studied",
       "ported_files": []
+    },
+    {
+      "upstream_path": "src/terminal/ref_counted_set.zig",
+      "sha256": "e85a6de1d297a11c2291b52eabe024364134aa2afd7514135527831b88cdfefc",
+      "status": "ported",
+      "ported_files": [
+        "src/lpage_layout.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/bitmap_allocator.zig",
+      "sha256": "bac61a65b5a3141ccfad2d9d0a6a452be7106a647182470fcf38e1289b5f86e1",
+      "status": "ported",
+      "ported_files": [
+        "src/lpage_layout.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/hash_map.zig",
+      "sha256": "37e3259bfee3e92f9002606bf48e90063678e1a3f30ea4c52958ae90ca7e3405",
+      "status": "ported",
+      "ported_files": [
+        "src/lpage_layout.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/hyperlink.zig",
+      "sha256": "8b7db5f00723871e268034f314c1dec6dcfeb99947abe9f63bf15f38b8786884",
+      "status": "ported",
+      "ported_files": [
+        "src/lpage_layout.c"
+      ]
     }
   ],
   "nested_licenses": [

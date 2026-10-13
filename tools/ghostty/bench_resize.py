@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import platform
 import re
+import shlex
 import shutil
 import statistics
 import subprocess
@@ -51,7 +52,12 @@ def identity(build):
         if sha(ROOT/path) != digest:
             raise ValueError('stale native source identity: '+path)
         source.append({'path':path,'sha256':digest})
-    if len(source) != 31:
+    cmake = (ROOT/'CMakeLists.txt').read_text()
+    contract = re.search(r'set\(BMUX_TERMINAL_SOURCE_FILES\s+([^)]*)\)', cmake)
+    if contract is None:
+        raise ValueError('missing native source identity contract')
+    expected = contract.group(1).split()
+    if len(source) != len(expected) or {s['path'] for s in source} != set(expected):
         raise ValueError('unexpected native source fingerprint; review the harness identity contract')
     cache = (build/'CMakeCache.txt').read_text()
     if 'BOGGART_SANITIZER:STRING=none' not in cache:
@@ -60,7 +66,16 @@ def identity(build):
     # vendored targets when export was disabled for the native core.
     commands = run(['ninja','-C',build,'-t','commands','libboggart_vt.a']).splitlines()
     selected = [c for c in commands if ' -c ' in c and ('CMakeFiles/boggart_vt.dir/' in c or 'CMakeFiles/boggart_unicode.dir/' in c)]
-    if len(selected) != 15:
+    core = re.search(r'add_library\(boggart_vt STATIC\s+([^)]*)\)', cmake)
+    if core is None:
+        raise ValueError('missing native core compilation contract')
+    expected_compilation = {(ROOT/p).resolve() for p in core.group(1).split()} | {(ROOT/'src/bunicode.c').resolve()}
+    compiled = []
+    for command in selected:
+        args = shlex.split(command)
+        path = Path(args[args.index('-c')+1])
+        compiled.append((path if path.is_absolute() else build/path).resolve())
+    if len(compiled) != len(expected_compilation) or set(compiled) != expected_compilation:
         raise ValueError('native core compilation list changed; review benchmark provenance')
     return {'source_files':source,'compile_commands':selected,
             'libraries':{name:sha(build/name) for name in ['libboggart_vt.a','libboggart_unicode.a']}}
