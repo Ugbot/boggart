@@ -23,7 +23,15 @@ for _, case in ipairs(cases) do
 end
 check(native.features.alt_screen and native.features.truecolor and native.features.wide and native.features.graphemes,
   "native feature boundary is explicit")
-check(#native.source.files == 31, "native identifies the compiled core, Unicode table, grapheme pool, resize and binding")
+local identified = {}
+for _, file in ipairs(native.source.files) do
+  check(not identified[file.path], "source identities are unique: " .. file.path)
+  identified[file.path] = true
+end
+for _, path in ipairs({ "src/lvt.c", "src/bunicode_data.h", "src/lgrapheme.c",
+  "src/lpage_resize.c", "src/lpage_layout.c", "src/lpage_layout.h", "src/lterminal.c" }) do
+  check(identified[path], "native identifies compiled terminal source: " .. path)
+end
 local terminal = require "terminal"
 local saved_source = terminal.source
 terminal.source = function()

@@ -928,7 +928,7 @@ add_test(NAME unicode COMMAND unicode_test
   ${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY/unicode/16.0.0/auxiliary/GraphemeBreakTest.txt)
 # Embed the sources actually compiled into this terminal backend. Benchmarks
 # reject a stale executable instead of attributing it to current disk contents.
-set(BMUX_TERMINAL_SOURCE_FILES src/lvt.c src/vt_table.h src/lstyle.c src/llink.c src/lpage.c src/lpage_resize.c
+set(BMUX_TERMINAL_SOURCE_FILES src/lvt.c src/vt_table.h src/lstyle.c src/llink.c src/lpage.c src/lpage_resize.c src/lpage_layout.c src/lpage_layout.h
   src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c src/lterminal.c
   src/lvt.h src/lstyle.h src/llink.h src/lpage.h src/lpage_internal.h src/bosc.h src/bmouse.h src/bkey.h src/bpaste.h src/bterm.h src/bterm_internal.h
   src/bunicode.c src/bunicode.h src/bunicode_data.h src/lgrapheme.c src/lgrapheme.h)
@@ -944,7 +944,7 @@ target_include_directories(boggart PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 if(TARGET boggart-studio)
   target_include_directories(boggart-studio PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 endif()
-add_library(boggart_vt STATIC src/lvt.c src/lstyle.c src/llink.c src/lpage.c src/lpage_resize.c src/lgrapheme.c
+add_library(boggart_vt STATIC src/lvt.c src/lstyle.c src/llink.c src/lpage.c src/lpage_resize.c src/lpage_layout.c src/lgrapheme.c
   src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c)
 target_include_directories(boggart_vt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(boggart_vt PUBLIC boggart_unicode)
@@ -961,6 +961,9 @@ add_test(NAME page_storage COMMAND page_storage_test)
 add_executable(page_resize_test tests/c/page_resize.c)
 target_link_libraries(page_resize_test PRIVATE boggart_vt)
 add_test(NAME page_resize COMMAND page_resize_test)
+add_executable(page_layout_test tests/c/page_layout.c)
+target_link_libraries(page_layout_test PRIVATE boggart_vt)
+add_test(NAME page_layout COMMAND page_layout_test)
 add_executable(resize_failure_test tests/c/resize_failure.c)
 target_link_libraries(resize_failure_test PRIVATE boggart_vt)
 add_test(NAME resize_failure COMMAND resize_failure_test)
@@ -1076,5 +1079,5 @@ endif()
 # Sanitizers on boggart's own code and the C tests (BOG-10); the vendored
 # interpreter and JSON lib too, so a misuse inside them is attributed.
 boggart_apply_sanitizer(boggart boggart-studio auth_threads_test assert_trap_test crash_handler_test
-                        termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt vt_parser_test page_storage_test page_resize_test resize_failure_test
+                        termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt vt_parser_test page_storage_test page_resize_test page_layout_test resize_failure_test
                         terminal_dispatch_test osc_commands_test terminal_events_test terminal_links_test mouse_encode_test terminal_mouse_test key_encode_test terminal_key_test paste_encode_test terminal_input_test boggart_unicode unicode_test wide_cells_test grapheme_cells_test terminal_unicode_test)

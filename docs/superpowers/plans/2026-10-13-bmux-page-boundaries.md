@@ -57,3 +57,25 @@ Observed constraints:
 
 The diagnostic is complete for the listed inputs. Logical page ownership and
 the remaining compatibility fix are still required.
+
+## C99 layout checkpoint
+
+`src/lpage_layout.c/.h` now compute page layout, column-capacity adjustment
+and initial capacity with explicit SDK target shape and 64-bit offsets.
+153 independent SDK arithmetic samples cover every represented region offset,
+zero metadata, rounding thresholds, maximum fields and initial fallback.
+The generated C fixture is dependency-free; `page_layout` is registered with
+CTest. Strict C99, the C test and ASan/UBSan pass. Four offline guards verify
+capture identity, generated expectations and rejection of inconsistent SDK
+samples. CLI and Studio build.
+
+Captured arithmetic conformance is established for the macOS arm64 SDK shape.
+Other shapes still need independent capture. The allocation/growth density
+policy and logical page lifecycle are pending; this checkpoint does not fix
+`cached_page_head_spill`. Details and reproduction are in
+`docs/benchmarks/2026-10-13-sdk-page-layout.md`.
+
+Final full suite: 125/126 (77.36s), only the existing page-grouping mismatch.
+ASan/UBSan `page_layout`, four fixture guards, four benchmark identity guards,
+seven topology guards and six oracle guards pass. The unchanged resize
+fixture checks at 43 cases/203 snapshots; attribution is 44 modules/29 files.

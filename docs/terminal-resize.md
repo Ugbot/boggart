@@ -10,6 +10,8 @@ actual page boundaries and managed-capacity growth. Its 59 frames agree with
 the independent C ABI oracle for row count/order and wrap/head flags. The
 [boundary implementation plan](superpowers/plans/2026-10-13-bmux-page-boundaries.md)
 describes the remaining logical page model needed to fix that mismatch.
+The [C99 layout checkpoint](benchmarks/2026-10-13-sdk-page-layout.md) verifies
+153 SDK arithmetic samples. Logical page ownership still needs to use it.
 
 ## Reproduce the reference
 
