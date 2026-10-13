@@ -23,4 +23,14 @@ typedef struct {
 bool lp_capacity_layout(lp_layout_shape shape, lp_capacity cap, lp_layout *out);
 bool lp_capacity_adjust(lp_layout_shape shape, lp_capacity cap, uint16_t columns, lp_capacity *out);
 bool lp_capacity_initial(lp_layout_shape shape, uint16_t columns, lp_capacity *out);
+typedef enum {
+  LP_GROW_REHASH, LP_GROW_STYLES, LP_GROW_GRAPHEMES, LP_GROW_HYPERLINKS, LP_GROW_STRINGS
+} lp_growth;
+/* SDK metadata growth: double (or restore a zero default), saturate at the
+ * field limit, then optionally project style/grapheme usage over all rows.
+ * used is the living style count or allocated grapheme bytes at the failed
+ * allocation; other dimensions ignore it. Invalid input/out-of-space leaves
+ * out untouched. Rehash preserves capacity. No allocation or screen mutation. */
+bool lp_capacity_grow(lp_layout_shape shape, lp_capacity capacity, lp_growth dimension,
+                      uint32_t used, uint16_t used_rows, lp_capacity *out);
 #endif

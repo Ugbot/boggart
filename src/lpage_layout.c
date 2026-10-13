@@ -88,3 +88,45 @@ bool lp_capacity_initial(lp_layout_shape s,uint16_t columns,lp_capacity *out) {
   if (lp_capacity_adjust(s,c,columns,out)) return true;
   c.cols=columns; *out=c; return true;
 }
+static void growth_set(lp_capacity *c,lp_growth dimension,uint64_t n) {
+  switch (dimension) {
+    case LP_GROW_STYLES: c->styles=(uint16_t)n; break;
+    case LP_GROW_GRAPHEMES: c->grapheme_bytes=(uint32_t)n; break;
+    case LP_GROW_HYPERLINKS: c->hyperlink_bytes=(uint16_t)n; break;
+    case LP_GROW_STRINGS: c->string_bytes=(uint32_t)n; break;
+    default: break;
+  }
+}
+bool lp_capacity_grow(lp_layout_shape s,lp_capacity c,lp_growth dimension,
+                      uint32_t used,uint16_t used_rows,lp_capacity *out) {
+  if (!out || !valid(s) || used_rows>c.rows) return false;
+  uint64_t old,maximum,standard;
+  switch (dimension) {
+    case LP_GROW_REHASH: {
+      lp_layout layout;
+      if (!lp_capacity_layout(s,c,&layout) || layout.total_size>UINT32_MAX) return false;
+      *out=c; return true;
+    }
+    case LP_GROW_STYLES: old=c.styles; maximum=UINT16_MAX; standard=128; break;
+    case LP_GROW_GRAPHEMES: old=c.grapheme_bytes; maximum=UINT32_MAX; standard=8192; break;
+    case LP_GROW_HYPERLINKS: old=c.hyperlink_bytes; maximum=UINT16_MAX; standard=4*(s.word_bytes==8 ? 48 : 28); break;
+    case LP_GROW_STRINGS: old=c.string_bytes; maximum=UINT32_MAX; standard=2048; break;
+    default: return false;
+  }
+  if (old==maximum) return false;
+  uint64_t next=old ? (old*2<maximum ? old*2 : maximum) : standard;
+  lp_capacity candidate=c;
+  growth_set(&candidate,dimension,next);
+  lp_layout layout;
+  if (!lp_capacity_layout(s,candidate,&layout) || layout.total_size>UINT32_MAX) return false;
+  if ((dimension==LP_GROW_STYLES || dimension==LP_GROW_GRAPHEMES) && used && used_rows) {
+    uint64_t density=(uint64_t)used*c.rows/used_rows,projected=density+density/4;
+    if (projected>old*32) projected=old*32;
+    if (projected>maximum) projected=maximum;
+    if (projected>next) {
+      growth_set(&candidate,dimension,projected);
+      if (!lp_capacity_layout(s,candidate,&layout) || layout.total_size>UINT32_MAX) growth_set(&candidate,dimension,next);
+    }
+  }
+  *out=candidate; return true;
+}

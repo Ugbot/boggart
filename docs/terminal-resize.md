@@ -1,10 +1,11 @@
 # Terminal resize and reference oracle
 
 The native `bterm_resize` and Lua `t:resize(columns, rows)` APIs now prepare
-and commit both screens transactionally. The current fixture has 43 cases /
-203 snapshots, all passing after logical page spans replaced physical-chunk
+and commit both screens transactionally. The current fixture has 46 cases /
+215 snapshots, all passing after logical page spans replaced physical-chunk
 membership in the cached-grow head scan. The extended 11-case/79-snapshot
-gate still fails on managed-capacity growth and mixed-script feed behavior.
+gate has three managed-capacity growth failures. The separate pinned SDK
+Unicode profile fixes the mixed-script feed mismatches.
 BMUX-20 acceptance remains open as described below.
 
 The [SDK page diagnostic](benchmarks/2026-10-13-sdk-page-topology.md) records
@@ -16,7 +17,10 @@ The [C99 layout checkpoint](benchmarks/2026-10-13-sdk-page-layout.md) verifies
 153 SDK arithmetic samples. The
 [logical page checkpoint](benchmarks/2026-10-13-logical-page-resize.md) now
 connects this arithmetic to screen spans, scrolling and resize ownership;
-page-local managed-capacity accounting remains required.
+page-local managed-capacity accounting remains required. The
+[managed-growth diagnostic](benchmarks/2026-10-13-sdk-page-growth.md) now captures
+24 growth decisions, including density projection and fragmentation, and
+verifies the C growth calculation. Its capture and validation tools are Lua.
 
 ## Reproduce the reference
 
@@ -56,7 +60,7 @@ resulting fixture diff with changes to the inputs, adapter, or upstream pin.
 
 ## Fixture contract
 
-`tools/ghostty/resize_cases.py` defines 43 cases and 203 snapshots in
+`tools/ghostty/resize_cases.py` defines 46 cases and 215 snapshots in
 `tests/fixtures/ghostty-resize.json`. Each case observes the initial state and
 every feed/resize operation. Grapheme mode 2027 is explicitly enabled before
 capture; the reference scrollback limit is 2,000 lines.
@@ -209,9 +213,9 @@ The SDK captures **39 cases / 182 snapshots**, adding cached shrink/grow cycles,
 growth beyond capacity, wide-head slow cloning, owned clusters/styles/links in
 history, active/inactive alternate screens, reflow transitions, mixed page
 widths, and a wide head beyond the native page boundary. An exhaustive native
-comparison matches **38 cases / 181 snapshots**. One snapshot fails in
+comparison at that checkpoint matched **38 cases / 181 snapshots**. One snapshot failed in
 `cached_page_head_spill`; it remains in the main fixture and the registered
-`terminal_resize` test fails. It has not been skipped or accepted as an override.
+`terminal_resize` test failed. The logical-span checkpoint subsequently fixed it.
 
 The failing case starts at 6x20, feeds `abcdefghij\r\n` twelve times, disables
 autowrap, crops to 4x20, temporarily enables autowrap and prints `日` at row 18,
@@ -242,7 +246,7 @@ Page-grouping parity remains acceptance work. Controlled C-API latency and
 backend-scoped memory have now been measured as described below. No renderer,
 PTY integration, or overall cmux parity is claimed.
 
-Latest cached-capacity verification: the full registered suite is **124/125
+Cached-capacity checkpoint verification: the full registered suite is **124/125
 (125.82 s)** and the focused ASan/UBSan suite is **23/24 (12.29 s)**. Both fail
 only `terminal_resize` at the documented page-grouping observation. The
 independent cached-width, API/lifecycle, page ownership and 108-allocation
@@ -257,7 +261,7 @@ seven controlled corpora, four rounds and 124 samples per step. Both backends
 produce matching rendered-value digests at all 29 states in every round, with
 seven compiled harness tests validating full fixture fingerprints and rejected
 inputs. Native height-only resize takes about 267–272 µs with 256 plain lines;
-the SDK takes 0.17–0.29 µs. The native path currently copies retained cells even
+the SDK takes 0.17–0.29 µs. At that measured checkpoint, the native path copied retained cells even
 when only row count changes. This is the next ownership/performance target.
 Styled linked Unicode is faster in the native corpus; plain reflow and cached
 nowrap changes are slower. No uniform speed advantage is established.
@@ -296,7 +300,7 @@ The existing page-grouping observation remains the only mismatch and still
 fails the registered `terminal_resize` gate. BMUX-20 remains open.
 
 
-Latest verification: both products build; strict C99 and attribution checks pass;
+Height-transfer checkpoint verification: both products build; strict C99 and attribution checks pass;
 CLI/Studio fingerprints match on all 33 fields. The full registered suite is
 124/125 (99.86 s), and ASan/UBSan focused checks are 23/24 (6.32 s). Both fail
 only the unchanged `cached_page_head_spill` observation in `terminal_resize`.
@@ -304,3 +308,18 @@ After those runs, eight additional fault-injection combinations force padding
 past unused slots into separately owned pages; the expanded 52-case / 340-failure
 `resize_failure` test passes again in normal and sanitizer builds. Product code
 is unchanged between the broad runs and this final test expansion.
+
+## Managed-growth calculation checkpoint
+
+`lp_capacity_grow` now matches all 24 independently observed SDK decisions in
+the [growth diagnostic](benchmarks/2026-10-13-sdk-page-growth.md). Lua captures
+and validates the pinned SDK; C implements the capacity arithmetic. The
+registered `ghostty_page_growth` test verifies provenance, projection coverage,
+fragmentation evidence and malformed-input rejection without Python or Zig.
+
+Both products build. Final normal and ASan/UBSan focused runs each pass five
+tests and reproduce the same three `terminal_resize_large` capacity failures
+(4.30 s / 14.19 s). Small SDK parity remains 46 cases / 215 snapshots; the large
+gate remains 76/79 snapshots matching. Live page-local ownership and allocator
+accounting are still required before this calculation can drive page growth.
+BMUX-20 remains in progress; these checks make no performance improvement claim.
