@@ -3,6 +3,7 @@
 #define BOGGART_BTERM_H
 #include "lpage.h"
 #include "lvt.h"
+#include "bosc.h"
 typedef struct bterm bterm;
 enum {
   BT_AUTOWRAP = 1u << 0, BT_ORIGIN = 1u << 1, BT_CURSOR_VISIBLE = 1u << 2,
@@ -20,6 +21,17 @@ typedef struct {
 /* Consume/copy the borrowed reply synchronously. Never re-enter the terminal
  * from this callback. A NULL sink intentionally discards replies. */
 typedef bool (*bterm_reply)(void *context, const uint8_t *bytes, size_t length);
+typedef struct { bosc_command command; size_t x, y; bool alternate; } bterm_event;
+/* Events borrow payloads only during this callback. Copy synchronously; never
+ * re-enter the terminal. Delivery is optional and does not imply side effects. */
+typedef void (*bterm_event_sink)(void *context, const bterm_event *event);
+void bterm_set_event_sink(bterm *terminal, bterm_event_sink sink, void *context);
+/* Host policy defaults to deny and survives reset/RIS. */
+void bterm_clipboard_policy(bterm *terminal, bool read, bool write);
+/* Respond to an allowed OSC 52 query. Denial/invalid text returns false without
+ * failing the terminal. The usual reply sink handles successful responses. */
+bool bterm_clipboard_reply(bterm *terminal, char selection, bool bel,
+                           const uint8_t *text, size_t length);
 bterm *bterm_create(size_t columns, size_t rows, size_t history_limit,
                     bterm_reply reply, void *context);
 void bterm_destroy(bterm *terminal);

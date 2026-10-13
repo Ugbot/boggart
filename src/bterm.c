@@ -154,8 +154,10 @@ static void event(void *context, const lvt_event *e) {
     case LVT_PRINT: bt_print(t, e->codepoint); break;
     case LVT_ESC: escape(t, e); break;
     case LVT_CSI: bt_csi(t, e); break;
+    case LVT_OSC: bt_osc(t, e); break;
     case LVT_EXECUTE:
       switch (e->codepoint) {
+        case 0x07: { bosc_command c = {0}; c.type = BOSC_BELL; bt_emit(t, &c); break; }
         case 0x08: bt_move(t, 0, -1); break;
         case 0x09: bt_tab(t, 1, false); break;
         case 0x0a: case 0x0b: case 0x0c: case 0x84:
@@ -166,7 +168,7 @@ static void event(void *context, const lvt_event *e) {
         default: break;
       }
       break;
-    default: break; /* Typed OSC, DCS, APC and bell events have separate tickets. */
+    default: break; /* DCS and APC have separate tickets. */
   }
 }
 bterm *bterm_create(size_t columns, size_t rows, size_t history_limit, bterm_reply reply, void *context) {
@@ -180,7 +182,7 @@ bterm *bterm_create(size_t columns, size_t rows, size_t history_limit, bterm_rep
   lvt_init(&t->parser); return t;
 }
 void bterm_destroy(bterm *t) {
-  if (t) { lpage_destroy(t->buffers[0].screen); lpage_destroy(t->buffers[1].screen); free(t); }
+  if (t) { lpage_destroy(t->buffers[0].screen); lpage_destroy(t->buffers[1].screen); free(t->notifications); free(t); }
 }
 bool bterm_feed(bterm *t, const uint8_t *bytes, size_t length) {
   if (t->failed) return false;
@@ -188,6 +190,7 @@ bool bterm_feed(bterm *t, const uint8_t *bytes, size_t length) {
 }
 bool bterm_finish(bterm *t) { if (t->failed) return false; lvt_finish(&t->parser, event, t); return !t->failed; }
 bool bterm_reset(bterm *t) {
+  free(t->notifications); t->notifications = NULL;
   t->failed = false; bt_set_pen(t, (lpage_style){0, 0, 0, 0});
   for (unsigned i = 0; i < 2; i++) {
     bt_buffer *b = &t->buffers[i];

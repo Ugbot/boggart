@@ -140,7 +140,7 @@ suite is included in sanitizer builds.
 
 Cells currently hold one scalar with width 1: grapheme/wide-cell behaviour is
 BMUX-19, and geometry/reflow is BMUX-20. Character-set designation, soft reset,
-selective erasure, mouse modes, typed OSC/DCS/APC extensions and live PTY
+selective erasure, mouse modes, DCS/APC extensions and live PTY
 consumers are not yet implemented. The pinned Ghostty differential suite is
 BMUX-23. Keep BMUX-16 open until vim, htop, less and tmux rendering is verified
 through the integrated terminal; these C tests do not satisfy that app gate.
@@ -187,7 +187,7 @@ return no values. `finish()` belongs at EOF, never at a read boundary.
 rows, live styles and queued reply bytes/capacity. Its screen byte count is not
 whole-terminal RSS or Lua allocation accounting. C grid allocations belong to
 the native core; snapshots and the userdata belong to Lua. `source()` returns
-the 13 source/header hashes embedded during CMake configuration. Changes to
+the 16 source/header hashes embedded during CMake configuration. Changes to
 those files trigger regeneration; the native benchmark compares them with the
 checkout and rejects a stale executable.
 
@@ -196,3 +196,67 @@ damage, alt-screen isolation, reply draining/overflow/reset, invalid inputs,
 explicit/scope close and garbage collection. `tools/fingerprint.lua` verifies
 the same API, grid snapshot and reply bytes in CLI and studio. Live shells and
 removing the Lua parser from studio's data path remain BMUX-21.
+
+
+## Typed OSC events (BMUX-17 increment)
+
+`src/bosc.c/h` parses OSC 0/2 (title), 7 (cwd file URI), 8 (hyperlink),
+9/99/777 (notification), 133 (shell marks/status) and 52 (clipboard). It borrows
+bounded input/scratch, validates UTF-8 and controls, requires explicit URI
+schemes and valid percent escapes, and strictly decodes padded/unpadded base64.
+Unsupported ConEmu OSC 9 commands produce no notifications. These are typed
+metadata; parsing never executes, opens, fetches or changes a directory.
+
+The C `bterm_set_event_sink` callback receives borrowed typed data plus zero-based
+cursor coordinates and alternate-screen identity synchronously. It must copy
+before returning and never re-enter the terminal. BEL also emits a typed event.
+Without a sink these events are discarded. Clipboard policy defaults to denied;
+`bterm_clipboard_policy` sets independent read/write permissions which survive
+reset/RIS. `bterm_clipboard_reply` validates permitted text and sends base64 with
+the request's BEL/ST ending through the ordinary reply sink. Native clipboard
+access belongs to the future host permission provider, not this core.
+
+Kitty OSC 99 title/body chunks assemble by ID in eight lazily allocated slots.
+Each assembly holds at most 4096 text bytes and 256 ID bytes. Overflow discards
+that ID through its completion; close cancels its assembly. If more than eight
+incomplete IDs arrive, further unknown IDs are discarded until reset, so tails
+of discarded chunks cannot become misleading complete notifications. Existing
+assemblies can finish. Allocation pressure never fails normal grid output.
+Urgency persists across chunks unless explicitly replaced. Close/query requests
+are emitted as data; no notification extension or GUI action is advertised.
+
+The Lua object copies events into a lazily allocated queue of at most 256 records
+and 64 KiB payload bytes. `events()` returns the copied array plus the overflow
+count and drains both; `usage()` exposes queue bounds/occupancy/loss. Overflow
+preserves earlier events and continues parsing/rendering. Reset clears queues;
+close/GC frees them. Lua event coordinates are one-based. Notifications include
+`id`, `title`, `body`, `urgency`, `action`; shell marks include `mark`, optional
+`status` and raw `options`; links include `id`/`uri`; clipboard requests include
+`selection`, `query`, `text`, `bel` and policy generation.
+
+```lua
+local t <close> = require("terminal").new(80, 24, 2000)
+t:clipboard_policy(false, false) -- host choice; shell bytes cannot change it
+t:feed(bytes)
+local count, dropped = require("terminal.events").drain(t, trusted_pane_id)
+```
+
+`terminal.events.drain` publishes JSON data on `terminal.title`, `.cwd`,
+`.hyperlink`, `.notification`, `.shell`, `.clipboard` and `.bell` through the
+existing bus. The caller supplies the trusted pane identity. Draining happens
+before any subscribers run, avoiding Lua re-entry from byte parsing. Revocation
+invalidates queued clipboard requests even if permission is later restored;
+the bridge checks policy generation again before every clipboard publication,
+since an earlier subscriber may revoke it. Deferred consumers must recheck host
+permission before applying a clipboard side effect. `clipboard_policy()` with
+no arguments reads policy/generation; `clipboard_reply(selection, bel, text)`
+returns false for denied/invalid responses. No OS clipboard integration is
+claimed by these APIs.
+
+OSC 8 currently emits validated link metadata, but cells still store no owned
+link URI. Link interning, cell/history ownership and URI snapshots remain the
+next BMUX-17 increment; the story stays in progress until those are verified.
+`tests/c/osc.c`, `tests/c/terminal_events.c` and `tests/terminal.lua` cover payload
+validation, ordering, fragmentation, interleaving, bounds, policy/revocation,
+reply encoding, queue lifetime and actual bus subscriber delivery. CLI/studio
+parity also fingerprints drained typed events.
