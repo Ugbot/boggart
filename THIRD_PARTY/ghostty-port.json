@@ -7,14 +7,19 @@
     {
       "upstream_path": "src/terminal/Parser.zig",
       "sha256": "51b8c098523e6dc1e245646bca835212eada57336ac54456a96f3ebeb9e0f84b",
-      "status": "studied",
-      "ported_files": []
+      "status": "ported",
+      "ported_files": [
+        "src/lvt.c",
+        "src/lvt.h"
+      ]
     },
     {
       "upstream_path": "src/terminal/parse_table.zig",
       "sha256": "8d6072a6b69fded203bdeb0afdae63c884bea1c8ed91f9aca832d3b468e560f8",
-      "status": "studied",
-      "ported_files": []
+      "status": "ported",
+      "ported_files": [
+        "src/vt_table.h"
+      ]
     },
     {
       "upstream_path": "src/terminal/osc.zig",
@@ -117,6 +122,12 @@
     {
       "upstream_path": "build.zig",
       "status": "skipped",
+      "ported_files": []
+    },
+    {
+      "upstream_path": "src/terminal/UTF8Decoder.zig",
+      "sha256": "834bae8f538cf0914fabbd16dc8184ce3ef8a5d412f4be6e80a44b93f3836794",
+      "status": "studied",
       "ported_files": []
     }
   ]

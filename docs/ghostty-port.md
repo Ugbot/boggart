@@ -13,13 +13,16 @@ the optional differential oracle, whose build will need that pinned toolchain.
 
 `THIRD_PARTY/ghostty-LICENSE` is the exact upstream MIT notice. The machine
 ledger in `THIRD_PARTY/ghostty-port.json` records the source SHA-256 hashes,
-review status and destination files. **No Ghostty module has been ported yet.**
+review status and destination files. The parser mechanism and transition table
+are now ported; grid operations, typed CSI/OSC handling and PTY integration remain
+separate BMUX work.
 “Studied” below means its interface and dependencies have been reviewed for
 the port boundary; it is not a correctness or completeness claim.
 
 | Upstream module | Status | BMUX work / adaptation |
 | --- | --- | --- |
-| `src/terminal/Parser.zig`, `parse_table.zig` | studied | BMUX-14; 14-state parser, entry/exit actions, 4 intermediates, 24 parameters, colon separators; preserve dispatch order |
+| `src/terminal/Parser.zig`, `parse_table.zig` | ported | BMUX-14; `src/lvt.c`, `src/lvt.h`, `src/vt_table.h`; 14-state parser, ordered entry/exit actions, 4 intermediates, 24 parameters, colon separators |
+| `src/terminal/UTF8Decoder.zig` | studied | Streaming replacement behaviour verified; Boggart uses original scalar-range checks instead of copying third-party DFA tables |
 | `src/terminal/osc.zig` | studied | BMUX-17; bounded OSC payloads; title/cwd/link/notification/shell-mark events go to the owning session |
 | `src/terminal/stream.zig`, `sgr.zig` | studied | BMUX-16/17; dispatch and SGR attributes adapted to C grid operations; no renderer calls from the parser |
 | `src/terminal/PageList.zig`, `page.zig`, `Screen.zig`, `style.zig` | studied | BMUX-15/20; page pools, row metadata, style IDs/refcounts, screen and history ownership, reflow and tracked positions |
@@ -69,10 +72,13 @@ Validate without network access:
 ```sh
 python3 tools/check_ghostty_port.py
 python3 tools/check_ghostty_port.py --upstream /path/to/pinned/ghostty
+python3 tools/gen_vt_table.py /path/to/pinned/ghostty --check
 ```
 
 The second command checks every hashed source file. The first checks the exact
 licence hash and both directions of the source/destination attribution ledger.
+The generator checks source hashes and enum ordering before translating every
+transition declaration; `--check` verifies the generated table byte for byte.
 
 ## Nested notices and exclusions
 
