@@ -175,6 +175,7 @@ static int l_usage(lua_State *L) {
   lua_createtable(L, 0, 7); integer(L, "pages", s.pages); integer(L, "row_capacity", s.row_capacity);
   integer(L, "history_rows", s.history_rows); integer(L, "styles", s.styles); integer(L, "screen_bytes", s.bytes);
   integer(L, "links", s.links); integer(L, "link_bytes", s.link_bytes);
+  integer(L, "graphemes", s.graphemes); integer(L, "grapheme_bytes", s.grapheme_bytes);
   integer(L, "reply_bytes", t->reply_length); integer(L, "reply_capacity", REPLY_CAPACITY);
   integer(L, "event_count", t->events ? t->events->count : 0); integer(L, "event_bytes", t->events ? t->events->used : 0);
   integer(L, "event_capacity", EVENT_CAPACITY); integer(L, "event_byte_capacity", EVENT_BYTES);

@@ -62,7 +62,9 @@
       "status": "ported",
       "ported_files": [
         "src/lpage.c",
-        "src/lpage.h"
+        "src/lpage.h",
+        "src/lgrapheme.c",
+        "src/lgrapheme.h"
       ]
     },
     {
