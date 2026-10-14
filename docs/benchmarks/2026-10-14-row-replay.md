@@ -62,11 +62,11 @@ not key-to-pixel latency, GPU timings or whole application throughput.
 | Plain | Unchanged | 0.008 ms | 0.007 ms |
 | RGB/256 colors | Unchanged | 0.008 ms | 0.008 ms |
 | Unicode | Unchanged | 0.008 ms | 0.008 ms |
-| Alternating four styles | Unchanged | 0.008 ms | 0.008 ms |
+| Mixed styles (three effective styles) | Unchanged | 0.008 ms | 0.008 ms |
 | Plain | One row changes | 1.000 ms | 0.444 ms |
 | RGB/256 colors | One row changes | 1.215 ms | 0.478 ms |
 | Unicode | One row changes | 1.283 ms | 0.509 ms |
-| Alternating four styles | One row changes | 2.277 ms | 1.209 ms |
+| Mixed styles (three effective styles) | One row changes | 2.277 ms | 1.209 ms |
 
 Every measured dirty case queues 24 rows, replays 5 and skips 19 for one dirty
 rectangle. The 96-pixel damage grid spans multiple terminal rows, so a one-row
@@ -85,3 +85,8 @@ still incur texture switches, and the row hash damages the whole row width.
 Merged atlas/instancing choices require separate implementation and measurement.
 Unicode/profile alignment, remaining font work, platforms and whole-app budgets
 are still open requirements in their respective tickets.
+
+Correction: the mixed corpus in these records retained bold when SGR 3 set
+italic, so it exercised three effective styles. The later shared-atlas experiment
+clears bold explicitly and hashes its corpora; these historical samples remain
+unchanged. Independent four-style correctness tests were unaffected.

@@ -64,11 +64,11 @@ earlier native-row report; the old reports are unchanged.
 | Plain | Unchanged | 1.054 ms | 0.008 ms |
 | RGB/256 colors | Unchanged | 1.477 ms | 0.008 ms |
 | Unicode | Unchanged | 0.833 ms | 0.007 ms |
-| Alternating four styles | Unchanged | 1.135 ms | 0.007 ms |
+| Mixed styles (three effective styles) | Unchanged | 1.135 ms | 0.007 ms |
 | Plain | One row changes | 1.893 ms | 0.946 ms |
 | RGB/256 colors | One row changes | 2.445 ms | 1.139 ms |
 | Unicode | One row changes | 1.622 ms | 1.014 ms |
-| Alternating four styles | One row changes | 2.563 ms | 2.088 ms |
+| Mixed styles (three effective styles) | One row changes | 2.563 ms | 2.088 ms |
 
 Native frames issue zero Lua text calls and capture zero/one rows on unchanged/
 dirty frames. Raw CPU/wall samples and manifests are in
@@ -85,3 +85,9 @@ not real style-face discovery or complex shaping. Bitmap/color emoji behavior,
 optional ligatures, procedural box/block/powerline glyphs, HiDPI/zoom,
 terminal/render Unicode-profile agreement and non-macOS execution remain
 required work in their respective tickets.
+
+Correction discovered during the subsequent shared-atlas work: this experiment's
+mixed corpus used SGR 3 without clearing bold, so its italic segment was also
+bold. It exercised regular, bold and bold/italic. The all-four-style pixel/font
+tests were independent and valid. Raw historical timing records are preserved;
+the later benchmark clears bold and records corpus hashes.

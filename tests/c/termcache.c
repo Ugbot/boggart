@@ -11,6 +11,8 @@ static void *cache_realloc(void *p,size_t n){return allocation_fails ? NULL : re
 #include "../../studio/src/rencache.c"
 #undef realloc
 void ren_get_size(int *w,int *h){*w=320;*h=240;}
+void ren_reset_glyph_stats(void){}
+RenGlyphStats ren_glyph_stats(void){return (RenGlyphStats){0};}
 void ren_set_clip_rect(RenRect r){(void)r;}
 void ren_update_rects(RenRect *r,int n){(void)r;CHECK(n>0);updates++;}
 void ren_draw_rect(RenRect r,RenColor c){(void)r;(void)c;}

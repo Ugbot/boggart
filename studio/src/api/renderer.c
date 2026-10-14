@@ -1,6 +1,7 @@
 #include "api.h"
 #include "renderer.h"
 #include "rencache.h"
+#include <stdlib.h>
 void terminalrender_open(lua_State *L);
 
 
@@ -51,12 +52,24 @@ static int f_end_frame(lua_State *L) {
 
 static int f_terminal_replay_stats(lua_State *L) {
   RenCacheStats stats = rencache_stats();
-  lua_createtable(L,0,4);
+  RenGlyphStats glyphs=stats.glyphs;
+  lua_createtable(L,0,11);
   lua_pushinteger(L,(lua_Integer)stats.rows_queued); lua_setfield(L,-2,"rows_queued");
   lua_pushinteger(L,(lua_Integer)stats.rows_replayed); lua_setfield(L,-2,"rows_replayed");
   lua_pushinteger(L,(lua_Integer)stats.rows_skipped); lua_setfield(L,-2,"rows_skipped");
   lua_pushinteger(L,stats.dirty_rects); lua_setfield(L,-2,"dirty_rects");
+  lua_pushinteger(L,(lua_Integer)glyphs.quads); lua_setfield(L,-2,"glyph_quads");
+  lua_pushinteger(L,(lua_Integer)glyphs.batches); lua_setfield(L,-2,"glyph_batches");
+  lua_pushinteger(L,(lua_Integer)glyphs.texture_switches); lua_setfield(L,-2,"glyph_texture_switches");
+  lua_pushboolean(L,glyphs.shared_style_atlases); lua_setfield(L,-2,"shared_style_atlases");
+  lua_pushinteger(L,(lua_Integer)glyphs.shared_atlas_bytes);lua_setfield(L,-2,"shared_atlas_bytes");
+  lua_pushinteger(L,(lua_Integer)glyphs.standalone_atlas_bytes);lua_setfield(L,-2,"standalone_atlas_bytes");
+  lua_pushstring(L,glyphs.backend ? glyphs.backend : "unknown");lua_setfield(L,-2,"renderer_backend");
   return 1;
+}
+static int f_test_style_atlas_sharing(lua_State *L) {
+  luaL_checktype(L,1,LUA_TBOOLEAN);
+  lua_pushboolean(L,ren_test_style_atlas_sharing(lua_toboolean(L,1)));return 1;
 }
 
 
@@ -227,6 +240,9 @@ int luaopen_renderer_font(lua_State *L);
 
 int luaopen_renderer(lua_State *L) {
   luaL_newlib(L, lib);
+  if(getenv("BOGGART_STUDIO_SCRIPT")) {
+    lua_pushcfunction(L,f_test_style_atlas_sharing);lua_setfield(L,-2,"_test_style_atlas_sharing");
+  }
   terminalrender_open(L);
 
   /* the Image userdata metatype: frees its RenImage on GC, and answers :size(). */

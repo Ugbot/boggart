@@ -10,6 +10,7 @@
 #include FT_OUTLINE_H
 #include "renderer.h"
 #include "fontfallback.h"
+#include "fontatlas.h"
 #include "utf8width.h"
 
 /* Why FreeType and not stb_truetype, which this used to be.
@@ -93,10 +94,11 @@ typedef struct {
    * font because a bitmap-strike glyph inside a subpixel font still comes out
    * grayscale. GPU drawing always uses coverage-in-A (see load_glyphset). */
   int lcd;
+  bool shared_texture;
   Glyph glyphs[256];
 } GlyphSet;
 
-typedef struct { GlyphSet *phase[SUBPIXEL_BITMAPS]; } Block;
+typedef struct { GlyphSet *phase[SUBPIXEL_BITMAPS]; FontAtlas *atlas[SUBPIXEL_BITMAPS]; } Block;
 
 /* One font file (or one subfont of a collection) at this RenFont's size.
  * The face reads directly out of memory owned elsewhere: font->data for the
@@ -153,6 +155,9 @@ static FT_Library library;
 static SDL_Vertex glyph_batch[GLYPH_BATCH_MAX * 4];
 static SDL_Texture *glyph_batch_tex;
 static int glyph_batch_n;
+static RenGlyphStats glyph_stats;
+static bool share_style_atlases;
+static uint64_t standalone_atlas_bytes;
 
 static void glyph_batch_flush(void);
 
@@ -228,9 +233,17 @@ static void glyph_batch_flush(void) {
   SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
   SDL_RenderGeometry(renderer, glyph_batch_tex, glyph_batch, glyph_batch_n * 4,
                      indices, glyph_batch_n * 6);
+  glyph_stats.batches++;
   glyph_batch_n = 0;
   glyph_batch_tex = NULL;
 }
+
+void ren_reset_glyph_stats(void){glyph_stats=(RenGlyphStats){.shared_style_atlases=share_style_atlases};}
+RenGlyphStats ren_glyph_stats(void){
+  RenGlyphStats stats=glyph_stats;stats.shared_atlas_bytes=fontatlas_capacity_bytes();
+  stats.standalone_atlas_bytes=standalone_atlas_bytes;stats.backend=renderer ? SDL_GetRendererName(renderer) : NULL;return stats;
+}
+bool ren_test_style_atlas_sharing(bool enabled){bool old=share_style_atlases;share_style_atlases=enabled;return old;}
 
 
 static void* check_alloc(void *ptr) {
@@ -270,6 +283,10 @@ void ren_init(SDL_Window *win) {
     exit(EXIT_FAILURE);
   }
   SDL_SetRenderVSync(renderer, 0);
+  /* Software geometry emulates per-vertex tint with texture color modulation.
+   * Sharing styles makes alternating tints repeatedly invalidate its blit map. */
+  const char *backend=SDL_GetRendererName(renderer);
+  share_style_atlases=backend && strcmp(backend,"software")!=0;
   ensure_target();
   ren_set_clip_rect( (RenRect) { 0, 0, target_w, target_h } );
 }
@@ -595,7 +612,8 @@ static int render_glyph(RenFont *font, FT_Face face, FT_UInt gid, int phase,
   if (w <= 0) { return 0; }
 
   int h = (int) bm->rows;
-  g->bits = check_alloc(calloc((size_t) w * (size_t) h, (size_t) channels));
+  g->bits = calloc((size_t) w * (size_t) h, (size_t) channels);
+  if(!g->bits)return -1;
   g->w = w;
   g->h = h;
   g->lcd = (channels == 3);
@@ -632,7 +650,7 @@ static int render_glyph(RenFont *font, FT_Face face, FT_UInt gid, int phase,
  * those call for completely different reactions from whoever is looking.
  * Synthesised rather than borrowed from a fallback's U+FFFD so it is always
  * available, including on a machine with no fallbacks at all. */
-static void synth_missing(RenFont *font, unsigned cp, RawGlyph *g) {
+static bool synth_missing(RenFont *font, unsigned cp, RawGlyph *g) {
   memset(g, 0, sizeof *g);
   int cells = bog_cp_width(cp);
   int w = (font->cell > 0 ? font->cell * cells : (int) (font->size * 0.55f)) - 2;
@@ -640,13 +658,14 @@ static void synth_missing(RenFont *font, unsigned cp, RawGlyph *g) {
   if (w < 3) { w = 3; }
   if (h < 3) { h = 3; }
 
-  g->bits = check_alloc(calloc((size_t) w * (size_t) h, 1));
+  g->bits = calloc((size_t) w * (size_t) h, 1);if(!g->bits)return false;
   g->w = w;
   g->h = h;
   g->left = 1;
   g->top = h;    /* sits on the baseline, like a capital letter */
   for (int c = 0; c < w; c++) { g->bits[c] = 0xa0; g->bits[c + (h - 1) * w] = 0xa0; }
   for (int r = 0; r < h; r++) { g->bits[r * w] = 0xa0; g->bits[w - 1 + r * w] = 0xa0; }
+  return true;
 }
 
 
@@ -673,9 +692,9 @@ static int pack_block(GlyphSet *set, const RawGlyph *raw, int pw, int ph) {
 }
 
 
-static GlyphSet* load_glyphset(RenFont *font, int block, int phase) {
-  GlyphSet *set = check_alloc(calloc(1, sizeof(GlyphSet)));
-  RawGlyph raw[256];
+static GlyphSet* bake_glyphset(RenFont *font, int block, int phase) {
+  GlyphSet *set = calloc(1, sizeof(GlyphSet));if(!set)return NULL;
+  RawGlyph raw[256]={0};
 
   /* ---- render ------------------------------------------------------------
    *
@@ -693,7 +712,7 @@ static GlyphSet* load_glyphset(RenFont *font, int block, int phase) {
     int missing = (gid == 0 && bog_cp_width(cp) > 0);
 
     if (missing) {
-      synth_missing(font, cp, &raw[i]);
+      if(!synth_missing(font,cp,&raw[i]))goto fail;
       raw[i].advance = advance;
       if (font->cell <= 0 && advance < (float) (raw[i].w + 2)) {
         /* A proportional font's .notdef often advances zero, which would stack
@@ -701,7 +720,9 @@ static GlyphSet* load_glyphset(RenFont *font, int block, int phase) {
         raw[i].advance = (float) (raw[i].w + 2);
       }
     } else {
-      if (!render_glyph(font, face->face, (FT_UInt) gid, phase, &raw[i])) {
+      int status=render_glyph(font,face->face,(FT_UInt)gid,phase,&raw[i]);
+      if(status<0)goto fail;
+      if (!status) {
         memset(&raw[i], 0, sizeof raw[i]);
       }
       raw[i].advance = advance;
@@ -719,12 +740,15 @@ static GlyphSet* load_glyphset(RenFont *font, int block, int phase) {
   /* ---- place -------------------------------------------------------------- */
   int width = 128, height = 128;
   while (!pack_block(set, raw, width, height)) {
+    if(width>=16384 || height>=16384)goto fail;
     /* CJK blocks are 256 ideographs at full em, so they land here two or three
      * times before they fit. Only the arithmetic repeats; see RawGlyph. */
     width *= 2;
     height *= 2;
   }
-  set->image = ren_new_image(width, height);
+  size_t bytes=(size_t)width*(size_t)height*sizeof(RenColor);
+  set->image=malloc(sizeof(RenImage)+bytes);if(!set->image)goto fail;
+  set->image->pixels=(void *)(set->image+1);set->image->width=width;set->image->height=height;
   /* GPU path stores coverage in A. Per-channel LCD needs a custom blend that
    * is not portable across Metal/D3D/GL, and REN_AA_SUBPIXEL is already wrong
    * on HiDPI; average the three coverages instead. */
@@ -799,14 +823,90 @@ static GlyphSet* load_glyphset(RenFont *font, int block, int phase) {
       }
     }
 
-    free(raw[i].bits);
+    free(raw[i].bits);raw[i].bits=NULL;
   }
 
   if (block == 0 && font->tab_advance > 0) {
     set->glyphs['\t'].xadvance = (float) font->tab_advance;
   }
 
-  if (renderer) {
+  return set;
+fail:
+  for(unsigned i=0;i<256;i++)free(raw[i].bits);
+  if(set->image)ren_free_image(set->image);free(set);return NULL;
+}
+
+static bool glyph_metrics_equal(const GlyphSet *a,const GlyphSet *b) {
+  for(unsigned i=0;i<256;i++) {
+    const Glyph *x=&a->glyphs[i],*y=&b->glyphs[i];
+    if(x->xoff!=y->xoff || x->yoff!=y->yoff || x->xadvance!=y->xadvance
+      || x->x1-x->x0!=y->x1-y->x0 || x->y1-x->y0!=y->y1-y->y0)return false;
+  }
+  return true;
+}
+
+static bool share_glyphset(RenFont *font,GlyphSet *fresh,unsigned block,int phase) {
+  RenFont *base=font->base ? font->base : font;
+  RenFont *owners[4]={NULL};GlyphSet *sets[4]={NULL},*copies[4]={NULL};
+  owners[base->style&3]=base;
+  for(unsigned i=0;i<4;i++)if(base->variants[i])owners[i]=base->variants[i];
+  unsigned count=0,plane=block>>8,index=block&255;
+  for(unsigned i=0;i<4;i++)if(owners[i]) {
+    sets[i]=owners[i]==font ? fresh : owners[i]->planes[plane] ? owners[i]->planes[plane][index].phase[phase] : NULL;
+    if(sets[i])count++;
+  }
+  if(count<2)return false;
+  if(!base->planes[plane]) {
+    base->planes[plane]=calloc(BLOCKS_PER_PLANE,sizeof(Block));if(!base->planes[plane])return false;
+  }
+  FontAtlas **slot=&base->planes[plane][index].atlas[phase],*old=*slot,*page=old;
+  int tile=old ? fontatlas_tile(old) : 0;
+  if(fresh->image->width>tile)tile=fresh->image->width;
+  if(fresh->image->height>tile)tile=fresh->image->height;
+  for(unsigned i=0;i<4;i++)if(sets[i] && !sets[i]->shared_texture) {
+    if(sets[i]->tw>tile)tile=sets[i]->tw;if(sets[i]->th>tile)tile=sets[i]->th;
+  }
+  bool replace=!old || tile>fontatlas_tile(old),success=false;
+  for(unsigned i=0;i<4;i++)if(sets[i] && (replace || !sets[i]->shared_texture)) {
+    if(!sets[i]->image) {
+      copies[i]=bake_glyphset(owners[i],(int)block,phase);
+      if(!copies[i] || !glyph_metrics_equal(sets[i],copies[i]))goto done;
+    }
+    RenImage *image=copies[i] ? copies[i]->image : sets[i]->image;
+    if(image->width>tile)tile=image->width;if(image->height>tile)tile=image->height;
+  }
+  if(replace){page=fontatlas_create(renderer,tile);if(!page)goto done;}
+  for(unsigned i=0;i<4;i++)if(sets[i] && (replace || !sets[i]->shared_texture)) {
+    RenImage *image=copies[i] ? copies[i]->image : sets[i]->image;
+    if(!fontatlas_upload(page,i,image))goto done;
+  }
+  /* No live batch may refer to a texture or UV coordinates being retired. */
+  glyph_batch_flush();
+  for(unsigned i=0;i<4;i++)if(sets[i] && (replace || !sets[i]->shared_texture)) {
+    GlyphSet *set=sets[i],*source=copies[i] ? copies[i] : set;
+    if(set->texture && !set->shared_texture){
+      standalone_atlas_bytes-=(uint64_t)set->tw*(uint64_t)set->th*4;SDL_DestroyTexture(set->texture);
+    }
+    if(source!=set)memcpy(set->glyphs,source->glyphs,sizeof set->glyphs);
+    for(unsigned cp=0;cp<256;cp++) {
+      Glyph *g=&set->glyphs[cp];unsigned x=(i&1)*(unsigned)tile,y=(i>>1)*(unsigned)tile;
+      g->x0=(unsigned short)(g->x0+x);g->x1=(unsigned short)(g->x1+x);
+      g->y0=(unsigned short)(g->y0+y);g->y1=(unsigned short)(g->y1+y);
+    }
+    set->texture=fontatlas_texture(page);set->tw=set->th=tile*2;set->shared_texture=true;
+    if(set->image){ren_free_image(set->image);set->image=NULL;}
+  }
+  *slot=page;if(replace)fontatlas_destroy(old);success=true;
+done:
+  if(!success && replace && page!=old)fontatlas_destroy(page);
+  for(unsigned i=0;i<4;i++)if(copies[i]){ren_free_image(copies[i]->image);free(copies[i]);}
+  return success;
+}
+
+static GlyphSet* load_glyphset(RenFont *font,int block,int phase) {
+  GlyphSet *set=check_alloc(bake_glyphset(font,block,phase));
+  int width=set->image->width,height=set->image->height;
+  if (renderer && (!share_style_atlases || !share_glyphset(font,set,(unsigned)block,phase))) {
     set->texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
                                      SDL_TEXTUREACCESS_STATIC, width, height);
     if (!set->texture) {
@@ -816,6 +916,7 @@ static GlyphSet* load_glyphset(RenFont *font, int block, int phase) {
     }
     if (set->texture) {
       set->tw = width; set->th = height;
+      standalone_atlas_bytes+=(uint64_t)width*(uint64_t)height*4;
       SDL_SetTextureBlendMode(set->texture, SDL_BLENDMODE_BLEND);
       SDL_SetTextureScaleMode(set->texture, SDL_SCALEMODE_NEAREST);
       SDL_SetTextureColorMod(set->texture, 255, 255, 255);
@@ -1024,10 +1125,13 @@ void ren_free_font(RenFont *font) {
       for (int s = 0; s < SUBPIXEL_BITMAPS; s++) {
         GlyphSet *set = table[b].phase[s];
         if (!set) { continue; }
-        if (set->texture) { SDL_DestroyTexture(set->texture); }
+        if (set->texture && !set->shared_texture) {
+          standalone_atlas_bytes-=(uint64_t)set->tw*(uint64_t)set->th*4;SDL_DestroyTexture(set->texture);
+        }
         if (set->image) { ren_free_image(set->image); }
         free(set);
       }
+      for(int s=0;s<SUBPIXEL_BITMAPS;s++)fontatlas_destroy(table[b].atlas[s]);
     }
     free(table);
   }
@@ -1252,6 +1356,7 @@ static void glyph_batch_push(SDL_Texture *tex, float x0, float y0, float x1, flo
                              float u0, float v0, float u1, float v1, SDL_FColor col) {
   if (!tex) { return; }
   if (glyph_batch_tex != tex || glyph_batch_n >= GLYPH_BATCH_MAX) {
+    if(glyph_batch_n && glyph_batch_tex!=tex)glyph_stats.texture_switches++;
     glyph_batch_flush();
     bind_target();
     glyph_batch_tex = tex;
@@ -1262,6 +1367,7 @@ static void glyph_batch_push(SDL_Texture *tex, float x0, float y0, float x1, flo
   q[2].position.x = x1; q[2].position.y = y1; q[2].color = col; q[2].tex_coord.x = u1; q[2].tex_coord.y = v1;
   q[3].position.x = x0; q[3].position.y = y1; q[3].color = col; q[3].tex_coord.x = u0; q[3].tex_coord.y = v1;
   glyph_batch_n++;
+  glyph_stats.quads++;
 }
 
 
