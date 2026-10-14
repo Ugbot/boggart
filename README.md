@@ -19,6 +19,12 @@ is enforced rather than intended: `ninja core-parity` runs both binaries and
 fails the build if the version, API surface, system prompt, limits, scopes,
 paths or tools have drifted apart.
 
+Studio also has a **BMUX** mode beside **AGENT / EDIT / FLEET**: interactive
+terminal tabs and split panes with visible controls. Click BMUX to open a shell;
+its toolbar creates tabs/splits and closes, focuses or zooms panes. Switching
+modes keeps the running shells and split layout. See
+[BMUX controls](docs/studio-panels.md#bmux-mode).
+
 ![The conversation is the application](docs/images/chat.png)
 
 The conversation is the primary surface; files open as tabs beside it. Markdown

@@ -9,6 +9,11 @@ local TerminalView = require "core.terminalview"
 
 command.add(nil, {
   ["terminal:open"] = function()
+    local shell = package.loaded["shell"]
+    if shell and shell.current == "bmux" then
+      require("shell.workspaces.bmux").open()
+      return
+    end
     core.root_view:open_view_in("down", TerminalView())
   end,
 })

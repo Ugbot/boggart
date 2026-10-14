@@ -4,7 +4,7 @@
 -- sidebarview + the everything-is-a-tab primary node). It reuses the proven
 -- engine (the agent turn loop, the scheduler pump, the Node split layout, marks)
 -- and rebuilds the shell on top: a menu bar, switchable full-screen workspaces
--- (AGENT / EDIT / FLEET), and an app-wide neovim spine.
+-- (AGENT / EDIT / FLEET / BMUX), and an app-wide neovim spine.
 --
 -- Restore the legacy window with BOGGART_STUDIO_LEGACY=1.
 local core = require "core"
@@ -13,13 +13,13 @@ local keymap = require "core.keymap"
 local MenuBar = require "shell.menubar"
 
 local shell = {}
-shell.workspaces = { "agent", "edit", "fleet" }
+shell.workspaces = { "agent", "edit", "fleet", "bmux" }
 shell.current = nil -- set by the first shell.switch(); nil means "nothing entered
                     -- yet", so the first switch doesn't stash a phantom workspace.
 
 local function primary() return core.root_view:get_primary_node() end
 
-shell._stash = {} -- workspace name -> { views = {...}, active = view }
+shell._stash = {} -- workspace name -> { views, active, tree? }
 
 -- Every NON-LOCKED leaf under the tree, in a/b traversal order. Locked leaves
 -- (the menu bar, the file tree) are docks -- excluded here so the walk sees only
@@ -69,7 +69,8 @@ end
 -- conversation -- not everything piled into one tab strip. The file tree and
 -- other docks are toggled by each workspace's enter()/leave().
 --
--- STRATEGY: this flattens splits into tabs (option B). If the user has split the
+-- STRATEGY: legacy workspaces flatten splits into tabs. BMUX opts into preserving
+-- its live content subtree (including zoom). If the user has split the
 -- primary (Ctrl-w s / v) there are MULTIPLE content leaves; we collect every
 -- view from all of them into the stash, then collapse back to one leaf. This
 -- loses split *geometry* across a switch but never loses a view's content (the
@@ -118,6 +119,19 @@ function shell.switch(name)
     if not active or not seen[active] then active = views[#views] end
     shell._stash[shell.current] = { views = views, active = active }
 
+    -- BMUX keeps its live Node subtree, including dividers and zoom state.
+    -- Detach it before collapsing so the live tree cannot mutate the stash.
+    if shell.current_ws and shell.current_ws.preserve_layout then
+      local content = node:get_content_root(root)
+      local Node = getmetatable(content)
+      local saved = Node()
+      saved:consume(content)
+      shell._stash[shell.current].tree = saved
+      content:consume(Node())
+      node = primary()
+      leaves = each_content_leaf(root, {})
+    end
+
     -- Collapse the extra split panes back to one leaf so the sibling can't
     -- render stale content into the next workspace. Note once, since flattening
     -- silently discards the user's split layout.
@@ -137,14 +151,20 @@ function shell.switch(name)
   -- reset the leaf to the target's stashed views (or the splash placeholder)
   node.views = {}
   local st = shell._stash[name]
-  if st and #st.views > 0 then
+  if st and st.tree then
+    node:consume(st.tree)
+    if st.active and node:get_node_for_view(st.active) then
+      core.set_active_view(st.active)
+    end
+    node = primary()
+  elseif st and #st.views > 0 then
     for _, v in ipairs(st.views) do node.views[#node.views + 1] = v end
     node.active_view = st.active or node.views[#node.views]
   else
     node.views = { EmptyView() }
     node.active_view = node.views[1]
   end
-  if node.active_view then core.set_active_view(node.active_view) end
+  if not (st and st.tree) and node.active_view then core.set_active_view(node.active_view) end
 
   shell.current, shell.current_ws = name, ws
   if ws.enter then pcall(ws.enter) end
@@ -186,7 +206,7 @@ function shell.install_menu_overlay()
   end
 end
 
--- Cycle AGENT -> EDIT -> FLEET (nvim `gt`/`gT`, leader `t`).
+-- Cycle AGENT -> EDIT -> FLEET -> BMUX (nvim `gt`/`gT`, leader `t`).
 function shell.cycle_workspace(dir)
   local order, i = shell.workspaces, 1
   for j, w in ipairs(order) do if w == shell.current then i = j end end
@@ -312,6 +332,7 @@ command.add(nil, {
   ["shell:workspace-agent"] = function() shell.switch("agent") end,
   ["shell:workspace-edit"]  = function() shell.switch("edit") end,
   ["shell:workspace-fleet"] = function() shell.switch("fleet") end,
+  ["shell:workspace-bmux"]  = function() shell.switch("bmux") end,
   ["shell:toggle-theme"]    = function() require("shell.theme").toggle() end,
 
   -- Automations: one saved-prompt concept (Run menu), superseding the old
@@ -453,10 +474,21 @@ command.add(nil, {
     core.log("copied %s", control.url())
   end,
 })
+-- Register BMUX commands without spawning a shell; menu actions must exist
+-- before the first visit to the workspace.
+require "shell.workspaces.bmux"
 keymap.add {
   ["ctrl+1"] = "shell:workspace-agent",
   ["ctrl+2"] = "shell:workspace-edit",
   ["ctrl+3"] = "shell:workspace-fleet",
+  ["cmd+alt+1"] = "shell:workspace-agent",
+  ["cmd+alt+2"] = "shell:workspace-edit",
+  ["cmd+alt+3"] = "shell:workspace-fleet",
+  ["cmd+alt+4"] = "shell:workspace-bmux",
+  ["ctrl+alt+1"] = "shell:workspace-agent",
+  ["ctrl+alt+2"] = "shell:workspace-edit",
+  ["ctrl+alt+3"] = "shell:workspace-fleet",
+  ["ctrl+alt+4"] = "shell:workspace-bmux",
   ["ctrl+shift+r"] = "agent:review",   -- cross-file review of the agent's edits
 }
 

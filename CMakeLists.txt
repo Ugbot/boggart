@@ -1207,15 +1207,21 @@ if(TARGET boggart-studio)
       $<TARGET_FILE:boggart-studio> .
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   set_tests_properties(terminal_process_studio PROPERTIES TIMEOUT 30)
-  set(_pane_suites studio_terminal_native studio_terminal_shutdown studio_terminal_render studio_terminal_clusters studio_grid_text studio_agent_clusters)
+  set(_pane_suites studio_terminal_native studio_terminal_shutdown studio_terminal_render studio_terminal_clusters studio_grid_text studio_agent_clusters studio_bmux)
   if(UNIX AND EXISTS /usr/bin/vim)
     list(APPEND _pane_suites studio_terminal_vim)
   endif()
   foreach(_pane_suite IN LISTS _pane_suites)
     set(_pane_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${_pane_suite})
+    set(_pane_shell_env)
+    if(_pane_suite STREQUAL "studio_bmux")
+      # Test interactive input without inheriting a user's shell startup scripts.
+      set(_pane_shell_env SHELL=/bin/sh)
+    endif()
     add_test(NAME ${_pane_suite}
       COMMAND ${CMAKE_COMMAND} -E env HOME=${_pane_home} USERPROFILE=${_pane_home}
         LOCALAPPDATA=${_pane_home}/AppData/Local BOGGART_HOME=${_pane_home}/.boggart
+        ${_pane_shell_env}
         SDL_VIDEODRIVER=dummy BMUX_RENDER_DIR=${_pane_home} BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/${_pane_suite}.lua
         $<TARGET_FILE:boggart-studio> .
       WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})

@@ -145,7 +145,33 @@ native encoders handle keyboard/IME, paste/focus and mouse. RGB/256 colors,
 alternate screen, scroll regions, wide clusters and reflow come from the C
 core. See [process-backed terminals](terminal-process.md) and the
 [integration plan](superpowers/plans/2026-10-14-bmux-libuv-pty.md). Batched cell
-rendering, shaping, selection and search remain Phase 2 work.
+rendering and positioned cell shaping are implemented. Selection, search and
+the remaining terminal presentation gates stay separate work.
+
+### BMUX mode
+
+Click **BMUX** beside AGENT / EDIT / FLEET, or use **Ctrl+Alt+4**
+(**Cmd+Option+4** on macOS). The first visit opens an interactive shell in the
+project directory. Its toolbar exposes **New terminal**, **Split right**,
+**Split down**, **Close**, **Zoom** and **Next pane**. New terminals open tabs in
+the focused pane; splits create independent shells. Click a tab/pane to focus it
+and drag dividers to resize. On macOS, **Cmd+T** opens a terminal tab,
+**Cmd+D** splits right, **Cmd+Shift+D** splits down and **Cmd+W** closes the
+focused terminal. **Ctrl+Alt+arrows** moves pane focus. Toolbar controls wrap
+in narrow windows; mode buttons move below the menus when their rows would overlap.
+
+Switching modes keeps BMUX's running shells, tabs, split proportions, focused
+pane and zoom state. New shells inherit a valid directory reported by OSC 7,
+falling back to their originating project directory. These sessions are local
+to the Studio process; server detach/reattach, persistent restoration and the
+shared cTUI layout remain BMUX-30/31/32/33/35 work. Terminal selection/search and
+the remaining cmux roadmap still have separate tracker gates.
+
+`tests/studio_bmux.lua` exercises real Studio mouse/keyboard dispatch and native
+PTYs, including output while hidden, mode roundtrips, tab closure and narrow
+controls. `shell.workspaces.bmux` owns terminal actions and
+`shell.bmuxtoolbar` owns their visible controls; the existing Node tree remains
+responsible for tabs, dividers and layout.
 
 1. **PTY host (new C).** Add `openpty`/`forkpty` (or `posix_openpt` +
    `grantpt`/`unlockpt`) behind a small Lua surface, e.g. `sys.pty.open{cmd,
