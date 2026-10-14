@@ -46,23 +46,39 @@ local function shell_cwd()
   return (M.focused and M.focused.bmux_cwd) or core.project_dir
 end
 
-function M.open(dir)
+function M.open(dir, options)
+  options = options or nil
   local shell = require "shell"
   if shell.current ~= "bmux" then
     shell.switch("bmux")
     -- First entry creates the initial shell; a menu open should not spawn two.
-    if not dir then return end
+    if not dir and not options then return end
   end
   local node = full_layout_node()
-  local cwd = shell_cwd()
-  local view = TerminalView { cwd = cwd }
+  local cwd = (options and options.cwd) or shell_cwd()
+  local view = TerminalView { cwd=cwd, cmd=options and options.cmd,
+    args=options and options.args, title=options and options.title }
   M.serial = (M.serial or 0) + 1
-  view.title = "Terminal " .. M.serial
+  view.title = (options and options.title) or ("Terminal " .. M.serial)
   view.bmux_cwd = cwd
   if dir then node:split(dir, view) else node:add_view(view) end
   M.focused = view
   core.root_view.root_node:update_layout()
   core.redraw = true
+  return view
+end
+
+function M.show(view)
+  require("shell").switch("bmux")
+  local root = core.root_view.root_node
+  local node = root:get_node_for_view(view)
+  if not node then
+    local content = core.root_view:get_primary_node():get_content_root(root)
+    if content.zoomed then content:toggle_zoom(); node = root:get_node_for_view(view) end
+  end
+  if not node then return nil, "agent pane is closed" end
+  node:set_active_view(view); M.focused=view; core.redraw=true
+  return true
 end
 
 function M.enter()
@@ -95,6 +111,7 @@ end
 
 local function in_bmux() return require("shell").current == "bmux" end
 command.add(in_bmux, {
+  ["bmux:new-agent"] = function() require("core.agentlauncher").choose() end,
   ["bmux:new-terminal"] = function() M.open() end,
   ["bmux:split-right"] = function() M.open("right") end,
   ["bmux:split-down"] = function() M.open("down") end,

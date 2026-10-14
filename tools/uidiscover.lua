@@ -38,7 +38,7 @@ local INTERNAL = {
 }
 
 local PRODUCT = { "agent", "studio", "shell", "service", "automations", "library",
-                  "swarm", "project" }
+                  "swarm", "project", "bmux" }
 
 local problems = {}
 local function check(ok, msg) if not ok then problems[#problems + 1] = msg end end

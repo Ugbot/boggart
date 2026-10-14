@@ -99,6 +99,7 @@ M.tree = {
     { "Open Bmux",        "shell:workspace-bmux" },
     M.SEP,
     { "New terminal",     "bmux:new-terminal" },
+    { "New agent",        "bmux:new-agent" },
     { "Split right",      "bmux:split-right" },
     { "Split down",       "bmux:split-down" },
     { "Close terminal",   "bmux:close-terminal" },

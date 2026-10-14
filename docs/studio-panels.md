@@ -173,6 +173,38 @@ controls. `shell.workspaces.bmux` owns terminal actions and
 `shell.bmuxtoolbar` owns their visible controls; the existing Node tree remains
 responsible for tabs, dividers and layout.
 
+### Agent TUIs in Bmux and Fleet
+
+**New agent** opens a profile chooser for **Boggart TUI**, **Resume Boggart TUI**,
+**Codex**, **Claude Code** and **Custom agent command**. It runs the actual
+executable in a native terminal tab. Custom commands support quoted arguments;
+variables, backticks, globs and pipelines are passed literally rather than
+expanded by a shell. An explicit shell executable can be selected when wanted.
+The Boggart executable is found beside Studio, in a source checkout or on PATH.
+
+Launched agents register in the existing **FLEET** view alongside Boggart's
+scheduled workers. External entries show their provider, cwd, process ID and
+exit/failure status. **Focus pane** switches to the original Bmux pane, including
+a pane hidden by zoom. **Stop** closes its native PTY without switching away
+from Fleet. Closing a Bmux agent tab retires its controls; natural exit preserves
+the native screen for inspection. Known live resumed Boggart sessions are focused
+instead of launched twice.
+
+Process liveness and agent activity are separate: external rows say
+**alive / unknown** until a runtime integration supplies semantic status. The
+launcher does not infer tasks, model names, approvals or completion from screen
+text. It does not send semantic prompts or automate approval keys. Child runtime
+IPC, hooks for agents started manually in shells, rich provider adapters and
+registration of a child TUI's own workers are subsequent integration stages.
+
+`lua/fleet.lua` owns bounded metadata, adapter capabilities and generation checks;
+`core.fleetagents` connects native PTYs and cached scheduler records to that
+model. Polling reads an in-memory revision before allocating process metadata.
+Ended, released history can be evicted at capacity; live records and open panes
+cannot be silently evicted. `core.agentlauncher` owns profiles and literal argv.
+`tests/studio_fleet_agents.lua` verifies the actual chooser, Boggart TUI keyboard
+quit/resume, foreign processes, Fleet focus/stop, hidden exit and literal arguments.
+
 1. **PTY host (new C).** Add `openpty`/`forkpty` (or `posix_openpt` +
    `grantpt`/`unlockpt`) behind a small Lua surface, e.g. `sys.pty.open{cmd,
    args, env, cwd, cols, rows}` returning a handle. Wrap the master fd in a
