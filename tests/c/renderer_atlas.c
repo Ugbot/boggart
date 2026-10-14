@@ -19,6 +19,7 @@ static bool checked_update(SDL_Texture *texture,const SDL_Rect *rect,const void 
 #include "../../studio/src/renderer.c"
 #include "../../studio/src/fontglyph.c"
 #include "../../studio/src/fontatlas.c"
+#include "../../studio/src/glyphcache.c"
 #undef calloc
 #undef SDL_UpdateTexture
 static unsigned char *pixels(size_t *bytes) {
@@ -84,8 +85,28 @@ int main(int argc,char **argv) {
   bold=ren_get_font_variant(base,1);glyphset_size=sizeof(FontAtlas);allocation_count=0;fail_glyphset=1;
   b=get_glyphset(bold,'A',0);fail_glyphset=0;
   CHECK(regular->texture==old && !regular->shared_texture && b->texture && !b->shared_texture);ren_free_font(base);
+  GlyphCache *ids=glyphcache_create(renderer,glyph_batch_flush);CHECK(ids);
+  RenColor ink={.r=255,.g=255,.b=255,.a=255};RenImage image={&ink,1,1};RenGlyph glyph,old_glyph;
+  update_count=0;fail_update=1;CHECK(!glyphcache_insert(ids,0,&image,0,0,1,&glyph));fail_update=0;
+  CHECK(!glyphcache_find(ids,0,&glyph) && !glyphcache_bytes());
+  CHECK(glyphcache_insert(ids,0,&image,0,0,1,&glyph));old_glyph=glyph;
+  update_count=0;fail_update=1;CHECK(!glyphcache_insert(ids,1,&image,0,0,1,&glyph));fail_update=0;
+  CHECK(glyphcache_find(ids,0,&glyph) && !memcmp(&glyph,&old_glyph,sizeof glyph));
+  CHECK(!glyphcache_find(ids,1,&glyph));
+  ren_draw_glyph(glyph,0,0,1,(RenColor){.r=255,.a=255});CHECK(glyph_batch_n>0);
+  for(uint64_t key=1;key<=7168;key++)CHECK(glyphcache_insert(ids,key,&image,0,0,1,&glyph));
+  CHECK(!glyph_batch_n && !glyphcache_find(ids,0,&glyph) && glyphcache_find(ids,7168,&glyph));
+  glyphcache_destroy(ids);CHECK(!glyphcache_bytes());
+  ids=glyphcache_create(renderer,glyph_batch_flush);CHECK(ids);
+  RenColor *large_pixels=calloc((size_t)1022*1022,sizeof *large_pixels);CHECK(large_pixels);
+  image=(RenImage){large_pixels,1022,1022};
+  for(uint64_t key=0;key<4;key++)CHECK(glyphcache_insert(ids,key,&image,0,0,1,&glyph));
+  CHECK(glyphcache_bytes()==UINT64_C(4)*1024*1024*4);
+  CHECK(glyphcache_insert(ids,4,&image,0,0,1,&glyph));
+  CHECK(glyphcache_bytes()==UINT64_C(1024)*1024*4 && !glyphcache_find(ids,0,&glyph));
+  free(large_pixels);glyphcache_destroy(ids);CHECK(!glyphcache_bytes());
   CHECK(!fontatlas_create(renderer,2049));
   CHECK(!fontatlas_capacity_bytes() && !standalone_atlas_bytes);
   SDL_DestroyTexture(target);target=NULL;SDL_DestroyRenderer(renderer);renderer=NULL;SDL_DestroyWindow(win);SDL_Quit();
-  puts("SDL atlas: shared style texture/batches, exact pixels, pending geometry, fallback/growth and teardown pass");return 0;
+  puts("SDL atlas: shared style texture/batches, exact pixels, pending geometry, fallback/growth, ID cache rollover/upload failure and teardown pass");return 0;
 }

@@ -693,7 +693,8 @@ endif()
 # compressed WOFF2 fonts (Brotli), PNG-backed colour-emoji strikes (libpng),
 # and HarfBuzz-assisted autohinting of Indic scripts. None of those are things
 # this renderer draws -- fontfallback.c refuses colour fonts on separate
-# grounds, and there is no shaping engine here for HarfBuzz to help.
+# grounds. The separate OpenType shaper below supplies positioned glyph IDs;
+# FreeType does not link HarfBuzz back for autohinting.
 #
 # Guarded on SDL3_FOUND as well as BOGGART_BUILD_APP so that a machine without
 # SDL3, which builds the CLI and skips the studio, does not download a
@@ -716,6 +717,28 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
     URL_HASH SHA256=${BOGGART_FREETYPE_SHA256}
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
   FetchContent_MakeAvailable(freetype)
+endif()
+
+if(BOGGART_BUILD_APP AND SDL3_FOUND)
+  # Upstream's supported amalgamation, static OpenType backend only. This avoids
+  # its CMake auto-enabling FreeType interop when our freetype target exists.
+  # Our C calls shape owned bytes; the existing FreeType alone rasterizes IDs.
+  include(FetchContent)
+  FetchContent_Declare(harfbuzz
+    URL https://github.com/harfbuzz/harfbuzz/releases/download/14.4.0/harfbuzz-14.4.0.tar.xz
+    URL_HASH SHA256=2357ed966c6ced7bfa720b0640c0231065af01158fbea215093ffa15aed44371
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SOURCE_SUBDIR boggart-amalgamation-only)
+  FetchContent_MakeAvailable(harfbuzz)
+  add_library(boggart_harfbuzz STATIC ${harfbuzz_SOURCE_DIR}/src/harfbuzz.cc)
+  target_compile_features(boggart_harfbuzz PRIVATE cxx_std_11)
+  target_include_directories(boggart_harfbuzz PUBLIC ${harfbuzz_SOURCE_DIR}/src)
+  target_compile_definitions(boggart_harfbuzz PRIVATE
+    HB_NO_GETENV HB_NO_BUFFER_SERIALIZE HB_NO_BUFFER_VERIFY HB_NO_DRAW HB_NO_PAINT
+    HB_NO_COLOR HB_NO_OT_FONT_GLYPH_NAMES HB_NO_SUBSET_DEPEND
+    HB_BUFFER_MAX_LEN_FACTOR=4 HB_BUFFER_MAX_LEN_MIN=256
+    HB_BUFFER_MAX_OPS_FACTOR=1024 HB_BUFFER_MAX_OPS_MIN=65536)
+  target_link_libraries(boggart_harfbuzz PRIVATE boggart_quiet)
 endif()
 
 if(BOGGART_BUILD_APP AND SDL3_FOUND)
@@ -780,7 +803,7 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
   target_link_libraries(boggart-studio PRIVATE
     boggart_warnings
     lua_vendor mining_parser_vendor sqlite_vendor cjson_vendor luv_lua uv_a isocline_vendor
-    CURL::libcurl freetype ${VOICE_LIBS} ${STATION_LIBS})
+    CURL::libcurl freetype boggart_harfbuzz ${VOICE_LIBS} ${STATION_LIBS})
   if(BOGGART_VOICE OR BOGGART_STATION)
     set_target_properties(boggart-studio PROPERTIES LINKER_LANGUAGE CXX)
   endif()
@@ -944,7 +967,8 @@ target_include_directories(boggart PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 if(TARGET boggart-studio)
   target_include_directories(boggart-studio PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
   set(_renderer_source_header "/* Generated renderer build identity. */\nstatic const struct { const char *path, *sha256; } terminalrender_source_files[] = {\n")
-  foreach(_source studio/src/renderer.c studio/src/renderer.h studio/src/fontglyph.c studio/src/fontglyph.h studio/src/rencache.c studio/src/rencache.h
+  foreach(_source CMakeLists.txt studio/src/renderer.c studio/src/renderer.h studio/src/fontglyph.c studio/src/fontglyph.h
+      studio/src/clusterdraw.c studio/src/fontshape.c studio/src/fontshape.h studio/src/fontcluster.c studio/src/fontcluster.h studio/src/glyphcache.c studio/src/glyphcache.h studio/src/rencache.c studio/src/rencache.h
       studio/src/termgrid.c studio/src/termgrid.h studio/src/termrender.c studio/src/termrender.h studio/src/fontatlas.c studio/src/fontatlas.h
       studio/src/api/renderer.c studio/src/api/renderer_font.c studio/src/api/terminalrender.c)
     file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${_source}" _sha)
@@ -1022,9 +1046,9 @@ if(TARGET boggart-studio)
     target_link_directories(termcache_test PRIVATE ${SDL3_LIBRARY_DIRS})
   endif()
   add_test(NAME termcache COMMAND termcache_test)
-  add_executable(renderer_fonts_test tests/c/renderer_fonts.c studio/src/fontfallback.c studio/src/fontatlas.c studio/src/termgrid.c studio/src/termrender.c)
+  add_executable(renderer_fonts_test tests/c/renderer_fonts.c studio/src/clusterdraw.c studio/src/fontshape.c studio/src/fontcluster.c studio/src/glyphcache.c studio/src/fontfallback.c studio/src/fontatlas.c studio/src/termgrid.c studio/src/termrender.c)
   target_include_directories(renderer_fonts_test PRIVATE studio/src ${SDL3_INCLUDE_DIRS})
-  target_link_libraries(renderer_fonts_test PRIVATE boggart_vt freetype uv_a)
+  target_link_libraries(renderer_fonts_test PRIVATE boggart_vt freetype boggart_harfbuzz uv_a)
   if(UNIX)
     target_link_libraries(renderer_fonts_test PRIVATE m)
   endif()
@@ -1040,9 +1064,27 @@ if(TARGET boggart-studio)
     target_link_libraries(renderer_fonts_test PRIVATE "-framework CoreText" "-framework CoreFoundation")
   endif()
   add_test(NAME renderer_fonts COMMAND renderer_fonts_test ${CMAKE_CURRENT_SOURCE_DIR}/studio/data/fonts/monospace.ttf)
-  add_executable(renderer_atlas_test tests/c/renderer_atlas.c studio/src/fontfallback.c)
+  add_executable(renderer_clusters_test tests/c/renderer_clusters.c studio/src/clusterdraw.c studio/src/fontshape.c studio/src/fontcluster.c studio/src/glyphcache.c studio/src/fontfallback.c studio/src/fontatlas.c studio/src/termgrid.c studio/src/termrender.c)
+  target_include_directories(renderer_clusters_test PRIVATE studio/src ${SDL3_INCLUDE_DIRS})
+  target_link_libraries(renderer_clusters_test PRIVATE boggart_vt freetype boggart_harfbuzz uv_a)
+  if(UNIX)
+    target_link_libraries(renderer_clusters_test PRIVATE m)
+  endif()
+  if(BOGGART_SDL_TARGET)
+    target_link_libraries(renderer_clusters_test PRIVATE ${BOGGART_SDL_TARGET})
+  elseif(TARGET SDL3::SDL3)
+    target_link_libraries(renderer_clusters_test PRIVATE SDL3::SDL3)
+  else()
+    target_link_libraries(renderer_clusters_test PRIVATE ${SDL3_LIBRARIES})
+    target_link_directories(renderer_clusters_test PRIVATE ${SDL3_LIBRARY_DIRS})
+  endif()
+  if(APPLE)
+    target_link_libraries(renderer_clusters_test PRIVATE "-framework CoreText" "-framework CoreFoundation")
+  endif()
+  add_test(NAME renderer_clusters COMMAND ${CMAKE_COMMAND} -E env SDL_VIDEODRIVER=dummy $<TARGET_FILE:renderer_clusters_test> ${CMAKE_CURRENT_SOURCE_DIR}/studio/data/fonts/monospace.ttf ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fonts/NotoSansDevanagari.ttf)
+  add_executable(renderer_atlas_test tests/c/renderer_atlas.c studio/src/fontshape.c studio/src/fontcluster.c studio/src/fontfallback.c)
   target_include_directories(renderer_atlas_test PRIVATE studio/src ${SDL3_INCLUDE_DIRS})
-  target_link_libraries(renderer_atlas_test PRIVATE boggart_unicode freetype uv_a)
+  target_link_libraries(renderer_atlas_test PRIVATE boggart_vt freetype boggart_harfbuzz uv_a)
   if(BOGGART_SDL_TARGET)
     target_link_libraries(renderer_atlas_test PRIVATE ${BOGGART_SDL_TARGET})
   elseif(TARGET SDL3::SDL3)
@@ -1163,7 +1205,7 @@ if(TARGET boggart-studio)
       $<TARGET_FILE:boggart-studio> .
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   set_tests_properties(terminal_process_studio PROPERTIES TIMEOUT 30)
-  set(_pane_suites studio_terminal_native studio_terminal_shutdown studio_terminal_render)
+  set(_pane_suites studio_terminal_native studio_terminal_shutdown studio_terminal_render studio_terminal_clusters)
   if(UNIX AND EXISTS /usr/bin/vim)
     list(APPEND _pane_suites studio_terminal_vim)
   endif()
@@ -1212,5 +1254,5 @@ endif()
 # Sanitizers on boggart's own code and the C tests (BOG-10); the vendored
 # interpreter and JSON lib too, so a misuse inside them is attributed.
 boggart_apply_sanitizer(boggart boggart-studio auth_threads_test assert_trap_test crash_handler_test
-                        termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt boggart_pty pty_transport_test studio_uvbridge_test termgrid_test termcache_test renderer_fonts_test renderer_atlas_test vt_parser_test page_storage_test page_resize_test page_layout_test bitmap_test idmap_test idmap_scalar_test resize_failure_test
+                        termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt boggart_pty pty_transport_test studio_uvbridge_test termgrid_test termcache_test renderer_fonts_test renderer_clusters_test renderer_atlas_test vt_parser_test page_storage_test page_resize_test page_layout_test bitmap_test idmap_test idmap_scalar_test resize_failure_test
                         terminal_dispatch_test osc_commands_test terminal_events_test terminal_links_test mouse_encode_test terminal_mouse_test key_encode_test terminal_key_test paste_encode_test terminal_input_test boggart_unicode unicode_test wide_cells_test grapheme_cells_test terminal_unicode_test terminal_text_width_test)

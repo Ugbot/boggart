@@ -9,6 +9,9 @@
 #include FT_LCD_FILTER_H
 #include FT_OUTLINE_H
 #include "fontglyph.h"
+#include "fontshape.h"
+#include "glyphcache.h"
+#include "fontcluster.h"
 #include "fontfallback.h"
 #include "fontatlas.h"
 #include "utf8width.h"
@@ -106,6 +109,8 @@ typedef struct { GlyphSet *phase[SUBPIXEL_BITMAPS]; FontAtlas *atlas[SUBPIXEL_BI
  * copy that memory, so it has to outlive the face -- see ren_free_font. */
 typedef struct {
   FT_Face face;
+  const void *bytes; size_t length; unsigned index;
+  FontShape *shape;
 } Face;
 
 struct RenFont {
@@ -117,6 +122,7 @@ struct RenFont {
   RenFont *variants[4];
   Block *planes[GLYPH_PLANES];
   Face faces[MAX_FACES];
+  GlyphCache *ids; FontClusters *clusters;
   int nfaces;        /* faces materialised so far; faces[0] is ours */
   int next_file;     /* next entry of the fallback chain left to expand */
   uint32_t covered;  /* union of the accepted faces' coverage signatures */
@@ -315,7 +321,7 @@ static Face* face_at(RenFont *font, int i) {
         continue;
       }
       font->covered |= sig;
-      font->faces[font->nfaces++].face = f;
+      font->faces[font->nfaces++] = (Face){.face=f,.bytes=data,.length=sz,.index=(unsigned)s};
       entry->usable = 1;
     }
   }
@@ -854,7 +860,7 @@ static RenFont* font_from_data(RenFont *font) {
 
   /* The primary face is the head of its own fallback chain. Everything after
    * it is discovered lazily by face_at(). */
-  font->faces[0].face = face;
+  font->faces[0] = (Face){.face=face,.bytes=font->data,.length=font->datalen};
   font->nfaces = 1;
   font->covered = face_signature(face);
 
@@ -932,6 +938,7 @@ RenFont *ren_get_font_variant(RenFont *font, unsigned style) {
 
 void ren_free_font(RenFont *font) {
   flush_glyphs();
+  fontcluster_destroy(font->clusters);glyphcache_destroy(font->ids);
   for (unsigned i = 0; i < 4; i++) {
     if (font->variants[i]) { ren_free_font(font->variants[i]); }
   }
@@ -955,6 +962,7 @@ void ren_free_font(RenFont *font) {
   /* Faces first, bytes second, and not the other way round: FreeType reads out
    * of the buffer it was given for as long as the face exists. */
   for (int i = 0; i < font->nfaces; i++) {
+    fontshape_destroy(font->faces[i].shape);
     if (font->faces[i].face) { FT_Done_Face(font->faces[i].face); }
   }
   /* Only our own file. The fallback faces point into fontfallback.c's cache,
@@ -1055,7 +1063,7 @@ int ren_get_font_height(RenFont *font) {
 /* The device and flush hook are borrowed from the SDL renderer. Font caches
  * are main-thread only and must be freed before the device is destroyed. */
 void ren_font_set_device(SDL_Renderer *device, bool sharing, void (*flush)(void)) {
-  assert(!standalone_atlas_bytes && !fontatlas_capacity_bytes());
+  assert(!standalone_atlas_bytes && !fontatlas_capacity_bytes() && !glyphcache_bytes());
   font_renderer = device;
   share_style_atlases = sharing;
   flush_pending_glyphs = flush;
@@ -1068,7 +1076,7 @@ bool ren_font_style_atlas_sharing(bool enabled) {
 }
 
 RenFontAtlasStats ren_font_atlas_stats(void) {
-  return (RenFontAtlasStats){share_style_atlases, fontatlas_capacity_bytes(), standalone_atlas_bytes};
+  return (RenFontAtlasStats){share_style_atlases, fontatlas_capacity_bytes(), standalone_atlas_bytes+glyphcache_bytes()};
 }
 
 RenFontMetrics ren_font_metrics(const RenFont *font) {
@@ -1082,4 +1090,37 @@ RenGlyph ren_font_glyph(RenFont *font, unsigned codepoint, int phase) {
   const Glyph *g = &set->glyphs[codepoint & 255];
   return (RenGlyph){set->texture, set->tw, set->th,
     g->x0, g->y0, g->x1, g->y1, g->xoff, g->yoff, g->xadvance};
+}
+bool ren_font_face_shape(RenFont *font,unsigned index,FontShape **out) {
+  *out=NULL;if(index>=MAX_FACES)return true;
+  Face *face=face_at(font,(int)index);if(!face)return true;
+  if(!face->shape)face->shape=fontshape_create(face->bytes,face->length,face->index,font->size);
+  if(!face->shape)return false;
+  *out=face->shape;return true;
+}
+const RenCluster *ren_font_cluster(RenFont *font,const char *text,size_t length) {
+  if(!font->clusters)font->clusters=fontcluster_create();
+  return fontcluster_layout(font->clusters,font,text,length);
+}
+bool ren_font_glyph_id(RenFont *font,unsigned face_index,uint32_t id,int phase,RenGlyph *out) {
+  if(face_index>=(unsigned)font->nfaces || !id || phase<0 || phase>=SUBPIXEL_BITMAPS || !out)return false;
+  if(!font->ids)font->ids=glyphcache_create(font_renderer,flush_glyphs);
+  if(!font->ids)return false;
+  uint64_t key=((uint64_t)face_index<<34)|((uint64_t)id<<2)|(unsigned)phase;
+  if(glyphcache_find(font->ids,key,out))return true;
+  RawGlyph raw;int status=render_glyph(font,font->faces[face_index].face,id,phase,&raw);
+  if(status<0)return false;
+  if(raw.w>1022 || raw.h>1022){free(raw.bits);return false;}
+  size_t pixels=(size_t)raw.w*(size_t)raw.h;
+  RenImage image={.width=raw.w,.height=raw.h};
+  if(pixels) {
+    image.pixels=malloc(pixels*sizeof *image.pixels);
+    if(!image.pixels){free(raw.bits);return false;}
+    for(size_t i=0;i<pixels;i++) {
+      unsigned coverage=raw.lcd ? ((unsigned)raw.bits[i*3]+raw.bits[i*3+1]+raw.bits[i*3+2])/3 : raw.bits[i];
+      image.pixels[i]=(RenColor){.r=255,.g=255,.b=255,.a=(uint8_t)coverage};
+    }
+  }
+  bool ok=glyphcache_insert(font->ids,key,&image,(float)raw.left,(float)(font->baseline-raw.top),0,out);
+  free(image.pixels);free(raw.bits);return ok;
 }

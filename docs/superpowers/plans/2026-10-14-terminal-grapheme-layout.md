@@ -37,7 +37,7 @@ shaping remain required before BMUX-19 can close.
 
 - [x] Separate glyph raster/cache ownership from generic SDL drawing so shaping
   can consume glyph IDs/positions without expanding the renderer's large module.
-- [ ] Pin a static OpenType shaping dependency, select cluster fallback faces,
+- [x] Pin a static OpenType shaping dependency, select cluster fallback faces,
   cache positioned cluster glyphs and draw/measure authoritative cell advances.
 - [ ] Verify cluster positions and prefix/width agreement across all fragmented
   inputs, both grapheme modes, font styles, mutation/resize/history and deferred
@@ -55,3 +55,17 @@ hook, so migration/free still flushes pending geometry before UV/texture changes
 No shaping behavior/dependency is introduced by this refactor. Normal and
 ASan/UBSan focused suites both pass 9/9; 26 saved pre/post SDL screenshots are
 byte-identical, and the controlled SDL window pixel/lifetime test passes.
+
+Native rendering increment: static HarfBuzz 14.4.0 over recorded font-byte/TTC
+owners; complete-cluster fallback, 64 cached runs of IDs/positions, Venus-derived
+7168-entry Swiss glyph map and four bounded SDL pages per font. Retained cell
+widths supply advances. Normal/sanitizer and real-window tests cover canonical
+accent pixels, positioned marks/Indic shaping, all byte splits, both modes,
+styles/history/reflow and queued closure, upload failure and cache rollover.
+Paired software/Metal captures verify native draw costs and atlas capacity;
+Unicode Metal dirty-pane CPU drops 21.6%, with 266 -> 3 batches. Mixed/style
+results vary, and full input/flood gates remain open. See
+`docs/benchmarks/2026-10-14-cluster-shaping.md`.
+
+The remaining checkbox still includes general width/prefix/renderer migration
+and full performance gates. Native cell shaping does not close criterion 1500.

@@ -108,7 +108,7 @@ static int draw(lua_State *L) {
     }
     if(cached->cell_width!=cw || cached->cell_height!=ch || cached->tab_width!=tab_width) {
       if(!tg_measure(cached->row,font,(int)cw,(int)ch,&cached->bounds))
-        return luaL_error(L,"cannot prepare terminal font variant");
+        return luaL_error(L,"cannot prepare terminal glyph layout");
       cached->cell_width=(int)cw; cached->cell_height=(int)ch; cached->tab_width=tab_width;
     }
   }
