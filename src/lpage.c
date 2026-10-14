@@ -14,6 +14,11 @@
 #include <stdlib.h>
 #include <string.h>
 #define PAGE_ROWS 16
+#if defined(_MSC_VER)
+static __declspec(thread) uint64_t row_serial;
+#else
+static _Thread_local uint64_t row_serial;
+#endif
 typedef struct page page;
 typedef struct {
   lpage_row view;
@@ -22,6 +27,7 @@ typedef struct {
   unsigned slot;
   bool dirty, kept; /* kept is used only during allocation-free transfer */
 } row;
+static void row_changed(row *r) { r->view.revision=++row_serial; r->dirty=true; }
 struct page {
   page *next, *available;
   size_t columns; /* allocated width; a crop may expose fewer columns */
@@ -127,7 +133,7 @@ void lpage_release_cell(lpage_screen *s, lpage_cell cell) {
 }
 static void blank_row(lpage_screen *s,row *r) {
   for (size_t x=0;x<r->owner->columns;x++) r->cells[x]=(lpage_cell){0,0,0,1,0,0};
-  r->view.columns=s->columns; r->view.wrapped=false; r->dirty=true; r->kept=false;
+  r->view.columns=s->columns; r->view.wrapped=false; row_changed(r); r->kept=false;
 }
 static row *new_row_capacity(lpage_screen *s,size_t capacity) {
   page **available=&s->available;
@@ -594,7 +600,7 @@ static bool put_cell(lpage_screen *s, size_t y, size_t x, lpage_cell cell,bool r
   if (!s->defer_managed && (&r->cells[x]!=s->grapheme_pending)
     && ((cell.flags|r->cells[x].flags)&LP_CELL_GRAPHEME)) graphemes_dirty_row(s,r);
   if (cell.width==2 && (r->cells[x+1].flags&LP_CELL_GRAPHEME)) graphemes_dirty_row(s,r);
-  lpage_release_cell(s, r->cells[x]); r->cells[x] = cell; r->dirty = true;
+  lpage_release_cell(s, r->cells[x]); r->cells[x] = cell; row_changed(r);
   if (cell.width == 2) {
     lpage_release_cell(s, r->cells[x + 1]);
     r->cells[x + 1] = tail;
@@ -636,7 +642,7 @@ static bool fill(lpage_screen *s, row *r, size_t x, size_t n, uint32_t style, bo
     if (release_old) lpage_release_cell(s, r->cells[i]);
     r->cells[i] = (lpage_cell){ 0, style, 0, 1, 0, 0 };
   }
-  r->dirty = true;
+  row_changed(r);
   return true;
 }
 bool lpage_erase(lpage_screen *s, size_t y, size_t x, size_t n, uint32_t style) {
@@ -767,7 +773,7 @@ void lpage_clear_history(lpage_screen *s) {
 }
 void lpage_wrap(lpage_screen *s, size_t y, bool wrapped) {
   if (y < s->rows) {
-    row *r = at(s, y); r->view.wrapped = wrapped; r->dirty = true;
+    row *r = at(s, y); r->view.wrapped = wrapped; row_changed(r);
     if (!wrapped) r->cells[s->columns - 1].flags &= (uint8_t)~LP_CELL_WIDE_HEAD;
   }
 }

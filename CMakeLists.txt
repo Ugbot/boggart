@@ -929,7 +929,7 @@ add_test(NAME unicode COMMAND unicode_test
 # Embed the sources actually compiled into this terminal backend. Benchmarks
 # reject a stale executable instead of attributing it to current disk contents.
 set(BMUX_TERMINAL_SOURCE_FILES src/bpty.c src/bpty.h src/lvt.c src/vt_table.h src/lstyle.c src/llink.c src/lpage.c src/lpage_resize.c src/lpage_layout.c src/lpage_layout.h src/lidmap.c src/lidmap.h src/lbitmap.c src/lbitmap.h
-  src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c src/lterminal.c
+  src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c src/lterminal.c src/lterminal.h
   src/lvt.h src/lstyle.h src/llink.h src/lpage.h src/lpage_internal.h src/bosc.h src/bmouse.h src/bkey.h src/bpaste.h src/bterm.h src/bterm_internal.h
   src/bunicode.c src/bunicode.h src/bunicode_data.h src/btunicode.c src/btunicode.h src/btunicode_data.h src/lgrapheme.c src/lgrapheme.h)
 set(_terminal_source_header "/* Generated build identity; do not edit. */\nstatic const struct { const char *path, *sha256; } terminal_source_files[] = {\n")
@@ -943,6 +943,16 @@ file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/terminal-source.h" CONTENT "$
 target_include_directories(boggart PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 if(TARGET boggart-studio)
   target_include_directories(boggart-studio PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+  set(_renderer_source_header "/* Generated renderer build identity. */\nstatic const struct { const char *path, *sha256; } terminalrender_source_files[] = {\n")
+  foreach(_source studio/src/renderer.c studio/src/renderer.h studio/src/rencache.c studio/src/rencache.h
+      studio/src/termgrid.c studio/src/termgrid.h studio/src/termrender.c studio/src/termrender.h
+      studio/src/api/renderer.c studio/src/api/renderer_font.c studio/src/api/terminalrender.c)
+    file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${_source}" _sha)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${_source}")
+    string(APPEND _renderer_source_header "  {\"${_source}\", \"${_sha}\"},\n")
+  endforeach()
+  string(APPEND _renderer_source_header "};\n")
+  file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/terminalrender_source.h "${_renderer_source_header}")
 endif()
 add_library(boggart_vt STATIC src/lvt.c src/lstyle.c src/llink.c src/lpage.c src/lpage_resize.c src/lpage_layout.c src/lidmap.c src/lbitmap.c src/lgrapheme.c src/btunicode.c
   src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c)
@@ -992,6 +1002,24 @@ add_test(NAME page_storage COMMAND page_storage_test)
 add_executable(page_resize_test tests/c/page_resize.c)
 target_link_libraries(page_resize_test PRIVATE boggart_vt)
 add_test(NAME page_resize COMMAND page_resize_test)
+add_executable(termgrid_test tests/c/termgrid.c)
+target_include_directories(termgrid_test PRIVATE studio/src)
+target_link_libraries(termgrid_test PRIVATE boggart_vt)
+add_test(NAME termgrid COMMAND termgrid_test)
+if(TARGET boggart-studio)
+  add_executable(termcache_test tests/c/termcache.c studio/src/termgrid.c)
+  target_include_directories(termcache_test PRIVATE studio/src ${SDL3_INCLUDE_DIRS})
+  target_link_libraries(termcache_test PRIVATE boggart_vt)
+  if(BOGGART_SDL_TARGET)
+    target_link_libraries(termcache_test PRIVATE ${BOGGART_SDL_TARGET})
+  elseif(TARGET SDL3::SDL3)
+    target_link_libraries(termcache_test PRIVATE SDL3::SDL3)
+  else()
+    target_link_libraries(termcache_test PRIVATE ${SDL3_LIBRARIES})
+    target_link_directories(termcache_test PRIVATE ${SDL3_LIBRARY_DIRS})
+  endif()
+  add_test(NAME termcache COMMAND termcache_test)
+endif()
 add_executable(page_layout_test tests/c/page_layout.c)
 target_link_libraries(page_layout_test PRIVATE boggart_vt)
 add_test(NAME page_layout COMMAND page_layout_test)
@@ -1096,7 +1124,7 @@ if(TARGET boggart-studio)
       $<TARGET_FILE:boggart-studio> .
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   set_tests_properties(terminal_process_studio PROPERTIES TIMEOUT 30)
-  set(_pane_suites studio_terminal_native studio_terminal_shutdown)
+  set(_pane_suites studio_terminal_native studio_terminal_shutdown studio_terminal_render)
   if(UNIX AND EXISTS /usr/bin/vim)
     list(APPEND _pane_suites studio_terminal_vim)
   endif()
@@ -1105,7 +1133,7 @@ if(TARGET boggart-studio)
     add_test(NAME ${_pane_suite}
       COMMAND ${CMAKE_COMMAND} -E env HOME=${_pane_home} USERPROFILE=${_pane_home}
         LOCALAPPDATA=${_pane_home}/AppData/Local BOGGART_HOME=${_pane_home}/.boggart
-        SDL_VIDEODRIVER=dummy BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/${_pane_suite}.lua
+        SDL_VIDEODRIVER=dummy BMUX_RENDER_DIR=${_pane_home} BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/${_pane_suite}.lua
         $<TARGET_FILE:boggart-studio> .
       WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     set_tests_properties(${_pane_suite} PROPERTIES TIMEOUT 15)
@@ -1145,5 +1173,5 @@ endif()
 # Sanitizers on boggart's own code and the C tests (BOG-10); the vendored
 # interpreter and JSON lib too, so a misuse inside them is attributed.
 boggart_apply_sanitizer(boggart boggart-studio auth_threads_test assert_trap_test crash_handler_test
-                        termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt boggart_pty pty_transport_test studio_uvbridge_test vt_parser_test page_storage_test page_resize_test page_layout_test bitmap_test idmap_test idmap_scalar_test resize_failure_test
+                        termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt boggart_pty pty_transport_test studio_uvbridge_test termgrid_test termcache_test vt_parser_test page_storage_test page_resize_test page_layout_test bitmap_test idmap_test idmap_scalar_test resize_failure_test
                         terminal_dispatch_test osc_commands_test terminal_events_test terminal_links_test mouse_encode_test terminal_mouse_test key_encode_test terminal_key_test paste_encode_test terminal_input_test boggart_unicode unicode_test wide_cells_test grapheme_cells_test terminal_unicode_test)

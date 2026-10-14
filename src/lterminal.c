@@ -1,6 +1,7 @@
 /* Lua owns the terminal lifetime; C owns parsing, grid storage and reply bytes.
  * Snapshot/row copies are made only on explicit calls, never while feeding. */
 #include "bterm.h"
+#include "lterminal.h"
 #include "bpty.h"
 #include "lua.h"
 #include "lauxlib.h"
@@ -51,6 +52,10 @@ static void capture_event(void *context, const bterm_event *event) {
 static terminal *check(lua_State *L) {
   terminal *t = luaL_checkudata(L, 1, TERMINAL_MT);
   luaL_argcheck(L, t->term != NULL, 1, "closed terminal"); return t;
+}
+bterm *boggart_terminal_borrow(lua_State *L,int index) {
+  terminal *t=luaL_checkudata(L,index,TERMINAL_MT);
+  luaL_argcheck(L,t->term!=NULL,index,"closed terminal");return t->term;
 }
 static bool reply(void *ctx, const uint8_t *bytes, size_t n) {
   terminal *t = ctx;

@@ -5,8 +5,9 @@
 is immutable. The module requires C99, calls no allocator and has no global
 mutable state. `boggart_vt` is compiled with both front ends; its `bterm`
 consumer connects parser events directly to C grid dispatch. Both front ends
-expose it through `require("terminal")`; live PTY integration is pending. The studio still
-uses its Lua parser until that integration is verified.
+expose it through `require("terminal")`. Studio uses the C PTY/core and native
+row renderer; see [process integration](terminal-process.md) and
+[renderer evidence](benchmarks/2026-10-14-native-row-renderer.md).
 
 ```c
 lvt_parser parser;
@@ -73,10 +74,12 @@ overwriting or erasing either half clears the pair, and insert/delete repairs
 glyphs crossing a cut or the right edge. Whole pairs move with their references.
 A WIDE_HEAD blank at a wrapped row's right edge records a wide glyph that starts
 on the next row. Native printing remains BMUX-19. Rows expose wrapped and
-damage state. `lpage_ack_damage` acknowledges visible damage after a renderer
+damage state and a durable content revision. `lpage_ack_damage` acknowledges visible damage after a renderer
 consumes it; scrolling conservatively damages the whole visible screen.
 Borrowed rows/cells can move or recycle on any mutation, so renderers must not
 retain their pointers across terminal updates.
+Native rendering copies text/styles into retained C rows. Its revision cache
+is independent of consumable damage flags and row allocation addresses.
 
 `src/lgrapheme.c/h` owns cluster slots per screen. A flagged 16-byte cell stores
 its pool ID in `codepoint`; C consumers use `lpage_codepoint` for the base scalar
