@@ -74,6 +74,10 @@ bool bterm_reset(bterm *terminal);
  * Success resets margins and width-dependent tabs, damages both screens, and
  * invalidates mouse motion. Parser fragments, queues and modes survive. */
 bool bterm_resize(bterm *terminal, size_t columns, size_t rows);
+/* Prepare both screens, then check the host resize before allocation-free
+ * commit. The check may update host geometry, but must not mutate/reenter the
+ * terminal. Failure preserves terminal geometry and ownership. */
+bool bterm_resize_guarded(bterm *terminal, size_t columns, size_t rows, bool (*check)(void *), void *context);
 bterm_status bterm_state(const bterm *terminal);
 /* Screen/style borrows expire on mutation. IDs belong to the active screen. */
 const lpage_screen *bterm_screen(const bterm *terminal);

@@ -309,9 +309,9 @@ bterm_status bterm_state(const bterm *t) {
   const bt_cursor *c = &t->buffers[t->active].cursor;
   return (bterm_status){ c->x, c->y, t->top, t->bottom, t->modes, t->cursor_style, t->active != 0, c->pending_wrap, t->pen };
 }
-bool bterm_resize(bterm *t,size_t columns,size_t rows) {
+bool bterm_resize_guarded(bterm *t,size_t columns,size_t rows,bool (*check)(void *),void *context) {
   if (!t || !columns || !rows || columns>4096 || rows>4096) return false;
-  if (columns==t->columns && rows==t->rows) return true;
+  if (columns==t->columns && rows==t->rows) return !check || check(context);
   lpage_resize *plans[2]={NULL,NULL};
   for (unsigned i=0;i<2;i++) {
     bt_buffer *b=&t->buffers[i]; if (!b->screen) continue;
@@ -322,6 +322,10 @@ bool bterm_resize(bterm *t,size_t columns,size_t rows) {
       for (unsigned n=0;n<2;n++) lpage_resize_abort(plans[n]);
       return false;
     }
+  }
+  if (check && !check(context)) {
+    for (unsigned i=0;i<2;i++) lpage_resize_abort(plans[i]);
+    return false;
   }
   for (unsigned i=0;i<2;i++) if (plans[i]) {
     bt_buffer *b=&t->buffers[i]; lpage_position p=lpage_resize_cursor(plans[i]);
@@ -339,6 +343,7 @@ bool bterm_resize(bterm *t,size_t columns,size_t rows) {
   t->mouse_motion.valid=false; t->mouse_cell_width=t->mouse_cell_height=0;
   return true;
 }
+bool bterm_resize(bterm *t,size_t columns,size_t rows) { return bterm_resize_guarded(t,columns,rows,NULL,NULL); }
 const lpage_screen *bterm_screen(const bterm *t) { return t->buffers[t->active].screen; }
 const llink_value *bterm_link(const bterm *t, uint32_t id) { return lpage_link(bterm_screen(t), id); }
 const lpage_style *bterm_style(const bterm *t, uint32_t id) { return lstyle_get(lpage_styles(t->buffers[t->active].screen), id); }
