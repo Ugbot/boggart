@@ -108,6 +108,10 @@ Dirty replay skips rows whose complete ink bounds miss the effective dirty clip.
 `renderer.terminal_replay_stats()` reports queued/replayed/skipped rows and dirty
 rectangle count for the last completed frame; see
 [replay evidence](benchmarks/2026-10-14-row-replay.md).
+GPU renderers coalesce synthetic style blocks into bounded shared atlas pages;
+software renderers retain separate textures. Completed-frame replay diagnostics
+also include glyph batches/quads/switches and logical texture capacities. See
+[shared style atlas evidence](benchmarks/2026-10-14-shared-style-atlas.md).
 
 Registered Studio tests cover SDL event injection, native pane/scrollback and
 alternate-screen state, a real shell's final output, normal teardown with a

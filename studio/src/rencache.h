@@ -22,6 +22,7 @@ void rencache_end_frame(void);
 typedef struct {
   size_t rows_queued,rows_replayed,rows_skipped;
   int dirty_rects;
+  RenGlyphStats glyphs;
 } RenCacheStats;
 RenCacheStats rencache_stats(void);
 

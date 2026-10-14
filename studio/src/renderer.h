@@ -61,6 +61,14 @@ void ren_init(SDL_Window *win);
 void ren_update_rects(RenRect *rects, int count);
 void ren_set_clip_rect(RenRect rect);
 void ren_get_size(int *x, int *y);
+typedef struct {
+  uint64_t quads,batches,texture_switches,shared_atlas_bytes,standalone_atlas_bytes;
+  bool shared_style_atlases;const char *backend;
+} RenGlyphStats;
+void ren_reset_glyph_stats(void);
+RenGlyphStats ren_glyph_stats(void);
+/* Test-script control affects future atlas loads, not existing pages. */
+bool ren_test_style_atlas_sharing(bool enabled);
 /* Writes the retained backbuffer to a BMP. 0 on success; SDL_GetError() on fail. */
 int ren_save_screenshot(const char *path);
 

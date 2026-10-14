@@ -263,6 +263,7 @@ void rencache_invalidate(void) {
 
 
 void rencache_begin_frame(void) {
+  ren_reset_glyph_stats();
   /* reset all cells if the screen width/height has changed */
   int w, h;
   ren_get_size(&w, &h);
@@ -435,6 +436,7 @@ void rencache_end_frame(void) {
   cells = cells_prev;
   cells_prev = tmp;
   command_buf_idx = 0;
+  last_frame.glyphs=ren_glyph_stats();
 }
 
 RenCacheStats rencache_stats(void) { return last_frame; }

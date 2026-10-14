@@ -5,6 +5,8 @@ local view_path=reference or 'studio/data/core/terminalview.lua'
 local View=reference and assert(loadfile(reference))() or require 'core.terminalview'
 local json=require 'json'; local hash=require 'hash_c'
 local out=assert(os.getenv('BMUX_DRAW_REPORT'),'BMUX_DRAW_REPORT required')
+local sharing=os.getenv('BMUX_STYLE_ATLAS')
+if sharing then assert(sharing=='on' or sharing=='off');renderer._test_style_atlas_sharing(sharing=='on') end
 local t <close> =protocol.new(80,24,2000)
 local view=View{terminal=t,send=function() return true end}
 local font_path='studio/data/fonts/monospace.ttf'
@@ -24,11 +26,13 @@ end
 view.position.x,view.position.y=0,0; view.size.x,view.size.y=view.cw*80,view.lh*24
 view.last_size.x,view.last_size.y=view.size.x,view.size.y
 local corpora={plain=('abcdefgh0123456789'):rep(120),styled=('\27[38;2;120;30;200;48;5;17mHELLO\27[0m world '):rep(170),unicode=('日éΩ漢'):rep(480),
-  mixed=('\27[0mA\27[1mB\27[3mI\27[1;3mC'):rep(600)}
+  mixed=('\27[0mA\27[1mB\27[0;3mI\27[1;3mC'):rep(600)}
 local calls={rect=0,text=0}; local draw_rect,draw_text=renderer.draw_rect,renderer.draw_text
 renderer.draw_rect=function(...) calls.rect=calls.rect+1; return draw_rect(...) end
 renderer.draw_text=function(font,...) calls.text=calls.text+1; return draw_text(inside_row and reference_fonts[current_style] or font,...) end
 local report={scope='actual Studio pane draw; CPU/wall time, not key-to-pixel latency',renderer=reference and 'native-lua-cells-reference' or 'native-row-commands',source=protocol.source(),samples={}}
+report.style_atlas_override=sharing
+report.corpus_sha256={};for name,data in pairs(corpora) do report.corpus_sha256[name]=hash.sha256(data) end
 local f=assert(io.open(view_path,'rb')); report.view_sha256=hash.sha256(f:read('a')); f:close()
 local font_file=assert(io.open(font_path,'rb')); report.font={path=font_path,size=16,sha256=hash.sha256(font_file:read('a'))}; font_file:close()
 report.reference_style_oracle=reference and 'independently loaded synthetic bold/italic fonts; saved frontend methods wrapped for matching pixels' or nil
