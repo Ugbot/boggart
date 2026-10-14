@@ -10,6 +10,7 @@
 #include "lpage.h"
 #include "lpage_internal.h"
 #include "lidmap.h"
+#include "lbitmap.h"
 #include <stdlib.h>
 #include <string.h>
 #define PAGE_ROWS 16
@@ -31,7 +32,9 @@ struct page {
 typedef struct {
   lp_capacity capacity; size_t rows;
   lidmap style_refs;
-  bool styles_dirty;
+  lidmap grapheme_offsets;
+  lbitmap grapheme_bitmap;
+  bool styles_dirty, graphemes_dirty;
 } logical_page;
 struct lpage_screen {
   size_t columns, rows, head, history_limit, history_capacity, history_head, history_count;
@@ -41,6 +44,8 @@ struct lpage_screen {
   bool damage_all;
   bool defer_managed; /* unpublished resize geometry rebuilds caches lazily */
   bool style_tracking;
+  bool grapheme_tracking;
+  const lpage_cell *grapheme_pending;
   lstyle_pool *styles;
   llink_pool *links;
   lgrapheme_pool *graphemes;
@@ -58,13 +63,19 @@ static lp_layout_shape group_shape(void) {
 static logical_page *group_at(const lpage_screen *s,size_t i) {
   return &s->groups[(s->group_head+i)%s->group_capacity];
 }
-static void group_destroy(logical_page *g) { lidmap_free(&g->style_refs); memset(g,0,sizeof *g); }
+static void group_destroy(logical_page *g) {
+  lidmap_free(&g->style_refs); lidmap_free(&g->grapheme_offsets);
+  lbitmap_destroy(&g->grapheme_bitmap); memset(g,0,sizeof *g);
+}
 static void groups_destroy(lpage_screen *s) {
   for (size_t i=0;i<s->group_count;i++) group_destroy(group_at(s,i));
   free(s->groups); s->groups=NULL; s->group_count=s->group_capacity=s->group_head=0;
 }
 static void styles_dirty(lpage_screen *s) {
   for (size_t i=0;i<s->group_count;i++) group_at(s,i)->styles_dirty=true;
+}
+static void graphemes_dirty(lpage_screen *s) {
+  if (s->grapheme_tracking) for (size_t i=0;i<s->group_count;i++) group_at(s,i)->graphemes_dirty=true;
 }
 static bool group_reserve(lpage_screen *s) {
   if (s->group_count<s->group_capacity) return true;
@@ -253,6 +264,7 @@ static bool style_prepare(lpage_screen *s,logical_page *g,size_t first,uint32_t 
     size_t count=candidate.count+(pending ? 1 : 0);
     if (ok && !style_grow(&cap,count,g->rows)) { lidmap_free(&candidate); return false; }
     if (ok && hint>=cap.styles) {
+      if (g->capacity.styles!=cap.styles && g->grapheme_bitmap.chunk_bytes) g->graphemes_dirty=true;
       lidmap_free(&g->style_refs); g->style_refs=candidate; g->capacity=cap; g->styles_dirty=false; s->style_tracking=true;
       *refs_out=incoming ? lidmap_value(&g->style_refs,incoming) : NULL; return true;
     }
@@ -280,6 +292,110 @@ static void styles_dirty_row(lpage_screen *s,const row *r) {
   }
   /* A newly allocated padding row joins its destination after fill. */
   styles_dirty(s);
+}
+static void graphemes_dirty_row(lpage_screen *s,const row *r) {
+  if (!s->grapheme_tracking || s->defer_managed) return;
+  size_t first=0;
+  for (size_t i=0;i<s->group_count;i++) {
+    logical_page *g=group_at(s,i);
+    for (size_t y=first;y<first+g->rows;y++) if (absolute_row(s,y)==r) { g->graphemes_dirty=true; return; }
+    first+=g->rows;
+  }
+  graphemes_dirty(s);
+}
+static uint32_t grapheme_cell_bytes(const lpage_screen *s,const lpage_cell *cell) {
+  if (!(cell->flags&LP_CELL_GRAPHEME)) return 0;
+  lgrapheme_value v=lgrapheme_get(s->graphemes,cell->codepoint);
+  return v.length>1 ? (uint32_t)(v.length-1)*4 : 0;
+}
+static uint64_t grapheme_key(const lpage_cell *cell) { return (uint64_t)(uintptr_t)cell; }
+static bool grapheme_rebuild(lpage_screen *s,logical_page *g,size_t first,lp_capacity cap) {
+  /* Staged metadata only: payloads remain owned by the shared GP pool.
+   * Moving/erasing cells invalidates pointer keys; the next append reconciles
+   * them. Resize preparation must never reconcile published source caches. */
+  size_t count=0;
+  for (size_t y=first;y<first+g->rows;y++) {
+    row *r=absolute_row(s,y);
+    for (size_t x=0;x<s->columns;x++) if (grapheme_cell_bytes(s,&r->cells[x])) count++;
+  }
+  if (count>=UINT32_C(1073741824)) return false;
+  for (;;) {
+    lbitmap bitmap={0}; lidmap offsets={0};
+    if (!lbitmap_init(&bitmap,cap.grapheme_bytes,16)) return false;
+    if (!lidmap_init(&offsets,(uint32_t)(count ? count+1 : 8))) { lbitmap_destroy(&bitmap); return false; }
+    bool ok=true;
+    for (size_t y=first;y<first+g->rows && ok;y++) {
+      row *r=absolute_row(s,y);
+      for (size_t x=0;x<s->columns && ok;x++) {
+        uint32_t bytes=grapheme_cell_bytes(s,&r->cells[x]),offset;
+        if (bytes) ok=lbitmap_alloc(&bitmap,bytes,&offset)
+          && lidmap_insert(&offsets,grapheme_key(&r->cells[x]),offset);
+      }
+    }
+    uint64_t used=lbitmap_used(&bitmap);
+    if (ok) {
+      lbitmap_destroy(&g->grapheme_bitmap); lidmap_free(&g->grapheme_offsets);
+      g->grapheme_bitmap=bitmap; g->grapheme_offsets=offsets; g->capacity=cap;
+      g->graphemes_dirty=false; s->grapheme_tracking=true; return true;
+    }
+    lbitmap_destroy(&bitmap); lidmap_free(&offsets);
+    lp_capacity grown;
+    if (used>UINT32_MAX || !lp_capacity_grow(group_shape(),cap,LP_GROW_GRAPHEMES,(uint32_t)used,(uint16_t)g->rows,&grown)) return false;
+    cap=grown;
+  }
+}
+static bool grapheme_map_room(lidmap *map) {
+  if (map->count<map->capacity*7/8) return true;
+  lidmap grown={0}; if (!lidmap_init(&grown,map->capacity)) return false;
+  for (size_t i=0;i<map->capacity;i++) if (map->ctrl[i]<128) {
+    if (!lidmap_insert(&grown,map->keys[i],map->values[i])) { lidmap_free(&grown); return false; }
+  }
+  lidmap_free(map); *map=grown; return true;
+}
+typedef struct {
+  logical_page *group;
+  uint64_t key;
+  uint32_t old_offset,old_bytes,new_offset,new_bytes;
+  bool allocated;
+} grapheme_reservation;
+static bool grapheme_reserve(lpage_screen *s,size_t y,size_t x,uint32_t old_bytes,uint32_t new_bytes,
+                             grapheme_reservation *out) {
+  memset(out,0,sizeof *out);
+  if (s->defer_managed) return true;
+  size_t first; logical_page *g=style_group(s,s->history_count+y,&first);
+  if (!g) return false;
+  if ((!g->grapheme_bitmap.chunk_bytes || g->graphemes_dirty)
+    && !grapheme_rebuild(s,g,first,g->capacity)) return false;
+  uint64_t key=grapheme_key(&at(s,y)->cells[x]);
+  uint32_t old_offset=0;
+  if (old_bytes && !lidmap_find(&g->grapheme_offsets,key,&old_offset)) return false;
+  if ((old_bytes+15)/16==(new_bytes+15)/16) {
+    *out=(grapheme_reservation){g,key,old_offset,old_bytes,old_offset,new_bytes,false}; return true;
+  }
+  uint32_t offset;
+  while (!lbitmap_alloc(&g->grapheme_bitmap,new_bytes,&offset)) {
+    uint64_t used=lbitmap_used(&g->grapheme_bitmap); lp_capacity grown;
+    if (used>UINT32_MAX || !lp_capacity_grow(group_shape(),g->capacity,LP_GROW_GRAPHEMES,(uint32_t)used,(uint16_t)g->rows,&grown)
+      || !grapheme_rebuild(s,g,first,grown)) return false;
+    if (old_bytes && !lidmap_find(&g->grapheme_offsets,key,&old_offset)) return false;
+  }
+  if (!old_bytes && !grapheme_map_room(&g->grapheme_offsets)) {
+    (void)lbitmap_free(&g->grapheme_bitmap,offset,new_bytes); return false;
+  }
+  *out=(grapheme_reservation){g,key,old_offset,old_bytes,offset,new_bytes,true}; return true;
+}
+static void grapheme_finish(grapheme_reservation *r,bool commit) {
+  if (!r->group) return;
+  logical_page *g=r->group;
+  if (!commit) {
+    if (r->allocated) (void)lbitmap_free(&g->grapheme_bitmap,r->new_offset,r->new_bytes);
+    g->graphemes_dirty=true; return;
+  }
+  if (!r->allocated) return;
+  if (r->old_bytes && !lbitmap_free(&g->grapheme_bitmap,r->old_offset,r->old_bytes)) g->graphemes_dirty=true;
+  /* Reservation ensured map room before publishing the cell. If metadata
+   * ever becomes inconsistent, retain the payload and reconcile on append. */
+  if (!lidmap_insert(&g->grapheme_offsets,r->key,r->new_offset)) g->graphemes_dirty=true;
 }
 static void style_remove(lidmap *map,uint32_t id) {
   if (!id) return;
@@ -475,6 +591,9 @@ static bool put_cell(lpage_screen *s, size_t y, size_t x, lpage_cell cell,bool r
     style_remove(&g->style_refs,r->cells[x].style);
     if (cell.width==2) style_remove(&g->style_refs,r->cells[x+1].style);
   }
+  if (!s->defer_managed && (&r->cells[x]!=s->grapheme_pending)
+    && ((cell.flags|r->cells[x].flags)&LP_CELL_GRAPHEME)) graphemes_dirty_row(s,r);
+  if (cell.width==2 && (r->cells[x+1].flags&LP_CELL_GRAPHEME)) graphemes_dirty_row(s,r);
   lpage_release_cell(s, r->cells[x]); r->cells[x] = cell; r->dirty = true;
   if (cell.width == 2) {
     lpage_release_cell(s, r->cells[x + 1]);
@@ -487,19 +606,30 @@ bool lpage_append_grapheme(lpage_screen *s,size_t y,size_t x,uint32_t cp,unsigne
   const lpage_cell *old=lpage_get(s,y,x);
   if (!old || !lpage_codepoint(s,old) || (old->flags & LP_CELL_WIDE_TAIL) || width<1 || width>2
       || (width==2 && x+1==s->columns)) return false;
+  size_t length=lpage_grapheme(s,old).length;
+  uint32_t old_bytes=grapheme_cell_bytes(s,old),new_bytes=(uint32_t)(length<LG_LIMIT ? length : length-1)*4;
+  grapheme_reservation reserved;
+  if (!grapheme_reserve(s,y,x,old_bytes,new_bytes,&reserved)) return false;
   lpage_cell cell=*old; uint32_t id;
   if (cell.flags & LP_CELL_GRAPHEME) {
-    if (!lgrapheme_append(s->graphemes,cell.codepoint,cp,&id)) return false;
+    if (!lgrapheme_append(s->graphemes,cell.codepoint,cp,&id)) { grapheme_finish(&reserved,false); return false; }
   } else {
     uint32_t cps[]={cell.codepoint,cp};
-    if (!lgrapheme_acquire(s->graphemes,cps,2,&id)) return false;
+    if (!lgrapheme_acquire(s->graphemes,cps,2,&id)) { grapheme_finish(&reserved,false); return false; }
   }
   cell.codepoint=id; cell.flags|=LP_CELL_GRAPHEME; cell.width=(uint8_t)width;
-  bool ok=put_cell(s,y,x,cell,width!=old->width); lgrapheme_release(s->graphemes,id); return ok;
+  s->grapheme_pending=old;
+  bool ok=put_cell(s,y,x,cell,width!=old->width); s->grapheme_pending=NULL;
+  grapheme_finish(&reserved,ok); lgrapheme_release(s->graphemes,id); return ok;
 }
 static bool fill(lpage_screen *s, row *r, size_t x, size_t n, uint32_t style, bool release_old) {
   if (s->style_tracking && release_old) {
     for (size_t i=x;i<x+n;i++) if (r->cells[i].style!=style) { styles_dirty_row(s,r); break; }
+  }
+  if (s->grapheme_tracking && release_old) {
+    for (size_t i=x;i<x+n;i++) if ((r->cells[i].flags&LP_CELL_GRAPHEME) && &r->cells[i]!=s->grapheme_pending) {
+      graphemes_dirty_row(s,r); break;
+    }
   }
   for (size_t i = x; i < x + n; i++) {
     if (style && !lstyle_retain(s->styles, style)) return false;
@@ -530,7 +660,7 @@ static bool edit(lpage_screen *s, size_t y, size_t x, size_t n, uint32_t style, 
   if (y >= s->rows || x > s->columns || !lstyle_retain(s->styles, style)) return false;
   if (n > s->columns - x) n = s->columns - x;
   row *r = at(s, y);
-  if (n) styles_dirty(s);
+  if (n) { styles_dirty(s); graphemes_dirty(s); }
   /* Splitting a glyph at either cut boundary erases that whole glyph before
    * ownership is transferred by memmove. Internal whole pairs move intact. */
   size_t boundary = insert ? s->columns - n : x + n;
@@ -599,7 +729,7 @@ static bool scroll_one(lpage_screen *s, size_t top, size_t bottom, bool up, bool
   }
   /* Appending a default blank to history keeps every retained row in its
    * logical group. fill already invalidated changed evicted style counts. */
-  if (!(up && history && s->history_limit && !style)) styles_dirty(s);
+  if (!(up && history && s->history_limit && !style)) { styles_dirty(s); graphemes_dirty(s); }
   return true;
 }
 bool lpage_scroll(lpage_screen *s, size_t top, size_t bottom, int count, bool history, uint32_t style) {
@@ -631,6 +761,7 @@ void lp_geometry_trim(lpage_screen *s) {
 }
 void lpage_clear_history(lpage_screen *s) {
   styles_dirty(s);
+  graphemes_dirty(s);
   for (size_t i=0;i<s->history_count;i++) free_row(s,s->history[(s->history_head+i)%s->history_capacity]);
   group_drop(s,s->history_count); s->history_count=s->history_head=0; lp_geometry_trim(s);
 }
@@ -652,8 +783,13 @@ lpage_stats lpage_usage(const lpage_screen *s) {
     + lstyle_bytes(s->styles) + stats.link_bytes + stats.grapheme_bytes + s->group_capacity*sizeof *s->groups;
   for (const page *p=s->pages;p;p=p->next) stats.bytes+=sizeof *p+PAGE_ROWS*p->columns*sizeof(lpage_cell);
   for (size_t i=0;i<s->group_count;i++) {
-    size_t n=group_at(s,i)->style_refs.capacity;
-    if (n) stats.bytes+=((n+16+63)&~(size_t)63)+((n*8+63)&~(size_t)63)+((n*4+63)&~(size_t)63);
+    const logical_page *g=group_at(s,i);
+    size_t sizes[2]={g->style_refs.capacity,g->grapheme_offsets.capacity};
+    for (unsigned j=0;j<2;j++) {
+      size_t n=sizes[j];
+      if (n) stats.bytes+=((n+16+63)&~(size_t)63)+((n*8+63)&~(size_t)63)+((n*4+63)&~(size_t)63);
+    }
+    stats.bytes+=(size_t)g->grapheme_bitmap.words*sizeof *g->grapheme_bitmap.bits;
   }
   return stats;
 }

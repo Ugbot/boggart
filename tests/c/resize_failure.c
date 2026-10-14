@@ -30,6 +30,7 @@ static void *fault_aligned_alloc(size_t alignment,size_t size) { return fail() ?
 #endif
 #define malloc fault_malloc
 #define calloc fault_calloc
+#include "../../src/lbitmap.c"
 #include "../../src/lpage.c"
 #include "../../src/lpage_resize.c"
 #undef malloc
@@ -62,14 +63,22 @@ static void capture(lpage_screen *s,image *out) {
     out->group_bytes^=group_data[i]; out->group_bytes*=UINT64_C(1099511628211);
   }
   for (size_t i=0;i<s->group_count;i++) {
-    const lidmap *m=&group_at(s,i)->style_refs;
-    for (size_t j=0;m->capacity && j<m->capacity+16;j++) {
-      out->group_bytes^=m->ctrl[j]; out->group_bytes*=UINT64_C(1099511628211);
+    const logical_page *g=group_at(s,i);
+    const lidmap *maps[2]={&g->style_refs,&g->grapheme_offsets};
+    for (unsigned kind=0;kind<2;kind++) {
+      const lidmap *m=maps[kind];
+      for (size_t j=0;m->capacity && j<m->capacity+16;j++) {
+        out->group_bytes^=m->ctrl[j]; out->group_bytes*=UINT64_C(1099511628211);
+      }
+      for (size_t j=0;j<m->capacity;j++) if (m->ctrl[j]<128) {
+        const unsigned char *key=(const unsigned char *)&m->keys[j],*value=(const unsigned char *)&m->values[j];
+        for (size_t k=0;k<sizeof m->keys[j];k++) { out->group_bytes^=key[k]; out->group_bytes*=UINT64_C(1099511628211); }
+        for (size_t k=0;k<sizeof m->values[j];k++) { out->group_bytes^=value[k]; out->group_bytes*=UINT64_C(1099511628211); }
+      }
     }
-    for (size_t j=0;j<m->capacity;j++) if (m->ctrl[j]<128) {
-      const unsigned char *key=(const unsigned char *)&m->keys[j],*value=(const unsigned char *)&m->values[j];
-      for (size_t k=0;k<sizeof m->keys[j];k++) { out->group_bytes^=key[k]; out->group_bytes*=UINT64_C(1099511628211); }
-      for (size_t k=0;k<sizeof m->values[j];k++) { out->group_bytes^=value[k]; out->group_bytes*=UINT64_C(1099511628211); }
+    const unsigned char *bits=(const unsigned char *)g->grapheme_bitmap.bits;
+    for (size_t j=0;j<(size_t)g->grapheme_bitmap.words*sizeof *g->grapheme_bitmap.bits;j++) {
+      out->group_bytes^=bits[j]; out->group_bytes*=UINT64_C(1099511628211);
     }
   }
   out->page_bytes=UINT64_C(14695981039346656037);
@@ -174,7 +183,65 @@ static void no_op_and_commit(void) {
   CHECK(bterm_resize(t,3,2) && t->failed && !bterm_feed(t,(const uint8_t *)"Z",1));
   CHECK(bterm_reset(t) && bterm_feed(t,(const uint8_t *)"Z",1)); bterm_destroy(t);
 }
+static void grapheme_cache_failures(void) {
+  for (unsigned dirty=0;dirty<2;dirty++) for (size_t point=1;point<=4;point++) {
+    fail_at=0; lpage_screen *s=lpage_create(6,4,1); CHECK(s);
+    CHECK(lpage_put(s,0,0,(lpage_cell){'x',0,0,1,0,0}));
+    if (dirty) {
+      CHECK(lpage_append_grapheme(s,0,0,0x301,1));
+      CHECK(lpage_erase(s,0,0,1,0));
+      CHECK(lpage_put(s,0,0,(lpage_cell){'x',0,0,1,0,0}));
+    }
+    image before,after; capture(s,&before);
+    allocations=0; failed_allocation=false; fail_at=point;
+    CHECK(!lpage_append_grapheme(s,0,0,0x301,1) && failed_allocation);
+    capture(s,&after); CHECK(!memcmp(&before,&after,sizeof before));
+    fail_at=0; CHECK(lpage_append_grapheme(s,0,0,0x302,1));
+    CHECK(lpage_grapheme(s,lpage_get(s,0,0)).length==2);
+    lpage_destroy(s);
+  }
+  /* Fail every staged map-growth allocation, then every bitmap/map allocation
+   * during arena growth. The pending extent must never leak or retire the old
+   * extent when preparation fails. */
+  for (unsigned arena=0;arena<2;arena++) for (size_t point=1;point<=(arena ? 4u : 3u);point++) {
+    fail_at=0; lpage_screen *s=lpage_create(6,6,1); CHECK(s);
+    unsigned count=arena ? 32 : 14;
+    bool ready=false; size_t y=14/6,x=14%6,expected=2;
+    for (unsigned i=0;i<count && !ready;i++) {
+      CHECK(lpage_put(s,i/6,i%6,(lpage_cell){'x',0,0,1,0,0}));
+      unsigned suffixes=arena ? 64 : 1;
+      for (unsigned j=0;j<suffixes;j++) {
+        logical_page *g=group_at(s,0);
+        if (arena && g->grapheme_bitmap.words && (j+3)/4!=(j+4)/4) {
+          /* Probe a copied bitmap, preserving the live allocator's exact
+           * holes and search hint instead of assuming sum-only exhaustion. */
+          uint64_t bits[8]; CHECK(g->grapheme_bitmap.words==8);
+          memcpy(bits,g->grapheme_bitmap.bits,sizeof bits);
+          lbitmap probe=g->grapheme_bitmap; probe.bits=bits; uint32_t offset;
+          if (!lbitmap_alloc(&probe,(j+1)*4,&offset)) {
+            ready=true; y=i/6; x=i%6; expected=j+2; break;
+          }
+        }
+        CHECK(lpage_append_grapheme(s,i/6,i%6,0x301,1));
+      }
+    }
+    CHECK(!arena || ready);
+    if (!arena) CHECK(lpage_put(s,y,x,(lpage_cell){'x',0,0,1,0,0}));
+    logical_page *g=group_at(s,0);
+    CHECK(!g->graphemes_dirty && g->capacity.grapheme_bytes==8192);
+    if (!arena) CHECK(g->grapheme_offsets.count==14 && g->grapheme_offsets.capacity==16);
+    image before,after; capture(s,&before);
+    allocations=0; failed_allocation=false; fail_at=point;
+    CHECK(!lpage_append_grapheme(s,y,x,0x302,1) && failed_allocation);
+    capture(s,&after); CHECK(!memcmp(&before,&after,sizeof before));
+    fail_at=0; CHECK(lpage_append_grapheme(s,y,x,0x302,1));
+    CHECK(lpage_grapheme(s,lpage_get(s,y,x)).length==expected);
+    lpage_destroy(s);
+  }
+  puts("15 GP initialization/map-growth/arena-growth failures preserve deep page state");
+}
 int main(void) {
+  grapheme_cache_failures();
   no_op_and_commit();
   for (unsigned alt=0;alt<2;alt++) for (unsigned wrap=0;wrap<2;wrap++) {
     failures(3,2,alt!=0,wrap!=0,false,0); failures(12,6,alt!=0,wrap!=0,false,0);
