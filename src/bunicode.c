@@ -134,3 +134,11 @@ size_t bunicode_str_take(const char *s, size_t length, int columns, int *used) {
   if (used) *used = width;
   return (size_t)(p - s);
 }
+size_t bunicode_utf8_put(uint32_t cp,char *out) {
+  if(!out)return 0;
+  if(!valid(cp))cp=0xfffd;
+  if(cp<0x80){out[0]=(char)cp;return 1;}
+  if(cp<0x800){out[0]=(char)(0xc0|(cp>>6));out[1]=(char)(0x80|(cp&63));return 2;}
+  if(cp<0x10000){out[0]=(char)(0xe0|(cp>>12));out[1]=(char)(0x80|((cp>>6)&63));out[2]=(char)(0x80|(cp&63));return 3;}
+  out[0]=(char)(0xf0|(cp>>18));out[1]=(char)(0x80|((cp>>12)&63));out[2]=(char)(0x80|((cp>>6)&63));out[3]=(char)(0x80|(cp&63));return 4;
+}

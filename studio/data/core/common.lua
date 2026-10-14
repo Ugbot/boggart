@@ -126,6 +126,16 @@ function common.draw_text(font, color, text, align, x,y,w,h)
   return renderer.draw_text(font, text, x, y, color), y + th
 end
 
+-- Whole-string cell layout, paired with sys.cell_width/cell_take. Styled runs
+-- must normalize cluster boundaries across runs before using this path.
+function common.draw_grid(font, color, text, align, x,y,w,h)
+  local tw, th = font:get_grid_width(text), font:get_height()
+  if align == "center" then x = x + (w - tw) / 2
+  elseif align == "right" then x = x + w - tw end
+  y = common.round(y + (h - th) / 2)
+  return renderer.draw_grid(font, text, x, y, color), y + th
+end
+
 
 function common.bench(name, fn, ...)
   local start = system.get_time()

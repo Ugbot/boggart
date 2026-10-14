@@ -2,6 +2,7 @@
 #include "renderer.h"
 #include "rencache.h"
 #include <stdlib.h>
+#include <math.h>
 void terminalrender_open(lua_State *L);
 
 
@@ -123,6 +124,17 @@ static int f_draw_text(lua_State *L) {
   lua_pushnumber(L, x);
   return 1;
 }
+static int f_draw_grid(lua_State *L) {
+  RenFont **font=luaL_checkudata(L,1,API_TYPE_FONT);
+  size_t length;const char *text=luaL_checklstring(L,2,&length);
+  double x=luaL_checknumber(L,3),y=luaL_checknumber(L,4);
+  luaL_argcheck(L,isfinite(x) && x>=-100000000 && x<=100000000,3,"position out of range");
+  luaL_argcheck(L,isfinite(y) && y>=-100000000 && y<=100000000,4,"position out of range");
+  RenColor color=checkcolor(L,5,255);
+  luaL_argcheck(L,*font!=NULL,1,"closed font");int end;
+  if(!rencache_draw_grid(*font,text,length,(int)x,(int)y,color,&end))return luaL_error(L,"cannot prepare grid text");
+  lua_pushinteger(L,end);return 1;
+}
 
 
 /* ---- images ---------------------------------------------------------------
@@ -233,6 +245,7 @@ static const luaL_Reg lib[] = {
   { "draw_rect",       f_draw_rect       },
   { "draw_line",       f_draw_line       },
   { "draw_text",       f_draw_text       },
+  { "draw_grid",       f_draw_grid       },
   { "image_from_rgba", f_image_from_rgba },
   { "image_from_file", f_image_from_file },
   { "draw_image",      f_draw_image      },

@@ -11,6 +11,8 @@
  *   sys.add_history(line)        -> (void)
  *   sys.width(s)                 -> display columns (wcwidth, not bytes)
  *   sys.wtake(s, cols)           -> prefix fitting in cols, columns used
+ *   sys.cell_width(s)            -> native on-mode plain-text cells
+ *   sys.cell_take(s, cols)       -> whole effective-cluster prefix, used cells
  *
  * File read/write, os.getenv, os.tmpname, io.popen etc. are already provided by
  * the Lua standard library, so we do not re-bind them.
@@ -39,6 +41,7 @@
 #include "isocline.h"
 
 #include "utf8width.h"
+#include "btunicode.h"
 #include "bogpaths.h"
 
 /* MSVC's <sys/stat.h> defines S_IFDIR/S_IFREG but not the S_IS* predicates,
@@ -629,6 +632,19 @@ static int l_wtake(lua_State *L) {
   lua_pushinteger(L, used);
   return 2;
 }
+/* Native plain-text cell policy, paired with Studio grid text. Scalar helpers
+ * above remain for their existing renderers. No VT escape/tab interpretation. */
+static int l_cell_width(lua_State *L) {
+  size_t length;const char *text=luaL_checklstring(L,1,&length);
+  lua_pushinteger(L,btunicode_text_width(text,length,true));return 1;
+}
+static int l_cell_take(lua_State *L) {
+  size_t length;const char *text=luaL_checklstring(L,1,&length);
+  lua_Integer columns=luaL_checkinteger(L,2);
+  if(columns<0)columns=0;if(columns>INT_MAX)columns=INT_MAX;
+  int used;size_t bytes=btunicode_text_take(text,length,(int)columns,true,&used);
+  lua_pushlstring(L,text,bytes);lua_pushinteger(L,used);return 2;
+}
 
 /* ---- POSIX regex + glob (sys.re_find, sys.re_gsub, sys.glob) --------------
  *
@@ -818,6 +834,8 @@ static const luaL_Reg sys_lib[] = {
   {"uv_version", l_uv_version},
   {"width", l_width},
   {"wtake", l_wtake},
+  {"cell_width", l_cell_width},
+  {"cell_take", l_cell_take},
   {NULL, NULL},
 };
 

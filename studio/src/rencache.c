@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <limits.h>
 #include <math.h>
+#include <string.h>
 #include "rencache.h"
 
 /* a cache over the software renderer -- all drawing operations are stored as
@@ -24,7 +25,7 @@
  * invariant is the whole argument, so it is stated rather than assumed. */
 #define COMMAND_BUF_INITIAL (1024 * 512)
 
-enum { FREE_FONT, SET_CLIP, DRAW_TEXT, DRAW_RECT, DRAW_LINE, DRAW_IMAGE, DRAW_ROW };
+enum { FREE_FONT, SET_CLIP, DRAW_TEXT, DRAW_RECT, DRAW_LINE, DRAW_IMAGE, DRAW_ROW, DRAW_GRID };
 
 typedef struct {
   int type, size;
@@ -52,6 +53,13 @@ typedef struct {
   int y;
 } RowCommand;
 
+
+typedef struct {
+  Command command;
+  size_t length;
+  int x,y;
+  char text[];
+} GridCommand;
 
 static unsigned cells_buf1[CELLS_X * CELLS_Y];
 static unsigned cells_buf2[CELLS_X * CELLS_Y];
@@ -240,6 +248,20 @@ int rencache_draw_text(RenFont *font, const char *text, int x, int y, RenColor c
   return x + rect.width;
 }
 
+bool rencache_draw_grid(RenFont *font,const char *text,size_t length,int x,int y,RenColor color,int *end) {
+  int width=ren_get_grid_width(font,text,length);if(width<0)return false;
+  if(end)*end=x+width;
+  if(!color.a || !length || !width)return true;
+  RenRect bounds;if(!ren_get_grid_bounds(font,text,length,&bounds))return false;
+  RenRect rect={x+bounds.x,y+bounds.y,bounds.width,bounds.height};
+  if(!rects_overlap(screen_rect,rect))return true;
+  if(length>(size_t)INT_MAX-sizeof(GridCommand))return false;
+  GridCommand *cmd=(GridCommand *)push_command(DRAW_GRID,(int)(sizeof(GridCommand)+length));
+  if(!cmd)return false;
+  cmd->command.rect=rect;cmd->command.color=color;cmd->command.font=font;
+  cmd->length=length;cmd->x=x;cmd->y=y;memcpy(cmd->text,text,length);return true;
+}
+
 bool rencache_draw_row(tg_row *row, RenFont *font, const tg_theme *theme,
                       double x, int y, int cw, int ch, RenRect bounds) {
   if (!row || !font || !theme || cw < 1 || ch < 1 || row->columns > (unsigned)(INT_MAX - 1) / (unsigned)cw) { return false; }
@@ -390,6 +412,11 @@ void rencache_end_frame(void) {
           ren_set_font_tab_width(cmd->font, cmd->tab_width);
           ren_draw_text(cmd->font, cmd->text, cmd->rect.x, cmd->rect.y, cmd->color);
           break;
+        case DRAW_GRID: {
+          GridCommand *payload=(GridCommand *)cmd;
+          ren_draw_grid(cmd->font,payload->text,payload->length,payload->x,payload->y,cmd->color);
+          break;
+        }
         case DRAW_IMAGE:
           ren_draw_image(cmd->image, &cmd->sub, &cmd->rect, cmd->color);
           break;

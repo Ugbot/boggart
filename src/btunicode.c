@@ -44,9 +44,10 @@ static unsigned text_scalar_width(uint32_t cp) {
 }
 /* One effective native text cluster, including ignored source suffixes. The
  * stored DFA/previous scalar stop advancing at the page's retention cap. */
-static const char *text_cluster(const char *p,const char *end,bool grapheme,unsigned *width) {
+static const char *text_cluster(const char *p,const char *end,bool grapheme,unsigned *width,btunicode_text_cluster *out) {
   uint32_t previous;const char *next=bunicode_utf8_next(p,end,&previous);
   *width=text_scalar_width(previous);if(!*width)return next;
+  if(out)out->length=bunicode_utf8_put(previous,out->text);
   btunicode_state state={0};(void)btunicode_break(&state,previous);size_t retained=1;
   p=next;
   while(p<end) {
@@ -54,6 +55,10 @@ static const char *text_cluster(const char *p,const char *end,bool grapheme,unsi
     if(cp<32 || cp==127){p=next;continue;}
     if(!grapheme) {
       if(scalar)break;
+      if(retained<LG_LIMIT && !((cp==0xfe0e || cp==0xfe0f) && !btunicode_pictographic(previous))) {
+        if(out)out->length+=bunicode_utf8_put(cp,out->text+out->length);
+        retained++;
+      }
       p=next;continue;
     }
     btunicode_state candidate=state;
@@ -66,7 +71,10 @@ static const char *text_cluster(const char *p,const char *end,bool grapheme,unsi
     if(effect!=BU_WIDTH_IGNORE) {
       if(effect==BU_WIDTH_WIDE)*width=2;
       else if(effect==BU_WIDTH_NARROW)*width=1;
-      if(retained<LG_LIMIT){state=candidate;previous=cp;retained++;}
+      if(retained<LG_LIMIT){
+        if(out)out->length+=bunicode_utf8_put(cp,out->text+out->length);
+        state=candidate;previous=cp;retained++;
+      }
     }
     p=next;
   }
@@ -76,7 +84,7 @@ int btunicode_text_width(const char *text,size_t length,bool grapheme) {
   if(!length || !text)return 0;
   const char *p=text,*end=text+length;int total=0;
   while(p<end) {
-    unsigned width;p=text_cluster(p,end,grapheme,&width);
+    unsigned width;p=text_cluster(p,end,grapheme,&width,NULL);
     if(total>INT_MAX-(int)width)return INT_MAX;
     total+=(int)width;
   }
@@ -87,10 +95,16 @@ size_t btunicode_text_take(const char *text,size_t length,int columns,bool graph
   if(!length || !text || columns<0)return 0;
   const char *p=text,*end=text+length;int total=0;
   while(p<end) {
-    unsigned width;const char *next=text_cluster(p,end,grapheme,&width);
+    unsigned width;const char *next=text_cluster(p,end,grapheme,&width,NULL);
     if((int)width>columns-total)break;
     total+=(int)width;p=next;
   }
   if(used)*used=total;
   return (size_t)(p-text);
+}
+size_t btunicode_text_next(const char *text,size_t length,bool grapheme,btunicode_text_cluster *out) {
+  if(out){out->width=0;out->length=0;}
+  if(!text || !length)return 0;
+  unsigned width;const char *next=text_cluster(text,text+length,grapheme,&width,out);
+  if(out)out->width=width;return (size_t)(next-text);
 }
