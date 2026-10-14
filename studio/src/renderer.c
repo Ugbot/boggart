@@ -394,7 +394,8 @@ int ren_draw_text(RenFont *font, const char *text, int x, int y, RenColor color)
         float gy = (float) y + g->yoff;
         glyph_batch_push(g->texture, gx, gy, gx + (float) gw, gy + (float) gh,
                          (float) g->x0 / tw, (float) g->y0 / th,
-                         (float) g->x1 / tw, (float) g->y1 / th, col);
+                         (float) g->x1 / tw, (float) g->y1 / th,
+                         g->colored ? (SDL_FColor){1,1,1,col.a} : col);
       }
     }
     pen += g->xadvance;
@@ -417,6 +418,7 @@ int ren_draw_text(RenFont *font, const char *text, int x, int y, RenColor color)
 void ren_draw_glyph(RenGlyph glyph,float x,float y,float scale,RenColor color) {
   if(clip_empty || !renderer || !color.a || !glyph.texture || !glyph.tw || !glyph.th)return;
   bind_target();
+  if(glyph.colored)color.r=color.g=color.b=255;
   float x0=x+glyph.xoff*scale,y0=y+glyph.yoff;
   float w=(float)(glyph.x1-glyph.x0)*scale,h=(float)(glyph.y1-glyph.y0);
   if(w>0 && h>0)glyph_batch_push(glyph.texture,x0,y0,x0+w,y0+h,

@@ -12,6 +12,7 @@ typedef struct {
   int tw, th;
   unsigned short x0, y0, x1, y1;
   float xoff, yoff, xadvance;
+  bool colored; /* Intrinsic straight-alpha RGB, only caller opacity applies. */
 } RenGlyph;
 typedef struct { int height, baseline, underline; unsigned style; } RenFontMetrics;
 typedef struct {
@@ -29,6 +30,7 @@ RenFontMetrics ren_font_metrics(const RenFont *font);
 RenGlyph ren_font_glyph(RenFont *font, unsigned codepoint, int phase);struct FontShape;
 struct RenCluster;
 bool ren_font_face_shape(RenFont *font,unsigned index,struct FontShape **out);
+bool ren_font_face_color(RenFont *font,unsigned index);
 bool ren_font_glyph_id(RenFont *font,unsigned face,uint32_t id,int phase,RenGlyph *out);
 void ren_draw_glyph(RenGlyph glyph,float x,float y,float scale,RenColor color);
 #endif

@@ -674,8 +674,8 @@ endif()
 
 # ---- FreeType ---------------------------------------------------------------
 # The text rasteriser. Same mechanism and the same reasoning as the SDL3 block
-# above: FetchContent, pinned by release tarball + SHA256, every optional
-# dependency switched off, linked statically, so `otool -L boggart-studio`
+# above: FetchContent, pinned by release tarball + SHA256, optional
+# dependencies either disabled or pinned, linked statically, so `otool -L boggart-studio`
 # still lists nothing but system libraries.
 #
 # It replaces stb_truetype, which was a single vendored header and cost
@@ -688,13 +688,9 @@ endif()
 # five seconds of single-threaded compile, cached after -- next to SDL3's two
 # to three minutes it is not the expensive fetch here.
 #
-# Everything optional is off -- no zlib, bzip2, libpng, HarfBuzz or Brotli --
-# which means no transitive fetches and no system packages. It costs us:
-# compressed WOFF2 fonts (Brotli), PNG-backed colour-emoji strikes (libpng),
-# and HarfBuzz-assisted autohinting of Indic scripts. None of those are things
-# this renderer draws -- fontfallback.c refuses colour fonts on separate
-# grounds. The separate OpenType shaper below supplies positioned glyph IDs;
-# FreeType does not link HarfBuzz back for autohinting.
+# PNG and zlib decode color-emoji bitmap strikes through pinned static targets.
+# Bzip2, Brotli and FreeType/HarfBuzz autohint interop remain disabled.
+# The separate OpenType shaper supplies positioned glyph IDs.
 #
 # Guarded on SDL3_FOUND as well as BOGGART_BUILD_APP so that a machine without
 # SDL3, which builds the CLI and skips the studio, does not download a
@@ -704,14 +700,13 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
   set(BOGGART_FREETYPE_SHA256 e61b31ab26358b946e767ed7eb7f4bb2e507da1cfefeb7a8861ace7fd5c899a1)
 
   set(BUILD_SHARED_LIBS   OFF  CACHE BOOL "" FORCE)
-  set(FT_DISABLE_ZLIB     TRUE CACHE BOOL "" FORCE)
   set(FT_DISABLE_BZIP2    TRUE CACHE BOOL "" FORCE)
-  set(FT_DISABLE_PNG      TRUE CACHE BOOL "" FORCE)
   set(FT_DISABLE_HARFBUZZ TRUE CACHE BOOL "" FORCE)
   set(FT_DISABLE_BROTLI   TRUE CACHE BOOL "" FORCE)
   set(SKIP_INSTALL_ALL    TRUE CACHE BOOL "" FORCE)
 
   include(FetchContent)
+  include(cmake/EmojiDependencies.cmake)
   FetchContent_Declare(freetype
     URL https://download.savannah.gnu.org/releases/freetype/freetype-${BOGGART_FREETYPE_VERSION}.tar.gz
     URL_HASH SHA256=${BOGGART_FREETYPE_SHA256}
@@ -971,7 +966,7 @@ target_include_directories(boggart PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 if(TARGET boggart-studio)
   target_include_directories(boggart-studio PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
   set(_renderer_source_header "/* Generated renderer build identity. */\nstatic const struct { const char *path, *sha256; } terminalrender_source_files[] = {\n")
-  foreach(_source CMakeLists.txt studio/src/renderer.c studio/src/renderer.h studio/src/fontglyph.c studio/src/fontglyph.h
+  foreach(_source CMakeLists.txt cmake/EmojiDependencies.cmake studio/src/renderer.c studio/src/renderer.h studio/src/fontglyph.c studio/src/fontglyph.h studio/src/fontfallback.c studio/src/fontfallback.h
       studio/src/gridtext.c studio/src/clusterdraw.c studio/src/fontshape.c studio/src/fontshape.h studio/src/fontcluster.c studio/src/fontcluster.h studio/src/glyphcache.c studio/src/glyphcache.h studio/src/rencache.c studio/src/rencache.h
       studio/src/termgrid.c studio/src/termgrid.h studio/src/termrender.c studio/src/termrender.h studio/src/fontatlas.c studio/src/fontatlas.h
       studio/src/api/renderer.c studio/src/api/renderer_font.c studio/src/api/terminalrender.c)
@@ -1086,6 +1081,7 @@ if(TARGET boggart-studio)
     target_link_libraries(renderer_clusters_test PRIVATE "-framework CoreText" "-framework CoreFoundation")
   endif()
   add_test(NAME renderer_clusters COMMAND ${CMAKE_COMMAND} -E env SDL_VIDEODRIVER=dummy $<TARGET_FILE:renderer_clusters_test> ${CMAKE_CURRENT_SOURCE_DIR}/studio/data/fonts/monospace.ttf ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fonts/NotoSansDevanagari.ttf)
+  add_test(NAME renderer_emoji COMMAND ${CMAKE_COMMAND} -E env SDL_VIDEODRIVER=dummy BOGGART_STUDIO_FONTS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fonts/NotoColorEmoji-subset.ttf $<TARGET_FILE:renderer_clusters_test> ${CMAKE_CURRENT_SOURCE_DIR}/studio/data/fonts/monospace.ttf ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fonts/NotoSansDevanagari.ttf ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fonts/NotoColorEmoji-subset.ttf)
   add_executable(renderer_atlas_test tests/c/renderer_atlas.c studio/src/fontshape.c studio/src/fontcluster.c studio/src/fontfallback.c)
   target_include_directories(renderer_atlas_test PRIVATE studio/src ${SDL3_INCLUDE_DIRS})
   target_link_libraries(renderer_atlas_test PRIVATE boggart_vt freetype boggart_harfbuzz uv_a)
@@ -1209,13 +1205,16 @@ if(TARGET boggart-studio)
       $<TARGET_FILE:boggart-studio> .
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   set_tests_properties(terminal_process_studio PROPERTIES TIMEOUT 30)
-  set(_pane_suites studio_terminal_native studio_terminal_shutdown studio_terminal_render studio_terminal_clusters studio_grid_text studio_agent_clusters studio_bmux studio_fleet_agents)
+  set(_pane_suites studio_terminal_native studio_terminal_shutdown studio_terminal_render studio_terminal_clusters studio_grid_text studio_agent_clusters studio_color_emoji studio_bmux studio_fleet_agents)
   if(UNIX AND EXISTS /usr/bin/vim)
     list(APPEND _pane_suites studio_terminal_vim)
   endif()
   foreach(_pane_suite IN LISTS _pane_suites)
     set(_pane_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${_pane_suite})
     set(_pane_shell_env)
+    if(_pane_suite STREQUAL "studio_color_emoji")
+      list(APPEND _pane_shell_env BOGGART_STUDIO_FONTS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fonts/NotoColorEmoji-subset.ttf)
+    endif()
     if(_pane_suite STREQUAL "studio_bmux" OR _pane_suite STREQUAL "studio_fleet_agents")
       # Test interactive input without inheriting a user's shell startup scripts.
       set(_pane_shell_env SHELL=/bin/sh)
@@ -1264,5 +1263,5 @@ endif()
 # Sanitizers on boggart's own code and the C tests (BOG-10); the vendored
 # interpreter and JSON lib too, so a misuse inside them is attributed.
 boggart_apply_sanitizer(boggart boggart-studio auth_threads_test assert_trap_test crash_handler_test
-                        termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt boggart_pty pty_transport_test studio_uvbridge_test termgrid_test termcache_test renderer_fonts_test renderer_clusters_test renderer_atlas_test vt_parser_test page_storage_test page_resize_test page_layout_test bitmap_test idmap_test idmap_scalar_test resize_failure_test
+                        termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt boggart_pty pty_transport_test studio_uvbridge_test termgrid_test termcache_test renderer_fonts_test renderer_clusters_test renderer_atlas_test freetype png_static zlibstatic vt_parser_test page_storage_test page_resize_test page_layout_test bitmap_test idmap_test idmap_scalar_test resize_failure_test
                         terminal_dispatch_test osc_commands_test terminal_events_test terminal_links_test mouse_encode_test terminal_mouse_test key_encode_test terminal_key_test paste_encode_test terminal_input_test boggart_unicode unicode_test wide_cells_test grapheme_cells_test terminal_unicode_test terminal_text_width_test)

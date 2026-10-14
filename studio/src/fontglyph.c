@@ -85,6 +85,7 @@
 typedef struct {
   unsigned short x0, y0, x1, y1;
   float xoff, yoff, xadvance;
+  bool colored;
 } Glyph;
 
 typedef struct {
@@ -269,6 +270,14 @@ static int face_set_size(FT_Face face, float size) {
   FT_F26Dot6 sz = (FT_F26Dot6) (size * 64.0f + 0.5f);
   if (FT_Set_Char_Size(face, 0, sz, 72, 72) == 0) { return 1; }
   if (FT_Set_Pixel_Sizes(face, 0, (FT_UInt) (size + 0.5f)) == 0) { return 1; }
+  /* CBDT/sbix faces often offer one large strike, not the requested size.
+   * Select the nearest em; rasterization resamples its pixels and bearings. */
+  int best=-1;float distance=INFINITY;
+  for(int i=0;i<face->num_fixed_sizes;i++) {
+    float delta=fabsf((float)face->available_sizes[i].y_ppem/64-size);
+    if(delta<distance){distance=delta;best=i;}
+  }
+  if(best>=0 && !FT_Select_Size(face,best))return 1;
   return 0;
 }
 
@@ -316,7 +325,9 @@ static Face* face_at(RenFont *font, int i) {
         continue;
       }
       uint32_t sig = face_signature(f);
-      if ((sig & ~font->covered) == 0 || !face_set_size(f, font->size)) {
+      /* A color face adds presentation/sequence coverage even when a symbols
+       * face already covered the sampled emoji scalars. */
+      if (((sig & ~font->covered) == 0 && !FT_HAS_COLOR(f)) || !face_set_size(f, font->size)) {
         FT_Done_Face(f);
         continue;
       }
@@ -366,6 +377,7 @@ typedef struct {
   int left, top;         /* FreeType's bitmap_left / bitmap_top */
   float advance;
   int lcd;
+  int colored;
 } RawGlyph;
 
 
@@ -380,12 +392,14 @@ typedef struct {
 static float glyph_advance(RenFont *font, FT_Face face, FT_UInt gid) {
   int flags = (load_flags(font) | FT_LOAD_NO_HINTING) & ~FT_LOAD_FORCE_AUTOHINT;
   if (FT_Load_Glyph(face, gid, flags) != 0) { return 0.0f; }
-  return face->glyph->advance.x / 64.0f;
+  float scale=!FT_IS_SCALABLE(face) && face->size->metrics.y_ppem
+    ? font->size/face->size->metrics.y_ppem : 1;
+  return face->glyph->advance.x / 64.0f*scale;
 }
 
 
-/* Render one glyph at one subpixel phase into `g`. Returns 0 if there is
- * nothing to draw, which covers both failure and the ordinary case of a space.
+/* Render one glyph at one subpixel phase into `g`. Returns 0 for no ink (space),
+ * -1 for allocation failure and -2 for an unsupported glyph raster format.
  *
  * The phase shift happens after FT_Load_Glyph, so it moves an outline that has
  * already been hinted. That is only sound because the hinting is vertical
@@ -395,7 +409,7 @@ static float glyph_advance(RenFont *font, FT_Face face, FT_UInt gid) {
 static int render_glyph(RenFont *font, FT_Face face, FT_UInt gid, int phase,
                         RawGlyph *g) {
   memset(g, 0, sizeof *g);
-  if (FT_Load_Glyph(face, gid, load_flags(font)) != 0) { return 0; }
+  if (FT_Load_Glyph(face, gid, load_flags(font)|FT_LOAD_COLOR) != 0) { return -2; }
 
   FT_GlyphSlot slot = face->glyph;
   if (slot->format == FT_GLYPH_FORMAT_OUTLINE) {
@@ -414,7 +428,8 @@ static int render_glyph(RenFont *font, FT_Face face, FT_UInt gid, int phase,
       FT_Outline_Transform(&slot->outline, &m);
     }
   }
-  if (FT_Render_Glyph(slot, render_mode(font)) != 0) { return 0; }
+  if (slot->format!=FT_GLYPH_FORMAT_BITMAP
+      && FT_Render_Glyph(slot,FT_HAS_COLOR(face) ? FT_RENDER_MODE_NORMAL : render_mode(font)) != 0) { return -2; }
 
   FT_Bitmap *bm = &slot->bitmap;
   if (!bm->width || !bm->rows || !bm->buffer) { return 0; }
@@ -424,17 +439,16 @@ static int render_glyph(RenFont *font, FT_Face face, FT_UInt gid, int phase,
   if (bm->pixel_mode == FT_PIXEL_MODE_LCD) {
     channels = 3;
     w = (int) bm->width / 3;
+  } else if(bm->pixel_mode==FT_PIXEL_MODE_BGRA) {
+    channels=4;g->colored=1;
   } else if (bm->pixel_mode != FT_PIXEL_MODE_GRAY
              && bm->pixel_mode != FT_PIXEL_MODE_MONO) {
-    /* FT_PIXEL_MODE_BGRA is a colour glyph. fontfallback.c refuses colour
-     * fonts before they get this far; a colour glyph inside an otherwise
-     * monochrome face would land here, and a silhouette is worse than the
-     * missing-glyph box, so treat it as absent. */
-    return 0;
+    return -2;
   }
   if (w <= 0) { return 0; }
 
   int h = (int) bm->rows;
+  if(w>4096 || h>4096)return -2;
   g->bits = calloc((size_t) w * (size_t) h, (size_t) channels);
   if(!g->bits)return -1;
   g->w = w;
@@ -460,7 +474,39 @@ static int render_glyph(RenFont *font, FT_Face face, FT_UInt gid, int phase,
       memcpy(dst, src, (size_t) w * (size_t) channels);
     }
   }
+  if(slot->format==FT_GLYPH_FORMAT_BITMAP && face->size->metrics.y_ppem
+     && !FT_IS_SCALABLE(face)) {
+    float scale=font->size/face->size->metrics.y_ppem;
+    int sw=(int)lroundf(w*scale),sh=(int)lroundf(h*scale);
+    if(sw<1)sw=1;if(sh<1)sh=1;
+    if(sw>4096 || sh>4096){free(g->bits);g->bits=NULL;return -2;}
+    unsigned char *scaled=malloc((size_t)sw*sh*channels);
+    if(!scaled){free(g->bits);g->bits=NULL;return -1;}
+    /* Interpolate premultiplied samples before unpremultiplying at upload;
+     * transparent PNG edges must not pick up dark/colored fringes. */
+    for(int y=0;y<sh;y++)for(int x=0;x<sw;x++) {
+      float sx=((float)x+.5f)/scale-.5f,sy=((float)y+.5f)/scale-.5f;
+      if(sx<0)sx=0;if(sy<0)sy=0;if(sx>w-1)sx=(float)(w-1);if(sy>h-1)sy=(float)(h-1);
+      int x0=(int)sx,y0=(int)sy,x1=x0+1<w?x0+1:x0,y1=y0+1<h?y0+1:y0;
+      float fx=sx-x0,fy=sy-y0;
+      for(int c=0;c<channels;c++) {
+        float a=g->bits[((size_t)y0*w+x0)*channels+c]*(1-fx)+g->bits[((size_t)y0*w+x1)*channels+c]*fx;
+        float b=g->bits[((size_t)y1*w+x0)*channels+c]*(1-fx)+g->bits[((size_t)y1*w+x1)*channels+c]*fx;
+        scaled[((size_t)y*sw+x)*channels+c]=(unsigned char)lroundf(a*(1-fy)+b*fy);
+      }
+    }
+    free(g->bits);g->bits=scaled;g->w=sw;g->h=sh;
+    g->left=(int)lroundf(g->left*scale);g->top=(int)lroundf(g->top*scale);
+  }
   return 1;
+}
+
+/* FreeType BGRA is premultiplied; SDL's ordinary blend expects straight RGB. */
+static RenColor color_pixel(const unsigned char *bgra) {
+  unsigned a=bgra[3];
+  return (RenColor){.r=a?(uint8_t)fminf(255,((unsigned)bgra[2]*255+a/2)/a):0,
+    .g=a?(uint8_t)fminf(255,((unsigned)bgra[1]*255+a/2)/a):0,
+    .b=a?(uint8_t)fminf(255,((unsigned)bgra[0]*255+a/2)/a):0,.a=(uint8_t)a};
 }
 
 
@@ -544,8 +590,10 @@ static GlyphSet* bake_glyphset(RenFont *font, int block, int phase) {
       }
     } else {
       int status=render_glyph(font,face->face,(FT_UInt)gid,phase,&raw[i]);
-      if(status<0)goto fail;
-      if (!status) {
+      if(status==-1)goto fail;
+      if(status==-2) {
+        if(!synth_missing(font,cp,&raw[i]))goto fail;
+      } else if (!status) {
         memset(&raw[i], 0, sizeof raw[i]);
       }
       raw[i].advance = advance;
@@ -594,9 +642,11 @@ static GlyphSet* bake_glyphset(RenFont *font, int block, int phase) {
     for (int row = 0; row < r->h; row++) {
       RenColor *dst = set->image->pixels + (g->y0 + row) * width + g->x0;
       const unsigned char *src = r->bits + (size_t) row * (size_t) r->w
-                               * (size_t) (r->lcd ? 3 : 1);
+                               * (size_t) (r->colored ? 4 : r->lcd ? 3 : 1);
       for (int c = 0; c < r->w; c++) {
-        if (set->lcd) {
+        if(r->colored) {
+          dst[c]=color_pixel(src+c*4);
+        } else if (set->lcd) {
           unsigned char cr = r->lcd ? src[c * 3]     : src[c];
           unsigned char cg = r->lcd ? src[c * 3 + 1] : src[c];
           unsigned char cb = r->lcd ? src[c * 3 + 2] : src[c];
@@ -613,6 +663,7 @@ static GlyphSet* bake_glyphset(RenFont *font, int block, int phase) {
     g->xoff = (float) r->left;
     g->yoff = (float) (font->baseline - r->top);
     g->xadvance = r->advance;
+    g->colored = r->colored;
 
     /* Grid snapping, and only for a monospace font.
      *
@@ -663,7 +714,8 @@ static bool glyph_metrics_equal(const GlyphSet *a,const GlyphSet *b) {
   for(unsigned i=0;i<256;i++) {
     const Glyph *x=&a->glyphs[i],*y=&b->glyphs[i];
     if(x->xoff!=y->xoff || x->yoff!=y->yoff || x->xadvance!=y->xadvance
-      || x->x1-x->x0!=y->x1-y->x0 || x->y1-x->y0!=y->y1-y->y0)return false;
+      || x->x1-x->x0!=y->x1-y->x0 || x->y1-x->y0!=y->y1-y->y0
+      || x->colored!=y->colored)return false;
   }
   return true;
 }
@@ -873,8 +925,9 @@ static RenFont* font_from_data(RenFont *font) {
     font->baseline = (int) (face->ascender * s + 0.5f);
     font->underline = (int) (face->underline_thickness * s + 0.5f);
   } else {
-    font->height = (int) (face->size->metrics.height / 64.0f + 0.5f);
-    font->baseline = (int) (face->size->metrics.ascender / 64.0f + 0.5f);
+    float scale=face->size->metrics.y_ppem ? font->size/face->size->metrics.y_ppem : 1;
+    font->height = (int) (face->size->metrics.height / 64.0f*scale + 0.5f);
+    font->baseline = (int) (face->size->metrics.ascender / 64.0f*scale + 0.5f);
     font->underline = 0;
   }
   if (font->underline < 1) { font->underline = 1; }
@@ -1089,7 +1142,10 @@ RenGlyph ren_font_glyph(RenFont *font, unsigned codepoint, int phase) {
   GlyphSet *set = get_glyphset(font, codepoint, phase);
   const Glyph *g = &set->glyphs[codepoint & 255];
   return (RenGlyph){set->texture, set->tw, set->th,
-    g->x0, g->y0, g->x1, g->y1, g->xoff, g->yoff, g->xadvance};
+    g->x0, g->y0, g->x1, g->y1, g->xoff, g->yoff, g->xadvance,g->colored};
+}
+bool ren_font_face_color(RenFont *font,unsigned index) {
+  Face *face=face_at(font,(int)index);return face && FT_HAS_COLOR(face->face);
 }
 bool ren_font_face_shape(RenFont *font,unsigned index,FontShape **out) {
   *out=NULL;if(index>=MAX_FACES)return true;
@@ -1117,10 +1173,13 @@ bool ren_font_glyph_id(RenFont *font,unsigned face_index,uint32_t id,int phase,R
     image.pixels=malloc(pixels*sizeof *image.pixels);
     if(!image.pixels){free(raw.bits);return false;}
     for(size_t i=0;i<pixels;i++) {
-      unsigned coverage=raw.lcd ? ((unsigned)raw.bits[i*3]+raw.bits[i*3+1]+raw.bits[i*3+2])/3 : raw.bits[i];
-      image.pixels[i]=(RenColor){.r=255,.g=255,.b=255,.a=(uint8_t)coverage};
+      if(raw.colored)image.pixels[i]=color_pixel(raw.bits+i*4);
+      else {
+        unsigned coverage=raw.lcd ? ((unsigned)raw.bits[i*3]+raw.bits[i*3+1]+raw.bits[i*3+2])/3 : raw.bits[i];
+        image.pixels[i]=(RenColor){.r=255,.g=255,.b=255,.a=(uint8_t)coverage};
+      }
     }
   }
-  bool ok=glyphcache_insert(font->ids,key,&image,(float)raw.left,(float)(font->baseline-raw.top),0,out);
+  bool ok=glyphcache_insert(font->ids,key,&image,(float)raw.left,(float)(font->baseline-raw.top),0,raw.colored,out);
   free(image.pixels);free(raw.bits);return ok;
 }
