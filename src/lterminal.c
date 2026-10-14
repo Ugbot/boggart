@@ -300,6 +300,15 @@ static int l_reset(lua_State *L) {
   if (!bterm_reset(t->term)) return luaL_error(L, "terminal reset failed"); return 0;
 }
 static int l_state(lua_State *L) { state(L, bterm_state(check(L)->term)); return 1; }
+static int l_geometry(lua_State *L) {
+  const lpage_screen *s=bterm_screen(check(L)->term);
+  size_t cols=lpage_columns(s),rows=lpage_rows(s),history=lpage_history_count(s);
+  lua_pushinteger(L,(lua_Integer)cols); lua_pushinteger(L,(lua_Integer)rows); lua_pushinteger(L,(lua_Integer)history); return 3;
+}
+static int l_process_revision(lua_State *L) {
+  terminal *t=check(L); if (!t->process) { lua_pushnil(L); return 1; }
+  lua_pushinteger(L,(lua_Integer)bpty_state(t->process).revision); return 1;
+}
 static int l_row(lua_State *L) {
   lua_Integer index=luaL_checkinteger(L,2);luaL_argcheck(L,index>0,2,"row out of range");
   snapshot_image *image=snapshot_copy(L,true,(size_t)index-1,lua_toboolean(L,3));
@@ -531,12 +540,16 @@ int luaopen_boggart_terminal(lua_State *L) {
     {"replies", l_replies}, {"key", l_key}, {"mouse", l_mouse}, {"input_state", l_input_state}, {"events", l_events}, {"clipboard_policy", l_clipboard_policy},
     {"paste", l_paste}, {"paste_safe", l_paste_safe}, {"focus", l_focus},
     {"write",l_write}, {"process_state",l_process_state}, {"foreground_group",l_foreground_group},
+    {"geometry",l_geometry}, {"process_revision",l_process_revision},
     {"clipboard_reply", l_clipboard_reply}, {"usage", l_usage}, {"close", l_close}, {"__gc", l_close}, {"__close", l_close}, {NULL, NULL} };
   luaL_newmetatable(L, TERMINAL_MT); luaL_setfuncs(L, methods, 0); lua_pushvalue(L, -1); lua_setfield(L, -2, "__index"); lua_pop(L, 1);
   lua_newtable(L); lua_pushcfunction(L, l_new); lua_setfield(L, -2, "new");
   lua_pushcfunction(L,l_open); lua_setfield(L,-2,"open");
   lua_pushcfunction(L, l_source); lua_setfield(L, -2, "source");
   integer(L, "COLOR_INDEXED", LP_COLOR_INDEXED); integer(L, "COLOR_RGB", LP_COLOR_RGB);
+  integer(L,"BOLD",LP_BOLD); integer(L,"FAINT",LP_FAINT); integer(L,"INVERSE",LP_INVERSE);
+  integer(L,"INVISIBLE",LP_INVISIBLE); integer(L,"STRIKE",LP_STRIKE); integer(L,"OVERLINE",LP_OVERLINE);
+  integer(L,"UNDERLINE_MASK",LP_UNDERLINE_MASK); integer(L,"UNDERLINE_SHIFT",LP_UNDERLINE_SHIFT);
   integer(L, "GRAPHEME", BT_GRAPHEME); integer(L, "AUTOWRAP", BT_AUTOWRAP); integer(L, "ORIGIN", BT_ORIGIN); integer(L, "CURSOR_VISIBLE", BT_CURSOR_VISIBLE);
   integer(L, "BRACKETED_PASTE", BT_BRACKETED_PASTE); integer(L, "FOCUS", BT_FOCUS);
   integer(L, "SHIFT", BI_SHIFT); integer(L, "ALT", BI_ALT); integer(L, "CTRL", BI_CTRL);

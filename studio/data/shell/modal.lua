@@ -153,9 +153,10 @@ function modal.install()
   if modal.installed then return end
   modal.installed = true
   local orig = keymap.on_key_pressed
-  keymap.on_key_pressed = function(k)
+  keymap.on_key_pressed = function(k,event)
+    if core.active_view and core.active_view.raw_keys then return orig(k,event) end
     if modal.intercept(k) then return true end
-    return orig(k)
+    return orig(k,event)
   end
 end
 

@@ -15,6 +15,7 @@ int  boggart_boot(lua_State *L, const char *mode, const char *version);
 lua_State *boggart_newstate(void);
 void boggart_http_shutdown(lua_State *L); /* src/lhttp.c: close raw uv handles before lua_close */
 void boggart_terminal_shutdown(lua_State *L);
+void boggart_studio_loop_shutdown(void);
 void boggart_station_shutdown(lua_State *L); /* src/lstation.c: same doctrine for the ZMQ polls */
 void boggart_voice_shutdown(void); /* src/lvoice.c: free the warm whisper ctx before exit */
 
@@ -195,7 +196,7 @@ int main(int argc, char **argv) {
    * can find core/ even when there is no data/ directory anywhere. */
   studio_assets_open(L);
 
-  (void) luaL_dostring(L,
+  int bootstrap_status=luaL_dostring(L,
     "local core\n"
     "xpcall(function()\n"
     "  SCALE = tonumber(os.getenv(\"BOGGART_SCALE\")) or SCALE\n"
@@ -228,13 +229,16 @@ int main(int argc, char **argv) {
     "  if core and core.on_error then\n"
     "    pcall(core.on_error, err)\n"
     "  end\n"
-    "  os.exit(1)\n"
+    "  rawset(_G, 'STUDIO_BOOT_FAILED', true)\n"
     "end)");
 
 
+  lua_pushglobaltable(L); lua_pushliteral(L,"STUDIO_BOOT_FAILED"); lua_rawget(L,-2);
+  bool bootstrap_failed=bootstrap_status!=LUA_OK || lua_toboolean(L,-1); lua_pop(L,2);
   /* Close our raw curl-on-libuv handles before lua_close() runs luv's loop_gc,
    * or it type-confuses on their non-luv handle->data and faults at exit -- the
    * same exit crash the CLI had. See boggart_http_shutdown in src/lhttp.c. */
+  boggart_studio_loop_shutdown();
   boggart_http_shutdown(L);
   boggart_station_shutdown(L);
   boggart_terminal_shutdown(L);
@@ -244,5 +248,5 @@ int main(int argc, char **argv) {
   lua_close(L);
   SDL_DestroyWindow(window);
 
-  return EXIT_SUCCESS;
+  return bootstrap_failed ? EXIT_FAILURE : EXIT_SUCCESS;
 }

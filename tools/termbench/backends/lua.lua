@@ -1,7 +1,7 @@
--- A temporary reference adapter: measure studio's real Lua parser, never a
--- second toy implementation. Window/PTY dependencies are inert and isolated
+-- Historical reference: the exact Studio v1 parser frozen before native pane
+-- integration. Window/PTY dependencies are inert and isolated
 -- from package.loaded, so measuring bytes does not launch an app or a shell.
-local M = { name = "studio-lua", features = {
+local M = { name = "studio-lua-reference", features = {
   alt_screen = false, scroll_regions = false, truecolor = false,
   color256 = false, wide = false, graphemes = false,
 } }
@@ -20,7 +20,7 @@ local deps = {
 local env = setmetatable({ pty = {}, require = function(name)
   return assert(deps[name], "unsupported headless dependency: " .. name)
 end }, { __index = _G })
-local source_path = "studio/data/core/terminalview.lua"
+local source_path = "tools/termbench/reference/terminalview-v1.lua"
 local file = assert(io.open(root .. source_path, "rb"))
 local source = file:read("a")
 file:close()

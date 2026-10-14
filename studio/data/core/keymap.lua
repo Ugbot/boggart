@@ -80,7 +80,8 @@ return keymap.reverse_map[cmd]
 end
 
 
-function keymap.on_key_pressed(k)
+function keymap.on_key_pressed(k, event)
+  if event then keymap.input_modifiers=event.modifiers end
   local mk = modkey_map[k]
   if mk then
     keymap.modkeys[mk] = true
@@ -88,6 +89,8 @@ function keymap.on_key_pressed(k)
     if mk == "altgr" then
       keymap.modkeys["ctrl"] = false
     end
+    local av=require('core').active_view
+    if av and av.raw_keys and av.on_key_pressed then return av:on_key_pressed(key_to_stroke(k),event),false end
   else
     local stroke = key_to_stroke(k)
     -- A raw-key view (the embedded terminal) gets the stroke BEFORE global
@@ -95,13 +98,18 @@ function keymap.on_key_pressed(k)
     -- It returns false for the app-reserved chords (Ctrl-Alt-*), which then
     -- fall through to the command dispatch below like any other key.
     local av = require("core").active_view
-    if av and av.raw_keys and av.on_key_pressed and av:on_key_pressed(stroke) then
-      return true
+    local commands=keymap.map[stroke]
+    if stroke:find('cmd+',1,true) and stroke~='cmd+v' and commands then
+      for _,cmd in ipairs(commands) do if command.perform(cmd) then return true,true end end
     end
-    local commands = keymap.map[stroke]
+    if av and av.raw_keys and av.on_key_pressed then
+      local handled,suppress=av:on_key_pressed(stroke,event)
+      if handled then return true,suppress==true end
+    end
+    commands = keymap.map[stroke]
     if commands then
       for _, cmd in ipairs(commands) do
-        if command.perform(cmd) then return true end
+        if command.perform(cmd) then return true,true end
       end
     end
     -- Nothing claimed the stroke: offer it to the focused view.
@@ -119,7 +127,7 @@ function keymap.on_key_pressed(k)
     -- full stroke ("ctrl+u", not "u") so it can tell them apart.
     local core = require "core"
     local view = core.active_view
-    if view and view.on_key_pressed and view:on_key_pressed(stroke) then
+    if view and view.on_key_pressed and view:on_key_pressed(stroke,event) then
       return true
     end
   end
@@ -127,11 +135,18 @@ function keymap.on_key_pressed(k)
 end
 
 
-function keymap.on_key_released(k)
+function keymap.on_key_released(k,event)
+  if event then keymap.input_modifiers=event.modifiers end
   local mk = modkey_map[k]
   if mk then
     keymap.modkeys[mk] = false
   end
+  local av=require('core').active_view
+  if av and av.raw_keys and av.on_key_released then av:on_key_released(k,event) end
+end
+function keymap.clear_modifiers()
+  for key in pairs(keymap.modkeys) do keymap.modkeys[key]=nil end
+  keymap.input_modifiers=0
 end
 
 

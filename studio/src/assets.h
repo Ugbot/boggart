@@ -22,5 +22,7 @@ struct lua_State;
 /* Install the searcher that resolves require("core.doc") out of the table
  * above. Call before the bootstrap runs. */
 void studio_assets_open(struct lua_State *L);
+/* Immediate virtual directory children for system.list_dir(@assets/...). */
+int studio_assets_list_dir(struct lua_State *L, const char *path);
 
 #endif

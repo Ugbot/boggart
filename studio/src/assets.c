@@ -14,6 +14,7 @@
  */
 #include <string.h>
 #include <stdio.h>
+#include <stdbool.h>
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -71,4 +72,21 @@ void studio_assets_open(struct lua_State *Ls) {
   lua_pushcfunction(L, asset_searcher);
   lua_rawseti(L, -2, n + 1);
   lua_pop(L, 2);
+}
+int studio_assets_list_dir(struct lua_State *Ls,const char *path) {
+  lua_State *L=(lua_State *)Ls; size_t marker=strlen(STUDIO_ASSET_PREFIX);
+  const char *directory=path+marker; if (*directory=='/') directory++;
+  size_t length=strlen(directory); while (length && directory[length-1]=='/') length--;
+  lua_newtable(L); int result=lua_gettop(L); lua_newtable(L); int seen=lua_gettop(L); lua_Integer count=0;
+  for (size_t i=0;i<studio_asset_count();i++) {
+    const char *name=studio_asset_name(i),*child=name;
+    if (length) { if (strncmp(name,directory,length) || name[length]!='/') continue; child=name+length+1; }
+    if (!*child) continue;
+    const char *slash=strchr(child,'/'); size_t n=slash ? (size_t)(slash-child) : strlen(child);
+    lua_pushlstring(L,child,n); lua_rawget(L,seen); bool exists=lua_toboolean(L,-1); lua_pop(L,1);
+    if (exists) continue;
+    lua_pushlstring(L,child,n); lua_pushboolean(L,true); lua_rawset(L,seen);
+    lua_pushlstring(L,child,n); lua_rawseti(L,result,++count);
+  }
+  lua_pop(L,1); return 1;
 }
