@@ -552,7 +552,7 @@ int luaopen_boggart_terminal(lua_State *L) {
   lua_pushcfunction(L,l_open); lua_setfield(L,-2,"open");
   lua_pushcfunction(L, l_source); lua_setfield(L, -2, "source");
   integer(L, "COLOR_INDEXED", LP_COLOR_INDEXED); integer(L, "COLOR_RGB", LP_COLOR_RGB);
-  integer(L,"BOLD",LP_BOLD); integer(L,"FAINT",LP_FAINT); integer(L,"INVERSE",LP_INVERSE);
+  integer(L,"BOLD",LP_BOLD); integer(L,"ITALIC",LP_ITALIC); integer(L,"FAINT",LP_FAINT); integer(L,"INVERSE",LP_INVERSE);
   integer(L,"INVISIBLE",LP_INVISIBLE); integer(L,"STRIKE",LP_STRIKE); integer(L,"OVERLINE",LP_OVERLINE);
   integer(L,"UNDERLINE_MASK",LP_UNDERLINE_MASK); integer(L,"UNDERLINE_SHIFT",LP_UNDERLINE_SHIFT);
   integer(L, "GRAPHEME", BT_GRAPHEME); integer(L, "AUTOWRAP", BT_AUTOWRAP); integer(L, "ORIGIN", BT_ORIGIN); integer(L, "CURSOR_VISIBLE", BT_CURSOR_VISIBLE);

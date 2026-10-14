@@ -109,6 +109,10 @@ typedef struct {
 struct RenFont {
   void *data;
   size_t datalen;
+  /* Lua owns the base. Its variants own faces/atlases but borrow these bytes;
+   * row commands retain the base lifetime through deferred frame replay. */
+  RenFont *base;
+  RenFont *variants[4];
   Block *planes[GLYPH_PLANES];
   Face faces[MAX_FACES];
   int nfaces;        /* faces materialised so far; faces[0] is ours */
@@ -980,14 +984,39 @@ static RenFont* font_from_data(RenFont *font) {
   return font;
 
 fail:
-  free(font->data);
+  if (!font->base) { free(font->data); }
   free(font);
   return NULL;
+}
+
+RenFont *ren_get_font_variant(RenFont *font, unsigned style) {
+  RenFont *base = font->base ? font->base : font;
+  unsigned wanted = font->style | (style & (REN_STYLE_BOLD | REN_STYLE_ITALIC));
+  if (wanted == base->style) { return base; }
+  unsigned slot = wanted & (REN_STYLE_BOLD | REN_STYLE_ITALIC);
+  RenFont *variant = base->variants[slot];
+  if (!variant) {
+    variant = calloc(1, sizeof *variant);
+    if (!variant) { return NULL; }
+    variant->base = base; variant->data = base->data; variant->datalen = base->datalen;
+    variant->size = base->size; variant->antialias = base->antialias;
+    variant->hinting = base->hinting; variant->style = wanted;
+    variant = font_from_data(variant);
+    if (!variant) { return NULL; }
+    base->variants[slot] = variant;
+  }
+  if (variant->tab_advance != base->tab_advance) {
+    ren_set_font_tab_width(variant, base->tab_advance);
+  }
+  return variant;
 }
 
 
 void ren_free_font(RenFont *font) {
   glyph_batch_flush();
+  for (unsigned i = 0; i < 4; i++) {
+    if (font->variants[i]) { ren_free_font(font->variants[i]); }
+  }
   for (int p = 0; p < GLYPH_PLANES; p++) {
     Block *table = font->planes[p];
     if (!table) { continue; }
@@ -1011,7 +1040,7 @@ void ren_free_font(RenFont *font) {
    * which is shared by every RenFont and lives as long as the process -- the
    * alternative is re-reading a 23 MB pan-Unicode face once per font size the
    * UI happens to load. */
-  free(font->data);
+  if (!font->base) { free(font->data); }
   free(font);
 }
 
@@ -1060,6 +1089,40 @@ int ren_get_font_width(RenFont *font, const char *text) {
     x += set->glyphs[codepoint & 0xff].xadvance;
   }
   return (int) lroundf(x);
+}
+
+RenRect ren_get_text_bounds(RenFont *font, const char *text) {
+  float pen = 0;
+  int left = 0, top = 0, right = 0, bottom = font->height;
+  const char *p = text;
+  while (*p) {
+    unsigned cp; p = utf8_to_codepoint(p, &cp);
+    int origin = (int)floorf(pen);
+    int phase = (int)((pen - (float)origin) * SUBPIXEL_BITMAPS);
+    if (phase >= SUBPIXEL_BITMAPS) { phase = SUBPIXEL_BITMAPS - 1; }
+    Glyph *glyph = &get_glyphset(font, cp, phase)->glyphs[cp & 255];
+    int width = glyph->x1 - glyph->x0, height = glyph->y1 - glyph->y0;
+    if (width && height) {
+      int x0 = (int)floorf((float)origin + glyph->xoff), y0 = (int)floorf(glyph->yoff);
+      int x1 = (int)ceilf((float)origin + glyph->xoff + (float)width);
+      int y1 = (int)ceilf(glyph->yoff + (float)height);
+      if (x0 < left) { left = x0; } if (y0 < top) { top = y0; }
+      if (x1 > right) { right = x1; } if (y1 > bottom) { bottom = y1; }
+    }
+    pen += glyph->xadvance;
+  }
+  int advance = (int)lroundf(pen);
+  if (advance > right) { right = advance; }
+  if (advance > 0 && (font->style & REN_STYLE_UNDERLINE)) {
+    int y = font->height - font->underline;
+    if (y < top) { top = y; }
+  }
+  if (advance > 0 && (font->style & REN_STYLE_STRIKETHROUGH)) {
+    int y = font->baseline - font->height / 6;
+    if (y < top) { top = y; }
+    if (y + font->underline > bottom) { bottom = y + font->underline; }
+  }
+  return (RenRect){left, top, right - left, bottom - top};
 }
 
 
