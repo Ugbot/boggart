@@ -7,14 +7,31 @@ local json=require 'json'; local hash=require 'hash_c'
 local out=assert(os.getenv('BMUX_DRAW_REPORT'),'BMUX_DRAW_REPORT required')
 local t <close> =protocol.new(80,24,2000)
 local view=View{terminal=t,send=function() return true end}
+local font_path='studio/data/fonts/monospace.ttf'
+view.font=renderer.font.load(font_path,16); view.cw=view.font:get_width('M'); view.lh=view.font:get_height()
+if view.render_context then view.render_context=renderer.new_terminal(view.font,t,view.render_theme) end
+local reference_fonts,inside_row,current_style
+if reference then
+  reference_fonts={[0]=view.font}
+  for flags=1,3 do reference_fonts[flags]=renderer.font.load(font_path,16,{bold=(flags&1)~=0,italic=(flags&2)~=0}) end
+  local resolve,row=view.resolve_colors,view.draw_row
+  function view:resolve_colors(cell)
+    current_style=((cell.style.attrs&protocol.BOLD)~=0 and 1 or 0)|((cell.style.attrs&protocol.ITALIC)~=0 and 2 or 0)
+    return resolve(self,cell)
+  end
+  function view:draw_row(...) inside_row=true; row(self,...); inside_row=false end
+end
 view.position.x,view.position.y=0,0; view.size.x,view.size.y=view.cw*80,view.lh*24
 view.last_size.x,view.last_size.y=view.size.x,view.size.y
-local corpora={plain=('abcdefgh0123456789'):rep(120),styled=('\27[38;2;120;30;200;48;5;17mHELLO\27[0m world '):rep(170),unicode=('日éΩ漢'):rep(480)}
+local corpora={plain=('abcdefgh0123456789'):rep(120),styled=('\27[38;2;120;30;200;48;5;17mHELLO\27[0m world '):rep(170),unicode=('日éΩ漢'):rep(480),
+  mixed=('\27[0mA\27[1mB\27[3mI\27[1;3mC'):rep(600)}
 local calls={rect=0,text=0}; local draw_rect,draw_text=renderer.draw_rect,renderer.draw_text
 renderer.draw_rect=function(...) calls.rect=calls.rect+1; return draw_rect(...) end
-renderer.draw_text=function(...) calls.text=calls.text+1; return draw_text(...) end
+renderer.draw_text=function(font,...) calls.text=calls.text+1; return draw_text(inside_row and reference_fonts[current_style] or font,...) end
 local report={scope='actual Studio pane draw; CPU/wall time, not key-to-pixel latency',renderer=reference and 'native-lua-cells-reference' or 'native-row-commands',source=protocol.source(),samples={}}
 local f=assert(io.open(view_path,'rb')); report.view_sha256=hash.sha256(f:read('a')); f:close()
+local font_file=assert(io.open(font_path,'rb')); report.font={path=font_path,size=16,sha256=hash.sha256(font_file:read('a'))}; font_file:close()
+report.reference_style_oracle=reference and 'independently loaded synthetic bold/italic fonts; saved frontend methods wrapped for matching pixels' or nil
 if reference then assert(report.view_sha256=='362c7f1c3ad312978be0eefaf53d1371b72ba40e83a665384705834a2e95aee3','reference has changed') end
 report.renderer_sources=renderer.terminal_sources()
 for path,digest in pairs(report.renderer_sources) do
@@ -25,7 +42,7 @@ local function frame()
   renderer.begin_frame(); core.clip_rect_stack[1]={0,0,view.size.x,view.size.y}
   renderer.set_clip_rect(0,0,view.size.x,view.size.y); view:draw(); renderer.end_frame()
 end
-for _,name in ipairs{'plain','styled','unicode'} do
+for _,name in ipairs{'plain','styled','unicode','mixed'} do
   local data=corpora[name]
   t:reset(); t:feed(data); view:sync(true); view.scroll.y=0; view.scroll.to.y=0
   for _,mode in ipairs{'unchanged','one-row-dirty'} do

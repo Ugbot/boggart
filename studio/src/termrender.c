@@ -1,16 +1,23 @@
 #include "termrender.h"
-RenRect tg_measure(const tg_row *row,RenFont *font,int cw,int ch) {
-  int width=(int)row->columns*cw;
+static RenFont *cell_font(RenFont *font,const tg_cell *cell) {
+  unsigned style=0;
+  if(cell->style.attrs&LP_BOLD)style|=REN_STYLE_BOLD;
+  if(cell->style.attrs&LP_ITALIC)style|=REN_STYLE_ITALIC;
+  return ren_get_font_variant(font,style);
+}
+bool tg_measure(const tg_row *row,RenFont *font,int cw,int ch,RenRect *bounds) {
+  int left=0,right=(int)row->columns*cw,top=ch<3 ? ch-3 : 0,bottom=ch;
   for(uint32_t i=0;i<row->columns;i++) {
     const tg_cell *cell=&row->cells[i];
     if(cell->width && cell->length) {
-      int end=(int)i*cw+ren_get_font_width(font,tg_text(row,cell));
-      if(end>width)width=end;
+      RenFont *variant=cell_font(font,cell);if(!variant)return false;
+      RenRect ink=ren_get_text_bounds(variant,tg_text(row,cell));
+      int x=(int)i*cw+ink.x,end=x+ink.width;
+      if(x<left)left=x;if(end>right)right=end;
+      if(ink.y<top)top=ink.y;if(ink.y+ink.height>bottom)bottom=ink.y+ink.height;
     }
   }
-  int top=ch<3 ? ch-3 : 0,height=ren_get_font_height(font);
-  if(height<ch)height=ch;
-  return (RenRect){0,top,width+1,height-top};
+  *bounds=(RenRect){left,top,right-left+1,bottom-top};return true;
 }
 static RenColor resolve(uint32_t value,const tg_theme *theme,bool bold,RenColor fallback) {
   if(!value)return fallback;
@@ -37,7 +44,10 @@ void tg_draw(const tg_row *row,RenFont *font,const tg_theme *theme,double x,int 
   for(uint32_t i=0;i<row->columns;i++){
     const tg_cell *cell=&row->cells[i];if(!cell->width)continue;
     RenColor fg,bg,line;colors(cell,theme,&fg,&bg,&line);int px=(int)(x+(double)i*cw),width=cell->width*cw;
-    if(cell->length && !(cell->style.attrs&LP_INVISIBLE))ren_draw_text(font,tg_text(row,cell),px,y,fg);
+    if(cell->length && !(cell->style.attrs&LP_INVISIBLE)){
+      RenFont *variant=cell_font(font,cell);
+      if(variant)ren_draw_text(variant,tg_text(row,cell),px,y,fg);
+    }
     unsigned underline=(cell->style.attrs&LP_UNDERLINE_MASK)>>LP_UNDERLINE_SHIFT;
     if(underline){
       if(underline==3){for(int dx=0;dx<width;dx++){int wave=dx%4-2;if(wave<0)wave=-wave;ren_draw_rect((RenRect){px+dx,y+ch-3+wave,1,1},line);}}

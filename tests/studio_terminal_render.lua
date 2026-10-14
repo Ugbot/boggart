@@ -4,6 +4,25 @@ local ok,err=xpcall(function()
   local Reference=assert(loadfile('tools/termbench/reference/terminalview-native-lua.lua'))()
   local t <close> =terminal.new(24,8,12)
   local view=Reference{terminal=t}; local theme={foreground=style.text,background=style.background}
+  -- The historical reference stays exact. Its cell calls use independently
+  -- loaded synthetic option fonts as this increment's explicit style oracle.
+  local fonts={}
+  for flags=0,3 do fonts[flags]=renderer.font.load('studio/data/fonts/monospace.ttf',16,
+    {bold=(flags&1)~=0,italic=(flags&2)~=0}) end
+  view.font=fonts[0]; view.cw=view.font:get_width('M'); view.lh=view.font:get_height()
+  local reference_row=view.draw_row
+  function view:draw_row(row,x,y)
+    local expected={}
+    for _,cell in ipairs(row.cells) do
+      if cell.width>0 and cell.text~='' and (cell.style.attrs&terminal.INVISIBLE)==0 then
+        expected[#expected+1]=((cell.style.attrs&terminal.BOLD)~=0 and 1 or 0)|((cell.style.attrs&terminal.ITALIC)~=0 and 2 or 0)
+      end
+    end
+    local draw_text=renderer.draw_text; local index=0
+    renderer.draw_text=function(_,text,px,py,color) index=index+1; return draw_text(fonts[expected[index]],text,px,py,color) end
+    local good,error_text=pcall(reference_row,self,row,x,y); renderer.draw_text=draw_text
+    assert(good,error_text)
+  end
   -- The reference palette is intentionally obtained through its color resolver.
   theme.palette={}; for i=0,15 do theme.palette[i]=view:resolve_colors{style={fg=terminal.COLOR_INDEXED|i,bg=0,underline=0,attrs=0}} end
   local native=renderer.new_terminal(view.font,t,theme)
@@ -32,7 +51,8 @@ local ok,err=xpcall(function()
   t:feed('plain 日é Ω\r\n\27[1;31;44mBOLD\27[2;7m INV\27[0m\r\n'..
     '\27[38;2;19;123;241;48;5;233mRGB\27[0m\r\n'..
     '\27[4:1;58;2;255;0;0mONE\27[4:2m TWO\27[4:3m WAVE\27[0m\r\n'..
-    '\27[4:4mDOT\27[4:5m DASH\27[9;53m LINES\27[8m HIDDEN\27[0m')
+    '\27[4:4mDOT\27[4:5m DASH\27[9;53m LINES\27[8m HIDDEN\27[0m\r\n'..
+    '\27[3mITALIC Ag日é\27[0m\r\n\27[1;3mBOTH Ag日é\27[0m')
   parity('styles and complete Unicode clusters')
   local captures=native:stats().captures
   frame(true,1,8); frame(true,1,8)
@@ -51,6 +71,7 @@ local ok,err=xpcall(function()
   frame(false,1,8,17,80,{0,0,200,110}); assert(system.save_screenshot(dir..'/overflow-ref.bmp'))
   assert(bytes(dir..'/overflow-native.bmp')==bytes(dir..'/overflow-ref.bmp'),'changed glyph damage includes pixels beyond its cell')
   view.cw,view.lh=cw,lh
+  t:feed('\27[2;1H\27[0mregular'); parity('return from styled atlases to regular',1,8)
   for i=1,20 do t:feed('\r\nline '..i..' 日') end
   parity('retained history',2,9,7,-view.lh)
   t:resize(31,6); parity('reflow and resize')
@@ -67,7 +88,7 @@ local ok,err=xpcall(function()
   local ownedfont=renderer.font.load('studio/data/fonts/monospace.ttf',14)
   if ownedfont then
     local ctx=renderer.new_terminal(ownedfont,fresh,theme)
-    fresh:feed('A'); renderer.begin_frame(); ctx:draw(0,0,8,16,1,1)
+    fresh:feed('\27[1;3mA'); renderer.begin_frame(); ctx:draw(0,0,8,16,1,1)
     getmetatable(ownedfont).__gc(ownedfont)
     assert(not pcall(function() ctx:draw(0,0,8,16,1,1) end),'closed font rejected')
     getmetatable(ownedfont).__gc(ownedfont); renderer.end_frame()

@@ -19,7 +19,7 @@ for _,backend in ipairs{'reference','native'} do
 end
 local function median(values) table.sort(values); return values[(#values+1)//2] end
 local summary={scope='80x24 pane draw, three warmed processes x 21 samples; SDL dummy, CPU/wall, no pixel latency',samples={}}
-for _,corpus in ipairs{'plain','styled','unicode'} do
+for _,corpus in ipairs{'plain','styled','unicode','mixed'} do
   for _,mode in ipairs{'unchanged','one-row-dirty'} do
     local group=groups[corpus..'/'..mode]; local old,new=group.reference,group.native
     local sample={corpus=corpus,mode=mode,reference_cpu_ns=median(old.cpu),native_cpu_ns=median(new.cpu),reference_wall_ns=median(old.wall),native_wall_ns=median(new.wall),

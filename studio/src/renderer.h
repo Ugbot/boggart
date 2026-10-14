@@ -75,6 +75,10 @@ RenFont* ren_load_font(const char *filename, float size, const RenFontOptions *o
 RenFont* ren_load_font_mem(const void *data, size_t len, float size,
                            const RenFontOptions *opt);
 void ren_free_font(RenFont *font);
+/* Borrowed synthetic variant, owned/freed by the base font. Only BOLD/ITALIC
+ * bits are added; caches and file bytes are shared across repeated requests.
+ * NULL on allocation/face failure, without changing the base font. */
+RenFont *ren_get_font_variant(RenFont *font, unsigned style);
 /* The system fonts discovered to draw what the bundled ones cannot, in the
  * order they are consulted. Diagnostic: it is how a user finds out why their
  * Japanese is boxes, and how the tests assert the chain degrades rather than
@@ -84,6 +88,7 @@ const char* ren_fallback_path(int i, int *loaded);
 void ren_set_font_tab_width(RenFont *font, int n);
 int ren_get_font_tab_width(RenFont *font);
 int ren_get_font_width(RenFont *font, const char *text);
+RenRect ren_get_text_bounds(RenFont *font, const char *text);
 int ren_get_font_height(RenFont *font);
 
 void ren_draw_rect(RenRect rect, RenColor color);

@@ -91,7 +91,10 @@ reports and fractional wheel input use the same native APIs. Fixed cell drawing
 preserves wide tails, clusters, RGB/256 colors, native cursor style and SGR
 decorations. One native row-context draw per pane feeds SDL3's existing glyph
 batcher; Lua no longer draws or snapshots individual cells. Shaping, selection,
-search, font variants and the remaining atlas/instancing contract remain Phase 2.
+search, real style faces/ligatures, procedural glyphs, zoom and the remaining
+atlas/instancing contract remain Phase 2. Native SGR bold/italic use cached
+synthetic outline variants sharing the base font's bytes; see
+[font variant evidence](benchmarks/2026-10-14-font-variants.md).
 
 `renderer.new_terminal(font, terminal, theme)` roots its font, terminal and theme.
 The theme contains `foreground`, `background` and a zero-based 16-color
