@@ -69,6 +69,7 @@ void ren_reset_glyph_stats(void);
 RenGlyphStats ren_glyph_stats(void);
 /* Test-script control affects future atlas loads, not existing pages. */
 bool ren_test_style_atlas_sharing(bool enabled);
+bool ren_test_cluster_shaping(bool enabled);
 /* Writes the retained backbuffer to a BMP. 0 on success; SDL_GetError() on fail. */
 int ren_save_screenshot(const char *path);
 
@@ -103,5 +104,8 @@ void ren_draw_rect(RenRect rect, RenColor color);
 void ren_draw_line(float x0, float y0, float x1, float y1, float thickness, RenColor color);
 void ren_draw_image(RenImage *image, RenRect *sub, RenRect *dst, RenColor color);
 int ren_draw_text(RenFont *font, const char *text, int x, int y, RenColor color);
-
+/* Native cell text with authoritative pixel advance; shapes one bounded cell
+ * cluster. Bounds prepare font caches before deferred replay. */
+bool ren_get_cluster_bounds(RenFont *font,const char *text,size_t length,int advance,RenRect *bounds);
+void ren_draw_cluster(RenFont *font,const char *text,size_t length,int x,int y,int advance,RenColor color);
 #endif

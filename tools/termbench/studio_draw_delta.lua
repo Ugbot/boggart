@@ -1,7 +1,7 @@
 -- Native before/after comparison. Both profiles use the same pane frontend.
 local json=require 'json'
 local prefix=assert(os.getenv('BMUX_DRAW_PREFIX'),'BMUX_DRAW_PREFIX required')
-local groups,identity,corpus_identity={},nil,nil
+local groups,identity,corpus_identity,renderer_backend={},nil,nil,nil
 for _,backend in ipairs{'before','after'} do
   for run=1,3 do
     local f=assert(io.open(prefix..'-'..backend..'-'..run..'.json','rb')); local report=json.decode(f:read('a')); f:close()
@@ -15,6 +15,8 @@ for _,backend in ipairs{'before','after'} do
       end
     end
     for _,sample in ipairs(report.samples) do
+      local current_backend=assert(sample.last_frame_replay.renderer_backend,'renderer backend missing')
+      renderer_backend=renderer_backend or current_backend;assert(renderer_backend==current_backend,'renderer backend changed between runs')
       local key=sample.corpus..'/'..sample.mode; groups[key]=groups[key] or {}
       local all=groups[key][backend] or {cpu={},wall={},captures=0,submissions=0,replay={}};groups[key][backend]=all
       for _,v in ipairs(sample.cpu_ns) do all.cpu[#all.cpu+1]=v end
@@ -26,7 +28,7 @@ for _,backend in ipairs{'before','after'} do
   end
 end
 local function median(values) table.sort(values);return values[(#values+1)//2] end
-local summary={scope='native 80x24 pane, font 16, SDL dummy, three processes x 21 draw samples; CPU/wall, no input latency',samples={}}
+local summary={scope='native 80x24 pane, font 16, SDL '..renderer_backend..', three processes x 21 draw samples; CPU/wall, no input latency',samples={}}
 for _,corpus in ipairs{'plain','styled','unicode','mixed'} do
   for _,mode in ipairs{'unchanged','one-row-dirty'} do
     local group=groups[corpus..'/'..mode];local before,after=group.before,group.after

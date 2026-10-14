@@ -26,5 +26,9 @@ void ren_font_set_device(SDL_Renderer *device, bool sharing, void (*flush)(void)
 bool ren_font_style_atlas_sharing(bool enabled);
 RenFontAtlasStats ren_font_atlas_stats(void);
 RenFontMetrics ren_font_metrics(const RenFont *font);
-RenGlyph ren_font_glyph(RenFont *font, unsigned codepoint, int phase);
+RenGlyph ren_font_glyph(RenFont *font, unsigned codepoint, int phase);struct FontShape;
+struct RenCluster;
+bool ren_font_face_shape(RenFont *font,unsigned index,struct FontShape **out);
+bool ren_font_glyph_id(RenFont *font,unsigned face,uint32_t id,int phase,RenGlyph *out);
+void ren_draw_glyph(RenGlyph glyph,float x,float y,float scale,RenColor color);
 #endif

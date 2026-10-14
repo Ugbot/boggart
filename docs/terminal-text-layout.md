@@ -61,7 +61,7 @@ run also passes the new methods and existing input/shell checks.
 
 ## Work still required for BMUX-19
 
-This is the measurement foundation, not integrated grapheme rendering. General
+The measurement foundation is followed by native cell shaping below. General
 `sys.width`/`sys.wtake`, termctl and generic font measurement keep their documented
 Unicode-16 scalar policy. The native terminal cell printer uses the pinned SDK
 profile. BMUX-19 criterion 1500 remains open until terminal cluster painting,
@@ -85,11 +85,67 @@ ASan/UBSan **9/9**, 6.73s. All **26** saved pre/post SDL dummy-driver screenshot
 are byte-identical, including styles, clips, partial damage, history, resize and
 queued mutation/close. The controlled SDL window pixel/lifetime test also passes.
 
-The next increment needs glyph-ID lookup and positioned cluster shaping within
-that boundary. Shaped runs should retain glyph IDs/positions, resolving each
-borrowed texture at draw time so later atlas migration cannot stale a run.
-Complex cluster shaping will use a pinned static OpenType
-shaper over owned font bytes. HarfBuzz's
+## Native positioned cell rendering
+
+`termrender.c` uses `ren_get_cluster_bounds` and `ren_draw_cluster` with each
+captured cell's explicit UTF-8 length and **recorded width times cell width**.
+It shapes one retained cell at a time. Existing cells keep their advances after
+mode changes. ASCII uses the existing C scalar draw path; other cell text uses
+cached positioned glyphs, with no Lua cell traversal or snapshot allocation.
+
+`fontshape.c` calls the pinned static HarfBuzz 14.4.0 C API over immutable owned
+font bytes. Each FreeType face records its byte owner, length and TTC index, and
+owns its separate OpenType shape object/reused buffer. Shape objects are freed
+before faces/bytes. No second FreeType instance or runtime HarfBuzz dependency
+is introduced. HarfBuzz's
 [OpenType font implementation](https://harfbuzz.github.io/harfbuzz-hb-ot-font.html)
 and [shaping API](https://harfbuzz.github.io/harfbuzz-hb-shape.html) provide that
-contract. No HarfBuzz dependency or shaping code has been introduced yet.
+contract supports this path; source/license hashes are in
+`THIRD_PARTY/harfbuzz.md`.
+
+`fontcluster.c` tries the bounded existing fallback face chain on the whole
+cluster, accepting a complete positioned run. This also permits canonical
+composition when a font supports the composed glyph. Unsupported clusters draw
+one diagnostic box in their cell span. Its 64 fixed cache slots compare full
+source bytes; runs retain IDs/positions and resolve textures at draw time.
+Input is bounded by the native 65-scalar/260-byte retention cap, output by 256
+glyphs, with explicit shaping work/position limits. Allocation failure remains
+retryable and does not publish a cached unsupported run.
+
+Retained scalar cells and soft-hyphen heads use a literal shaping policy that
+preserves their nominal ink. Flags reset on every reused buffer; joined emoji
+and other clusters retain normal handling of invisible formatting scalars. A
+regression test proves a positive-width soft hyphen survives with its selected
+face's glyph, including legacy combining/joiner suffixes.
+
+`glyphcache.c` uses the Venus-derived `lidmap` Swiss map for face/glyph-ID/phase
+keys. It holds at most 7168 entries and four SDL pages per font, starting at
+512 square and using 1024 for larger glyphs (at most 16 MiB logical RGBA).
+Rollover flushes pending geometry before clearing textures. Failed unused-slot
+uploads publish no metadata; cached geometry stays valid. CPU bitmap staging is
+released after upload. Capacity diagnostics include these pages. Atlas UVs never
+live in shaped runs or native row snapshots.
+
+The painter centers a run in its cell span and compresses genuinely wider runs
+horizontally; fractional monospace advances within one pixel preserve natural
+ink. Positioned marks share the primary baseline. Bounds and painting use one
+layout routine, including ink overhang and font decorations. A regression test
+reproduces/fixes the tiny-negative-offset subpixel phase edge. General scalar
+renderers retain their policy while their prefix/width consumers await migration.
+
+`renderer_clusters`, `renderer_atlas` and `studio_terminal_clusters` verify
+canonical accents across four styles/pixel budgets, positioned marks, a pinned
+Indic fixture, all native vector byte splits/both modes, retained row and font
+lifetime, cache limits/upload failure, mode changes, history/reflow and queued
+closure. The existing scalar reference test covers single-scalar parity and
+ASCII overhang; shaped text uses the native tests rather than the old mark
+placement as an oracle. Normal and ASan/UBSan focused suites pass, as do the
+controlled SDL window tests. C11 warning/diff checks and static-link inspection
+pass. Paired draw evidence: `docs/benchmarks/2026-10-14-cluster-shaping.md`.
+
+The full suite passes **149/149**, 135.74s at the native-shaping checkpoint.
+Final literal-cell policy checks pass in normal and ASan/UBSan builds, including
+the reproduced soft-hyphen regression and native pane tests.
+
+General helper/renderer migration, remaining BMUX-25 typography and full
+BMUX-3/28 frame/input gates are still required. Criterion 1500 remains open.

@@ -48,12 +48,12 @@ local ok,err=xpcall(function()
     frame(true,first,last,x,y,clip); assert(system.save_screenshot(b))
     assert(bytes(a)==bytes(b),'native/reference pixel mismatch: '..label)
   end
-  t:feed('plain 日é Ω\r\n\27[1;31;44mBOLD\27[2;7m INV\27[0m\r\n'..
+  t:feed('plain 日é Ω\r\n\27[1;31;44mBOLD\27[2;7m INV\27[0m\r\n'..
     '\27[38;2;19;123;241;48;5;233mRGB\27[0m\r\n'..
     '\27[4:1;58;2;255;0;0mONE\27[4:2m TWO\27[4:3m WAVE\27[0m\r\n'..
     '\27[4:4mDOT\27[4:5m DASH\27[9;53m LINES\27[8m HIDDEN\27[0m\r\n'..
-    '\27[3mITALIC Ag日é\27[0m\r\n\27[1;3mBOTH Ag日é\27[0m')
-  parity('styles and complete Unicode clusters')
+    '\27[3mITALIC Ag日é\27[0m\r\n\27[1;3mBOTH Ag日é\27[0m')
+  parity('styles and single-scalar Unicode')
   local captures=native:stats().captures
   frame(true,1,8); frame(true,1,8)
   assert(native:stats().captures==captures,'unchanged rows are reused')
@@ -70,6 +70,9 @@ local ok,err=xpcall(function()
   parity('fractional offset and clip',1,8,-4.5,-6.25,{11,13,133,93})
   parity('empty clip',1,8,nil,nil,{0,0,0,0})
   assert(renderer.terminal_replay_stats().rows_replayed==0,'empty clips replay no terminal rows')
+  -- Scalar reference parity stays on its existing policy. The C cluster test
+  -- covers shaping; use ASCII here to retain its independent overhang oracle.
+  t:reset(); t:feed('\27[3mAg\27[1;3mG\27[4:3mWAVE\27[0m'); view:sync(true)
   local cw,lh=view.cw,view.lh; view.cw,view.lh=1,1
   parity('glyphs and decorations extending beyond tiny cells',1,8,17,80,{0,0,200,110})
   frame(true,1,8,17,80,{0,0,200,110}); frame(true,1,8,17,80,{0,0,200,110})
