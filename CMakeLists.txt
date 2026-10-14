@@ -928,7 +928,7 @@ add_test(NAME unicode COMMAND unicode_test
   ${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY/unicode/16.0.0/auxiliary/GraphemeBreakTest.txt)
 # Embed the sources actually compiled into this terminal backend. Benchmarks
 # reject a stale executable instead of attributing it to current disk contents.
-set(BMUX_TERMINAL_SOURCE_FILES src/lvt.c src/vt_table.h src/lstyle.c src/llink.c src/lpage.c src/lpage_resize.c src/lpage_layout.c src/lpage_layout.h src/lidmap.c src/lidmap.h src/lbitmap.c src/lbitmap.h
+set(BMUX_TERMINAL_SOURCE_FILES src/bpty.c src/bpty.h src/lvt.c src/vt_table.h src/lstyle.c src/llink.c src/lpage.c src/lpage_resize.c src/lpage_layout.c src/lpage_layout.h src/lidmap.c src/lidmap.h src/lbitmap.c src/lbitmap.h
   src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c src/lterminal.c
   src/lvt.h src/lstyle.h src/llink.h src/lpage.h src/lpage_internal.h src/bosc.h src/bmouse.h src/bkey.h src/bpaste.h src/bterm.h src/bterm_internal.h
   src/bunicode.c src/bunicode.h src/bunicode_data.h src/btunicode.c src/btunicode.h src/btunicode_data.h src/lgrapheme.c src/lgrapheme.h)
@@ -948,6 +948,22 @@ add_library(boggart_vt STATIC src/lvt.c src/lstyle.c src/llink.c src/lpage.c src
   src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c)
 target_include_directories(boggart_vt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(boggart_vt PUBLIC boggart_unicode)
+add_library(boggart_pty STATIC src/bpty.c)
+target_include_directories(boggart_pty PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(boggart_pty PUBLIC boggart_vt uv_a)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(boggart_pty PUBLIC util)
+endif()
+target_link_libraries(boggart PRIVATE boggart_pty)
+if(TARGET boggart-studio)
+  target_link_libraries(boggart-studio PRIVATE boggart_pty)
+endif()
+if(UNIX)
+  add_executable(pty_transport_test tests/c/pty_transport.c)
+  target_link_libraries(pty_transport_test PRIVATE boggart_pty)
+  add_test(NAME pty_transport COMMAND pty_transport_test)
+  set_tests_properties(pty_transport PROPERTIES TIMEOUT 30)
+endif()
 target_link_libraries(boggart PRIVATE boggart_vt)
 if(TARGET boggart-studio)
   target_link_libraries(boggart-studio PRIVATE boggart_vt)
@@ -1042,7 +1058,7 @@ add_custom_target(ghostty-oracle
   COMMENT "Building the pinned test oracle and verifying resize fixtures"
   USES_TERMINAL)
 
-foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable typesafe judge ladder toolroute ladder_sites harden policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast mining_recognition mining_compile mining_jobs learning_evaluate learning_promote learning_route learning_monitor workflow_slack workflow_novel workflow_triggers searchroute tracker story story_model story_geo story_geosql story_style auth_file looplag http_body json_c store_save hash_c fileview termbench terminal terminal_graphemes terminal_resize terminal_resize_cached terminal_resize_api terminal_resize_large ghostty_page_growth ghostty_bitmap)
+foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable typesafe judge ladder toolroute ladder_sites harden policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast mining_recognition mining_compile mining_jobs learning_evaluate learning_promote learning_route learning_monitor workflow_slack workflow_novel workflow_triggers searchroute tracker story story_model story_geo story_geosql story_style auth_file looplag http_body json_c store_save hash_c fileview termbench terminal terminal_process terminal_process_shutdown terminal_graphemes terminal_resize terminal_resize_cached terminal_resize_api terminal_resize_large ghostty_page_growth ghostty_bitmap)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home}
@@ -1055,6 +1071,17 @@ foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor 
       $<TARGET_FILE:boggart> --eval tests/${suite}.lua
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
+
+if(TARGET boggart-studio)
+  set(_process_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/terminal_process_studio)
+  add_test(NAME terminal_process_studio
+    COMMAND ${CMAKE_COMMAND} -E env HOME=${_process_home} USERPROFILE=${_process_home}
+      LOCALAPPDATA=${_process_home}/AppData/Local BOGGART_HOME=${_process_home}/.boggart
+      SDL_VIDEODRIVER=dummy BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/terminal_process_studio.lua
+      $<TARGET_FILE:boggart-studio> .
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  set_tests_properties(terminal_process_studio PROPERTIES TIMEOUT 30)
+endif()
 
 # termctl (B0 of the cTUI, docs/cli-plan.md): the dependency-free full-screen
 # terminal layer. Compiled standalone and smoke-tested here so it stays
@@ -1089,5 +1116,5 @@ endif()
 # Sanitizers on boggart's own code and the C tests (BOG-10); the vendored
 # interpreter and JSON lib too, so a misuse inside them is attributed.
 boggart_apply_sanitizer(boggart boggart-studio auth_threads_test assert_trap_test crash_handler_test
-                        termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt vt_parser_test page_storage_test page_resize_test page_layout_test bitmap_test idmap_test idmap_scalar_test resize_failure_test
+                        termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt boggart_pty pty_transport_test vt_parser_test page_storage_test page_resize_test page_layout_test bitmap_test idmap_test idmap_scalar_test resize_failure_test
                         terminal_dispatch_test osc_commands_test terminal_events_test terminal_links_test mouse_encode_test terminal_mouse_test key_encode_test terminal_key_test paste_encode_test terminal_input_test boggart_unicode unicode_test wide_cells_test grapheme_cells_test terminal_unicode_test)

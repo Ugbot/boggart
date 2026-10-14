@@ -164,6 +164,23 @@ static void failures(size_t columns,size_t rows,bool alternate,bool wrap,bool ca
   }
   CHECK(false);
 }
+static bool reject_host_resize(void *context) { (*(unsigned *)context)++; return false; }
+static bool accept_host_resize(void *context) {
+  (*(unsigned *)context)++; allocations=0; failed_allocation=false; fail_at=1; return true;
+}
+static void guarded_resize(void) {
+  fail_at=0; callbacks c={0}; bterm *t=make(&c,true); bterm before=*t;
+  image images[2],after; for (unsigned i=0;i<2;i++) capture(t->buffers[i].screen,&images[i]);
+  unsigned calls=0;
+  CHECK(!bterm_resize_guarded(t,12,7,reject_host_resize,&calls) && calls==1);
+  CHECK(!memcmp(&before,t,sizeof before));
+  for (unsigned i=0;i<2;i++) { capture(t->buffers[i].screen,&after); CHECK(!memcmp(&images[i],&after,sizeof after)); }
+  allocations=0; CHECK(!bterm_resize_guarded(t,6,4,reject_host_resize,&calls) && calls==2 && !allocations);
+  CHECK(!bterm_resize_guarded(t,0,4,reject_host_resize,&calls) && calls==2);
+  CHECK(bterm_resize_guarded(t,12,7,accept_host_resize,&calls) && calls==3 && !failed_allocation && !allocations);
+  CHECK(t->columns==12 && t->rows==7); fail_at=0; bterm_destroy(t);
+  puts("host resize failure preserves both screens; accepted host resize commits without allocation");
+}
 static void no_op_and_commit(void) {
   fail_at=0; callbacks c={0}; bterm *t=make(&c,true); bterm before; memcpy(&before,t,sizeof before);
   allocations=0; fail_at=1;
@@ -241,6 +258,7 @@ static void grapheme_cache_failures(void) {
   puts("15 GP initialization/map-growth/arena-growth failures preserve deep page state");
 }
 int main(void) {
+  guarded_resize();
   grapheme_cache_failures();
   no_op_and_commit();
   for (unsigned alt=0;alt<2;alt++) for (unsigned wrap=0;wrap<2;wrap++) {

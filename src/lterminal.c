@@ -1,6 +1,7 @@
 /* Lua owns the terminal lifetime; C owns parsing, grid storage and reply bytes.
  * Snapshot/row copies are made only on explicit calls, never while feeding. */
 #include "bterm.h"
+#include "bpty.h"
 #include "lua.h"
 #include "lauxlib.h"
 #include <string.h>
@@ -14,7 +15,7 @@
 #define PASTE_LIMIT (32u * 1024u * 1024u)
 typedef struct { size_t count, used; bterm_event events[EVENT_CAPACITY]; uint8_t bytes[EVENT_BYTES]; } event_queue;
 typedef struct {
-  bterm *term; size_t reply_length; uint8_t replies[REPLY_CAPACITY];
+  bterm *term; bpty *process; size_t reply_length; uint8_t replies[REPLY_CAPACITY];
   event_queue *events; size_t dropped; lua_Integer clipboard_generation; bool clipboard_read, clipboard_write;
 } terminal;
 static void dropped(terminal *t) { if (t->dropped < (size_t)LLONG_MAX) t->dropped++; }
@@ -53,6 +54,7 @@ static terminal *check(lua_State *L) {
 }
 static bool reply(void *ctx, const uint8_t *bytes, size_t n) {
   terminal *t = ctx;
+  if (t->process) return bpty_write(t->process,bytes,n)==0;
   if (n > REPLY_CAPACITY - t->reply_length) return false;
   memcpy(t->replies + t->reply_length, bytes, n); t->reply_length += n; return true;
 }
@@ -187,20 +189,88 @@ static void pending(lua_State *L, const lvt_parser *p) {
   for (size_t i = 0; i < p->osc_length; i++) { lua_pushinteger(L, p->osc[i]); lua_rawseti(L, -2, i + 1); }
   lua_setfield(L, -2, "osc");
 }
+static terminal *create_terminal(lua_State *L,size_t cols,size_t rows,size_t history) {
+  terminal *t=lua_newuserdatauv(L,sizeof *t,0); memset(t,0,sizeof *t);
+  luaL_setmetatable(L,TERMINAL_MT);
+  t->term=bterm_create(cols,rows,history,reply,t);
+  if (!t->term) luaL_error(L,"cannot allocate terminal");
+  bterm_set_event_sink(t->term,capture_event,t); return t;
+}
 static int l_new(lua_State *L) {
   lua_Integer cols = luaL_optinteger(L, 1, 80), rows = luaL_optinteger(L, 2, 24), history = luaL_optinteger(L, 3, 2000);
   luaL_argcheck(L, cols > 0 && cols <= 4096, 1, "columns must be in 1..4096");
   luaL_argcheck(L, rows > 0 && rows <= 4096, 2, "rows must be in 1..4096");
   luaL_argcheck(L, history >= 0 && history <= 1000000, 3, "history must be in 0..1000000");
-  terminal *t = lua_newuserdatauv(L, sizeof *t, 0); memset(t, 0, sizeof *t);
-  luaL_setmetatable(L, TERMINAL_MT);
-  t->term = bterm_create((size_t)cols, (size_t)rows, (size_t)history, reply, t);
-  if (!t->term) return luaL_error(L, "cannot allocate terminal");
-  bterm_set_event_sink(t->term, capture_event, t);
+  create_terminal(L,(size_t)cols,(size_t)rows,(size_t)history);
   return 1;
+}
+extern uv_loop_t *luv_loop(lua_State *L);
+extern int luaopen_luv(lua_State *L);
+static char process_loop_started,process_loop_shutdown;
+void boggart_terminal_shutdown(lua_State *L) {
+  lua_rawgetp(L,LUA_REGISTRYINDEX,&process_loop_started); bool started=lua_toboolean(L,-1); lua_pop(L,1);
+  if (!started) return; /* Preserve lazy loop creation for parser-only users. */
+  lua_pushboolean(L,true); lua_rawsetp(L,LUA_REGISTRYINDEX,&process_loop_shutdown);
+  bpty_shutdown(luv_loop(L));
+}
+static const char *spawn_string(lua_State *L,int index) {
+  size_t length; luaL_checktype(L,index,LUA_TSTRING); const char *s=lua_tolstring(L,index,&length);
+  if (memchr(s,0,length)) luaL_error(L,"terminal spawn strings must not contain NUL");
+  return s;
+}
+static lua_Integer spawn_integer(lua_State *L,const char *field,lua_Integer fallback,lua_Integer low,lua_Integer high) {
+  lua_getfield(L,1,field); lua_Integer n=luaL_optinteger(L,-1,fallback); lua_pop(L,1);
+  if (n<low || n>high) luaL_error(L,"terminal %s out of range",field); return n;
+}
+static int l_open(lua_State *L) {
+  luaL_checktype(L,1,LUA_TTABLE);
+  lua_rawgetp(L,LUA_REGISTRYINDEX,&process_loop_shutdown); bool shutting_down=lua_toboolean(L,-1); lua_pop(L,1);
+  if (shutting_down) return luaL_error(L,"terminal process loop is shutting down");
+  luaL_requiref(L,"uv",luaopen_luv,0); lua_pop(L,1); uv_loop_t *loop=luv_loop(L);
+  lua_pushboolean(L,true); lua_rawsetp(L,LUA_REGISTRYINDEX,&process_loop_started);
+  size_t cols=(size_t)spawn_integer(L,"cols",80,1,4096),rows=(size_t)spawn_integer(L,"rows",24,1,4096);
+  size_t history=(size_t)spawn_integer(L,"history",2000,0,1000000);
+  /* Keep every command/cwd/argument string rooted on the stack throughout
+   * validation and userdata allocation, including values from metamethods. */
+  lua_getfield(L,1,"cmd");
+  if (lua_isnil(L,-1)) { lua_pop(L,1); const char *shell=getenv("SHELL"); lua_pushstring(L,shell && *shell ? shell : "/bin/sh"); }
+  const char *command=spawn_string(L,-1); if (!*command) return luaL_error(L,"terminal command must not be empty");
+  lua_getfield(L,1,"cwd"); const char *cwd=lua_isnil(L,-1) ? NULL : spawn_string(L,-1);
+  lua_getfield(L,1,"args"); int args_index=lua_gettop(L); size_t count=0;
+  if (!lua_isnil(L,args_index)) { luaL_checktype(L,args_index,LUA_TTABLE); count=lua_rawlen(L,args_index); }
+  if (count>1024 || !lua_checkstack(L,(int)count+8)) return luaL_error(L,"terminal argv too large");
+  char *argv[1026]; argv[0]=(char *)command;
+  for (size_t i=0;i<count;i++) { lua_rawgeti(L,args_index,(lua_Integer)i+1); argv[i+1]=(char *)spawn_string(L,-1); }
+  argv[count+1]=NULL;
+  terminal *t=create_terminal(L,cols,rows,history); int error;
+  t->process=bpty_open(loop,t->term,(bpty_options){command,cwd,argv},&error);
+  if (!t->process) { bterm_destroy(t->term); t->term=NULL; lua_pushnil(L); lua_pushstring(L,uv_strerror(error)); return 2; }
+  return 1;
+}
+static int l_write(lua_State *L) {
+  luaL_checktype(L,2,LUA_TSTRING); size_t length; const uint8_t *bytes=(const uint8_t *)lua_tolstring(L,2,&length);
+  terminal *t=check(L); if (!t->process) return luaL_error(L,"terminal has no process");
+  int error=bpty_write(t->process,bytes,length);
+  if (error) { lua_pushnil(L); lua_pushstring(L,uv_strerror(error)); return 2; }
+  lua_pushinteger(L,(lua_Integer)length); return 1;
+}
+static int l_process_state(lua_State *L) {
+  terminal *t=check(L); if (!t->process) { lua_pushnil(L); return 1; }
+  bpty_status s=bpty_state(t->process); /* No native borrow across Lua allocation. */
+  lua_createtable(L,0,11); integer(L,"pid",s.pid); boolean(L,"exited",s.exited); boolean(L,"eof",s.eof);
+  integer(L,"exit_status",s.exit_status); integer(L,"term_signal",s.term_signal); integer(L,"error_code",s.error);
+  if (s.error) { lua_pushstring(L,uv_strerror(s.error)); lua_setfield(L,-2,"error"); }
+  integer(L,"revision",(lua_Integer)s.revision); integer(L,"bytes_read",(lua_Integer)s.bytes_read);
+  integer(L,"read_callbacks",(lua_Integer)s.read_callbacks); integer(L,"queued_bytes",(lua_Integer)s.queued_bytes); return 1;
+}
+static int l_foreground_group(lua_State *L) {
+  terminal *t=check(L); int64_t group; int error=bpty_foreground_group(t->process,&group);
+  if (error) { lua_pushnil(L); lua_pushstring(L,uv_strerror(error)); return 2; }
+  lua_pushinteger(L,group); return 1;
 }
 static int l_close(lua_State *L) {
   terminal *t = luaL_checkudata(L, 1, TERMINAL_MT);
+  bpty_destroy(t->process); t->process=NULL;
   bterm_destroy(t->term); t->term = NULL; t->reply_length = 0; free(t->events); t->events = NULL; t->dropped = 0; return 0;
 }
 static int l_feed(lua_State *L) {
@@ -214,7 +284,13 @@ static int l_resize(lua_State *L) {
   lua_Integer columns=luaL_checkinteger(L,2),rows=luaL_checkinteger(L,3);
   luaL_argcheck(L,columns>0 && columns<=4096,2,"columns must be in 1..4096");
   luaL_argcheck(L,rows>0 && rows<=4096,3,"rows must be in 1..4096");
-  if (!bterm_resize(check(L)->term,(size_t)columns,(size_t)rows))
+  terminal *t=check(L);
+  if (t->process && !bpty_state(t->process).eof) {
+    int error=bpty_resize(t->process,(unsigned)columns,(unsigned)rows);
+    if (error) return luaL_error(L,"terminal/PTY resize failed: %s",uv_strerror(error));
+    return 0;
+  }
+  if (!bterm_resize(t->term,(size_t)columns,(size_t)rows))
     return luaL_error(L,"terminal resize allocation failure; geometry preserved");
   return 0;
 }
@@ -289,13 +365,37 @@ static int l_clipboard_reply(lua_State *L) {
   const char *text = lua_tolstring(L,4,&n);
   lua_pushboolean(L,bterm_clipboard_reply(t->term,selection[0],lua_toboolean(L,3),(const uint8_t *)text,n)); return 1;
 }
+static bosc_slice rebase_slice(const event_queue *source,event_queue *copy,bosc_slice s) {
+  return (bosc_slice){copy->bytes+(s.data-source->bytes),s.length};
+}
 static int l_events(lua_State *L) {
-  terminal *t = check(L); event_queue *q = t->events; size_t output = 0;
+  terminal *t=check(L); size_t output=0;
+  if ((!t->events || !t->events->count) && !t->dropped) { lua_newtable(L); lua_pushinteger(L,0); return 2; }
+  /* Root an immutable copy before building any tables/strings. Finalizers can
+   * close/feed the terminal or run uv, so no queue/terminal pointer may be
+   * borrowed across a subsequent Lua allocation. */
+  event_queue *q=lua_newuserdatauv(L,sizeof *q,0); t=check(L);
+  const event_queue *source=t->events;
+  if (source) memcpy(q,source,sizeof *q); else memset(q,0,sizeof *q);
+  bool clipboard_read=t->clipboard_read,clipboard_write=t->clipboard_write;
+  lua_Integer generation=t->clipboard_generation; size_t dropped_count=t->dropped;
+  for (size_t i=0;i<q->count;i++) {
+    bosc_command *c=&q->events[i].command;
+    switch (c->type) {
+      case BOSC_TITLE: case BOSC_CWD: c->value.text=rebase_slice(source,q,c->value.text); break;
+      case BOSC_HYPERLINK: c->value.link.id=rebase_slice(source,q,c->value.link.id); c->value.link.uri=rebase_slice(source,q,c->value.link.uri); break;
+      case BOSC_NOTIFY: c->value.notify.id=rebase_slice(source,q,c->value.notify.id); c->value.notify.title=rebase_slice(source,q,c->value.notify.title); c->value.notify.body=rebase_slice(source,q,c->value.notify.body); break;
+      case BOSC_SHELL: c->value.shell.options=rebase_slice(source,q,c->value.shell.options); break;
+      case BOSC_CLIPBOARD: c->value.clipboard.text=rebase_slice(source,q,c->value.clipboard.text); break;
+      default: break;
+    }
+  }
+  if (t->events) t->events->count=t->events->used=0; t->dropped=0;
   static const char *names[] = {"none","title","cwd","hyperlink","notification","shell","clipboard","bell"};
   lua_createtable(L,q ? (int)q->count : 0,0);
   if (q) for (size_t i=0;i<q->count;i++) {
     bterm_event *e=&q->events[i]; bosc_command *c=&e->command;
-    if (c->type == BOSC_NONE || (c->type == BOSC_CLIPBOARD && !(c->value.clipboard.query ? t->clipboard_read : t->clipboard_write))) continue;
+    if (c->type == BOSC_NONE || (c->type == BOSC_CLIPBOARD && !(c->value.clipboard.query ? clipboard_read : clipboard_write))) continue;
     lua_createtable(L,0,10); lua_pushstring(L,names[c->type]); lua_setfield(L,-2,"type");
     integer(L,"code",c->code); integer(L,"row",e->y+1); integer(L,"col",e->x+1); boolean(L,"alternate",e->alternate);
     switch (c->type) {
@@ -310,14 +410,13 @@ static int l_events(lua_State *L) {
         if (c->value.shell.has_status) integer(L,"status",c->value.shell.status); break;
       case BOSC_CLIPBOARD:
         string(L,"selection",(bosc_slice){(const uint8_t *)&c->value.clipboard.selection,1});
-        integer(L,"clipboard_generation",t->clipboard_generation);
+        integer(L,"clipboard_generation",generation);
         boolean(L,"query",c->value.clipboard.query); boolean(L,"bel",c->value.clipboard.bel); string(L,"text",c->value.clipboard.text); break;
       default: break;
     }
     lua_rawseti(L,-2,++output);
   }
-  if (q) q->count = q->used = 0;
-  lua_pushinteger(L,(lua_Integer)t->dropped); t->dropped=0; return 2;
+  lua_pushinteger(L,(lua_Integer)dropped_count); return 2;
 }
 static void event_field(lua_State *L, const char *key) { lua_pushstring(L,key); lua_rawget(L,2); }
 static lua_Integer event_integer(lua_State *L, const char *key, lua_Integer fallback, lua_Integer low, lua_Integer high) {
@@ -431,9 +530,11 @@ int luaopen_boggart_terminal(lua_State *L) {
     {"row", l_row}, {"snapshot", l_snapshot}, {"damage", l_damage}, {"ack_damage", l_ack},
     {"replies", l_replies}, {"key", l_key}, {"mouse", l_mouse}, {"input_state", l_input_state}, {"events", l_events}, {"clipboard_policy", l_clipboard_policy},
     {"paste", l_paste}, {"paste_safe", l_paste_safe}, {"focus", l_focus},
+    {"write",l_write}, {"process_state",l_process_state}, {"foreground_group",l_foreground_group},
     {"clipboard_reply", l_clipboard_reply}, {"usage", l_usage}, {"close", l_close}, {"__gc", l_close}, {"__close", l_close}, {NULL, NULL} };
   luaL_newmetatable(L, TERMINAL_MT); luaL_setfuncs(L, methods, 0); lua_pushvalue(L, -1); lua_setfield(L, -2, "__index"); lua_pop(L, 1);
   lua_newtable(L); lua_pushcfunction(L, l_new); lua_setfield(L, -2, "new");
+  lua_pushcfunction(L,l_open); lua_setfield(L,-2,"open");
   lua_pushcfunction(L, l_source); lua_setfield(L, -2, "source");
   integer(L, "COLOR_INDEXED", LP_COLOR_INDEXED); integer(L, "COLOR_RGB", LP_COLOR_RGB);
   integer(L, "GRAPHEME", BT_GRAPHEME); integer(L, "AUTOWRAP", BT_AUTOWRAP); integer(L, "ORIGIN", BT_ORIGIN); integer(L, "CURSOR_VISIBLE", BT_CURSOR_VISIBLE);
