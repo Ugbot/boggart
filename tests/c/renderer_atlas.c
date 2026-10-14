@@ -17,6 +17,7 @@ static bool checked_update(SDL_Texture *texture,const SDL_Rect *rect,const void 
 #define SDL_UpdateTexture checked_update
 #define calloc checked_calloc
 #include "../../studio/src/renderer.c"
+#include "../../studio/src/fontglyph.c"
 #include "../../studio/src/fontatlas.c"
 #undef calloc
 #undef SDL_UpdateTexture
