@@ -1,0 +1,126 @@
+-- BMUX: live native terminal tabs/splits, with discoverable mouse controls.
+local core = require "core"
+local command = require "core.command"
+local keymap = require "core.keymap"
+local TerminalView = require "core.terminalview"
+local Toolbar = require "shell.bmuxtoolbar"
+
+local M = { preserve_layout = true }
+
+local function target_node()
+  local root = core.root_view.root_node
+  local node = core.root_view:get_active_node()
+  if node and not node.locked then return node end
+  return (M.focused and root:get_node_for_view(M.focused)) or core.root_view:get_primary_node()
+end
+
+-- Structural edits operate on the full tree. Closing/splitting a zoomed leaf
+-- must not discard its saved neighbours or strand new panes inside zoom state.
+local function full_layout_node()
+  local node = target_node()
+  node:set_active_view(node.active_view)
+  local root = core.root_view.root_node
+  local content = node:get_content_root(root)
+  if content.zoomed then
+    content:toggle_zoom()
+    node = root:get_node_for_view(core.active_view)
+    node:set_active_view(core.active_view)
+  end
+  return node
+end
+
+function M.remember_focus()
+  if core.active_view and core.active_view:is(TerminalView) then M.focused = core.active_view end
+end
+
+local function shell_cwd()
+  local cwd = M.focused and M.focused.cwd
+  if cwd then
+    local path = cwd:match("^file://[^/]*(/.*)$") or cwd
+    path = path:gsub("%%(%x%x)", function(hex) return string.char(tonumber(hex, 16)) end)
+    if not path:find("\0", 1, true) then
+      local info = system.get_file_info(path)
+      if info and info.type == "dir" then return path end
+    end
+  end
+  return (M.focused and M.focused.bmux_cwd) or core.project_dir
+end
+
+function M.open(dir)
+  local shell = require "shell"
+  if shell.current ~= "bmux" then
+    shell.switch("bmux")
+    -- First entry creates the initial shell; a menu open should not spawn two.
+    if not dir then return end
+  end
+  local node = full_layout_node()
+  local cwd = shell_cwd()
+  local view = TerminalView { cwd = cwd }
+  M.serial = (M.serial or 0) + 1
+  view.title = "Terminal " .. M.serial
+  view.bmux_cwd = cwd
+  if dir then node:split(dir, view) else node:add_view(view) end
+  M.focused = view
+  core.root_view.root_node:update_layout()
+  core.redraw = true
+end
+
+function M.enter()
+  require("shell").set_docks("bmux")
+  if not M.toolbar then
+    M.toolbar = Toolbar(M)
+    core.root_view:get_primary_node():split("up", M.toolbar, true)
+  end
+  M.toolbar.visible = true
+  local root = core.root_view.root_node
+  if not (core.active_view and core.active_view:is(TerminalView) and root:get_node_for_view(core.active_view)) then
+    local node = M.focused and root:get_node_for_view(M.focused)
+    if node then node:set_active_view(M.focused)
+    else
+      for _, leaf in ipairs(root:get_leaves()) do
+        for _, view in ipairs(leaf.views) do
+          if view:is(TerminalView) then leaf:set_active_view(view); M.focused = view; return end
+        end
+      end
+      M.open()
+    end
+  end
+  M.remember_focus()
+end
+
+function M.leave()
+  if M.toolbar then M.toolbar.visible = false end
+  require("shell").set_docks(nil)
+end
+
+local function in_bmux() return require("shell").current == "bmux" end
+command.add(in_bmux, {
+  ["bmux:new-terminal"] = function() M.open() end,
+  ["bmux:split-right"] = function() M.open("right") end,
+  ["bmux:split-down"] = function() M.open("down") end,
+  ["bmux:close-terminal"] = function()
+    local node = full_layout_node()
+    node:close_active_view(core.root_view.root_node)
+    M.focused = core.active_view
+  end,
+  ["bmux:zoom"] = function()
+    local node = target_node(); node:set_active_view(node.active_view)
+    node:get_content_root(core.root_view.root_node):toggle_zoom()
+    core.redraw = true
+  end,
+  ["bmux:next-pane"] = function()
+    local node = target_node(); node:set_active_view(node.active_view)
+    command.perform("root:next-pane"); M.remember_focus()
+  end,
+})
+keymap.add {
+  ["cmd+t"] = "bmux:new-terminal",
+  ["cmd+d"] = "bmux:split-right",
+  ["cmd+shift+d"] = "bmux:split-down",
+  ["cmd+w"] = "bmux:close-terminal",
+  ["ctrl+alt+t"] = "bmux:new-terminal",
+  ["ctrl+alt+d"] = "bmux:split-right",
+  ["ctrl+alt+shift+d"] = "bmux:split-down",
+}
+
+return M
