@@ -189,8 +189,29 @@ whole emoji truncation in the actual picker/sandbox draw paths and deferred font
 closure. Final encoder round-trip checks pass separately in both builds. C11
 warning/diff checks and the existing 44-module/34-file attribution gate pass.
 
-AgentView still needs normalization across styled token boundaries so a cluster
-split by markup is measured/painted once with its head's style. CLI/TUI consumers
-also need an explicit external-terminal policy before switching their helpers.
-This increment migrates whole-string Studio consumers; criterion 1500 and the
-overall BMUX goal remain open.
+## Styled AgentView grid consumers
+
+AgentView now normalizes styled token boundaries before wrapping. The token at
+each native cluster's source head owns its color, bold and link metadata.
+`sys.cell_partition(text, ends)` accepts cumulative byte offsets and returns
+owner/text spans, keeping original source bytes for selection, including ignored,
+malformed and over-cap suffixes. Its workspace and source stay rooted through Lua
+result allocations. `sys.cell_first(text)` consumes one whole effective cluster
+when a glyph exceeds a narrow wrapping budget.
+
+Transcript, choices and composer use paired cell metrics/grid painting. Mouse
+selection snaps to whole cluster boundaries. Composer keyboard motions still
+use their existing scalar editing behavior; grapheme editing is separate work.
+
+Direct binding checks cover every byte boundary inside accent/emoji/flag/selector
+clusters and invalid token offsets. Styled layout checks cover head ownership,
+one-cell wrapping and selection. SDL tests compare styled grid pixels with native
+retained cells and verify the real transcript paints visible pixels. Nine focused
+checks pass in both builds; the Studio suite passes separately in normal and
+ASan/UBSan builds after concurrent runs collided on its existing timestamp-named
+temporary file. Controlled SDL window, C11 warnings and attribution checks pass.
+Color emoji remains unsupported in the current font pipeline.
+
+CLI/TUI consumers still need an explicit external-terminal policy before switching
+their helpers. Criterion 1500, full performance gates and the overall BMUX goal
+remain open.
