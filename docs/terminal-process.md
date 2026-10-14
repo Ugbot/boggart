@@ -104,6 +104,10 @@ rows. It caches C rows and queues independent retained commands. `stats()`
 reports captures/submissions/cached rows; `renderer.terminal_sources()` reports
 compiled renderer source hashes for benchmark freshness checks. See
 [native row evidence](benchmarks/2026-10-14-native-row-renderer.md).
+Dirty replay skips rows whose complete ink bounds miss the effective dirty clip.
+`renderer.terminal_replay_stats()` reports queued/replayed/skipped rows and dirty
+rectangle count for the last completed frame; see
+[replay evidence](benchmarks/2026-10-14-row-replay.md).
 
 Registered Studio tests cover SDL event injection, native pane/scrollback and
 alternate-screen state, a real shell's final output, normal teardown with a

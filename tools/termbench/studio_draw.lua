@@ -56,7 +56,8 @@ for _,name in ipairs{'plain','styled','unicode','mixed'} do
     for i=1,21 do change(i); local c=os.clock(); local w=system.get_time(); frame(); wall[i]=(system.get_time()-w)*1e9; cpu[i]=(os.clock()-c)*1e9 end
     local after=view.render_context and view.render_context:stats()
     report.samples[#report.samples+1]={corpus=name,mode=mode,wall_ns=wall,cpu_ns=cpu,rect_calls=calls.rect,text_calls=calls.text,
-      captures=after and after.captures-before.captures or nil,submissions=after and after.submissions-before.submissions or nil}
+      captures=after and after.captures-before.captures or nil,submissions=after and after.submissions-before.submissions or nil,
+      last_frame_replay=renderer.terminal_replay_stats and renderer.terminal_replay_stats() or nil}
   end
 end
 renderer.draw_rect,renderer.draw_text=draw_rect,draw_text
