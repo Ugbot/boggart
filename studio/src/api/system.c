@@ -20,6 +20,47 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include "api.h"
+#include "uvbridge.h"
+#include "terminalkeys.h"
+#include "assets.h"
+extern uv_loop_t *luv_loop(lua_State *L);
+extern int luaopen_luv(lua_State *L);
+static uvbridge *loop_bridge;
+static uv_loop_t *studio_loop;
+static bool loop_shutdown,loop_dispatching;
+void boggart_studio_loop_shutdown(void) {
+  loop_shutdown=true; uvbridge_destroy(loop_bridge); loop_bridge=NULL; studio_loop=NULL;
+}
+static int f_pump_uv(lua_State *L) {
+  if (loop_shutdown || loop_dispatching) return 0;
+  if (!studio_loop) {
+    luaL_requiref(L,"uv",luaopen_luv,0); lua_pop(L,1); studio_loop=luv_loop(L);
+    if (uv_backend_fd(studio_loop)>=0) {
+      loop_bridge=uvbridge_create(studio_loop);
+      if (!loop_bridge) return luaL_error(L,"cannot create event-loop waiter: %s",SDL_GetError());
+    }
+  }
+  loop_dispatching=true; uv_run(studio_loop,UV_RUN_NOWAIT); loop_dispatching=false;
+  uvbridge_arm(loop_bridge); return 0;
+}
+static int f_loop_stats(lua_State *L) {
+  uvbridge_stats stats=uvbridge_get_stats(loop_bridge); lua_createtable(L,0,6);
+  lua_pushboolean(L,loop_bridge!=NULL); lua_setfield(L,-2,"enabled");
+  lua_pushinteger(L,(lua_Integer)stats.polls); lua_setfield(L,-2,"polls");
+  lua_pushinteger(L,(lua_Integer)stats.wakes); lua_setfield(L,-2,"wakes");
+  lua_pushinteger(L,(lua_Integer)stats.rearms); lua_setfield(L,-2,"rearms");
+  lua_pushinteger(L,(lua_Integer)stats.push_failures); lua_setfield(L,-2,"push_failures"); return 1;
+}
+static void push_keyboard(lua_State *L,const SDL_KeyboardEvent *event) {
+  bkey_event key=terminal_keyboard_event(event); lua_createtable(L,0,8);
+  lua_pushstring(L,bkey_name(key.key)); lua_setfield(L,-2,"key");
+  lua_pushstring(L,key.action==BK_RELEASE ? "release" : (key.action==BK_REPEAT ? "repeat" : "press")); lua_setfield(L,-2,"action");
+  lua_pushinteger(L,key.modifiers); lua_setfield(L,-2,"modifiers");
+  lua_pushinteger(L,key.right_modifiers); lua_setfield(L,-2,"right_modifiers");
+  lua_pushinteger(L,key.unshifted); lua_setfield(L,-2,"unshifted");
+  lua_pushinteger(L,key.base_layout); lua_setfield(L,-2,"base_layout");
+  lua_pushinteger(L,event->scancode); lua_setfield(L,-2,"scancode");
+}
 #include "dirmonitor.h"
 #include "rencache.h"
 #ifdef _WIN32
@@ -66,6 +107,8 @@ static const char* button_name(int button) {
     case 1  : return "left";
     case 2  : return "middle";
     case 3  : return "right";
+    case 4  : return "x1";
+    case 5  : return "x2";
     default : return "?";
   }
 }
@@ -92,6 +135,7 @@ top:
   if ( !SDL_PollEvent(&e) ) {
     return 0;
   }
+  if (loop_bridge && e.type==uvbridge_event_type(loop_bridge)) { lua_pushliteral(L,"uv"); return 1; }
 
   switch (e.type) {
     case SDL_EVENT_QUIT:
@@ -117,11 +161,12 @@ top:
 
     case SDL_EVENT_WINDOW_FOCUS_GAINED:
       g_input_scale = 0.0;
-      /* on some systems, when alt-tabbing to the window SDL will queue up
-      ** several KEYDOWN events for the `tab` key; we flush all keydown
-      ** events on focus so these are discarded */
-      SDL_FlushEvent(SDL_EVENT_KEY_DOWN);
-      goto top;
+      /* Keep keys queued after focus gain. Blanket flushing loses the first
+       * typed character; the input controller tracks focus/modifier lifetime. */
+      lua_pushliteral(L,"focus"); lua_pushboolean(L,true); return 2;
+
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
+      lua_pushliteral(L,"focus"); lua_pushboolean(L,false); return 2;
 
     case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
     case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
@@ -140,12 +185,15 @@ top:
     case SDL_EVENT_KEY_DOWN:
       lua_pushstring(L, "keypressed");
       lua_pushstring(L, key_name(buf, sizeof(buf), e.key.key));
-      return 2;
+      push_keyboard(L,&e.key); return 3;
 
     case SDL_EVENT_KEY_UP:
       lua_pushstring(L, "keyreleased");
       lua_pushstring(L, key_name(buf, sizeof(buf), e.key.key));
-      return 2;
+      push_keyboard(L,&e.key); return 3;
+
+    case SDL_EVENT_TEXT_EDITING:
+      lua_pushliteral(L,"textediting"); lua_pushstring(L,e.edit.text ? e.edit.text : ""); return 2;
 
     case SDL_EVENT_TEXT_INPUT:
       lua_pushstring(L, "textinput");
@@ -179,8 +227,9 @@ top:
 
     case SDL_EVENT_MOUSE_WHEEL:
       lua_pushstring(L, "mousewheel");
-      lua_pushnumber(L, e.wheel.y);
-      return 2;
+      lua_pushnumber(L,e.wheel.direction==SDL_MOUSEWHEEL_FLIPPED ? -e.wheel.y : e.wheel.y);
+      lua_pushnumber(L,px(e.wheel.mouse_x)); lua_pushnumber(L,px(e.wheel.mouse_y));
+      lua_pushnumber(L,e.wheel.direction==SDL_MOUSEWHEEL_FLIPPED ? -e.wheel.x : e.wheel.x); return 5;
 
     default:
       goto top;
@@ -192,6 +241,10 @@ top:
 
 static int f_wait_event(lua_State *L) {
   double n = luaL_checknumber(L, 1);
+  uvbridge_arm(loop_bridge);
+  /* IOCP has no pollable backend descriptor. This central fallback is replaced
+   * by the Windows integration; Unix quiet loops sleep until an SDL/uv event. */
+  if (studio_loop && !loop_bridge && uv_loop_alive(studio_loop) && n>0.008) n=0.008;
   lua_pushboolean(L, SDL_WaitEventTimeout(NULL, n * 1000));
   return 1;
 }
@@ -357,6 +410,9 @@ static int f_chdir(lua_State *L) {
 
 
 static int f_list_dir(lua_State *L) {
+  const char *asset_path=luaL_checkstring(L,1); size_t marker=strlen(STUDIO_ASSET_PREFIX);
+  if (!strncmp(asset_path,STUDIO_ASSET_PREFIX,marker) && (asset_path[marker]=='/' || !asset_path[marker]))
+    return studio_assets_list_dir(L,asset_path);
   const char *path = luaL_checkstring(L, 1);
 
   uv_fs_t req;
@@ -593,6 +649,8 @@ static int f_fuzzy_match(lua_State *L) {
 
 
 static const luaL_Reg lib[] = {
+  { "pump_uv",             f_pump_uv             },
+  { "loop_stats",          f_loop_stats          },
   { "save_screenshot",     f_save_screenshot     },
   { "poll_event",          f_poll_event          },
   { "wait_event",          f_wait_event          },
@@ -619,6 +677,7 @@ static const luaL_Reg lib[] = {
 
 int luaopen_system(lua_State *L) {
   luaL_newlib(L, lib);
+  if (getenv("BOGGART_STUDIO_SCRIPT")) { extern void system_test_open(lua_State *L); system_test_open(L); }
   /* The watcher arrives with the rest of the platform surface rather than as a
    * separate module: the project scanner is the only caller, and it already
    * reaches for system.list_dir and system.get_file_info beside it. */

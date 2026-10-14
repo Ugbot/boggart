@@ -1,576 +1,213 @@
--- terminalview.lua -- phase 3 of docs/studio-panels.md: a PTY-backed
--- terminal pane. This file owns the cell grid and a small ANSI/VT parser;
--- pty.c (studio/src/api/pty.c) owns the child process and the byte pipe.
--- An ordinary View: it lives in any pane, tabs, splits and closes like the
--- rest (core/rootview.lua, core/view.lua).
---
--- v1: no alt-screen (so vim/htop/tmux render wrong or not at all -- out of
--- v1 on purpose), no 256-colour/truecolor (approximated to the 16 SGR
--- colours), no mouse reporting, no reflow on resize (scrollback keeps its
--- old width). See docs/studio-panels.md section 3 for the rest of the split.
-local core = require "core"
-local common = require "core.common"
-local style = require "core.style"
-local View = require "core.view"
-
-local TerminalView = View:extend()
-
--- Scrollback beyond the visible screen, in rows. The screen itself is
--- always exactly the last `self.rows` entries of self.lines -- see top().
-local SCROLLBACK = 2000
-
--- The 16 SGR colours (8 base + 8 bright) -- v1's "map to the theme's 16"
--- (docs/studio-panels.md). Picked to sit with style.lua's own palette
--- (style.error/good/warn/keyword) rather than a raw xterm cube, so a
--- coloured `ls` or a shell prompt looks native instead of borrowed.
-local PALETTE = {
-  [0] = { common.color "#3f3f46" }, [8]  = { common.color "#6b6b72" },
-  [1] = { common.color "#F77483" }, [9]  = { common.color "#ff8f9c" },
-  [2] = { common.color "#7FB77E" }, [10] = { common.color "#96d194" },
-  [3] = { common.color "#FFA94D" }, [11] = { common.color "#ffc06b" },
-  [4] = { common.color "#93DDFA" }, [12] = { common.color "#b0e6ff" },
-  [5] = { common.color "#E58AC9" }, [13] = { common.color "#f0a8de" },
-  [6] = { common.color "#f7c95c" }, [14] = { common.color "#ffe08a" },
-  [7] = { common.color "#e1e1e6" }, [15] = { common.color "#ffffff" },
+-- Native terminal pane: C owns PTY bytes, parsing, grids and scrollback.
+-- Lua owns layout, input policy and presentation of visible/damaged rows.
+local core=require 'core'
+local common=require 'core.common'
+local style=require 'core.style'
+local keymap=require 'core.keymap'
+local View=require 'core.view'
+local terminal=require 'terminal'
+local Input=require 'core.terminalinput'
+local TerminalView=View:extend()
+local PALETTE={
+  [0]={common.color '#3f3f46'},[8]={common.color '#6b6b72'},
+  [1]={common.color '#F77483'},[9]={common.color '#ff8f9c'},
+  [2]={common.color '#7FB77E'},[10]={common.color '#96d194'},
+  [3]={common.color '#FFA94D'},[11]={common.color '#ffc06b'},
+  [4]={common.color '#93DDFA'},[12]={common.color '#b0e6ff'},
+  [5]={common.color '#E58AC9'},[13]={common.color '#f0a8de'},
+  [6]={common.color '#f7c95c'},[14]={common.color '#ffe08a'},
+  [7]={common.color '#e1e1e6'},[15]={common.color '#ffffff'},
 }
-
--- Non-text keys that turn into a fixed escape sequence. Plain characters do
--- NOT go through here -- they arrive as on_text_input, the same path
--- DocView and AgentView use, which is what keeps IME/unicode composition
--- working for free (see on_key_pressed below for why this table must not
--- grow to cover printable keys).
-local KEY_SEQ = {
-  up = "\27[A", down = "\27[B", right = "\27[C", left = "\27[D",
-  home = "\27[H", ["end"] = "\27[F",
-  pageup = "\27[5~", pagedown = "\27[6~",
-  insert = "\27[2~", delete = "\27[3~",
-  ["return"] = "\r", ["keypad enter"] = "\r",
-  tab = "\t", backspace = "\127", escape = "\27",
-}
-
-
-local function blank_row() return {} end
-
-
+local cube={0,95,135,175,215,255}
+local function color(value,bold)
+  if not value or value==0 then return nil end
+  if (value&terminal.COLOR_RGB)~=0 then return {(value>>16)&255,(value>>8)&255,value&255,255} end
+  local index=value&255
+  if index<16 then return PALETTE[bold and index<8 and index+8 or index] end
+  if index>=232 then local level=8+(index-232)*10; return {level,level,level,255} end
+  local n=index-16; return {cube[math.floor(n/36)+1],cube[math.floor(n/6)%6+1],cube[n%6+1],255}
+end
 function TerminalView:new(opts)
-  TerminalView.super.new(self)
-  opts = opts or {}
-  self.scrollable = true
-  -- Take raw keys before global commands (keymap.on_key_pressed), so Ctrl-W and
-  -- friends reach the shell. on_key_pressed still returns false for the reserved
-  -- Ctrl-Alt-* pane chords, which then fall through to their commands.
-  self.raw_keys = true
-
-  self.font = style.code_font
-  self.cw = self.font:get_width("M")
-  self.lh = self.font:get_height()
-
-  self.cols, self.rows = 80, 24
-  self.lines = {}
-  for i = 1, self.rows do self.lines[i] = blank_row() end
-  self.cursor = { row = 1, col = 1 }
-  self.saved_cursor = nil
-  self.cursor_visible = true
-
-  -- Current SGR pen. nil fg/bg means "the terminal's default", not palette
-  -- index 0 -- that is what lets style.text/style.background keep showing
-  -- through for text nothing ever coloured.
-  self.fg, self.bg, self.bold, self.reverse, self.underline = nil, nil, false, false, false
-
-  -- Parser state, carried across feed() calls so a sequence split across two
-  -- pty:read()s (or two frames) still parses correctly.
-  self.parse_state = "ground"
-  self.csi_buf = ""
-  self.utf8_buf, self.utf8_need = "", 0
-
-  self.last_size = { x = 0, y = 0 }
-  self.dead = false
-
-  local cmd = opts.cmd or os.getenv("SHELL") or "/bin/sh"
-  self.title = opts.title or cmd:match("([^/]+)$") or "terminal"
-
-  if pty.open then
-    local h, err = pty.open {
-      cmd = cmd, args = opts.args, cwd = opts.cwd,
-      cols = self.cols, rows = self.rows,
-    }
-    if h then
-      self.pty = h
-    else
-      self.dead = true
-      self.spawn_error = err or "spawn failed"
-    end
-  else
-    self.dead = true
-    self.spawn_error = "no pty support on this platform"
+  TerminalView.super.new(self); opts=opts or {}; self.raw_keys=true; self.scrollable=true
+  self.font=style.code_font; self.cw=self.font:get_width('M'); self.lh=self.font:get_height()
+  self.cols,self.rows,self.history_rows=opts.cols or 80,opts.rows or 24,0
+  self.last_size={x=0,y=0}; self.screen_rows={}; self.history_cache={}; self.revision=-1
+  self.mouse_buttons={}; self.custom_title=opts.title
+  local cmd=opts.cmd or os.getenv('SHELL') or '/bin/sh'; self.title=opts.title or cmd:match('([^/]+)$') or 'terminal'
+  self.owns_terminal=opts.terminal==nil; self.terminal=opts.terminal
+  if not self.terminal then
+    local t,err=terminal.open{cmd=cmd,args=opts.args,cwd=opts.cwd,cols=self.cols,rows=self.rows,history=opts.history or 2000}
+    self.terminal=t; if not t then self.dead=true; self.spawn_error=err end
+  end
+  self.send_override=opts.send
+  if self.terminal then
+    self.input=Input.new(self.terminal,function(bytes) return self:send(bytes) end,system.get_clipboard)
+    self.terminal:focus(false); self:sync(true)
   end
 end
-
-
-function TerminalView:get_name()
-  if self.dead then return self.title .. " [exited]" end
-  return self.title
+function TerminalView:get_name() return self.title..(self.dead and ' [exited]' or '') end
+function TerminalView:is_text_input() return not self.dead end
+function TerminalView:try_close(close)
+  if self.terminal and self.owns_terminal then self.terminal:close() end
+  self.terminal=nil; self.input=nil; close()
 end
-
-
-function TerminalView:is_text_input()
-  -- v1 has no cooked/raw distinction (that needs reading the slave's
-  -- termios) -- a terminal always takes every key. Ctrl-Alt-arrows etc still
-  -- reach it: keymap.on_key_pressed checks command bindings before ever
-  -- asking the view (core/keymap.lua), so panes.lua's fallback bindings are
-  -- the way out of a terminal pane (docs/studio-panels.md section 4).
-  return not self.dead
-end
-
-
-function TerminalView:try_close(do_close)
-  if self.pty then self.pty:close() end
-  do_close()
-end
-
-
--- ---- the screen model -------------------------------------------------
---
--- self.lines is every row ever emitted, oldest first; the screen is always
--- exactly the last `self.rows` of them (top()..#self.lines). Moving the
--- cursor within that range needs no separate scroll-region bookkeeping: a
--- linefeed off the bottom appends a new row (new_line), which is exactly
--- what "the screen scrolled" means when the screen is just "the tail of the
--- list". Scroll regions (DECSTBM) are not modelled -- deferred, along with
--- alt-screen and everything else section 3 defers.
-
-function TerminalView:top()
-  return math.max(1, #self.lines - self.rows + 1)
-end
-
-
-function TerminalView:new_line()
-  self.lines[#self.lines + 1] = blank_row()
-  if #self.lines - self.rows > SCROLLBACK then
-    table.remove(self.lines, 1)
-    self.cursor.row = self.cursor.row - 1
-  end
-end
-
-
-function TerminalView:linefeed()
-  if self.cursor.row >= #self.lines then
-    self:new_line()
-    self.cursor.row = #self.lines
-  else
-    self.cursor.row = self.cursor.row + 1
-  end
-end
-
-
-function TerminalView:carriage_return()
-  self.cursor.col = 1
-end
-
-
--- Cursor motion relative to the current position, clamped to the screen
--- (not the whole scrollback -- a running program addresses the screen).
-function TerminalView:move_cursor(drow, dcol)
-  self.cursor.row = common.clamp(self.cursor.row + drow, self:top(), #self.lines)
-  self.cursor.col = common.clamp(self.cursor.col + dcol, 1, self.cols)
-end
-
-
--- 1-based screen coordinates (CUP/HVP/CHA), not scrollback-absolute.
-function TerminalView:set_cursor(row1, col1)
-  if row1 then
-    self.cursor.row = common.clamp(self:top() + row1 - 1, self:top(), #self.lines)
-  end
-  if col1 then
-    self.cursor.col = common.clamp(col1, 1, self.cols)
-  end
-end
-
-
-function TerminalView:put_char(ch)
-  -- Delayed wrap: writing past the last column parks the cursor one past
-  -- the edge (below) rather than wrapping immediately, so a full line drawn
-  -- right up to the margin does not spuriously blank-line before the next
-  -- char -- the same thing a real terminal does.
-  if self.cursor.col > self.cols then
-    self:linefeed()
-    self:carriage_return()
-  end
-  self.lines[self.cursor.row][self.cursor.col] = {
-    ch = ch, fg = self.fg, bg = self.bg,
-    bold = self.bold, reverse = self.reverse, underline = self.underline,
-  }
-  self.cursor.col = self.cursor.col + 1
-end
-
-
-function TerminalView:clear_range(row, from_col, to_col)
-  local r = self.lines[row]
-  for c = from_col, to_col do r[c] = nil end
-end
-
-
-function TerminalView:erase_in_line(mode)
-  if mode == 1 then self:clear_range(self.cursor.row, 1, self.cursor.col)
-  elseif mode == 2 then self:clear_range(self.cursor.row, 1, self.cols)
-  else self:clear_range(self.cursor.row, self.cursor.col, self.cols) end
-end
-
-
-function TerminalView:erase_in_display(mode)
-  local top = self:top()
-  if mode == 2 or mode == 3 then
-    for r = top, #self.lines do self.lines[r] = blank_row() end
-  elseif mode == 1 then
-    for r = top, self.cursor.row - 1 do self.lines[r] = blank_row() end
-    self:clear_range(self.cursor.row, 1, self.cursor.col)
-  else
-    self:clear_range(self.cursor.row, self.cursor.col, self.cols)
-    for r = self.cursor.row + 1, #self.lines do self.lines[r] = blank_row() end
-  end
-end
-
-
--- ---- SGR (colour/attribute) ---------------------------------------------
-
-local function split_params(s)
-  local t = {}
-  for p in (s .. ";"):gmatch("([^;]*);") do
-    t[#t + 1] = tonumber(p)
-  end
-  return t
-end
-
-
-function TerminalView:apply_sgr(params)
-  if #params == 0 then params = { 0 } end
-  local i = 1
-  while i <= #params do
-    local p = params[i] or 0
-    if p == 0 then
-      self.fg, self.bg = nil, nil
-      self.bold, self.reverse, self.underline = false, false, false
-    elseif p == 1 then self.bold = true
-    elseif p == 4 then self.underline = true
-    elseif p == 7 then self.reverse = true
-    elseif p == 22 then self.bold = false
-    elseif p == 24 then self.underline = false
-    elseif p == 27 then self.reverse = false
-    elseif p >= 30 and p <= 37 then self.fg = p - 30
-    elseif p == 38 then
-      -- 256-colour/truecolor is deferred (docs/studio-panels.md) -- consume
-      -- the trailing params ("5;N" or "2;R;G;B") so they are not misread as
-      -- unrelated SGR codes on the next loop.
-      if params[i + 1] == 5 then i = i + 2
-      elseif params[i + 1] == 2 then i = i + 4 end
-    elseif p == 39 then self.fg = nil
-    elseif p >= 40 and p <= 47 then self.bg = p - 40
-    elseif p == 48 then
-      if params[i + 1] == 5 then i = i + 2
-      elseif params[i + 1] == 2 then i = i + 4 end
-    elseif p == 49 then self.bg = nil
-    elseif p >= 90 and p <= 97 then self.fg = p - 90 + 8
-    elseif p >= 100 and p <= 107 then self.bg = p - 100 + 8
-    end
-    i = i + 1
-  end
-end
-
-
--- ---- CSI dispatch ---------------------------------------------------------
-
-function TerminalView:handle_csi(final, raw)
-  local private = raw:sub(1, 1) == "?"
-  local params = split_params(private and raw:sub(2) or raw)
-  local function n(idx, default)
-    local v = params[idx]
-    if not v or v == 0 then return default end
-    return v
-  end
-
-  if final == "A" then self:move_cursor(-n(1, 1), 0)
-  elseif final == "B" then self:move_cursor(n(1, 1), 0)
-  elseif final == "C" then self:move_cursor(0, n(1, 1))
-  elseif final == "D" then self:move_cursor(0, -n(1, 1))
-  elseif final == "G" then self:set_cursor(nil, n(1, 1))
-  elseif final == "H" or final == "f" then self:set_cursor(n(1, 1), n(2, 1))
-  elseif final == "J" then self:erase_in_display(params[1] or 0)
-  elseif final == "K" then self:erase_in_line(params[1] or 0)
-  elseif final == "m" then self:apply_sgr(params)
-  elseif final == "s" then
-    self.saved_cursor = { row = self.cursor.row - self:top() + 1, col = self.cursor.col }
-  elseif final == "u" then
-    if self.saved_cursor then self:set_cursor(self.saved_cursor.row, self.saved_cursor.col) end
-  elseif private and params[1] == 25 and final == "h" then self.cursor_visible = true
-  elseif private and params[1] == 25 and final == "l" then self.cursor_visible = false
-  end
-  -- Everything else -- scroll regions, alt-screen (?1049), mouse reporting,
-  -- bracketed paste (?2004), 256-colour set via other codes -- is deferred:
-  -- silently consumed so it never leaks into the grid as literal text.
-end
-
-
--- ---- byte-level parser -----------------------------------------------
-
-function TerminalView:step_byte(b)
-  if self.utf8_need > 0 then
-    if b >= 0x80 and b < 0xC0 then
-      self.utf8_buf = self.utf8_buf .. string.char(b)
-      self.utf8_need = self.utf8_need - 1
-      if self.utf8_need == 0 then
-        self:put_char(self.utf8_buf)
-        self.utf8_buf = ""
-      end
-      return
-    end
-    -- Malformed continuation: drop the partial char and re-process this
-    -- byte fresh rather than eating it silently.
-    self.utf8_buf, self.utf8_need = "", 0
-  end
-
-  local st = self.parse_state
-  if st == "ground" then
-    if b == 0x1B then self.parse_state = "esc"
-    elseif b == 0x0D then self:carriage_return()
-    elseif b == 0x0A then self:linefeed()
-    elseif b == 0x08 then self:move_cursor(0, -1)
-    elseif b == 0x09 then
-      self.cursor.col = math.min(self.cols, (math.floor((self.cursor.col - 1) / 8) + 1) * 8 + 1)
-    elseif b == 0x07 then -- bell: no-op
-    elseif b < 0x20 or b == 0x7F then -- other control bytes: no-op
-    elseif b < 0x80 then self:put_char(string.char(b))
-    elseif b >= 0xF0 then self.utf8_buf, self.utf8_need = string.char(b), 3
-    elseif b >= 0xE0 then self.utf8_buf, self.utf8_need = string.char(b), 2
-    elseif b >= 0xC0 then self.utf8_buf, self.utf8_need = string.char(b), 1
-    end -- else: a stray continuation byte with nothing pending -- drop it
-
-  elseif st == "esc" then
-    if b == 0x5B then self.parse_state, self.csi_buf = "csi", ""       -- '['
-    elseif b == 0x5D then self.parse_state = "osc"                     -- ']'
-    else self.parse_state = "ground" end -- a single-char ESC sequence: swallow it
-
-  elseif st == "csi" then
-    if b >= 0x40 and b <= 0x7E then
-      self:handle_csi(string.char(b), self.csi_buf)
-      self.parse_state = "ground"
-    else
-      self.csi_buf = self.csi_buf .. string.char(b)
-      if #self.csi_buf > 64 then self.parse_state = "ground" end -- runaway guard
-    end
-
-  elseif st == "osc" then
-    -- Window-title / colour-query sequences: not rendered (v1 has no tab
-    -- title from OSC), just consumed so they cannot leak into the grid.
-    if b == 0x07 then self.parse_state = "ground"
-    elseif b == 0x1B then self.parse_state = "osc_esc" end
-
-  elseif st == "osc_esc" then
-    if b == 0x5C then self.parse_state = "ground" else self.parse_state = "osc" end
-  end
-end
-
-
-function TerminalView:feed(data)
-  for i = 1, #data do self:step_byte(data:byte(i)) end
-end
-
-
--- ---- input: keys and pasted/typed text -------------------------------
-
 function TerminalView:send(bytes)
-  if self.dead or not self.pty then return end
-  self.pty:write(bytes)
-  if self:at_bottom() then self:scroll_to_bottom() end
+  if self.dead or not self.terminal or #bytes==0 then return false end
+  if self.send_override then return self.send_override(bytes) end
+  local n,err=self.terminal:write(bytes)
+  if not n then self.spawn_error=err; core.redraw=true; return false end
+  self:scroll_to_bottom(); return true
 end
-
-
-function TerminalView:on_key_pressed(key)
-  if self.dead or not self.pty then return false end
-
-  if key == "cmd+v" or key == "ctrl+v" then
-    local text = system.get_clipboard()
-    if text and text ~= "" then self:send(text) end
-    return true
-  end
-
-  local seq = KEY_SEQ[key]
-  if seq then self:send(seq); return true end
-
-  -- Ctrl+<letter> -> the matching C0 control byte (Ctrl-C is SIGINT,
-  -- Ctrl-D is EOF, and so on) -- the one piece of chording a shell needs
-  -- that on_text_input cannot express.
-  local letter = key:match("^ctrl%+(%a)$")
-  if letter then
-    self:send(string.char(letter:lower():byte() - 96))
-    return true
-  end
-
-  return false
+function TerminalView:on_key_pressed(stroke,event)
+  if self.dead or not self.input then return false end
+  return self.input:key_pressed(stroke,event)
 end
-
-
--- Plain typed characters arrive here, not through on_key_pressed -- the
--- same split DocView and AgentView use, so unicode input keeps working.
-function TerminalView:on_text_input(text)
-  self:send(text)
+function TerminalView:on_key_released(key,event) if not self.dead and self.input then self.input:key_released(event) end end
+function TerminalView:on_text_input(text) if not self.dead and self.input then self.input:text_input(text) end end
+function TerminalView:on_text_editing(text) if not self.dead and self.input then self.input:text_editing(text) end end
+function TerminalView:flush_input() if not self.dead and self.input then self.input:flush() end end
+function TerminalView:on_window_focus(focused) if self.input and not self.dead then self.input:focus(focused) end end
+function TerminalView:on_focus_lost() self:on_window_focus(false) end
+function TerminalView:on_focus_gained()
+  local focused=core.window_focused; if focused==nil then focused=system.window_has_focus() end
+  self:on_window_focus(focused)
 end
-
-
--- ---- layout: resize follows the pane ----------------------------------
-
 function TerminalView:resize_to_fit()
-  local cols = math.max(1, math.floor(self.size.x / self.cw))
-  local rows = math.max(1, math.floor(self.size.y / self.lh))
-  if cols == self.cols and rows == self.rows then return end
-  self.cols, self.rows = cols, rows
-  -- v1 does not reflow scrollback to the new width (docs/studio-panels.md) --
-  -- only pad so the screen (top()..#self.lines) always has `rows` entries.
-  while #self.lines < self.rows do self.lines[#self.lines + 1] = blank_row() end
-  self.cursor.row = common.clamp(self.cursor.row, self:top(), #self.lines)
-  self.cursor.col = common.clamp(self.cursor.col, 1, self.cols)
-  if self.pty then self.pty:resize(self.cols, self.rows) end
+  local cols=common.clamp(math.floor(self.size.x/self.cw),1,4096)
+  local rows=common.clamp(math.floor(self.size.y/self.lh),1,4096)
+  if cols==self.cols and rows==self.rows then return end
+  if self.terminal then self.terminal:resize(cols,rows) end
+  self.cols,self.rows=cols,rows; self.screen_rows={}; self.history_cache={}; self:sync(true)
 end
-
-
-function TerminalView:get_scrollable_size()
-  return #self.lines * self.lh
+function TerminalView:get_scrollable_size() return (self.history_rows+self.rows)*self.lh end
+function TerminalView:at_bottom() return self.scroll.to.y>=self:get_scrollable_size()-self.size.y-self.lh end
+function TerminalView:scroll_to_bottom() self.scroll.to.y=math.max(0,self:get_scrollable_size()-self.size.y) end
+function TerminalView:sync(force)
+  if not self.terminal then return end
+  local revision=self.terminal:process_revision(); if not force and revision and revision==self.revision then return end
+  local was_bottom=self:at_bottom(); local state=self.terminal:state()
+  local cols,rows,history=self.terminal:geometry()
+  local geometry_changed=cols~=self.cols or rows~=self.rows or history~=self.history_rows or (self.state and self.state.alternate~=state.alternate)
+  if geometry_changed then self.screen_rows={} end
+  self.cols,self.rows,self.history_rows=cols,rows,history; self.state=state; self.revision=revision
+  -- The retained history ring can shift without changing its row count.
+  self.history_cache={}
+  local damaged=self.terminal:damage(); for _,y in ipairs(damaged) do self.screen_rows[y]=nil end
+  self.terminal:ack_damage()
+  local process=self.terminal:process_state()
+  if process then self.dead=process.exited and process.eof; if process.error then self.spawn_error=process.error end end
+  local events,dropped=self.terminal:events(); self.dropped_events=(self.dropped_events or 0)+dropped
+  for _,event in ipairs(events) do
+    if event.type=='title' and not self.custom_title then self.title=event.text
+    elseif event.type=='cwd' then self.cwd=event.text
+    elseif event.type=='bell' then self.bell=true
+    elseif event.type=='notification' then self.notification=event end
+  end
+  if force or geometry_changed or #damaged>0 or process then core.redraw=true end
+  if was_bottom or (state.alternate and geometry_changed) then self:scroll_to_bottom() end
 end
-
-
-function TerminalView:at_bottom()
-  return self.scroll.to.y >= self:get_scrollable_size() - self.size.y - self.lh
-end
-
-
-function TerminalView:scroll_to_bottom()
-  self.scroll.to.y = math.max(0, self:get_scrollable_size() - self.size.y)
-end
-
-
 function TerminalView:update()
   TerminalView.super.update(self)
-
-  -- Node:update_layout writes self.size every frame regardless of whether
-  -- it actually changed; only react when it did.
-  if self.size.x ~= self.last_size.x or self.size.y ~= self.last_size.y then
-    self.last_size.x, self.last_size.y = self.size.x, self.size.y
-    if self.cw > 0 and self.lh > 0 then self:resize_to_fit() end
+  if self.size.x~=self.last_size.x or self.size.y~=self.last_size.y then
+    self.last_size.x,self.last_size.y=self.size.x,self.size.y
+    if self.cw>0 and self.lh>0 then self:resize_to_fit() end
   end
-
-  if self.dead or not self.pty then return end
-
-  if not self.pty:alive() then
-    self.dead = true   -- freeze the last screen; get_name() shows [exited]
-    core.redraw = true
-    return
-  end
-
-  local was_at_bottom = self:at_bottom()
-  local got_data = false
-  -- Bounded drain: a chatty child (`yes`, a build log) must not be allowed
-  -- to starve the rest of the frame loop of a turn.
-  for _ = 1, 256 do
-    local data = self.pty:read()
-    if data == nil then break end
-    if data == "" then break end
-    self:feed(data)
-    got_data = true
-  end
-  if got_data then
-    core.redraw = true
-    if was_at_bottom then self:scroll_to_bottom() end
+  self:sync(false)
+end
+local buttons={left=1,middle=2,right=3,x1=8,x2=9}
+function TerminalView:report_mouse(action,button,x,y)
+  if self.dead or not self.input or not self:at_bottom() then return false end
+  local pressed=false; for _,down in pairs(self.mouse_buttons) do if down then pressed=true end end
+  return self.input:mouse{action=action,button=button or 0,x=math.floor(x-self.position.x),y=math.floor(y-self.position.y),
+    cell_width=math.max(1,math.floor(self.cw)),cell_height=math.max(1,math.floor(self.lh)),
+    modifiers=(keymap.input_modifiers or 0)&7,any_button_pressed=pressed}
+end
+function TerminalView:on_mouse_pressed(button,x,y,clicks)
+  if TerminalView.super.on_mouse_pressed(self,button,x,y,clicks) then return true end
+  local number=buttons[button]; if not number then return false end
+  self.mouse_buttons[number]=true; return self:report_mouse('press',number,x,y)
+end
+function TerminalView:on_mouse_released(button,x,y)
+  TerminalView.super.on_mouse_released(self,button,x,y)
+  local number=buttons[button]; if number then self.mouse_buttons[number]=nil; self:report_mouse('release',number,x,y) end
+end
+function TerminalView:on_mouse_moved(x,y,dx,dy)
+  TerminalView.super.on_mouse_moved(self,x,y,dx,dy)
+  if not self.dragging_scrollbar then
+    local number=0; for b,down in pairs(self.mouse_buttons) do if down then number=b; break end end
+    self:report_mouse('motion',number,x,y)
   end
 end
-
-
--- ---- drawing ------------------------------------------------------------
-
-local function style_eq(a, b)
-  local afg, bfg = a and a.fg, b and b.fg
-  local abg, bbg = a and a.bg, b and b.bg
-  local abold, bbold = a and a.bold, b and b.bold
-  local arev, brev = a and a.reverse, b and b.reverse
-  local aund, bund = a and a.underline, b and b.underline
-  return afg == bfg and abg == bbg and abold == bbold and arev == brev and aund == bund
+function TerminalView:on_mouse_wheel(amount,x,y,horizontal)
+  x,y=x or self.position.x,y or self.position.y; local reported=false
+  local reporting=self.terminal and self:at_bottom() and self.terminal:input_state().mouse_mode~='none'
+  if not reporting then TerminalView.super.on_mouse_wheel(self,amount); return end
+  self.wheel_y=(self.wheel_y or 0)+amount; self.wheel_x=(self.wheel_x or 0)+(horizontal or 0)
+  local function ticks(value) return value>=0 and math.floor(value) or math.ceil(value) end
+  local vertical,lateral=ticks(self.wheel_y),ticks(self.wheel_x)
+  self.wheel_y,self.wheel_x=self.wheel_y-vertical,self.wheel_x-lateral
+  for _=1,math.min(100,math.abs(vertical)) do reported=self:report_mouse('press',vertical>0 and 4 or 5,x,y) or reported end
+  for _=1,math.min(100,math.abs(lateral)) do reported=self:report_mouse('press',lateral>0 and 7 or 6,x,y) or reported end
+  if vertical==0 and lateral==0 then return end
+  if not reported then TerminalView.super.on_mouse_wheel(self,amount) end
 end
-
-
--- Resolve a cell's SGR pen to actual draw colours, folding bold-brightens-
--- the-base-8-colours (the convention most terminals and most CLI tools that
--- colour their own output assume) and reverse-video into the result.
 function TerminalView:resolve_colors(cell)
-  local fg_idx, bg_idx = cell and cell.fg, cell and cell.bg
-  local bold, reverse = cell and cell.bold, cell and cell.reverse
-
-  local fg
-  if fg_idx then
-    fg = PALETTE[(bold and fg_idx < 8) and fg_idx + 8 or fg_idx]
-  elseif bold then
-    fg = PALETTE[15]
-  end
-  fg = fg or style.text
-  local bg = bg_idx and PALETTE[bg_idx] or nil
-
-  if reverse then
-    fg, bg = bg or style.background, fg
-  end
-  return fg, bg
+  local pen=cell.style; local bold=(pen.attrs&terminal.BOLD)~=0
+  local fg=color(pen.fg,bold) or (bold and PALETTE[15] or style.text); local bg=color(pen.bg,false)
+  if (pen.attrs&terminal.INVERSE)~=0 then fg,bg=bg or style.background,fg end
+  if (pen.attrs&terminal.FAINT)~=0 then fg={math.floor(fg[1]/2),math.floor(fg[2]/2),math.floor(fg[3]/2),fg[4] or 255} end
+  return fg,bg,color(pen.underline,false) or fg
 end
-
-
-function TerminalView:draw_row(row, x0, y)
-  local i = 1
-  while i <= self.cols do
-    local cell = row[i]
-    local j = i + 1
-    while j <= self.cols and style_eq(row[j], cell) do j = j + 1 end
-
-    local chars = {}
-    for k = i, j - 1 do chars[#chars + 1] = (row[k] and row[k].ch) or " " end
-    local count = j - i
-    local fg, bg = self:resolve_colors(cell)
-    local x = x0 + (i - 1) * self.cw
-
-    if bg then renderer.draw_rect(x, y, count * self.cw, self.lh, bg) end
-    renderer.draw_text(self.font, table.concat(chars), x, y, fg)
-    if cell and cell.underline then
-      renderer.draw_rect(x, y + self.lh - 1, count * self.cw, 1, fg)
+function TerminalView:draw_row(row,x0,y)
+  -- Backgrounds precede glyphs so a wide tail cannot erase its head.
+  for x,cell in ipairs(row.cells) do
+    local _,bg=self:resolve_colors(cell); if bg then renderer.draw_rect(x0+(x-1)*self.cw,y,self.cw,self.lh,bg) end
+  end
+  for x,cell in ipairs(row.cells) do
+    if cell.width>0 then
+      local fg,_,line=self:resolve_colors(cell); local px=x0+(x-1)*self.cw; local width=cell.width*self.cw
+      if cell.text~='' and (cell.style.attrs&terminal.INVISIBLE)==0 then renderer.draw_text(self.font,cell.text,px,y,fg) end
+      local underline=(cell.style.attrs&terminal.UNDERLINE_MASK)>>terminal.UNDERLINE_SHIFT
+      if underline>0 then
+        if underline==3 then
+          for dx=0,math.floor(width)-1 do renderer.draw_rect(px+dx,y+self.lh-2+math.abs((dx%4)-2)-1,1,1,line) end
+        elseif underline==4 or underline==5 then
+          local span=underline==4 and 1 or 3
+          for dx=0,math.floor(width)-1,span+1 do renderer.draw_rect(px+dx,y+self.lh-1,math.min(span,width-dx),1,line) end
+        else renderer.draw_rect(px,y+self.lh-1,width,1,line) end
+        if underline==2 then renderer.draw_rect(px,y+self.lh-3,width,1,line) end
+      end
+      if (cell.style.attrs&terminal.STRIKE)~=0 then renderer.draw_rect(px,y+math.floor(self.lh/2),width,1,fg) end
+      if (cell.style.attrs&terminal.OVERLINE)~=0 then renderer.draw_rect(px,y,width,1,fg) end
     end
-    i = j
   end
 end
-
-
+function TerminalView:visible_row(index)
+  if index<=self.history_rows then
+    if not self.history_cache[index] then self.history_cache[index]=self.terminal:row(index,true) end
+    return self.history_cache[index]
+  end
+  local y=index-self.history_rows; if not self.screen_rows[y] then self.screen_rows[y]=self.terminal:row(y) end
+  return self.screen_rows[y]
+end
 function TerminalView:draw()
-  self:draw_background(style.background)
-  core.push_clip_rect(self.position.x, self.position.y, self.size.x, self.size.y)
-
-  local ox, oy = self:get_content_offset()
-  local vmin = common.clamp(math.floor(self.scroll.y / self.lh) + 1, 1, #self.lines)
-  local vmax = common.clamp(math.floor((self.scroll.y + self.size.y) / self.lh) + 1, 1, #self.lines)
-
-  for r = vmin, vmax do
-    self:draw_row(self.lines[r], ox, oy + (r - 1) * self.lh)
+  self:draw_background(style.background); core.push_clip_rect(self.position.x,self.position.y,self.size.x,self.size.y)
+  if self.terminal then
+    local ox,oy=self:get_content_offset(); local count=self.history_rows+self.rows
+    local first=common.clamp(math.floor(self.scroll.y/self.lh)+1,1,count)
+    local last=common.clamp(math.floor((self.scroll.y+self.size.y)/self.lh)+1,1,count); local retained={}
+    for y=first,last do self:draw_row(self:visible_row(y),ox,oy+(y-1)*self.lh); if y<=self.history_rows then retained[y]=self.history_cache[y] end end
+    self.history_cache=retained
+    local state=self.state; local cursor=state and self.history_rows+state.row
+    if state and (state.modes&terminal.CURSOR_VISIBLE)~=0 and not self.dead and cursor>=first and cursor<=last then
+      local x=ox+(state.col-1)*self.cw; local y=oy+(cursor-1)*self.lh
+      local caret={style.caret[1],style.caret[2],style.caret[3],core.active_view==self and 200 or 90}
+      if state.cursor_style==3 or state.cursor_style==4 then renderer.draw_rect(x,y+self.lh-2,self.cw,2,caret)
+      elseif state.cursor_style==5 or state.cursor_style==6 then renderer.draw_rect(x,y,2,self.lh,caret)
+      else renderer.draw_rect(x,y,self.cw,self.lh,caret) end
+    end
   end
-
-  if self.cursor_visible and not self.dead
-     and self.cursor.row >= vmin and self.cursor.row <= vmax then
-    local col = math.min(self.cursor.col, self.cols)
-    local cx, cy = ox + (col - 1) * self.cw, oy + (self.cursor.row - 1) * self.lh
-    local alpha = core.active_view == self and 200 or 90
-    renderer.draw_rect(cx, cy, self.cw, self.lh,
-      { style.caret[1], style.caret[2], style.caret[3], alpha })
-  end
-
-  core.pop_clip_rect()
-  self:draw_scrollbar()
-
-  if self.spawn_error then
-    common.draw_text(style.font, style.error, self.spawn_error, "left",
-      self.position.x + style.padding.x, self.position.y + style.padding.y,
-      self.size.x, self.font:get_height())
-  end
+  core.pop_clip_rect(); self:draw_scrollbar()
+  if self.spawn_error then common.draw_text(style.font,style.error,self.spawn_error,'left',self.position.x+style.padding.x,self.position.y+style.padding.y,self.size.x,self.font:get_height()) end
 end
-
-
 return TerminalView

@@ -758,10 +758,10 @@ function RootView:on_mouse_moved(x, y, dx, dy)
 end
 
 
-function RootView:on_mouse_wheel(...)
-  local x, y = self.mouse.x, self.mouse.y
+function RootView:on_mouse_wheel(amount,x,y,horizontal)
+  x,y=x or self.mouse.x,y or self.mouse.y
   local node = self.root_node:get_child_overlapping_point(x, y)
-  node.active_view:on_mouse_wheel(...)
+  node.active_view:on_mouse_wheel(amount,x,y,horizontal)
 end
 
 

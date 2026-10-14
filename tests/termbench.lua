@@ -3,6 +3,8 @@ package.path = "tools/?.lua;tools/?/init.lua;" .. package.path
 local runner = require "termbench.runner"
 local scenarios = require "termbench.scenarios"
 local backend = require "termbench.backends.lua"
+assert(backend.name=='studio-lua-reference' and backend.source.path=='tools/termbench/reference/terminalview-v1.lua')
+assert(backend.source.sha256=='74b819186f68abd48ee7db85fbe12ef50cd9fcc148d11b022f35a020880a38b7','historical parser reference changed')
 local native = require "termbench.backends.native"
 local json = require "json"
 local passed = 0

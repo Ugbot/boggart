@@ -688,7 +688,8 @@ end
 function core.quit(force)
   if force then
     delete_temp_files()
-    os.exit()
+    core.quit_requested=true
+    return
   end
   local dirty_count = 0
   local dirty_name
@@ -756,8 +757,10 @@ end
 function core.set_active_view(view)
   assert(view, "Tried to set active view to nil")
   if view ~= core.active_view then
+    if core.active_view and core.active_view.on_focus_lost then core.active_view:on_focus_lost() end
     core.last_active_view = core.active_view
     core.active_view = view
+    if view.on_focus_gained then view:on_focus_gained() end
   end
 end
 
@@ -878,9 +881,16 @@ function core.on_event(type, ...)
   if type == "textinput" then
     core.root_view:on_text_input(...)
   elseif type == "keypressed" then
-    did_keymap = keymap.on_key_pressed(...)
+    local handled,suppress_text=keymap.on_key_pressed(...)
+    did_keymap=suppress_text==nil and handled or suppress_text
   elseif type == "keyreleased" then
     keymap.on_key_released(...)
+  elseif type == 'textediting' then
+    if core.active_view.on_text_editing then core.active_view:on_text_editing(...) end
+  elseif type == 'focus' then
+    local focused=...; core.window_focused=focused
+    if not focused then keymap.clear_modifiers() end
+    if core.active_view.on_window_focus then core.active_view:on_window_focus(focused) end
   elseif type == "mousemoved" then
     core.root_view:on_mouse_moved(...)
   elseif type == "mousepressed" then
@@ -920,6 +930,7 @@ function core.request_frames(n)
 end
 
 function core.step()
+  if system.pump_uv then system.pump_uv() end
   -- handle events
   local did_keymap = false
   local mouse_moved = false
@@ -934,10 +945,10 @@ function core.step()
       did_keymap = false
     else
       local _, res = core.try(core.on_event, type, a, b, c, d)
-      did_keymap = res or did_keymap
+      if type=='keypressed' then did_keymap=res or false
+      elseif type=='textinput' then did_keymap=false end
     end
-    core.redraw = true
-    core.last_event = core.frame_start
+    if type~='uv' then core.redraw=true; core.last_event=core.frame_start end
   end
   if core.frames_to_render > 0 then
     core.frames_to_render = core.frames_to_render - 1
@@ -946,6 +957,7 @@ function core.step()
   if mouse_moved then
     core.try(core.on_event, "mousemoved", mouse.x, mouse.y, mouse.dx, mouse.dy)
   end
+  if core.active_view.flush_input then core.active_view:flush_input() end
 
   local width, height = renderer.get_size()
 
@@ -1049,7 +1061,7 @@ end)
 local blink_period = 0.8   -- caret on/off cycle; kept in sync with docview.lua
 
 function core.run()
-  while true do
+  while not core.quit_requested do
     core.frame_start = system.get_time()
     local did_redraw = core.step()
     local time_to_wake = run_threads()
@@ -1071,7 +1083,7 @@ function core.run()
       system.wait_event(math.max(0, math.min(cap, time_to_wake)))
     end
     local elapsed = system.get_time() - core.frame_start
-    system.sleep(math.max(0, 1 / config.fps - elapsed))
+    system.wait_event(math.max(0, 1 / config.fps - elapsed))
   end
 end
 

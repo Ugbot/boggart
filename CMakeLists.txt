@@ -964,6 +964,21 @@ if(UNIX)
   add_test(NAME pty_transport COMMAND pty_transport_test)
   set_tests_properties(pty_transport PROPERTIES TIMEOUT 30)
 endif()
+if(TARGET boggart-studio AND UNIX)
+  add_executable(studio_uvbridge_test tests/c/studio_uvbridge.c studio/src/uvbridge.c)
+  target_include_directories(studio_uvbridge_test PRIVATE studio/src ${SDL3_INCLUDE_DIRS})
+  target_link_libraries(studio_uvbridge_test PRIVATE uv_a)
+  if(BOGGART_SDL_TARGET)
+    target_link_libraries(studio_uvbridge_test PRIVATE ${BOGGART_SDL_TARGET})
+  elseif(TARGET SDL3::SDL3)
+    target_link_libraries(studio_uvbridge_test PRIVATE SDL3::SDL3)
+  else()
+    target_link_libraries(studio_uvbridge_test PRIVATE ${SDL3_LIBRARIES})
+    target_link_directories(studio_uvbridge_test PRIVATE ${SDL3_LIBRARY_DIRS})
+  endif()
+  add_test(NAME studio_uvbridge COMMAND studio_uvbridge_test)
+  set_tests_properties(studio_uvbridge PROPERTIES TIMEOUT 10)
+endif()
 target_link_libraries(boggart PRIVATE boggart_vt)
 if(TARGET boggart-studio)
   target_link_libraries(boggart-studio PRIVATE boggart_vt)
@@ -1058,7 +1073,7 @@ add_custom_target(ghostty-oracle
   COMMENT "Building the pinned test oracle and verifying resize fixtures"
   USES_TERMINAL)
 
-foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable typesafe judge ladder toolroute ladder_sites harden policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast mining_recognition mining_compile mining_jobs learning_evaluate learning_promote learning_route learning_monitor workflow_slack workflow_novel workflow_triggers searchroute tracker story story_model story_geo story_geosql story_style auth_file looplag http_body json_c store_save hash_c fileview termbench terminal terminal_process terminal_process_shutdown terminal_graphemes terminal_resize terminal_resize_cached terminal_resize_api terminal_resize_large ghostty_page_growth ghostty_bitmap)
+foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable typesafe judge ladder toolroute ladder_sites harden policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast mining_recognition mining_compile mining_jobs learning_evaluate learning_promote learning_route learning_monitor workflow_slack workflow_novel workflow_triggers searchroute tracker story story_model story_geo story_geosql story_style auth_file looplag http_body json_c store_save hash_c fileview termbench terminal terminal_input_route terminal_process terminal_process_shutdown terminal_graphemes terminal_resize terminal_resize_cached terminal_resize_api terminal_resize_large ghostty_page_growth ghostty_bitmap)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home}
@@ -1081,6 +1096,20 @@ if(TARGET boggart-studio)
       $<TARGET_FILE:boggart-studio> .
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   set_tests_properties(terminal_process_studio PROPERTIES TIMEOUT 30)
+  set(_pane_suites studio_terminal_native studio_terminal_shutdown)
+  if(UNIX AND EXISTS /usr/bin/vim)
+    list(APPEND _pane_suites studio_terminal_vim)
+  endif()
+  foreach(_pane_suite IN LISTS _pane_suites)
+    set(_pane_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${_pane_suite})
+    add_test(NAME ${_pane_suite}
+      COMMAND ${CMAKE_COMMAND} -E env HOME=${_pane_home} USERPROFILE=${_pane_home}
+        LOCALAPPDATA=${_pane_home}/AppData/Local BOGGART_HOME=${_pane_home}/.boggart
+        SDL_VIDEODRIVER=dummy BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/${_pane_suite}.lua
+        $<TARGET_FILE:boggart-studio> .
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(${_pane_suite} PROPERTIES TIMEOUT 15)
+  endforeach()
 endif()
 
 # termctl (B0 of the cTUI, docs/cli-plan.md): the dependency-free full-screen
@@ -1116,5 +1145,5 @@ endif()
 # Sanitizers on boggart's own code and the C tests (BOG-10); the vendored
 # interpreter and JSON lib too, so a misuse inside them is attributed.
 boggart_apply_sanitizer(boggart boggart-studio auth_threads_test assert_trap_test crash_handler_test
-                        termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt boggart_pty pty_transport_test vt_parser_test page_storage_test page_resize_test page_layout_test bitmap_test idmap_test idmap_scalar_test resize_failure_test
+                        termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt boggart_pty pty_transport_test studio_uvbridge_test vt_parser_test page_storage_test page_resize_test page_layout_test bitmap_test idmap_test idmap_scalar_test resize_failure_test
                         terminal_dispatch_test osc_commands_test terminal_events_test terminal_links_test mouse_encode_test terminal_mouse_test key_encode_test terminal_key_test paste_encode_test terminal_input_test boggart_unicode unicode_test wide_cells_test grapheme_cells_test terminal_unicode_test)

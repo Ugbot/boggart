@@ -40,9 +40,13 @@ enabled. The interval includes grid writes and scrollback, not rendering or PTY
 transport. MB/s means decimal megabytes per second, calculated from actual
 bytes fed and the median elapsed time; all elapsed samples remain in the JSON.
 
-The first backend loads **the actual** `studio/data/core/terminalview.lua` parser
-with inert UI dependencies in a separate Lua environment. It neither duplicates
-the parser nor patches the running studio. It implements only the current toy
+The Lua reference backend loads the exact v1 Studio parser frozen at
+`tools/termbench/reference/terminalview-v1.lua` before native pane integration
+(origin commit `93772f7`, SHA256
+`74b819186f68abd48ee7db85fbe12ef50cd9fcc148d11b022f35a020880a38b7`).
+It uses inert UI dependencies in a separate Lua environment and is identified
+as `studio-lua-reference`; it does not represent the current production pane.
+It implements only the historical toy
 behaviour: alternate screen, scroll regions, 256/RGB colour, wide-cell layout and
 grapheme clustering are missing. Reports retain throughput for those streams
 while listing missing features; `--require-features` rejects them. Agreement

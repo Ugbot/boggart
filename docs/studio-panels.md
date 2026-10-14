@@ -137,6 +137,16 @@ with those two calls.
 
 ### Pieces
 
+**Current implementation (2026-10-14):** the v1 split below is historical.
+TerminalView now presents native `terminal.open` grids, using `src/bpty.c` and
+the shared C VT core. The production Lua byte parser and frame-polled PTY
+module are removed. A single SDL/libuv waiter wakes main-thread dispatch;
+native encoders handle keyboard/IME, paste/focus and mouse. RGB/256 colors,
+alternate screen, scroll regions, wide clusters and reflow come from the C
+core. See [process-backed terminals](terminal-process.md) and the
+[integration plan](superpowers/plans/2026-10-14-bmux-libuv-pty.md). Batched cell
+rendering, shaping, selection and search remain Phase 2 work.
+
 1. **PTY host (new C).** Add `openpty`/`forkpty` (or `posix_openpt` +
    `grantpt`/`unlockpt`) behind a small Lua surface, e.g. `sys.pty.open{cmd,
    args, env, cwd, cols, rows}` returning a handle. Wrap the master fd in a

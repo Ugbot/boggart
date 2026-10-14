@@ -71,8 +71,32 @@ descriptor cleanup, uv_spawn coexistence, parser failure and deferred close/GC.
 `terminal_process_studio` runs the same binding tests using SDL's dummy video
 driver; it does not verify rendering or input delivery in a real window.
 
-BMUX-21 remains in progress: Studio's terminal pane still uses its old PTY/Lua
-parser until the next integration step replaces that data path and connects the
-central event-loop wakeup. Windows currently returns `UV_ENOSYS`; ConPTY is
-BMUX-22. No new application throughput, idle CPU, RSS or latency claim follows
-from these transport tests.
+Studio's terminal pane now uses this API. The old frame-polled PTY module and
+Lua byte parser have been removed from production. `geometry()` returns
+columns/rows/history as three integers; `process_revision()` is an allocation-free
+cached revision check for idle panes. Presentation keeps only resolved screen
+rows and currently visible history rows, invalidating damage after native feed.
+
+One app-level SDL waiter polls the Unix libuv backend descriptor, coalesces
+wakeups and posts SDL events. The main thread dispatches the shared uv loop and
+all C/Lua callbacks. Quiet and empty loops park; normal app quit joins the
+waiter before native terminal/loop teardown. Windows uses a bounded central wait
+fallback until its backend is exercised with BMUX-22.
+
+SDL key metadata feeds the existing native encoders. Printable keys wait for
+associated text; IME composition and Kitty repeat/release avoid duplicate bytes.
+Ctrl-Alt pane chords and valid Command shortcuts remain app-owned. Paste is
+Command-V or Ctrl-Shift-V; Ctrl-V reaches the terminal. Focus, negotiated mouse
+reports and fractional wheel input use the same native APIs. Fixed cell drawing
+preserves wide tails, clusters, RGB/256 colors, native cursor style and SGR
+decorations; native batched rendering, shaping, selection and search remain
+Phase 2 work.
+
+Registered Studio tests cover SDL event injection, native pane/scrollback and
+alternate-screen state, a real shell's final output, normal teardown with a
+live child, and Vim editing where `/usr/bin/vim` is available. Real-window
+macOS runs also verify the shell and Vim paths. The exact former Lua parser is
+kept solely as an identified historical termbench reference.
+
+Windows currently returns `UV_ENOSYS`; ConPTY is BMUX-22. No new application
+throughput, idle CPU, RSS or key-to-pixel latency claim follows from these tests.
