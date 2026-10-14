@@ -498,6 +498,9 @@ docs/images/    the screenshots above, rendered by the app itself
 - ncurses — MIT-X11, fetched and linked statically into the CLI on Unix.
 - SDL3 — zlib, fetched at configure time (pinned by SHA256) and linked
   statically, so `boggart-studio` has no runtime SDL dependency at all.
+- libpng 1.6.59 and zlib 1.3.2 — libpng/zlib licenses, pinned and linked
+  statically into FreeType for installed color emoji bitmap strikes. Notices
+  are in `THIRD_PARTY/libpng-LICENSE` and `THIRD_PARTY/zlib-LICENSE`.
 - stb_truetype — public domain / MIT (© Sean Barrett), the glyph rasteriser,
   vendored in `studio/src/lib/stb/`.
 - **rxi/lite** — MIT (© rxi). `boggart-studio` grew out of its C+Lua editor

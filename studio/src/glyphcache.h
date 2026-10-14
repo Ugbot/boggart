@@ -10,6 +10,6 @@ GlyphCache *glyphcache_create(SDL_Renderer *device,void (*flush)(void));
 void glyphcache_destroy(GlyphCache *cache);
 bool glyphcache_find(GlyphCache *cache,uint64_t key,RenGlyph *out);
 bool glyphcache_insert(GlyphCache *cache,uint64_t key,const RenImage *image,
-                       float xoff,float yoff,float advance,RenGlyph *out);
+                       float xoff,float yoff,float advance,bool colored,RenGlyph *out);
 uint64_t glyphcache_bytes(void);
 #endif

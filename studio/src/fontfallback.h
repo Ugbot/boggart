@@ -12,7 +12,7 @@ typedef struct {
   void *data;        /* NULL until something actually needs a glyph from it */
   size_t size;
   int tried;         /* we have attempted to load it; do not attempt again */
-  int usable;        /* loaded, and stb_truetype can rasterise it */
+  int usable;        /* loaded and admitted by FreeType */
 } FontFallback;
 
 /* The discovered chain, in the order it should be consulted. Built on first

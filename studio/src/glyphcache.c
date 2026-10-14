@@ -40,12 +40,12 @@ static bool page_create(GlyphCache *cache,int side,Page *out) {
   *out=(Page){.texture=texture,.side=side};return true;
 }
 bool glyphcache_insert(GlyphCache *cache,uint64_t key,const RenImage *image,
-                       float xoff,float yoff,float advance,RenGlyph *out) {
+                       float xoff,float yoff,float advance,bool colored,RenGlyph *out) {
   if(!cache || !out || !image || image->width<0 || image->height<0
     || image->width>GC_SIDE-2 || image->height>GC_SIDE-2)return false;
   if(glyphcache_find(cache,key,out))return true;
   if(cache->count==GC_ENTRIES)clear(cache);
-  int w=image->width,h=image->height;RenGlyph glyph={.xoff=xoff,.yoff=yoff,.xadvance=advance};
+  int w=image->width,h=image->height;RenGlyph glyph={.xoff=xoff,.yoff=yoff,.xadvance=advance,.colored=colored};
   unsigned index=cache->pages ? cache->pages-1 : 0;Page next={0};bool fresh=false;
   if(w && h && cache->device) {
     if(!image->pixels)return false;
