@@ -74,8 +74,8 @@ driver; it does not verify rendering or input delivery in a real window.
 Studio's terminal pane now uses this API. The old frame-polled PTY module and
 Lua byte parser have been removed from production. `geometry()` returns
 columns/rows/history as three integers; `process_revision()` is an allocation-free
-cached revision check for idle panes. Presentation keeps only resolved screen
-rows and currently visible history rows, invalidating damage after native feed.
+cached revision check for idle panes. The C renderer context retains only
+currently visible immutable rows and reuses unchanged content revisions.
 
 One app-level SDL waiter polls the Unix libuv backend descriptor, coalesces
 wakeups and posts SDL events. The main thread dispatches the shared uv loop and
@@ -89,8 +89,18 @@ Ctrl-Alt pane chords and valid Command shortcuts remain app-owned. Paste is
 Command-V or Ctrl-Shift-V; Ctrl-V reaches the terminal. Focus, negotiated mouse
 reports and fractional wheel input use the same native APIs. Fixed cell drawing
 preserves wide tails, clusters, RGB/256 colors, native cursor style and SGR
-decorations; native batched rendering, shaping, selection and search remain
-Phase 2 work.
+decorations. One native row-context draw per pane feeds SDL3's existing glyph
+batcher; Lua no longer draws or snapshots individual cells. Shaping, selection,
+search, font variants and the remaining atlas/instancing contract remain Phase 2.
+
+`renderer.new_terminal(font, terminal, theme)` roots its font, terminal and theme.
+The theme contains `foreground`, `background` and a zero-based 16-color
+`palette`, each an RGBA array. `context:draw(x, y, cell_width, cell_height,
+first, last)` addresses the combined history/screen with inclusive one-based
+rows. It caches C rows and queues independent retained commands. `stats()`
+reports captures/submissions/cached rows; `renderer.terminal_sources()` reports
+compiled renderer source hashes for benchmark freshness checks. See
+[native row evidence](benchmarks/2026-10-14-native-row-renderer.md).
 
 Registered Studio tests cover SDL event injection, native pane/scrollback and
 alternate-screen state, a real shell's final output, normal teardown with a

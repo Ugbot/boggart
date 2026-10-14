@@ -19,7 +19,12 @@ typedef struct {
   uint8_t width, flags;
   uint16_t reserved;
 } lpage_cell;
-typedef struct { const lpage_cell *cells; size_t columns; bool wrapped; } lpage_row;
+typedef struct {
+  const lpage_cell *cells; size_t columns; bool wrapped;
+  /* Content generation is independent of consumable damage flags. Multiple
+   * renderers may acknowledge damage without invalidating another's cache. */
+  uint64_t revision;
+} lpage_row;
 typedef struct lpage_screen lpage_screen;
 typedef struct { size_t x, y; bool pending_wrap; } lpage_position;
 typedef struct {

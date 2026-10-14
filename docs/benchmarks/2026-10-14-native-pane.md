@@ -39,7 +39,9 @@ reference has exact origin revision/SHA recorded in
 `tools/termbench/reference/terminalview-v1.json` and is hash-guarded by termbench.
 Historical benchmark reports retain their original source identity and meaning.
 
-Rendering still uses Lua visible-cell draw calls over SDL; native batched cells,
-shaping/font-profile alignment, selection, links and search remain Phase 2.
+At this earlier checkpoint rendering used Lua visible-cell draw calls over SDL.
+The subsequent [native row renderer checkpoint](2026-10-14-native-row-renderer.md)
+replaces those calls. Shaping/font-profile alignment, selection, links and search
+remain Phase 2.
 Windows ConPTY, non-macOS execution, broad TUI conformance and application
 throughput/RSS/100-pane idle/key-to-pixel budgets remain unproven here.

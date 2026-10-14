@@ -1,6 +1,7 @@
 #include "api.h"
 #include "renderer.h"
 #include "rencache.h"
+void terminalrender_open(lua_State *L);
 
 
 static RenColor checkcolor(lua_State *L, int idx, int def) {
@@ -90,6 +91,7 @@ static int f_draw_text(lua_State *L) {
   int x = luaL_checknumber(L, 3);
   int y = luaL_checknumber(L, 4);
   RenColor color = checkcolor(L, 5, 255);
+  luaL_argcheck(L,*font!=NULL,1,"closed font");
   x = rencache_draw_text(*font, text, x, y, color);
   lua_pushnumber(L, x);
   return 1;
@@ -214,6 +216,7 @@ int luaopen_renderer_font(lua_State *L);
 
 int luaopen_renderer(lua_State *L) {
   luaL_newlib(L, lib);
+  terminalrender_open(L);
 
   /* the Image userdata metatype: frees its RenImage on GC, and answers :size(). */
   luaL_newmetatable(L, API_TYPE_IMAGE);

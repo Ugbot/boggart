@@ -31,7 +31,7 @@ function TerminalView:new(opts)
   TerminalView.super.new(self); opts=opts or {}; self.raw_keys=true; self.scrollable=true
   self.font=style.code_font; self.cw=self.font:get_width('M'); self.lh=self.font:get_height()
   self.cols,self.rows,self.history_rows=opts.cols or 80,opts.rows or 24,0
-  self.last_size={x=0,y=0}; self.screen_rows={}; self.history_cache={}; self.revision=-1
+  self.last_size={x=0,y=0}; self.revision=-1
   self.mouse_buttons={}; self.custom_title=opts.title
   local cmd=opts.cmd or os.getenv('SHELL') or '/bin/sh'; self.title=opts.title or cmd:match('([^/]+)$') or 'terminal'
   self.owns_terminal=opts.terminal==nil; self.terminal=opts.terminal
@@ -41,6 +41,8 @@ function TerminalView:new(opts)
   end
   self.send_override=opts.send
   if self.terminal then
+    self.render_theme={foreground=style.text,background=style.background,palette=PALETTE}
+    self.render_context=renderer.new_terminal(self.font,self.terminal,self.render_theme)
     self.input=Input.new(self.terminal,function(bytes) return self:send(bytes) end,system.get_clipboard)
     self.terminal:focus(false); self:sync(true)
   end
@@ -49,7 +51,7 @@ function TerminalView:get_name() return self.title..(self.dead and ' [exited]' o
 function TerminalView:is_text_input() return not self.dead end
 function TerminalView:try_close(close)
   if self.terminal and self.owns_terminal then self.terminal:close() end
-  self.terminal=nil; self.input=nil; close()
+  self.terminal=nil; self.input=nil; self.render_context=nil; close()
 end
 function TerminalView:send(bytes)
   if self.dead or not self.terminal or #bytes==0 then return false end
@@ -77,7 +79,7 @@ function TerminalView:resize_to_fit()
   local rows=common.clamp(math.floor(self.size.y/self.lh),1,4096)
   if cols==self.cols and rows==self.rows then return end
   if self.terminal then self.terminal:resize(cols,rows) end
-  self.cols,self.rows=cols,rows; self.screen_rows={}; self.history_cache={}; self:sync(true)
+  self.cols,self.rows=cols,rows; self:sync(true)
 end
 function TerminalView:get_scrollable_size() return (self.history_rows+self.rows)*self.lh end
 function TerminalView:at_bottom() return self.scroll.to.y>=self:get_scrollable_size()-self.size.y-self.lh end
@@ -88,11 +90,8 @@ function TerminalView:sync(force)
   local was_bottom=self:at_bottom(); local state=self.terminal:state()
   local cols,rows,history=self.terminal:geometry()
   local geometry_changed=cols~=self.cols or rows~=self.rows or history~=self.history_rows or (self.state and self.state.alternate~=state.alternate)
-  if geometry_changed then self.screen_rows={} end
   self.cols,self.rows,self.history_rows=cols,rows,history; self.state=state; self.revision=revision
-  -- The retained history ring can shift without changing its row count.
-  self.history_cache={}
-  local damaged=self.terminal:damage(); for _,y in ipairs(damaged) do self.screen_rows[y]=nil end
+  local damaged=self.terminal:damage()
   self.terminal:ack_damage()
   local process=self.terminal:process_state()
   if process then self.dead=process.exited and process.eof; if process.error then self.spawn_error=process.error end end
@@ -158,46 +157,19 @@ function TerminalView:resolve_colors(cell)
   if (pen.attrs&terminal.FAINT)~=0 then fg={math.floor(fg[1]/2),math.floor(fg[2]/2),math.floor(fg[3]/2),fg[4] or 255} end
   return fg,bg,color(pen.underline,false) or fg
 end
-function TerminalView:draw_row(row,x0,y)
-  -- Backgrounds precede glyphs so a wide tail cannot erase its head.
-  for x,cell in ipairs(row.cells) do
-    local _,bg=self:resolve_colors(cell); if bg then renderer.draw_rect(x0+(x-1)*self.cw,y,self.cw,self.lh,bg) end
-  end
-  for x,cell in ipairs(row.cells) do
-    if cell.width>0 then
-      local fg,_,line=self:resolve_colors(cell); local px=x0+(x-1)*self.cw; local width=cell.width*self.cw
-      if cell.text~='' and (cell.style.attrs&terminal.INVISIBLE)==0 then renderer.draw_text(self.font,cell.text,px,y,fg) end
-      local underline=(cell.style.attrs&terminal.UNDERLINE_MASK)>>terminal.UNDERLINE_SHIFT
-      if underline>0 then
-        if underline==3 then
-          for dx=0,math.floor(width)-1 do renderer.draw_rect(px+dx,y+self.lh-2+math.abs((dx%4)-2)-1,1,1,line) end
-        elseif underline==4 or underline==5 then
-          local span=underline==4 and 1 or 3
-          for dx=0,math.floor(width)-1,span+1 do renderer.draw_rect(px+dx,y+self.lh-1,math.min(span,width-dx),1,line) end
-        else renderer.draw_rect(px,y+self.lh-1,width,1,line) end
-        if underline==2 then renderer.draw_rect(px,y+self.lh-3,width,1,line) end
-      end
-      if (cell.style.attrs&terminal.STRIKE)~=0 then renderer.draw_rect(px,y+math.floor(self.lh/2),width,1,fg) end
-      if (cell.style.attrs&terminal.OVERLINE)~=0 then renderer.draw_rect(px,y,width,1,fg) end
-    end
-  end
-end
 function TerminalView:visible_row(index)
-  if index<=self.history_rows then
-    if not self.history_cache[index] then self.history_cache[index]=self.terminal:row(index,true) end
-    return self.history_cache[index]
-  end
-  local y=index-self.history_rows; if not self.screen_rows[y] then self.screen_rows[y]=self.terminal:row(y) end
-  return self.screen_rows[y]
+  -- Inspection only; rendering captures and caches rows entirely in C.
+  if index<=self.history_rows then return self.terminal:row(index,true) end
+  return self.terminal:row(index-self.history_rows)
 end
 function TerminalView:draw()
   self:draw_background(style.background); core.push_clip_rect(self.position.x,self.position.y,self.size.x,self.size.y)
   if self.terminal then
     local ox,oy=self:get_content_offset(); local count=self.history_rows+self.rows
     local first=common.clamp(math.floor(self.scroll.y/self.lh)+1,1,count)
-    local last=common.clamp(math.floor((self.scroll.y+self.size.y)/self.lh)+1,1,count); local retained={}
-    for y=first,last do self:draw_row(self:visible_row(y),ox,oy+(y-1)*self.lh); if y<=self.history_rows then retained[y]=self.history_cache[y] end end
-    self.history_cache=retained
+    local last=common.clamp(math.floor((self.scroll.y+self.size.y)/self.lh)+1,1,count)
+    self.render_theme.foreground,self.render_theme.background=style.text,style.background
+    self.render_context:draw(ox,oy,self.cw,self.lh,first,last)
     local state=self.state; local cursor=state and self.history_rows+state.row
     if state and (state.modes&terminal.CURSOR_VISIBLE)~=0 and not self.dead and cursor>=first and cursor<=last then
       local x=ox+(state.col-1)*self.cw; local y=oy+(cursor-1)*self.lh

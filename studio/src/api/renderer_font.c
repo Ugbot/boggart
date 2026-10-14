@@ -75,6 +75,7 @@ static int f_load(lua_State *L) {
   };
 
   RenFont **self = lua_newuserdata(L, sizeof(*self));
+  *self = NULL;
   luaL_setmetatable(L, API_TYPE_FONT);
 
   static const char pfx[] = STUDIO_ASSET_PREFIX "/";
@@ -94,6 +95,7 @@ static int f_load(lua_State *L) {
 static int f_set_tab_width(lua_State *L) {
   RenFont **self = luaL_checkudata(L, 1, API_TYPE_FONT);
   int n = luaL_checknumber(L, 2);
+  luaL_argcheck(L,*self!=NULL,1,"closed font");
   ren_set_font_tab_width(*self, n);
   return 0;
 }
@@ -101,7 +103,7 @@ static int f_set_tab_width(lua_State *L) {
 
 static int f_gc(lua_State *L) {
   RenFont **self = luaL_checkudata(L, 1, API_TYPE_FONT);
-  if (*self) { rencache_free_font(*self); }
+  if (*self) { rencache_free_font(*self); *self=NULL; }
   return 0;
 }
 
@@ -109,6 +111,7 @@ static int f_gc(lua_State *L) {
 static int f_get_width(lua_State *L) {
   RenFont **self = luaL_checkudata(L, 1, API_TYPE_FONT);
   const char *text = luaL_checkstring(L, 2);
+  luaL_argcheck(L,*self!=NULL,1,"closed font");
   lua_pushnumber(L, ren_get_font_width(*self, text) );
   return 1;
 }
@@ -116,6 +119,7 @@ static int f_get_width(lua_State *L) {
 
 static int f_get_height(lua_State *L) {
   RenFont **self = luaL_checkudata(L, 1, API_TYPE_FONT);
+  luaL_argcheck(L,*self!=NULL,1,"closed font");
   lua_pushnumber(L, ren_get_font_height(*self) );
   return 1;
 }

@@ -1,0 +1,6 @@
+{
+  "origin_revision": "f76f9679e3bff15c700b74bfebdba485ab82315d",
+  "origin_path": "studio/data/core/terminalview.lua",
+  "sha256": "362c7f1c3ad312978be0eefaf53d1371b72ba40e83a665384705834a2e95aee3",
+  "purpose": "Exact native-grid Lua cell renderer reference for pixel parity and controlled draw measurements; never production."
+}
