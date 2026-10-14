@@ -18,8 +18,8 @@
 -- allowed to sleep inside libuv, because nothing is drawing sixty times a
 -- second behind it.
 --
--- OBSERVATION, NOT PLUMBING. The roster's state model is lua/dash.lua's --
--- literally: that module is required and its records are reused. dash learns
+-- OBSERVATION, NOT PLUMBING. The shared Fleet registry combines native agent
+-- processes with lua/dash.lua's existing scheduler records. dash learns
 -- what each agent is doing by wrapping three bog.* entry points and
 -- attributing every chunk to whichever actor's coroutine is running; that
 -- mechanism exists, is tested (tests/ltui.lua), and writing a second one would
@@ -72,6 +72,11 @@ local STATE = {
   err      = { "crashed",             "error"   },
   idle     = { "idle",                "dim"     },
   new      = { "new",                 "dim"     },
+  alive    = { "alive / unknown",     "link"    },
+  starting = { "starting",            "dim"     },
+  exited   = { "exited",              "dim"     },
+  failed   = { "failed",              "error"   },
+  unreachable = { "unreachable",      "warn"    },
 }
 
 function SwarmView:new()
@@ -91,7 +96,7 @@ function SwarmView:new()
 end
 
 function SwarmView:get_name()
-  return self:live() and "Swarm *" or "Swarm"
+  return self:live() and "Fleet *" or "Fleet"
 end
 
 -- Closing is just closing now. This view no longer owns the run -- the studio's
@@ -247,6 +252,7 @@ end
 -- ---------------------------------------------------------------------------
 
 function SwarmView:state_of(rec)
+  if rec.fleet_origin == "external" then return rec.state end
   if self.killed[rec.id] then return "stopped" end
   -- The swarm gate holds approval requests out of band in bog.approvals; if one
   -- is outstanding for this agent it is waiting on approval, whatever its
@@ -273,12 +279,7 @@ local function state_word(s)
 end
 
 function SwarmView:records()
-  local out = {}
-  for _, id in ipairs(dash.order) do
-    local rec = dash.agents[id]
-    if rec then out[#out + 1] = rec end
-  end
-  return out
+  return require("core.fleetagents").registry:records()
 end
 
 function SwarmView:selected_record()
@@ -397,6 +398,7 @@ end
 
 function SwarmView:toolbar_items()
   local items = {}
+  items[#items + 1] = { label = "New agent", action = function() require("core.agentlauncher").choose() end }
   if self:live() then
     items[#items + 1] = { label = "Stop", tone = style.warn,
                           action = function() self:stop() end }
@@ -467,7 +469,7 @@ function SwarmView:draw_roster(font, charw, x, y, lh, voff, cols, rows)
     -- step up a shade on the row you are actually reading.
     local quiet = sel and style.text or style.dim
     if sel and colour == style.dim then colour = style.text end
-    cell(font, charw, x, y + voff, C.id, tostring(rec.id), style.text, 4)
+    cell(font, charw, x, y + voff, C.id, rec.short_id or tostring(rec.id), style.text, 4)
     cell(font, charw, x, y + voff, C.kind, rec.kind or "agent", style.accent,
          (C.state - C.kind) - 1)
     cell(font, charw, x, y + voff, C.state, word, colour,
@@ -486,7 +488,7 @@ function SwarmView:draw_roster(font, charw, x, y, lh, voff, cols, rows)
         "approve? " .. pend.name .. " " .. (pend.summary or ""):gsub("%s+", " "),
         style.warn, cols - C.act)
     else
-      cell(font, charw, x, y + voff, C.act, dash.activity(rec), style.text, cols - C.act)
+      cell(font, charw, x, y + voff, C.act, rec.activity or dash.activity(rec), style.text, cols - C.act)
     end
     local id = rec.id
     self.hits[#self.hits + 1] = {
@@ -582,6 +584,32 @@ function SwarmView:draw_detail(font, charw, x, y, lh, voff, cols, rows)
     return
   end
 
+  if rec.fleet_origin == "external" then
+    local registry = require("core.fleetagents").registry
+    cell(font, charw, x, y + voff, 0, rec.name .. "  " .. rec.provider .. "  " .. rec.state, style.accent, cols)
+    y = y + lh
+    local items = {}
+    for _, entry in ipairs { { "focus", "Focus pane" }, { "stop", "Stop", style.error } } do
+      if rec.capabilities[entry[1]] then
+        local action, id, generation = entry[1], rec.id, rec.generation
+        items[#items + 1] = { label=entry[2], tone=entry[3], action=function()
+          local ok,err=registry:control(id,generation,action)
+          if not ok then self:note(err or "agent action failed",true) end
+          core.redraw=true
+        end }
+      end
+    end
+    for _,hit in ipairs(widgets.row(font,items,x,y,self.mouse)) do self.hits[#self.hits+1]=hit end
+    y = y + widgets.height(font)
+    for _,text in ipairs { "pane: " .. (rec.short_id or rec.id), "cwd: " .. (rec.cwd or "?"),
+      "process: " .. tostring(rec.pid or "?") .. (rec.exit_status and rec.exit_status>=0 and ("  exit: " .. rec.exit_status) or ""),
+      rec.activity or "agent activity unknown", rec.error or "" } do
+      if y + lh > self.position.y + self.size.y - style.padding.y then break end
+      cell(font,charw,x,y+voff,0,text,style.text,cols);y=y+lh
+    end
+    return
+  end
+
   local word = select(1, state_word(self:state_of(rec)))
   cell(font, charw, x, y + voff, 0, string.format(
     "AGENT %d  %s  %s%s  %s out  %d tool call%s", rec.id, rec.kind or "agent", word,
@@ -673,11 +701,13 @@ local TALLY = {
   { "run", "running" }, { "io", "io" }, { "mail", "mail" },
   { "proc", "in a command" }, { "paused", "paused" }, { "stopped", "stopped" },
   { "done", "done" }, { "err", "crashed" },
+  { "alive", "alive (activity unknown)" }, { "starting", "starting" },
+  { "exited", "exited" }, { "failed", "failed" }, { "unreachable", "unreachable" },
 }
 local ALWAYS = { run = true, io = true, mail = true, done = true, err = true }
 
 function SwarmView:draw_totals(font, charw, x, y, cols)
-  local t = dash.totals()   -- the aggregates: how many, and how much came out
+  local t = dash.totals(self:records())
   -- The states are counted from the same state_of() the roster rows use, so
   -- the bar and the rows cannot disagree. dash.totals counts only the five it
   -- has words for, which is why a stopped swarm read "3 done, 1 crashed" under
@@ -782,7 +812,7 @@ function SwarmView:draw()
   -- ---- roster -------------------------------------------------------------
   -- Capped at just under half the body: the roster is the index, and the pane
   -- underneath is where the reading happens.
-  local n = math.max(#dash.order, 1)
+  local n = math.max(#self:records(), 1)
   local roster_rows = math.max(1, math.min(n, math.floor(body_h * 0.45 / lh) - 1))
   local y = self:draw_roster(font, charw, x, body_y, lh, voff, cols, roster_rows)
 

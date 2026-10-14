@@ -1,7 +1,10 @@
 # Bmux agent control and a common Fleet
 
-Status: proposed design for review, 2026-10-14. Agent integration is not yet
-implemented. The BMUX workspace and native terminal controls are committed.
+Status: staged design, 2026-10-14. The BMUX workspace, native terminal controls,
+New agent launcher and common internal/external Fleet roster are implemented.
+Structured runtime control, manual-shell hooks, rich provider adapters and
+persistence remain proposed follow-up work. See the
+[launcher implementation plan](../plans/2026-10-14-bmux-agent-launcher.md).
 
 ## Product shape
 

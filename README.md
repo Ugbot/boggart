@@ -24,6 +24,10 @@ terminal tabs and split panes with visible controls. Click BMUX to open a shell;
 its toolbar creates tabs/splits and closes, focuses or zooms panes. Switching
 modes keeps the running shells and split layout. See
 [BMUX controls](docs/studio-panels.md#bmux-mode).
+**New agent** starts Boggart TUIs or external/custom agent commands in those
+panes and registers them in the same Fleet roster, with process status and
+working focus/stop controls. Rich runtime control and manual-launch hooks are
+the next integration stages.
 
 ![The conversation is the application](docs/images/chat.png)
 
