@@ -134,3 +134,40 @@ translate managed growth/projection and copy-time reservation policies, then
 resolve the mixed-script feed width behavior. Capture large boundary
 expectations per SDK target profile. Keep BMUX-20 failed until the entire
 extended gate and rollback/performance checks pass.
+
+## Live managed-data checkpoint, 2026-10-14
+
+The pinned terminal Unicode profile and cell-backed style accounting are
+connected. Grapheme append now reserves page-local bitmap extents before
+releasing the old extent, preserving the SDK's allocation fragmentation and
+growth/projection behavior. Venus Swiss tables index extents by physical cell
+address. Payloads stay in the existing shared C pool; each cell owns its own
+metadata extent. Style-capacity growth invalidates grapheme metadata so the
+next append reconciles it. Usage includes aligned map buffers and bitmap words.
+
+Both pinned resize corpora now pass: 46 small cases/215 snapshots and 11 large
+cases/79 snapshots. Dense growth, independent copied-cluster appends, suffix
+limits, erase/ID reuse, retained capacity and history lifetime have direct C
+checks. Fault images cover maps and bitmap words; 15 fresh/dirty cache,
+Swiss-table growth and arena-growth failures preserve deep page state.
+Resize preparation defers
+managed caches, preserving source ownership and allocation-free commit.
+
+Normal CLI/Studio builds and C11 warnings-as-errors pass. Full normal CTest
+passes 132/132 (126.73s); focused ASan/UBSan passes six tests (13.54s), with
+no sanitizer diagnostics. Final expanded fault checks then pass separately
+in both normal and sanitizer builds (0.24s/0.33s); product code is unchanged
+from the full-suite run.
+
+This is a bounded conformance checkpoint. Bulk cell copies/erases and geometry
+changes reconcile caches lazily; exact fragmentation preservation across every
+cached resize is not established. Pen-only styles, hyperlink/string metadata,
+broader differential fuzzing and other SDK target profiles remain open. The
+prior style-feed benchmark measured additional feed cost; this checkpoint makes
+no performance claim. BMUX-20 remains in progress while these gaps are checked.
+
+Implementation preference: C11 or newer and Lua; borrow useful structures from
+`~/venus`, and use SDL3 platform facilities wherever they fit. Studio already
+uses SDL3 for windows/input. Current new implementation and test changes are C;
+new capture/validation tools use Lua. Historical Python developer tooling is
+still present and has not been rewritten by this checkpoint.

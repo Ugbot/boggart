@@ -221,4 +221,38 @@ static void managed_styles(void) {
   CHECK(lpage_put(s,0,0,(lpage_cell){'z',id,0,1,0,0})); lstyle_release(lpage_styles(s),id);
   lpage_destroy(s);
 }
-int main(void) { ownership(); cached_capacity(); height_transfer(); heads(); bounded(); group_boundaries(); managed_styles(); puts("resize ownership, live page style capacities, logical boundaries and 9000 mixed resizes passed"); return 0; }
+static void managed_graphemes(void) {
+  lpage_screen *s=lpage_create(215,300,2000); CHECK(s);
+  lp_group_span first,second; CHECK(lp_row_group(s,0,&first)); size_t boundary=first.rows;
+  for (unsigned i=0;i<768;i++) {
+    CHECK(lpage_put(s,i/215,i%215,(lpage_cell){'x',0,0,1,0,0}));
+    for (unsigned j=0;j<16;j++) CHECK(lpage_append_grapheme(s,i/215,i%215,0x301,1));
+    CHECK(lpage_grapheme(s,lpage_get(s,i/215,i%215)).length==17);
+  }
+  CHECK(lp_row_group(s,0,&first) && first.capacity.grapheme_bytes==65536 && first.rows==boundary);
+  CHECK(lp_row_group(s,boundary,&second) && second.capacity.grapheme_bytes==8192);
+  /* Shared payloads still have separate cell extents. Appending one copy
+   * must leave the original cluster and its references intact. */
+  lpage_cell copy=*lpage_get(s,0,0);
+  CHECK(lpage_put(s,5,0,copy)); CHECK(lpage_append_grapheme(s,5,0,0x302,1));
+  CHECK(lpage_grapheme(s,lpage_get(s,0,0)).length==17);
+  CHECK(lpage_grapheme(s,lpage_get(s,5,0)).length==18);
+  for (unsigned i=0;i<100;i++) CHECK(lpage_append_grapheme(s,5,0,0x303,1));
+  CHECK(lpage_grapheme(s,lpage_get(s,5,0)).length==LG_LIMIT);
+  lpage_resize *r=lpage_resize_prepare(s,(lpage_resize_options){217,300,false,true,{0,299,false},{0,0,false},false});
+  CHECK(r); lpage_resize_commit(r);
+  CHECK(lp_row_group(s,0,&first) && first.capacity.grapheme_bytes==65536);
+  for (size_t y=0;y<300;y++) CHECK(lpage_erase(s,y,0,217,0));
+  CHECK(!lgrapheme_count(lpage_graphemes(s)));
+  for (unsigned i=0;i<2000;i++) {
+    CHECK(lpage_put(s,0,0,(lpage_cell){'y',0,0,1,0,0}));
+    CHECK(lpage_append_grapheme(s,0,0,0x301,1));
+    CHECK(lpage_erase(s,0,0,1,0));
+  }
+  CHECK(!lgrapheme_count(lpage_graphemes(s)));
+  CHECK(lp_row_group(s,0,&first) && first.capacity.grapheme_bytes==65536);
+  CHECK(lpage_scroll(s,0,299,25,true,0)); lpage_clear_history(s);
+  CHECK(lpage_put(s,0,0,(lpage_cell){'z',0,0,1,0,0}));
+  CHECK(lpage_append_grapheme(s,0,0,0x301,1)); lpage_destroy(s);
+}
+int main(void) { ownership(); cached_capacity(); height_transfer(); heads(); bounded(); group_boundaries(); managed_styles(); managed_graphemes(); puts("resize ownership, live style/grapheme capacities, logical boundaries and 9000 mixed resizes passed"); return 0; }
