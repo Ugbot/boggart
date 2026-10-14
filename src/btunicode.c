@@ -4,6 +4,8 @@
  */
 #include "btunicode.h"
 #include "btunicode_data.h"
+#include "lgrapheme.h"
+#include <limits.h>
 static bool valid(uint32_t cp) {
   return cp <= 0x10ffff && !(cp >= 0xd800 && cp <= 0xdfff);
 }
@@ -35,4 +37,60 @@ bunicode_width_effect btunicode_effect(uint32_t previous, uint32_t cp) {
     return cp == 0xfe0f ? BU_WIDTH_WIDE : BU_WIDTH_NARROW;
   }
   return valid(cp) && (properties(cp) & 4) ? BU_WIDTH_UNCHANGED : BU_WIDTH_WIDE;
+}
+
+static unsigned text_scalar_width(uint32_t cp) {
+  return cp<32 || cp==127 ? 0 : btunicode_width(cp);
+}
+/* One effective native text cluster, including ignored source suffixes. The
+ * stored DFA/previous scalar stop advancing at the page's retention cap. */
+static const char *text_cluster(const char *p,const char *end,bool grapheme,unsigned *width) {
+  uint32_t previous;const char *next=bunicode_utf8_next(p,end,&previous);
+  *width=text_scalar_width(previous);if(!*width)return next;
+  btunicode_state state={0};(void)btunicode_break(&state,previous);size_t retained=1;
+  p=next;
+  while(p<end) {
+    uint32_t cp;next=bunicode_utf8_next(p,end,&cp);unsigned scalar=text_scalar_width(cp);
+    if(cp<32 || cp==127){p=next;continue;}
+    if(!grapheme) {
+      if(scalar)break;
+      p=next;continue;
+    }
+    btunicode_state candidate=state;
+    bool boundary=cp<=255 || btunicode_break(&candidate,cp);
+    if(boundary) {
+      if(scalar)break;
+      p=next;continue;
+    }
+    bunicode_width_effect effect=btunicode_effect(previous,cp);
+    if(effect!=BU_WIDTH_IGNORE) {
+      if(effect==BU_WIDTH_WIDE)*width=2;
+      else if(effect==BU_WIDTH_NARROW)*width=1;
+      if(retained<LG_LIMIT){state=candidate;previous=cp;retained++;}
+    }
+    p=next;
+  }
+  return p;
+}
+int btunicode_text_width(const char *text,size_t length,bool grapheme) {
+  if(!length || !text)return 0;
+  const char *p=text,*end=text+length;int total=0;
+  while(p<end) {
+    unsigned width;p=text_cluster(p,end,grapheme,&width);
+    if(total>INT_MAX-(int)width)return INT_MAX;
+    total+=(int)width;
+  }
+  return total;
+}
+size_t btunicode_text_take(const char *text,size_t length,int columns,bool grapheme,int *used) {
+  if(used)*used=0;
+  if(!length || !text || columns<0)return 0;
+  const char *p=text,*end=text+length;int total=0;
+  while(p<end) {
+    unsigned width;const char *next=text_cluster(p,end,grapheme,&width);
+    if((int)width>columns-total)break;
+    total+=(int)width;p=next;
+  }
+  if(used)*used=total;
+  return (size_t)(p-text);
 }

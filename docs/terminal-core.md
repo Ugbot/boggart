@@ -172,6 +172,12 @@ consumers are not yet implemented. The pinned Ghostty differential suite is
 BMUX-23. Keep BMUX-16 open until vim, htop, less and tmux rendering is verified
 through the integrated terminal; these C tests do not satisfy that app gate.
 
+Native `terminal:width(text)` and `terminal:take(text, columns)` now expose the
+pinned profile and current mode for plain-text layout, with bounded cluster
+prefixes. They do not interpret VT cursor/escape behavior or change existing
+cell widths. See [native text measurement](terminal-text-layout.md). Rendering
+and general string-helper migration remain required before BMUX-19 closes.
+
 ## Lua terminal object
 
 `src/lterminal.c` is registered as `terminal` in both front ends and worker

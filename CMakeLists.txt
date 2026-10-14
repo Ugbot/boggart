@@ -1006,6 +1006,9 @@ add_executable(termgrid_test tests/c/termgrid.c)
 target_include_directories(termgrid_test PRIVATE studio/src)
 target_link_libraries(termgrid_test PRIVATE boggart_vt)
 add_test(NAME termgrid COMMAND termgrid_test)
+add_executable(terminal_text_width_test tests/c/terminal_text_width.c)
+target_link_libraries(terminal_text_width_test PRIVATE boggart_vt)
+add_test(NAME terminal_text_width COMMAND terminal_text_width_test)
 if(TARGET boggart-studio)
   add_executable(termcache_test tests/c/termcache.c studio/src/termgrid.c)
   target_include_directories(termcache_test PRIVATE studio/src ${SDL3_INCLUDE_DIRS})
@@ -1210,4 +1213,4 @@ endif()
 # interpreter and JSON lib too, so a misuse inside them is attributed.
 boggart_apply_sanitizer(boggart boggart-studio auth_threads_test assert_trap_test crash_handler_test
                         termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt boggart_pty pty_transport_test studio_uvbridge_test termgrid_test termcache_test renderer_fonts_test renderer_atlas_test vt_parser_test page_storage_test page_resize_test page_layout_test bitmap_test idmap_test idmap_scalar_test resize_failure_test
-                        terminal_dispatch_test osc_commands_test terminal_events_test terminal_links_test mouse_encode_test terminal_mouse_test key_encode_test terminal_key_test paste_encode_test terminal_input_test boggart_unicode unicode_test wide_cells_test grapheme_cells_test terminal_unicode_test)
+                        terminal_dispatch_test osc_commands_test terminal_events_test terminal_links_test mouse_encode_test terminal_mouse_test key_encode_test terminal_key_test paste_encode_test terminal_input_test boggart_unicode unicode_test wide_cells_test grapheme_cells_test terminal_unicode_test terminal_text_width_test)

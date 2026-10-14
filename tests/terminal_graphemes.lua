@@ -9,8 +9,16 @@ check(row.cells[1].codepoint == 101 and row.cells[1].text == "é", "base codepo
 check(row.cells[2].text == "👩‍💻" and row.cells[2].width == 2 and row.cells[3].text == "" and row.cells[3].width == 0, "emoji pair text")
 check(row.cells[4].text == "🇬🇧" and row.cells[6].text == "日" and t:state().col == 8, "cluster widths advance cursor")
 check(t:state().modes & terminal.GRAPHEME ~= 0, "Unicode mode defaults on")
+check(t:width('é👩‍💻🇬🇧日')==7,'native text width collapses cell graphemes')
+local head,used=t:take('é👩‍💻X',3)
+check(head=='é👩‍💻' and used==3,'native prefix preserves whole clusters')
+check(t:take('👩‍💻X',1)=='','native prefix leaves a wide cluster whole')
+check(t:width('a\0b')==2,'native text width uses explicit string lengths')
 t:feed("\27[?2027$p\27[?2027l\27[?2027$p")
 check(t:replies() == "\27[?2027;1$y\27[?2027;2$y", "mode query reports enabled and disabled")
+check(t:width('👩‍💻')==4,'native text width follows current legacy mode')
+head,used=t:take('👩‍💻X',2)
+check(head=='👩‍' and used==2,'legacy prefix follows scalar cells and zero-width suffixes')
 t:feed("\27[?2027:1$p\27[?2027;1$p\27[2027$p\27[?9999$p")
 check(t:replies() == "", "unsupported and malformed queries are ignored")
 t:reset();t:feed("e" .. ("́"):rep(10000))
@@ -61,4 +69,25 @@ for _, method in ipairs { "row", "snapshot" } do
 end
 collectgarbage("incremental");collectgarbage("restart")
 check(finalized == 40, "all finalizers exercised")
+-- Number-to-string validation allocates before borrowing the native mode.
+local old_step=collectgarbage('param','stepsize')
+local old_pause=collectgarbage('param','pause')
+for _,method in ipairs{'width','take'} do
+  local triggered=0
+  for attempt=1,10 do
+    collectgarbage('collect');collectgarbage('stop')
+    local target=terminal.new(8,1,0);local ran=false
+    do local garbage=setmetatable({},{__gc=function() ran=true;target:close() end}) end
+    collectgarbage('incremental');collectgarbage('param','stepsize',0);collectgarbage('param','pause',100)
+    collectgarbage('restart')
+    local ok,result,columns=pcall(target[method],target,10000000+attempt,3)
+    if ran then triggered=triggered+1 end
+    if ok then check(method=='width' and result==8 or method=='take' and #result==3 and columns==3,'measurement result survives finalization')
+    else check(tostring(result):find('closed terminal',1,true)~=nil,'validation finalizer closure is rejected safely') end
+    collectgarbage('collect');target:close()
+  end
+  check(triggered>0,'measurement argument validation exercised finalizers: '..method)
+end
+collectgarbage('param','stepsize',old_step);collectgarbage('param','pause',old_pause)
+collectgarbage('collect');collectgarbage('restart')
 io.write(string.format("terminal Unicode: %d passed\n", passed))

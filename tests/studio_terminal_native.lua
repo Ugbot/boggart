@@ -8,6 +8,8 @@ local ok,err=xpcall(function()
   assert(seen['panes.lua'] and seen['terminal.lua'],'embedded directory lists actual plugins')
   assert(View.feed==nil and View.step_byte==nil and rawget(_G,'pty')==nil,'no legacy parser/PTY on the pane path')
   local t <close> =terminal.new(80,24,20); local captured={}
+  assert(t:width('é👩‍💻🇬🇧日')==7,'Studio native profile measures complete cell clusters')
+  local head,used=t:take('é👩‍💻X',3);assert(head=='é👩‍💻' and used==3,'Studio native prefix matches CLI')
   local view=View{terminal=t,send=function(s) captured[#captured+1]=s; return true end}
   local node=core.root_view:get_active_node(); node:add_view(view)
   local function frame() core.frame_start=system.get_time(); core.step() end
