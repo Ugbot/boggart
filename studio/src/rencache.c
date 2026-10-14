@@ -63,6 +63,7 @@ static int command_buf_size;
 static int command_buf_idx;
 static RenRect screen_rect;
 static bool show_debug;
+static RenCacheStats last_frame;
 
 
 static inline int min(int a, int b) { return a < b ? a : b; }
@@ -312,10 +313,12 @@ static void push_rect(RenRect r, int *count) {
 
 
 void rencache_end_frame(void) {
+  last_frame = (RenCacheStats){0};
   /* update cells from commands */
   Command *cmd = NULL;
   RenRect cr = screen_rect;
   while (next_command(&cmd)) {
+    if (cmd->type == DRAW_ROW) { last_frame.rows_queued++; }
     if (cmd->type == SET_CLIP) { cr = cmd->rect; }
     RenRect r = intersect_rects(cmd->rect, cr);
     if (r.width == 0 || r.height == 0) { continue; }
@@ -359,9 +362,11 @@ void rencache_end_frame(void) {
   }
 
   /* redraw updated regions */
+  last_frame.dirty_rects = rect_count;
   for (int i = 0; i < rect_count; i++) {
     /* draw */
     RenRect r = rect_buf[i];
+    RenRect replay_clip = r;
     ren_set_clip_rect(r);
 
     cmd = NULL;
@@ -370,7 +375,8 @@ void rencache_end_frame(void) {
         case FREE_FONT:
           break;  /* a marker, not drawn; freed unconditionally below */
         case SET_CLIP:
-          ren_set_clip_rect(intersect_rects(cmd->rect, r));
+          replay_clip = intersect_rects(cmd->rect, r);
+          ren_set_clip_rect(replay_clip);
           break;
         case DRAW_RECT:
           ren_draw_rect(cmd->rect, cmd->color);
@@ -387,6 +393,11 @@ void rencache_end_frame(void) {
           ren_draw_image(cmd->image, &cmd->sub, &cmd->rect, cmd->color);
           break;
         case DRAW_ROW: {
+          /* The cached bounds include glyph/decorations overhang. Clip state
+           * must still be replayed in order, even when a row has no pixels. */
+          RenRect visible = intersect_rects(cmd->rect, replay_clip);
+          if (!visible.width || !visible.height) { last_frame.rows_skipped++; break; }
+          last_frame.rows_replayed++;
           RowCommand *payload = (RowCommand *)cmd;
           ren_set_font_tab_width(cmd->font, cmd->tab_width);
           tg_draw(payload->row, cmd->font, &payload->theme, payload->x, payload->y,
@@ -425,3 +436,5 @@ void rencache_end_frame(void) {
   cells_prev = tmp;
   command_buf_idx = 0;
 }
+
+RenCacheStats rencache_stats(void) { return last_frame; }

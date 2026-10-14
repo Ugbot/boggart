@@ -49,6 +49,16 @@ static int f_end_frame(lua_State *L) {
   return 0;
 }
 
+static int f_terminal_replay_stats(lua_State *L) {
+  RenCacheStats stats = rencache_stats();
+  lua_createtable(L,0,4);
+  lua_pushinteger(L,(lua_Integer)stats.rows_queued); lua_setfield(L,-2,"rows_queued");
+  lua_pushinteger(L,(lua_Integer)stats.rows_replayed); lua_setfield(L,-2,"rows_replayed");
+  lua_pushinteger(L,(lua_Integer)stats.rows_skipped); lua_setfield(L,-2,"rows_skipped");
+  lua_pushinteger(L,stats.dirty_rects); lua_setfield(L,-2,"dirty_rects");
+  return 1;
+}
+
 
 static int f_set_clip_rect(lua_State *L) {
   RenRect rect;
@@ -201,6 +211,7 @@ static const luaL_Reg lib[] = {
   { "get_size",        f_get_size        },
   { "begin_frame",     f_begin_frame     },
   { "end_frame",       f_end_frame       },
+  { "terminal_replay_stats", f_terminal_replay_stats },
   { "set_clip_rect",   f_set_clip_rect   },
   { "draw_rect",       f_draw_rect       },
   { "draw_line",       f_draw_line       },

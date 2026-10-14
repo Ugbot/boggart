@@ -18,5 +18,11 @@ bool rencache_draw_row(tg_row *row, RenFont *font, const tg_theme *theme,
 void rencache_invalidate(void);
 void rencache_begin_frame(void);
 void rencache_end_frame(void);
+/* Snapshot of the last completed frame; replay counts include each dirty rect. */
+typedef struct {
+  size_t rows_queued,rows_replayed,rows_skipped;
+  int dirty_rects;
+} RenCacheStats;
+RenCacheStats rencache_stats(void);
 
 #endif
