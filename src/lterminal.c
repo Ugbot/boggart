@@ -3,6 +3,7 @@
 #include "bterm.h"
 #include "lterminal.h"
 #include "bpty.h"
+#include "btunicode.h"
 #include "lua.h"
 #include "lauxlib.h"
 #include <string.h>
@@ -310,6 +311,21 @@ static int l_geometry(lua_State *L) {
   size_t cols=lpage_columns(s),rows=lpage_rows(s),history=lpage_history_count(s);
   lua_pushinteger(L,(lua_Integer)cols); lua_pushinteger(L,(lua_Integer)rows); lua_pushinteger(L,(lua_Integer)history); return 3;
 }
+static int l_width(lua_State *L) {
+  size_t length;const char *text=luaL_checklstring(L,2,&length);
+  bool grapheme=(bterm_state(check(L)->term).modes&BT_GRAPHEME)!=0;
+  int width=btunicode_text_width(text,length,grapheme);
+  lua_pushinteger(L,width);return 1;
+}
+static int l_take(lua_State *L) {
+  size_t length;const char *text=luaL_checklstring(L,2,&length);
+  lua_Integer columns=luaL_checkinteger(L,3);
+  if(columns<0)columns=0;else if(columns>INT_MAX)columns=INT_MAX;
+  bool grapheme=(bterm_state(check(L)->term).modes&BT_GRAPHEME)!=0;
+  int used;size_t bytes=btunicode_text_take(text,length,(int)columns,grapheme,&used);
+  /* The source Lua string is rooted; the native borrow ended before allocation. */
+  lua_pushlstring(L,text,bytes);lua_pushinteger(L,used);return 2;
+}
 static int l_process_revision(lua_State *L) {
   terminal *t=check(L); if (!t->process) { lua_pushnil(L); return 1; }
   lua_pushinteger(L,(lua_Integer)bpty_state(t->process).revision); return 1;
@@ -546,6 +562,7 @@ int luaopen_boggart_terminal(lua_State *L) {
     {"paste", l_paste}, {"paste_safe", l_paste_safe}, {"focus", l_focus},
     {"write",l_write}, {"process_state",l_process_state}, {"foreground_group",l_foreground_group},
     {"geometry",l_geometry}, {"process_revision",l_process_revision},
+    {"width",l_width}, {"take",l_take},
     {"clipboard_reply", l_clipboard_reply}, {"usage", l_usage}, {"close", l_close}, {"__gc", l_close}, {"__close", l_close}, {NULL, NULL} };
   luaL_newmetatable(L, TERMINAL_MT); luaL_setfuncs(L, methods, 0); lua_pushvalue(L, -1); lua_setfield(L, -2, "__index"); lua_pop(L, 1);
   lua_newtable(L); lua_pushcfunction(L, l_new); lua_setfield(L, -2, "new");
