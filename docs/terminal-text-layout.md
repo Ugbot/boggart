@@ -68,9 +68,28 @@ profile. BMUX-19 criterion 1500 remains open until terminal cluster painting,
 measurement and corresponding prefix/render consumers agree across fragmented
 input, fonts, edits/history/resize and deferred lifetime.
 
-The next rendering increment needs a glyph-ID/position interface separated from
-generic SDL drawing. Complex cluster shaping will use a pinned static OpenType
+The font raster/cache ownership now lives in `studio/src/fontglyph.c`, separate
+from generic SDL drawing in `renderer.c` (416 lines after extraction). The
+internal `fontglyph.h` boundary keeps FreeType faces, font bytes and mutable
+cache entries private. It returns scalar glyph geometry by value plus a borrowed
+texture, font metrics and atlas capacity statistics. The renderer installs its
+borrowed SDL device and pending-geometry flush hook. Each returned glyph must be
+queued before another lookup can migrate its atlas; migration and free flush
+geometry before changing UVs or destroying textures. Font caches must be released
+before destroying the device. Headless measurement keeps the existing CPU path.
+Both files are included in compiled renderer-source fingerprints.
+
+This ownership refactor preserves the existing scalar layout, fallback policy,
+style variants and atlas behavior. Normal focused tests pass **9/9**, 4.60s;
+ASan/UBSan **9/9**, 6.73s. All **26** saved pre/post SDL dummy-driver screenshots
+are byte-identical, including styles, clips, partial damage, history, resize and
+queued mutation/close. The controlled SDL window pixel/lifetime test also passes.
+
+The next increment needs glyph-ID lookup and positioned cluster shaping within
+that boundary. Shaped runs should retain glyph IDs/positions, resolving each
+borrowed texture at draw time so later atlas migration cannot stale a run.
+Complex cluster shaping will use a pinned static OpenType
 shaper over owned font bytes. HarfBuzz's
 [OpenType font implementation](https://harfbuzz.github.io/harfbuzz-hb-ot-font.html)
 and [shaping API](https://harfbuzz.github.io/harfbuzz-hb-shape.html) provide that
-contract. No HarfBuzz dependency or shaping code is introduced by this increment.
+contract. No HarfBuzz dependency or shaping code has been introduced yet.

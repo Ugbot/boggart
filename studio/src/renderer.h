@@ -37,7 +37,7 @@ typedef enum {
 
 typedef enum {
   REN_HINT_NONE,     /* the outline as designed */
-  REN_HINT_SLIGHT,   /* vertical-only autohint; the default, see renderer.c */
+  REN_HINT_SLIGHT,   /* vertical-only autohint; the default, see fontglyph.c */
   REN_HINT_FULL      /* the autohinter's full grid fitting */
 } RenHinting;
 

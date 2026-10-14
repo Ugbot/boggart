@@ -682,7 +682,7 @@ endif()
 # nothing. What that header cannot do is hint: it scales the outline and
 # rasterises wherever it lands, so small text is uniformly soft. That is the
 # whole legibility gap, and it is not closable downstream of the rasteriser.
-# See the comment at the top of studio/src/renderer.c.
+# See the comment at the top of studio/src/fontglyph.c.
 #
 # Cost, measured on an M-series mac: 680 KB of binary (5.14 MB -> 5.82 MB) and
 # five seconds of single-threaded compile, cached after -- next to SDL3's two
@@ -944,7 +944,7 @@ target_include_directories(boggart PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 if(TARGET boggart-studio)
   target_include_directories(boggart-studio PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
   set(_renderer_source_header "/* Generated renderer build identity. */\nstatic const struct { const char *path, *sha256; } terminalrender_source_files[] = {\n")
-  foreach(_source studio/src/renderer.c studio/src/renderer.h studio/src/rencache.c studio/src/rencache.h
+  foreach(_source studio/src/renderer.c studio/src/renderer.h studio/src/fontglyph.c studio/src/fontglyph.h studio/src/rencache.c studio/src/rencache.h
       studio/src/termgrid.c studio/src/termgrid.h studio/src/termrender.c studio/src/termrender.h studio/src/fontatlas.c studio/src/fontatlas.h
       studio/src/api/renderer.c studio/src/api/renderer_font.c studio/src/api/terminalrender.c)
     file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${_source}" _sha)

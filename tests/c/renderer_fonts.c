@@ -15,6 +15,7 @@ static FT_Error font_face(FT_Library lib,const FT_Byte *bytes,FT_Long n,FT_Long 
 #define calloc font_calloc
 #define FT_New_Memory_Face font_face
 #include "../../studio/src/renderer.c"
+#include "../../studio/src/fontglyph.c"
 #undef calloc
 #undef FT_New_Memory_Face
 static uint64_t atlas_hash(GlyphSet *set) {

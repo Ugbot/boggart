@@ -35,7 +35,7 @@ shaping remain required before BMUX-19 can close.
 
 ## Required rendering follow-up
 
-- [ ] Separate glyph raster/cache ownership from generic SDL drawing so shaping
+- [x] Separate glyph raster/cache ownership from generic SDL drawing so shaping
   can consume glyph IDs/positions without expanding the renderer's large module.
 - [ ] Pin a static OpenType shaping dependency, select cluster fallback faces,
   cache positioned cluster glyphs and draw/measure authoritative cell advances.
@@ -46,3 +46,12 @@ shaping remain required before BMUX-19 can close.
 
 Measurement evidence: `docs/terminal-text-layout.md`. Required rendering work
 above remains unfinished; neither BMUX-19 nor the overall BMUX goal is complete.
+
+Font boundary increment: `studio/src/fontglyph.c` now owns font bytes, faces,
+fallback selection, rasterization and scalar atlases. `fontglyph.h` exposes
+glyph geometry by value and a borrowed texture; each quad must be queued before
+the next lookup can migrate an atlas. The renderer supplies the device and flush
+hook, so migration/free still flushes pending geometry before UV/texture changes.
+No shaping behavior/dependency is introduced by this refactor. Normal and
+ASan/UBSan focused suites both pass 9/9; 26 saved pre/post SDL screenshots are
+byte-identical, and the controlled SDL window pixel/lifetime test passes.
