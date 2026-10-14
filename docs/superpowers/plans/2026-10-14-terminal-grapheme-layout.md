@@ -69,3 +69,13 @@ results vary, and full input/flood gates remain open. See
 
 The remaining checkbox still includes general width/prefix/renderer migration
 and full performance gates. Native cell shaping does not close criterion 1500.
+
+Whole-string grid increment: `btunicode_text_next` copies exact native retained
+text, with a shared UTF-8 encoder. `sys.cell_width/cell_take`, font grid width and
+C deferred grid drawing now agree. Picker and sandbox text labels use these
+paired APIs, including whole-emoji truncation and explicit NUL lengths. Normal
+and sanitizer focused suites pass 13/13, with native pixel/retention/command
+ownership and actual SDL window tests. Remaining migration: normalize AgentView
+styled runs across cluster boundaries, and choose the CLI/external-terminal
+policy before switching its width/prefix consumers. Full performance gates stay
+open. Evidence: `docs/terminal-text-layout.md`.

@@ -2,6 +2,7 @@
 #include "fontcluster.h"
 #include "termgrid.h"
 #include "termrender.h"
+#include "btunicode.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -95,6 +96,20 @@ int main(int argc,char **argv) {
     free(expected);
   }
   FontShape *shape=NULL;CHECK(ren_font_face_shape(font,0,&shape) && shape);
+  for(unsigned v=0;v<sizeof vectors/sizeof *vectors;v++) {
+    const char *text=vectors[v];size_t length=strlen(text);
+    bterm *native=bterm_create(64,1,0,NULL,NULL);CHECK(native);
+    CHECK(bterm_feed(native,(const uint8_t *)text,length));
+    tg_row *snapshot=tg_capture(native,lpage_visible(bterm_screen(native),0),64);CHECK(snapshot);
+    ren_draw_rect((RenRect){0,0,640,240},(RenColor){.a=255});
+    tg_draw(snapshot,font,&theme,20,20,font->cell,font->height);size_t a;unsigned char *expected=pixels(&a);
+    tg_release(snapshot);bterm_destroy(native);
+    ren_draw_rect((RenRect){0,0,640,240},(RenColor){.a=255});
+    RenRect bounds;CHECK(ren_get_grid_bounds(font,text,length,&bounds));
+    CHECK(ren_get_grid_width(font,text,length)==btunicode_text_width(text,length,true)*font->cell);
+    ren_draw_grid(font,text,length,20,20,theme.foreground);size_t b;unsigned char *actual=pixels(&b);
+    CHECK(a==b && !memcmp(expected,actual,a));free(expected);free(actual);
+  }
   uint32_t too_many[FONT_SHAPE_SCALARS+1]={0};FontShapeRun unchanged;memset(&unchanged,0x5a,sizeof unchanged);
   FontShapeRun before=unchanged;CHECK(!fontshape_run(shape,too_many,FONT_SHAPE_SCALARS+1,&unchanged));CHECK(!memcmp(&before,&unchanged,sizeof before));
   RenFont *indic=ren_load_font(argv[2],16,NULL);CHECK(indic);

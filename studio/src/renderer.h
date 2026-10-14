@@ -108,4 +108,9 @@ int ren_draw_text(RenFont *font, const char *text, int x, int y, RenColor color)
  * cluster. Bounds prepare font caches before deferred replay. */
 bool ren_get_cluster_bounds(RenFont *font,const char *text,size_t length,int advance,RenRect *bounds);
 void ren_draw_cluster(RenFont *font,const char *text,size_t length,int x,int y,int advance,RenColor color);
+/* Whole plain-text grid strings use the native on-mode policy and font's "0"
+ * cell unit. Explicit lengths include NUL; C0/DEL do not paint/move the pen. */
+int ren_get_grid_width(RenFont *font,const char *text,size_t length);
+bool ren_get_grid_bounds(RenFont *font,const char *text,size_t length,RenRect *bounds);
+void ren_draw_grid(RenFont *font,const char *text,size_t length,int x,int y,RenColor color);
 #endif

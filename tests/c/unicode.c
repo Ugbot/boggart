@@ -80,6 +80,11 @@ static void decoding(void) {
   CHECK(bunicode_str_take("e\xcc\x81x", 4, 1, &used) == 3 && used == 1);
 }
 int main(int argc, char **argv) {
+  for(uint32_t cp=0;cp<=0x10ffff;cp++) {
+    if(cp>=0xd800 && cp<=0xdfff)continue;
+    char encoded[4];size_t n=bunicode_utf8_put(cp,encoded);uint32_t decoded;
+    CHECK(n>=1 && n<=4 && bunicode_utf8_next(encoded,encoded+n,&decoded)==encoded+n && decoded==cp);
+  }
   CHECK(argc == 2); conformance(argv[1]);
   CHECK(bunicode_width('a') == 1 && bunicode_width(0) == 0);
   CHECK(bunicode_width(0x301) == 0 && bunicode_width(0x200d) == 0);

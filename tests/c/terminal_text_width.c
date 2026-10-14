@@ -15,6 +15,20 @@ static int cell_width(const char *s,size_t n,bool grapheme,size_t split) {
 }
 static void vector(const char *s,size_t n,bool grapheme) {
   int expected=cell_width(s,n,grapheme,n);CHECK(btunicode_text_width(s,n,grapheme)==expected);
+  bterm *t=bterm_create(128,1,0,NULL,NULL);CHECK(t);
+  if(!grapheme)CHECK(bterm_feed(t,(const uint8_t *)"\033[?2027l",8));
+  CHECK(bterm_feed(t,(const uint8_t *)s,n));size_t position=0,column=0;
+  const lpage_screen *screen=bterm_screen(t);
+  while(position<n) {
+    btunicode_text_cluster cluster;size_t bytes=btunicode_text_next(s+position,n-position,grapheme,&cluster);
+    CHECK(bytes && bytes<=n-position && cluster.length<=sizeof cluster.text);position+=bytes;
+    if(!cluster.width){CHECK(!cluster.length);continue;}
+    const lpage_cell *cell=lpage_get(screen,0,column);CHECK(cell && cell->width==cluster.width);
+    lgrapheme_value value=lpage_grapheme(screen,cell);char encoded[LG_LIMIT*4];size_t length=0;
+    for(size_t i=0;i<value.length;i++)length+=bunicode_utf8_put(value.codepoints[i],encoded+length);
+    CHECK(length==cluster.length && !memcmp(encoded,cluster.text,length));column+=cluster.width;
+  }
+  CHECK(column==(size_t)expected);bterm_destroy(t);
   for(size_t cut=0;cut<=n;cut++)CHECK(cell_width(s,n,grapheme,cut)==expected);
   size_t previous=0;
   for(int budget=0;budget<=expected+2;budget++) {
@@ -49,5 +63,10 @@ int main(void) {
   CHECK(btunicode_text_take(NULL,0,0,true,&used)==0 && used==0);
   CHECK(btunicode_text_take("X",1,-1,true,&used)==0 && used==0);
   CHECK(btunicode_text_take("a日b",5,INT_MAX,true,&used)==5 && used==4);
+  btunicode_text_cluster empty;CHECK(!btunicode_text_next(NULL,0,true,&empty) && !empty.width && !empty.length);
+  char encoded[4];CHECK(!bunicode_utf8_put('A',NULL));
+  CHECK(bunicode_utf8_put(0,encoded)==1 && !encoded[0]);
+  CHECK(bunicode_utf8_put(0xd800,encoded)==3 && !memcmp(encoded,"\xef\xbf\xbd",3));
+  CHECK(bunicode_utf8_put(0x110000,encoded)==3 && !memcmp(encoded,"\xef\xbf\xbd",3));
   puts("terminal text: native cell/mode parity, all byte splits and prefix budgets, selectors/caps/profile and bounded UTF-8 pass");return 0;
 }

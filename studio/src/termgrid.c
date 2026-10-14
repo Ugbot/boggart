@@ -1,13 +1,7 @@
 #include "termgrid.h"
+#include "bunicode.h"
 #include <stdlib.h>
 #include <string.h>
-static size_t encode(uint32_t cp,char *out) {
-  if(cp>0x10ffff || (cp>=0xd800 && cp<=0xdfff))cp=0xfffd;
-  if(cp<0x80){out[0]=(char)cp;return 1;}
-  if(cp<0x800){out[0]=(char)(0xc0|(cp>>6));out[1]=(char)(0x80|(cp&63));return 2;}
-  if(cp<0x10000){out[0]=(char)(0xe0|(cp>>12));out[1]=(char)(0x80|((cp>>6)&63));out[2]=(char)(0x80|(cp&63));return 3;}
-  out[0]=(char)(0xf0|(cp>>18));out[1]=(char)(0x80|((cp>>12)&63));out[2]=(char)(0x80|((cp>>6)&63));out[3]=(char)(0x80|(cp&63));return 4;
-}
 tg_row *tg_capture(const bterm *term,const lpage_row *source,size_t columns) {
   if(!term || !source || !columns || columns>4096 || source->columns!=columns)return NULL;
   const lpage_screen *screen=bterm_screen(term);
@@ -15,7 +9,7 @@ tg_row *tg_capture(const bterm *term,const lpage_row *source,size_t columns) {
   size_t bytes=sizeof(tg_row)+columns*sizeof(tg_cell);
   for(size_t x=0;x<columns;x++){
     lgrapheme_value value=lpage_grapheme(screen,&source->cells[x]);char encoded[4];
-    for(size_t i=0;i<value.length;i++)bytes+=encode(value.codepoints[i],encoded);
+    for(size_t i=0;i<value.length;i++)bytes+=bunicode_utf8_put(value.codepoints[i],encoded);
     bytes++;
   }
   if(bytes>UINT32_MAX)return NULL;
@@ -27,7 +21,7 @@ tg_row *tg_capture(const bterm *term,const lpage_row *source,size_t columns) {
     const lpage_style *style=bterm_style(term,in->style);if(style)out->style=*style;
     out->width=in->width;out->flags=in->flags;out->text=(uint32_t)(text-(char *)row);
     lgrapheme_value value=lpage_grapheme(screen,in);
-    for(size_t i=0;i<value.length;i++)text+=encode(value.codepoints[i],text);
+    for(size_t i=0;i<value.length;i++)text+=bunicode_utf8_put(value.codepoints[i],text);
     out->length=(uint16_t)((size_t)(text-(char *)row)-out->text);*text++=0;
   }
   row->hash=UINT64_C(14695981039346656037);

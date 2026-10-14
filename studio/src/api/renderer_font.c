@@ -123,6 +123,13 @@ static int f_get_height(lua_State *L) {
   lua_pushnumber(L, ren_get_font_height(*self) );
   return 1;
 }
+static int f_get_grid_width(lua_State *L) {
+  RenFont **font=luaL_checkudata(L,1,API_TYPE_FONT);
+  size_t length;const char *text=luaL_checklstring(L,2,&length);
+  luaL_argcheck(L,*font!=NULL,1,"closed font");
+  int width=ren_get_grid_width(*font,text,length);
+  luaL_argcheck(L,width>=0,2,"grid text too wide");lua_pushinteger(L,width);return 1;
+}
 
 
 /* renderer.font.fallbacks() -> { { path = ..., loaded = bool }, ... }
@@ -152,6 +159,7 @@ static const luaL_Reg lib[] = {
   { "load",          f_load          },
   { "set_tab_width", f_set_tab_width },
   { "get_width",     f_get_width     },
+  { "get_grid_width",f_get_grid_width},
   { "get_height",    f_get_height    },
   { "fallbacks",     f_fallbacks     },
   { NULL, NULL }

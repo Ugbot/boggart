@@ -374,13 +374,16 @@ end
 
 -- Cut a row to the column it is drawn in, measured in display cells.
 --
--- sys.wtake is the only correct way to do this: a 200-character filename is
+-- Native cell prefixes stay whole and use the same policy as draw_grid.
+-- A 200-character filename is
 -- ordinary, this renderer does not clip, and a row that does not fit is drawn
 -- straight across whatever view is to the right. Slicing by byte instead would
 -- fit the column and hand the C text decoder half a codepoint.
 local function fit(text, cells)
-  if cells <= 1 or sys.width(text) <= cells then return text end
-  local head = sys.wtake(text, cells - 1)
+  if cells <= 0 then return "" end
+  if sys.cell_width(text) <= cells then return text end
+  if cells == 1 then return "…" end
+  local head = sys.cell_take(text, cells - 1)
   return head .. "…"
 end
 
@@ -396,13 +399,13 @@ function PickerView:draw()
   local w = self.size.x - pad * 2
   local y = self.position.y + vpad
 
-  common.draw_text(font, style.dim,
+  common.draw_grid(font, style.dim,
     self.mode == "folder"
       and "Choose a folder to work in -- enter chooses, right arrow opens"
       or "Open a file -- enter opens, left arrow goes up",
     "left", x, y, w, lh)
   y = y + lh
-  common.draw_text(font, style.text, self.dir, "left", x, y, w, lh)
+  common.draw_grid(font, style.text, self.dir, "left", x, y, w, lh)
   y = y + lh + vpad
 
   local actions = { { label = "Up", action = function()
@@ -418,12 +421,12 @@ function PickerView:draw()
   y = y + bh + vpad
 
   if self.filter ~= "" then
-    common.draw_text(font, style.accent, "filter: " .. self.filter,
+    common.draw_grid(font, style.accent, "filter: " .. self.filter,
       "left", x, y, w, lh)
     y = y + lh
   end
   if self.error then
-    common.draw_text(font, style.error, self.error, "left", x, y, w, lh)
+    common.draw_grid(font, style.error, self.error, "left", x, y, w, lh)
     y = y + lh
   end
 
@@ -435,7 +438,7 @@ function PickerView:draw()
     -- Filtering to nothing used to leave a blank rectangle, which reads as a
     -- picker that has broken rather than one that has been asked a question
     -- with no answer.
-    common.draw_text(font, style.dim, "nothing here matches " .. self.filter,
+    common.draw_grid(font, style.dim, "nothing here matches " .. self.filter,
       "left", x + pad / 2, top, w, lh)
     self.content_height = (top + lh + vpad) - self.position.y
     self:draw_scrollbar()
@@ -462,7 +465,7 @@ function PickerView:draw()
       renderer.draw_rect(x, ry, w, lh, style.line_highlight)
     end
     local colour = e.dim and style.dim or (e.dir and style.accent or style.text)
-    common.draw_text(font, colour, (e.dir and "/ " or "  ") .. fit(e.shown, cells),
+    common.draw_grid(font, colour, (e.dir and "/ " or "  ") .. fit(e.shown, cells),
       "left", x + pad / 2, ry, w, lh)
     self.row_hits[#self.row_hits + 1] =
       { x = x, y = ry, w = w, h = lh, index = i, entry = e }

@@ -149,3 +149,48 @@ the reproduced soft-hyphen regression and native pane tests.
 
 General helper/renderer migration, remaining BMUX-25 typography and full
 BMUX-3/28 frame/input gates are still required. Criterion 1500 remains open.
+
+## Whole-string Studio grid consumers
+
+`sys.cell_width(text)` and `sys.cell_take(text, columns)` explicitly select the
+same native on-mode plain-text policy as terminal cells. `sys.width/wtake`
+continue to serve their scalar renderers. Studio's `font:get_grid_width(text)`
+returns pixels using the font's width of `0` as its cell unit;
+`renderer.draw_grid(font, text, x, y, color)` returns the ending pixel position.
+`common.draw_grid` aligns and draws with those same metrics. These methods use
+explicit lengths, including embedded NUL. C0/DEL are ignored rather than treated
+as cursor, tab or newline instructions; callers provide one logical text line.
+The grid span is bounded to 100 million pixels and Lua coordinates are bounded
+before conversion to integers.
+
+`btunicode_text_next` now copies exactly the retained UTF-8 of one effective
+native cluster while consuming its source prefix. Ignored and over-cap source
+bytes do not enter the copied text. The existing width/take helpers use the same
+segmentation routine. `bunicode_utf8_put` centralizes strict scalar encoding and
+replaces the render-row encoder; every valid scalar round-trips through the
+bounded decoder. The collector compares its text and widths with actual native
+cells in both modes, including selectors, controls and retention caps.
+
+`gridtext.c` uses that iterator for both ink bounds and positioned cluster paint.
+Grid commands carry an explicit-length copy of the source in the existing
+command arena, with a separate payload so ordinary editor commands retain their
+size. They use the same deferred font cleanup as other text commands. Empty,
+invisible or zero-width grid text adds no paint command. Source mutation, embedded
+NUL, no-damage replay and failed buffer growth are tested.
+
+Picker text and sandbox text labels now pair cell prefixes with grid painting.
+A one-cell filename budget emits an ellipsis instead of splitting an emoji;
+sandbox `text_width` reports the same pixels its `text` function paints. Existing
+file-name control-byte display sanitization remains before grid layout.
+
+Normal focused checks pass **13/13**, 4.64s; ASan/UBSan **13/13**, 9.59s. The
+controlled SDL window test verifies width/prefix/paint/native pixel agreement,
+whole emoji truncation in the actual picker/sandbox draw paths and deferred font
+closure. Final encoder round-trip checks pass separately in both builds. C11
+warning/diff checks and the existing 44-module/34-file attribution gate pass.
+
+AgentView still needs normalization across styled token boundaries so a cluster
+split by markup is measured/painted once with its head's style. CLI/TUI consumers
+also need an explicit external-terminal policy before switching their helpers.
+This increment migrates whole-string Studio consumers; criterion 1500 and the
+overall BMUX goal remain open.

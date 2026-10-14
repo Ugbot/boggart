@@ -55,6 +55,9 @@ int bunicode_grapheme_width(const uint32_t *cps, size_t length, size_t *consumed
  * truncated encoding yields U+FFFD and consumes exactly one byte. At an empty
  * bounded input (or a NUL terminator without end), returns p and sets cp to 0. */
 const char *bunicode_utf8_next(const char *p, const char *end, uint32_t *cp);
+/* Encode a scalar into four available bytes; invalid values become U+FFFD.
+ * Returns 0 for NULL output, otherwise 1-4. Embedded NUL is one byte. */
+size_t bunicode_utf8_put(uint32_t cp,char *out);
 /* Compatibility measurement: sum scalar widths, saturating at INT_MAX.
  * These deliberately do not collapse clusters until the renderers do. */
 int bunicode_str_width(const char *s, size_t length);

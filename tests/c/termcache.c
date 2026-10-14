@@ -2,9 +2,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "btunicode.h"
 #define CHECK(c) do{if(!(c)){fprintf(stderr,"line %d: %s\n",__LINE__,#c);exit(1);}}while(0)
 static bool allocation_fails;
 static unsigned updates,draws,frees;
+static unsigned grid_draws;
 static unsigned draws_by_y[240];
 static void *cache_realloc(void *p,size_t n){return allocation_fails ? NULL : realloc(p,n);}
 #define realloc cache_realloc
@@ -23,6 +25,11 @@ int ren_get_font_height(RenFont *f){(void)f;return 16;}
 int ren_get_font_tab_width(RenFont *f){(void)f;return 8;}
 void ren_set_font_tab_width(RenFont *f,int n){(void)f;(void)n;}
 int ren_draw_text(RenFont *f,const char *s,int x,int y,RenColor c){(void)f;(void)y;(void)c;return x+(int)strlen(s)*8;}
+int ren_get_grid_width(RenFont *f,const char *s,size_t n){(void)f;return btunicode_text_width(s,n,true)*8;}
+bool ren_get_grid_bounds(RenFont *f,const char *s,size_t n,RenRect *bounds){*bounds=(RenRect){0,-2,ren_get_grid_width(f,s,n),18};return true;}
+void ren_draw_grid(RenFont *f,const char *s,size_t n,int x,int y,RenColor c){
+  (void)f;(void)x;(void)y;(void)c;CHECK(n==3 && !memcmp(s,"a\0b",3));grid_draws++;
+}
 void ren_free_font(RenFont *f){CHECK(f);frees++;}
 void tg_draw(const tg_row *row,RenFont *font,const tg_theme *theme,double x,int y,int cw,int ch){
   (void)font;(void)theme;(void)x;(void)cw;(void)ch;
@@ -93,6 +100,17 @@ int main(void){
   CHECK(!rencache_draw_row(row,font,&theme,0,0,8,16,bounds));CHECK(row->references==1 && command_buf_idx==0);
   allocation_fails=false; command_buf_size=capacity;
   CHECK(!push_command(DRAW_ROW,INT_MAX) && command_buf_idx==0);
+  char grid_text[]={'a',0,'b'};int end;
+  rencache_begin_frame();rencache_set_clip_rect((RenRect){0,0,320,240});
+  CHECK(rencache_draw_grid(font,grid_text,3,7,10,(RenColor){.a=255},&end) && end==23);
+  memset(grid_text,'X',sizeof grid_text);rencache_end_frame();CHECK(grid_draws>0);
+  unsigned before_grid=grid_draws;
+  rencache_begin_frame();rencache_set_clip_rect((RenRect){0,0,320,240});
+  CHECK(rencache_draw_grid(font,"a\0b",3,7,10,(RenColor){.a=255},&end));rencache_end_frame();
+  CHECK(grid_draws==before_grid);
+  capacity=command_buf_size;command_buf_size=0;allocation_fails=true;
+  CHECK(!rencache_draw_grid(font,"a\0b",3,7,10,(RenColor){.a=255},&end));
+  allocation_fails=false;command_buf_size=capacity;
   /* Borrowed source destruction and producer release do not invalidate replay. */
   rencache_begin_frame();CHECK(rencache_draw_row(row,font,&theme,8,16,8,16,bounds));
   tg_release(row);bterm_destroy(t);rencache_end_frame();

@@ -12,6 +12,7 @@ void rencache_draw_rect(RenRect rect, RenColor color);
 void rencache_draw_image(RenImage *image, RenRect sub, RenRect dst, RenColor color);
 void rencache_draw_line(float x0, float y0, float x1, float y1, float thickness, RenColor color);
 int  rencache_draw_text(RenFont *font, const char *text, int x, int y, RenColor color);
+bool rencache_draw_grid(RenFont *font,const char *text,size_t length,int x,int y,RenColor color,int *end);
 /* Commands own rows until end_frame, including frames with no damage. */
 bool rencache_draw_row(tg_row *row, RenFont *font, const tg_theme *theme,
                       double x, int y, int cell_width, int cell_height, RenRect bounds);

@@ -6,6 +6,7 @@
 #ifndef BOGGART_BTUNICODE_H
 #define BOGGART_BTUNICODE_H
 #include "bunicode.h"
+#include "lgrapheme.h"
 typedef struct {
   uint32_t previous;
   uint8_t machine;
@@ -20,4 +21,13 @@ bunicode_width_effect btunicode_effect(uint32_t previous, uint32_t cp);
  * Width saturates at INT_MAX. take never cuts an effective cluster. */
 int btunicode_text_width(const char *text,size_t length,bool grapheme);
 size_t btunicode_text_take(const char *text,size_t length,int columns,bool grapheme,int *used);
+typedef struct {
+  unsigned width;
+  size_t length;
+  char text[LG_LIMIT*4];
+} btunicode_text_cluster;
+/* Consume one effective cluster, copying exactly the native retained UTF-8.
+ * Ignored/over-cap source bytes are consumed but not copied. A leading ignored
+ * scalar consumes bytes with width/length zero. No allocations; empty => 0. */
+size_t btunicode_text_next(const char *text,size_t length,bool grapheme,btunicode_text_cluster *out);
 #endif
