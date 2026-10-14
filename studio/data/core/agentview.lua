@@ -1641,19 +1641,14 @@ end
 -- drew 192 cells wide and ran off the right of the panel with no way to scroll
 -- to it.
 --
--- Cells are the third, and are what a monospace grid actually has. sys.width
--- and sys.wtake are C, over the Unicode tables in src/utf8width.h, so this
--- agrees with the renderer's own advances by construction rather than by two
--- pieces of code being kept in step by hand.
---
--- What is still not right, and is not fixable here: no grapheme clustering, so
--- a ZWJ emoji sequence measures as its parts and wraps as if it were several
--- characters; and no bidi, so Hebrew and Arabic wrap correctly by width while
--- being drawn in logical rather than visual order.
+-- Native cell metrics and grid paint share the pinned terminal profile.
+-- Styled runs are partitioned across their original boundaries: the token at
+-- a cluster's head owns its color/bold/link metadata. Source text stays exact
+-- for selection, including suffixes beyond the native paint retention cap.
 
 -- Display cells occupied by s, which is not #s (bytes) and not utf8.len(s)
 -- (characters).
-local function cols_of(s) return sys.width(s) end
+local function cols_of(s) return sys.cell_width(s) end
 
 -- Split s at n cells: the part that fits, the rest, and the cells that part
 -- took.
@@ -1664,22 +1659,14 @@ local function cols_of(s) return sys.width(s) end
 -- cell does not end. See first_char for the case where there is no new row to
 -- start either.
 local function split(s, n)
-  local head, w = sys.wtake(s, n)
+  local head, w = sys.cell_take(s, n)
   return head, s:sub(#head + 1), w
 end
 
 -- The first character of s whatever it costs. The escape hatch for a two-cell
 -- glyph in a one-cell column: it overflows by a cell, which is visible, and
 -- the alternative is a hang, which is not.
-local function first_char(s)
-  local i = 2
-  while i <= #s do
-    local b = s:byte(i)
-    if b < 0x80 or b >= 0xc0 then break end
-    i = i + 1
-  end
-  return s:sub(1, i - 1)
-end
+local function first_char(s) return sys.cell_first(s) end
 
 -- Everything past the first n cells of s.
 local function cdrop(s, n) return select(2, split(s, n)) end
@@ -1723,9 +1710,21 @@ local function syntax_for(lang)
   return nil
 end
 
+local function cell_tokens(tokens)
+  local parts,ends={},{};local bytes=0
+  for i,t in ipairs(tokens) do parts[i]=t[2];bytes=bytes+#t[2];ends[i]=bytes end
+  local out={}
+  for _,span in ipairs(sys.cell_partition(table.concat(parts),ends)) do
+    local head=tokens[span[1]]
+    out[#out+1]={head[1],span[2],bold=head.bold,link=head.link}
+  end
+  return out
+end
+
 -- Break a coloured token row to fit `cols` cells, splitting between tokens
 -- where possible and inside one only when a single token is too wide.
 local function fit(tokens, cols)
+  tokens=cell_tokens(tokens)
   local rows, cur, used = {}, {}, 0
   for _, t in ipairs(tokens) do
     local col, text = t[1], t[2]
@@ -1734,7 +1733,7 @@ local function fit(tokens, cols)
       local room = cols - used
       local n = cols_of(text)
       if n <= room then
-        cur[#cur + 1] = { col, text }; used = used + n; text = ""
+        cur[#cur + 1] = { col, text, bold=t.bold, link=t.link }; used = used + n; text = ""
       else
         local head, tail, w = split(text, room)
         if head == "" and used > 0 then
@@ -1750,7 +1749,7 @@ local function fit(tokens, cols)
             tail = text:sub(#head + 1)
             w = cols_of(head)
           end
-          cur[#cur + 1] = { col, head }
+          cur[#cur + 1] = { col, head, bold=t.bold, link=t.link }
           text, used = tail, used + w
         end
       end
@@ -1816,6 +1815,7 @@ end
 -- lettered lists keep their marker in a column instead of wrapping into the
 -- body. Matches termrender's wrap_runs hanging indent.
 local function wrap_tokens(tokens, cols, hang)
+  tokens=cell_tokens(tokens)
   local hang_w = (hang and hang[2] and cols_of(hang[2])) or 0
   if hang_w >= cols then hang, hang_w = nil, 0 end
   local inner = math.max(1, cols - hang_w)
@@ -1851,8 +1851,10 @@ local function wrap_tokens(tokens, cols, hang)
         rows[#rows + 1] = cur; cur, used = {}, 0
         word = tail; wlen = cols_of(word)
       end
-      cur[#cur + 1] = { t[1], word, bold = t.bold, link = t.link }
-      used = used + wlen
+      if word ~= "" then
+        cur[#cur + 1] = { t[1], word, bold = t.bold, link = t.link }
+        used = used + wlen
+      end
     end
     -- ...and the trailing whitespace, which gmatch never yields either. That
     -- is the space *before* the next span: "add a **bounded**" would otherwise
@@ -2149,6 +2151,7 @@ function AgentView:pos_at(x, y)
   local col = math.floor((x - best.x) / self.char_w + 0.5)
   if col < 0 then col = 0 end
   if col > best.cells then col = best.cells end
+  if best.text then local _,used=sys.cell_take(best.text,col);col=used end
   return { e = best.e, r = best.r, c = col }
 end
 
@@ -2164,7 +2167,7 @@ function AgentView:composer_visual_rows(cols)
     local rest, byte0 = line, 1
     while true do
       local head, tail = split(rest, cols)
-      if head == "" and tail ~= "" then head, tail = rest, "" end -- never loop forever
+      if head == "" and tail ~= "" then head=first_char(rest);tail=rest:sub(#head+1) end
       rows[#rows + 1] = { i = i, byte0 = byte0, text = head }
       if tail == "" then break end
       byte0 = byte0 + #head
@@ -2426,7 +2429,7 @@ function AgentView:draw_working(x, y, w, font)
   elseif self.tool_running then what = "running " .. self.tool_running end
 
   local label = string.format("%s  %.0fs", what, elapsed)
-  common.draw_text(font, style.dim, label, "left", x, y, w, lh)
+  common.draw_grid(font, style.dim, label, "left", x, y, w, lh)
 
   -- The track, and a segment sliding along it. Two seconds a lap: fast enough
   -- to read as alive, slow enough not to nag.
@@ -2537,11 +2540,11 @@ function AgentView:draw_pending(x, y, w, font)
   -- the filename you were being asked to approve.
   local verb = (p.name == "bash" and "run: " or "apply: ")
   local body = p.summary or p.name
-  local room = math.floor(w / font:get_width("0")) - #verb
+  local room = math.floor(w / font:get_grid_width("0")) - #verb
   if room > 4 and cols_of(body) > room then
     body = "..." .. cdrop(body, cols_of(body) - (room - 3))
   end
-  common.draw_text(font, style.accent, verb .. body, "left", x, y + pad, w, lh)
+  common.draw_grid(font, style.accent, verb .. body, "left", x, y + pad, w, lh)
 
   local hits = widgets.row(font, {
     { label = "Approve", action = function() self:decide("approve") end },
@@ -2592,7 +2595,7 @@ function AgentView:draw_choice(rec, x, y, w, cols, font, visible)
   local function draw_row(row)
     local tx = x
     for _, t in ipairs(row) do
-      tx = renderer.draw_text(font, t[2], tx, ty + voff, t[1])
+      tx = renderer.draw_grid(font, t[2], tx, ty + voff, t[1])
     end
     ty = ty + lh
   end
@@ -2623,7 +2626,7 @@ function AgentView:draw_choice(rec, x, y, w, cols, font, visible)
   end
 
   if rec.allow_input then
-    common.draw_text(font, style.dim,
+    common.draw_grid(font, style.dim,
       "(click one, press its letter, or type your own answer below)",
       "left", x, ty, w, lh)
   end
@@ -2639,7 +2642,7 @@ function AgentView:draw()
   local lh = font:get_height() * config.line_height
   local pad = style.padding.x
   local vpad = style.padding.y
-  local charw = font:get_width("0")
+  local charw = font:get_grid_width("0")
 
   -- The composer wraps to this many monospace columns. Computed up front so the
   -- box height (input_lines, below) and the draw loop share ONE wrapped layout:
@@ -2724,7 +2727,7 @@ function AgentView:draw()
     e.content_y = (y + self.scroll.y) - body_top
     if e.role == "diff" and e.diff then
       if visible(y) then
-        common.draw_text(font, style.dim, difflib.summary(e.diff, e.path or ""),
+        common.draw_grid(font, style.dim, difflib.summary(e.diff, e.path or ""),
           "left", x, y, w, lh)
       end
       y = y + lh
@@ -2734,7 +2737,7 @@ function AgentView:draw()
                     or style.dim
         if visible(y) then
           renderer.draw_rect(x - pad / 2, y, w + pad, lh, style.background2)
-          common.draw_text(font, col or style.text, kind .. " " .. text,
+          common.draw_grid(font, col or style.text, kind .. " " .. text,
             "left", x, y, w, lh)
         end
         y = y + lh
@@ -2783,7 +2786,7 @@ function AgentView:draw()
               -- lifting a snippet, brightening on hover, flips to "copied" after
               -- a click. Registered as a hit so on_mouse_pressed dispatches it.
               local label = (self.copied_block == row.copy_block) and "copied" or "copy"
-              local bw = font:get_width(label) + pad
+              local bw = font:get_grid_width(label) + pad
               local bx = x + w - bw
               local hov = self.mouse and widgets.inside(
                 { x = bx, y = y, w = bw, h = lh }, self.mouse.x, self.mouse.y)
@@ -2813,7 +2816,7 @@ function AgentView:draw()
             local rtext = row_text(row)
             local cells = cell_len(rtext)
             self.rows_drawn[#self.rows_drawn + 1] = {
-              e = ei, r = ri, x = ex, y = y, h = lh, cells = cells,
+              e = ei, r = ri, x = ex, y = y, h = lh, cells = cells, text = rtext,
             }
             if sel_lo then
               -- The part of this row inside the selection, as two columns.
@@ -2835,11 +2838,11 @@ function AgentView:draw()
             end
             local tx = ex
             for _, t in ipairs(row) do
-              local nx = renderer.draw_text(font, t[2], tx, y + voff, t[1])
+              local nx = renderer.draw_grid(font, t[2], tx, y + voff, t[1])
               -- Faux-bold: the same glyphs a pixel to the right. Cheap, and the
               -- only way to show emphasis with one font cut.
               if t.bold then
-                renderer.draw_text(font, t[2], tx + math.max(1, SCALE * 0.5),
+                renderer.draw_grid(font, t[2], tx + math.max(1, SCALE * 0.5),
                   y + voff, t[1])
               end
               if t.link then
@@ -2881,7 +2884,7 @@ function AgentView:draw()
 
   -- An empty panel should say what to do, not sit there blankly.
   if #self.entries == 0 then
-    common.draw_text(font, style.dim, "Ask boggart anything about this project.",
+    common.draw_grid(font, style.dim, "Ask boggart anything about this project.",
       "center", self.position.x, body_top, self.size.x, body_bottom - body_top)
   end
 
@@ -3042,9 +3045,9 @@ function AgentView:draw()
       else
         placeholder = "Reply to boggart..."
       end
-      common.draw_text(font, style.dim, placeholder, "left", x, ty, w, lh)
+      common.draw_grid(font, style.dim, placeholder, "left", x, ty, w, lh)
     else
-      common.draw_text(font, (not composing) and style.dim or style.text,
+      common.draw_grid(font, (not composing) and style.dim or style.text,
         shown, "left", x, ty, w, lh)
     end
     -- The insert-mode bar sits on top of the text, between glyphs, and blinks.

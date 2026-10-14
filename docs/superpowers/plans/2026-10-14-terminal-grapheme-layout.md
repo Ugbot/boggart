@@ -75,7 +75,14 @@ text, with a shared UTF-8 encoder. `sys.cell_width/cell_take`, font grid width a
 C deferred grid drawing now agree. Picker and sandbox text labels use these
 paired APIs, including whole-emoji truncation and explicit NUL lengths. Normal
 and sanitizer focused suites pass 13/13, with native pixel/retention/command
-ownership and actual SDL window tests. Remaining migration: normalize AgentView
-styled runs across cluster boundaries, and choose the CLI/external-terminal
-policy before switching its width/prefix consumers. Full performance gates stay
-open. Evidence: `docs/terminal-text-layout.md`.
+ownership and actual SDL window tests.
+
+Styled AgentView increment: native source-span partitioning assigns each whole
+cluster its head token's style before wrapping. Transcript/choice/composer metrics
+and drawing use paired grid APIs; mouse selection snaps to whole clusters and
+copying retains original source text. Direct binding, styled/narrow layout and
+native pixel tests pass in normal/sanitizer builds, including visible transcript
+pixels in the controlled SDL window. Existing scalar composer keyboard motions
+and color emoji remain separate work. Remaining migration: choose the CLI/external
+terminal policy before switching its width/prefix consumers. Full performance
+gates stay open. Evidence: `docs/terminal-text-layout.md`.

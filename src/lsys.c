@@ -645,6 +645,43 @@ static int l_cell_take(lua_State *L) {
   int used;size_t bytes=btunicode_text_take(text,length,(int)columns,true,&used);
   lua_pushlstring(L,text,bytes);lua_pushinteger(L,used);return 2;
 }
+static int l_cell_first(lua_State *L) {
+  size_t length;const char *text=luaL_checklstring(L,1,&length);
+  size_t bytes=btunicode_text_next(text,length,true,NULL);
+  lua_pushlstring(L,text,bytes);return 1;
+}
+typedef struct { size_t start,length,owner; } cell_span;
+/* Partition whole text by native clusters and the token owning each head.
+ * End offsets and ranges live in rooted userdata before any result allocation;
+ * source bytes remain exact, including ignored/over-cap suffixes for copying. */
+static int l_cell_partition(lua_State *L) {
+  size_t length;const char *text=luaL_checklstring(L,1,&length);
+  luaL_checktype(L,2,LUA_TTABLE);size_t count=lua_rawlen(L,2);
+  luaL_argcheck(L,count<=SIZE_MAX/(sizeof(size_t)+sizeof(cell_span)),2,"too many token boundaries");
+  size_t *ends=lua_newuserdatauv(L,count*(sizeof(size_t)+sizeof(cell_span)),0);
+  cell_span *spans=(cell_span *)(ends+count);size_t previous=0;
+  for(size_t i=0;i<count;i++) {
+    lua_rawgeti(L,2,(lua_Integer)i+1);lua_Integer value=luaL_checkinteger(L,-1);lua_pop(L,1);
+    luaL_argcheck(L,value>=0 && (lua_Unsigned)value<=length && (size_t)value>=previous,2,"invalid token boundary");
+    ends[i]=previous=(size_t)value;
+  }
+  luaL_argcheck(L,previous==length && (!length || count),2,"token boundaries must cover text");
+  size_t used=0,owner=0;
+  for(size_t p=0;p<length;) {
+    while(owner<count && ends[owner]<=p)owner++;
+    size_t next=p+btunicode_text_next(text+p,length-p,true,NULL);
+    if(used && spans[used-1].owner==owner+1)spans[used-1].length=next-spans[used-1].start;
+    else spans[used++]=(cell_span){p,next-p,owner+1};
+    p=next;
+  }
+  lua_createtable(L,0,0);
+  for(size_t i=0;i<used;i++) {
+    lua_createtable(L,2,0);lua_pushinteger(L,(lua_Integer)spans[i].owner);lua_rawseti(L,-2,1);
+    lua_pushlstring(L,text+spans[i].start,spans[i].length);lua_rawseti(L,-2,2);
+    lua_rawseti(L,-2,(lua_Integer)i+1);
+  }
+  return 1;
+}
 
 /* ---- POSIX regex + glob (sys.re_find, sys.re_gsub, sys.glob) --------------
  *
@@ -836,6 +873,8 @@ static const luaL_Reg sys_lib[] = {
   {"wtake", l_wtake},
   {"cell_width", l_cell_width},
   {"cell_take", l_cell_take},
+  {"cell_first", l_cell_first},
+  {"cell_partition", l_cell_partition},
   {NULL, NULL},
 };
 

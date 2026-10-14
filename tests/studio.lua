@@ -142,6 +142,7 @@ function font:get_width(s)
   return #s * W
 end
 function font:get_height() return 10 end
+function font:get_grid_width(s) return sys.cell_width(s)*W end
 
 local function new_font() return setmetatable({}, font) end
 
@@ -154,6 +155,7 @@ rawset(_G, "renderer", {
   font = { load = function() return new_font() end },
   draw_rect = function() end,
   draw_text = function(_, text, x) return x + #text * W end,
+  draw_grid = function(_, text, x) return x + sys.cell_width(text)*W end,
   set_clip_rect = function() end,
 })
 if rawget(_G, "system") == nil then
@@ -221,6 +223,26 @@ if loaded then
     local _, n = s:gsub("[^\128-\191]", "")
     return n
   end
+  -- Graphemes cross markdown boundaries, inheriting the head's style.
+  for _,case in ipairs{
+    {'e**́**X','é',1,false},
+    {'**e**́X','é',1,true},
+    {'👩**‍💻**X','👩‍💻',2,false},
+    {'🇬**🇧**X','🇬🇧',2,false},
+  } do
+    local wrapped=rows_of(case[1],case[3]);local found
+    for _,row in ipairs(wrapped) do for _,token in ipairs(row) do
+      if token[2]==case[2] then found=token;break end
+    end end
+    ok(found~=nil,'a whole cluster crosses markup token boundaries: '..case[1])
+    ok(found and not not found.bold==case[4],'cluster keeps the head style: '..case[1])
+  end
+  local narrow=rows_of('👩‍💻X',1)
+  ok(#narrow==2 and text_of(narrow[1])=='👩‍💻' and text_of(narrow[2])=='X','one-cell transcript column preserves a whole wide cluster')
+  v.lines={'👩‍💻X'};local visual=v:composer_visual_rows(1)
+  ok(#visual==2 and visual[1].text=='👩‍💻' and visual[2].text=='X','one-cell composer column makes whole-cluster progress')
+  v.char_w=W;v.rows_drawn={{e=1,r=1,x=0,y=0,h=10,cells=3,text='👩‍💻X'}}
+  ok(v:pos_at(W,5).c==0 and v:pos_at(2*W,5).c==2,'selection hit-testing snaps to native cell boundaries')
 
   -- ---- wrapping ----------------------------------------------------------
   local long = string.rep("abcdefghij", 30)   -- 300 characters, no spaces
