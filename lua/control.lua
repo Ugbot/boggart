@@ -414,6 +414,7 @@ end
 -- Generate a token for every ordinary listener. Unauthenticated loopback
 -- requires the explicit trusted_local profile, checked again in C.
 require('terminal.routes').install(M)
+require('bmux.server').install(M)
 
 function M.start(opts)
   opts = opts or {}
@@ -449,6 +450,7 @@ function M.start(opts)
   if not srv then return nil, why end
 
   M.terminals=terminals
+  M.layout=require('bmux.server').new(terminals)
   M.server, client_token = srv, token
   require('terminal.push').new(terminals,srv)
   install_bridge()
@@ -462,6 +464,7 @@ function M.stop()
   remove_bridge()
   deferred.revoke(client_binding)
   if M.terminals then M.terminals:shutdown();M.terminals=nil end
+  M.layout=nil
   M.server:stop()
   M.server, client_token, client_context = nil, nil, nil
   bog.events.emit("serve:stopped", {})

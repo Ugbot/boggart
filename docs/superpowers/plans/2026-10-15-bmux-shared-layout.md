@@ -21,6 +21,8 @@ Continue the accepted session-host design and standing commit/push instruction.
 - [ ] Add workspace/surface containers around that same tree with a shared
   server-owned descriptor representation. Connect both Studio and cTUI to the
   hierarchy, preserving focus/geometry and independent terminal identities.
+  BMUX-80 delivers the server container/command/snapshot portion; client
+  attachment to the hierarchy is still required before checking this item.
 - [ ] cTUI consumes the shared model for tiling and narrow-screen presentation;
   verify actual termctl frames and split/focus/zoom operations. Server owns the
   session's layout; clients only keep validated presentation snapshots.
