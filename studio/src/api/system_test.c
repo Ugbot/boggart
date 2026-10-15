@@ -52,6 +52,10 @@ static int push_event(lua_State *L) {
     event.type=!strcmp(type,"mousepressed") ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
     event.button.windowID=id; event.button.button=(Uint8)integer_field(L,"button",1); event.button.clicks=1;
     event.button.x=(float)integer_field(L,"x",0)*point_x; event.button.y=(float)integer_field(L,"y",0)*point_y;
+  } else if (!strcmp(type,"mousemoved")) {
+    event.type=SDL_EVENT_MOUSE_MOTION; event.motion.windowID=id;
+    event.motion.x=(float)integer_field(L,"x",0)*point_x; event.motion.y=(float)integer_field(L,"y",0)*point_y;
+    event.motion.xrel=(float)integer_field(L,"dx",0)*point_x; event.motion.yrel=(float)integer_field(L,"dy",0)*point_y;
   } else if (!strcmp(type,"mousewheel")) {
     event.type=SDL_EVENT_MOUSE_WHEEL; event.wheel.windowID=id;
     event.wheel.x=(float)integer_field(L,"horizontal",0); event.wheel.y=(float)integer_field(L,"amount",1);
