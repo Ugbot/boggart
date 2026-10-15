@@ -50,7 +50,9 @@ function M.open(dir, options)
   options = options or nil
   local shell = require "shell"
   if shell.current ~= "bmux" then
-    shell.switch("bmux")
+    M.suppress_initial=options and options.attachment~=nil
+    local ok,why=pcall(shell.switch,"bmux");M.suppress_initial=nil
+    if not ok then error(why,0)end
     -- First entry creates the initial shell; a menu open should not spawn two.
     if not dir and not options then return end
   end
@@ -58,7 +60,7 @@ function M.open(dir, options)
   local cwd = (options and options.cwd) or shell_cwd()
   local view = TerminalView { cwd=cwd, cmd=options and options.cmd,
     args=options and options.args, title=options and options.title, control=options and options.control,
-    fleet_agent=options and options.fleet_agent,bmux_context=true }
+    fleet_agent=options and options.fleet_agent,attachment=options and options.attachment,bmux_context=true }
   M.serial = (M.serial or 0) + 1
   view.title = (options and options.title) or ("Terminal " .. M.serial)
   view.bmux_cwd = cwd
@@ -99,7 +101,7 @@ function M.enter()
           if view:is(TerminalView) then leaf:set_active_view(view); M.focused = view; return end
         end
       end
-      M.open()
+      if not M.suppress_initial then M.open()end
     end
   end
   M.remember_focus()

@@ -43,7 +43,14 @@ function modal.chooser(label, choices, on_pick)
     end
     if pick then on_pick(pick) end
   end, function(text)
-    return common.fuzzy_match(choices, text or "")
+    local ranked={}
+    for i,choice in ipairs(choices)do
+      local score=system.fuzzy_match(choice.text,text or '')
+      if score then ranked[#ranked+1]={choice=choice,score=score,index=i}end
+    end
+    table.sort(ranked,function(a,b)return a.score>b.score or a.score==b.score and a.index<b.index end)
+    local matches={};for i,item in ipairs(ranked)do matches[i]=item.choice end
+    return matches
   end)
 end
 

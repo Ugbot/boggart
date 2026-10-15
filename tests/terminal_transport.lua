@@ -4,6 +4,10 @@ local count,received=0
 local parser=T.parser(false,nil,function(status,body)assert(status==200);count=count+1;received=body end)
 for c in response('{"emoji":"🦊"}'):gmatch('.')do parser:feed(c)end
 assert(count==1 and received=='{"emoji":"🦊"}');parser:eof()
+for _,streaming in ipairs{false,true}do
+  local refusal=T.parser(streaming,nil,function(status,body)assert(status==401 and body=='Denied')end)
+  refusal:feed('HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 6\r\n\r\nDenied');refusal:eof()
+end
 local events={};local stream=T.parser(true,function(event,body)events[#events+1]={event,body}end,function()error('stream completed')end)
 local bytes='HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n: hello\r\n\r\nevent: message\r\ndata: first\r\ndata: second\r\n\r\ndata: tail\n\n'
 for c in bytes:gmatch('.')do stream:feed(c)end

@@ -152,7 +152,7 @@ the remaining terminal presentation gates stay separate work.
 
 Click **BMUX** beside AGENT / EDIT / FLEET, or use **Ctrl+Alt+4**
 (**Cmd+Option+4** on macOS). The first visit opens an interactive shell in the
-project directory. Its toolbar exposes **New terminal**, **Split right**,
+project directory. Its toolbar exposes **New terminal**, **New agent**, **Attach**, **Split right**,
 **Split down**, **Close**, **Zoom** and **Next pane**. New terminals open tabs in
 the focused pane; splits create independent shells. Click a tab/pane to focus it
 and drag dividers to resize. On macOS, **Cmd+T** opens a terminal tab,
@@ -162,9 +162,12 @@ in narrow windows; mode buttons move below the menus when their rows would overl
 
 Switching modes keeps BMUX's running shells, tabs, split proportions, focused
 pane and zoom state. New shells inherit a valid directory reported by OSC 7,
-falling back to their originating project directory. These sessions are local
-to the Studio process; server detach/reattach, persistent restoration and the
-shared cTUI layout remain BMUX-30/31/32/33/35 work. Terminal selection/search and
+falling back to their originating project directory. These new local shells are
+owned by Studio. **Attach** (also **Ctrl-Alt-A**) connects a thin pane to a
+server-owned terminal over a trusted private UDS, with read-only observation,
+explicit controller actions and same-process detach/reattach. See
+[attached Studio terminals](bmux-studio-attachment.md). Persistent restoration,
+the shared layout and the cTUI attached view remain BMUX-31/33/35 work. Terminal selection/search and
 the remaining cmux roadmap still have separate tracker gates.
 
 `tests/studio_bmux.lua` exercises real Studio mouse/keyboard dispatch and native
@@ -396,10 +399,10 @@ Each phase ships on its own.
 
 ## 8. Non-goals
 
-- **No full tmux/screen.** No tmux control protocol, no session server, no
-  detach/reattach. Panes are studio panes.
-- **No remote panes.** A terminal is a local child on a local PTY. Remote work
-  is SSH inside a local terminal, not a studio feature.
+- **No tmux/screen control protocol.** Studio panes can attach to the native
+  Bmux terminal host; they do not control an external tmux/screen server.
+- **No network remote pane transport.** Host attachment uses a same-user private
+  UDS. Network remote work uses SSH inside a terminal.
 - **No floating or OS windows.** The tree tiles; panes do not overlap and do not
   detach into separate OS windows.
 - **No terminal multiplexer semantics inside a pane.** One child per terminal

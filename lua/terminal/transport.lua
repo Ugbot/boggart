@@ -30,7 +30,7 @@ function Parser:feed(chunk)
     else
       if not length or not length:match('^%d+$') or #length>10 then fail('invalid response length')end
       self.length=tonumber(length);if self.length>M.MAX_BODY then fail('response body too large')end
-      if content~='application/json' and not content:match('^application/json%s*;')then fail('expected JSON response')end
+      if self.status>=200 and self.status<300 and content~='application/json' and not content:match('^application/json%s*;')then fail('expected JSON response')end
     end
     self.headers=headers
     if self.ready then self.ready(self.status,headers)end
