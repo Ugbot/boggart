@@ -39,6 +39,10 @@ void tg_draw(const tg_row *row,RenFont *font,const tg_theme *theme,double x,int 
 int main(void){
   bterm *t=bterm_create(4,1,0,NULL,NULL);CHECK(t);CHECK(bterm_feed(t,(const uint8_t *)"A",1));
   tg_row *row=tg_capture(t,lpage_visible(bterm_screen(t),0),4);CHECK(row);
+  tg_value values[4];
+  for(size_t i=0;i<4;i++){const tg_cell *c=&row->cells[i];values[i]=(tg_value){c->style,tg_text(row,c),c->length,c->width,c->flags};}
+  tg_row *resolved=tg_capture_values(values,4);CHECK(resolved && tg_equal(row,resolved));tg_release(resolved);
+  values[0].width=3;CHECK(!tg_capture_values(values,4));values[0].width=1;
   RenFont *font=(RenFont *)(void *)&updates;tg_theme theme={0};
   theme.foreground.r=255;theme.foreground.a=255;
   RenRect bounds={0,0,32,16};

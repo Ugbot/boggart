@@ -5,6 +5,8 @@ native libuv binding. It uses the [attachment protocol](bmux-terminal-attachment
 and has no curl subprocess or new runtime dependency. The daemon owns each PTY,
 parser, grid and history. This is the reusable client for the upcoming Studio
 and cTUI attachment views (BMUX-34/35), not those views themselves.
+Studio's [native image source](bmux-terminal-image.md) consumes this replica
+directly through the existing C row renderer.
 
 ```lua
 local uv = require 'uv'

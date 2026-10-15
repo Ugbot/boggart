@@ -979,7 +979,8 @@ if(TARGET boggart-studio)
   foreach(_source CMakeLists.txt cmake/EmojiDependencies.cmake studio/src/renderer.c studio/src/renderer.h studio/src/fontglyph.c studio/src/fontglyph.h studio/src/fontfallback.c studio/src/fontfallback.h
       studio/src/gridtext.c studio/src/clusterdraw.c studio/src/fontshape.c studio/src/fontshape.h studio/src/fontcluster.c studio/src/fontcluster.h studio/src/glyphcache.c studio/src/glyphcache.h studio/src/rencache.c studio/src/rencache.h
       studio/src/termgrid.c studio/src/termgrid.h studio/src/termrender.c studio/src/termrender.h studio/src/fontatlas.c studio/src/fontatlas.h
-      studio/src/api/renderer.c studio/src/api/renderer_font.c studio/src/api/terminalrender.c)
+      studio/src/api/renderer.c studio/src/api/renderer_font.c studio/src/api/terminalrender.c
+      studio/src/api/terminalimage.c studio/src/api/terminalimage.h)
     file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${_source}" _sha)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${_source}")
     string(APPEND _renderer_source_header "  {\"${_source}\", \"${_sha}\"},\n")
@@ -1224,14 +1225,14 @@ if(TARGET boggart-studio)
       $<TARGET_FILE:boggart-studio> .
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   set_tests_properties(terminal_process_studio PROPERTIES TIMEOUT 30)
-  set(_pane_suites studio_terminal_native studio_terminal_shutdown studio_terminal_render studio_terminal_clusters studio_grid_text studio_agent_clusters studio_color_emoji studio_grapheme_edit studio_bmux studio_fleet_agents studio_agent_control studio_fleet_workers studio_manual_agents studio_agent_hooks studio_provider_events studio_fleet_keyboard)
+  set(_pane_suites studio_terminal_image studio_terminal_native studio_terminal_shutdown studio_terminal_render studio_terminal_clusters studio_grid_text studio_agent_clusters studio_color_emoji studio_grapheme_edit studio_bmux studio_fleet_agents studio_agent_control studio_fleet_workers studio_manual_agents studio_agent_hooks studio_provider_events studio_fleet_keyboard)
   if(UNIX AND EXISTS /usr/bin/vim)
     list(APPEND _pane_suites studio_terminal_vim)
   endif()
   foreach(_pane_suite IN LISTS _pane_suites)
     set(_pane_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${_pane_suite})
     set(_pane_shell_env)
-    if(_pane_suite STREQUAL "studio_color_emoji")
+    if(_pane_suite STREQUAL "studio_color_emoji" OR _pane_suite STREQUAL "studio_terminal_image")
       list(APPEND _pane_shell_env BOGGART_STUDIO_FONTS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fonts/NotoColorEmoji-subset.ttf)
     endif()
     if(_pane_suite STREQUAL "studio_bmux" OR _pane_suite STREQUAL "studio_fleet_agents" OR _pane_suite STREQUAL "studio_agent_control" OR _pane_suite STREQUAL "studio_fleet_workers" OR _pane_suite STREQUAL "studio_manual_agents" OR _pane_suite STREQUAL "studio_agent_hooks" OR _pane_suite STREQUAL "studio_provider_events" OR _pane_suite STREQUAL "studio_fleet_keyboard")

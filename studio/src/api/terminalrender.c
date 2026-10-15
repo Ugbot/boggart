@@ -1,5 +1,6 @@
 #include "api.h"
 #include "lterminal.h"
+#include "terminalimage.h"
 #include "rencache.h"
 #include <math.h>
 #include <stdlib.h>
@@ -53,7 +54,8 @@ static int create(lua_State *L) {
   for(int i=1;i<=3;i++){lua_pushvalue(L,i); lua_setiuservalue(L,-2,i);}
   /* All Lua allocations precede borrowing the source and checking the owner. */
   luaL_argcheck(L,*(RenFont **)luaL_checkudata(L,1,API_TYPE_FONT)!=NULL,1,"closed font");
-  (void)boggart_terminal_borrow(L,2);
+  if(terminalimage_test(L,2))(void)terminalimage_borrow(L,2);
+  else (void)boggart_terminal_borrow(L,2);
   return 1;
 }
 static double position(lua_State *L,int index) {
@@ -78,11 +80,14 @@ static int draw(lua_State *L) {
   lua_getiuservalue(L,1,2);
   luaL_argcheck(L,!ctx->closed,1,"closed terminal renderer");
   luaL_argcheck(L,*owner!=NULL,1,"closed font"); RenFont *font=*owner;
-  bterm *term=boggart_terminal_borrow(L,-1);
+  TerminalImage *image=terminalimage_test(L,-1) ? terminalimage_borrow(L,-1) : NULL;
+  bterm *term=image ? NULL : boggart_terminal_borrow(L,-1);
   /* No Lua operation until the native borrow is finished. Cached/queued rows
    * own full text/style values; none retain screen pointers or pool IDs. */
-  const lpage_screen *screen=bterm_screen(term);
-  size_t history=lpage_history_count(screen),total=history+lpage_rows(screen),columns=lpage_columns(screen);
+  const lpage_screen *screen=image ? NULL : bterm_screen(term);
+  size_t history=image ? 0 : lpage_history_count(screen);
+  size_t total=image ? terminalimage_count(image) : history+lpage_rows(screen);
+  size_t columns=image ? terminalimage_columns(image) : lpage_columns(screen);
   if((size_t)last>total)last=(lua_Integer)total;
   size_t count=last<first ? 0 : (size_t)(last-first+1);
   if(count>ctx->capacity) {
@@ -96,15 +101,24 @@ static int draw(lua_State *L) {
   int tab_width=ren_get_font_tab_width(font);
   for(size_t i=0;i<count;i++) {
     size_t index=(size_t)first-1+i;
-    const lpage_row *source=index<history ? lpage_history(screen,index) : lpage_visible(screen,index-history);
     CachedRow *cached=&ctx->rows[i];
-    if(!cached->row || cached->revision!=source->revision || cached->row->columns!=columns) {
-      tg_row *row=tg_capture(term,source,columns);
-      if(!row)return luaL_error(L,"cannot capture terminal row");
-      ctx->captures++;
-      if(tg_equal(row,cached->row))tg_release(row);
-      else {tg_release(cached->row); cached->row=row; cached->cell_width=0;}
-      cached->revision=source->revision;
+    if(image) {
+      tg_row *source=terminalimage_row(image,index);
+      if(cached->row!=source) {
+        if(!tg_retain(source))return luaL_error(L,"cannot retain terminal image row");
+        if(!tg_equal(source,cached->row))cached->cell_width=0;
+        tg_release(cached->row);cached->row=source;ctx->captures++;
+      }
+    } else {
+      const lpage_row *source=index<history ? lpage_history(screen,index) : lpage_visible(screen,index-history);
+      if(!cached->row || cached->revision!=source->revision || cached->row->columns!=columns) {
+        tg_row *row=tg_capture(term,source,columns);
+        if(!row)return luaL_error(L,"cannot capture terminal row");
+        ctx->captures++;
+        if(tg_equal(row,cached->row))tg_release(row);
+        else {tg_release(cached->row); cached->row=row; cached->cell_width=0;}
+        cached->revision=source->revision;
+      }
     }
     if(cached->cell_width!=cw || cached->cell_height!=ch || cached->tab_width!=tab_width) {
       if(!tg_measure(cached->row,font,(int)cw,(int)ch,&cached->bounds))
@@ -138,6 +152,7 @@ static int sources(lua_State *L) {
   return 1;
 }
 void terminalrender_open(lua_State *L) {
+  terminalimage_open(L);
   luaL_newmetatable(L,TERMINAL_RENDER_MT);
   lua_pushcfunction(L,dispose); lua_setfield(L,-2,"__gc");
   lua_pushcfunction(L,dispose); lua_setfield(L,-2,"__close");
