@@ -1,5 +1,12 @@
 # One vim, every surface
 
+Composer policy update (2026-10-14): both composer adapters now expose virtual
+grapheme columns to the shared grammar. Public TUI codepoint offsets and
+AgentView byte offsets remain unchanged. The optional `pattern_units(pattern)`
+adapter hook aligns Unicode search and prompt backspace with those columns;
+DocView retains its default policy. See [composer grapheme editing](terminal-grapheme-editing.md).
+The historical plan below describes the original extraction.
+
 ## The problem
 
 Modal editing is implemented three times in boggart, over two different buffer

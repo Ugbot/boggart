@@ -3,6 +3,7 @@
 #include "bterm.h"
 #include "lterminal.h"
 #include "bpty.h"
+#include "lchannel.h"
 #include "btunicode.h"
 #include "lua.h"
 #include "lauxlib.h"
@@ -196,7 +197,7 @@ static void pending(lua_State *L, const lvt_parser *p) {
   lua_setfield(L, -2, "osc");
 }
 static terminal *create_terminal(lua_State *L,size_t cols,size_t rows,size_t history) {
-  terminal *t=lua_newuserdatauv(L,sizeof *t,0); memset(t,0,sizeof *t);
+  terminal *t=lua_newuserdatauv(L,sizeof *t,1); memset(t,0,sizeof *t);
   luaL_setmetatable(L,TERMINAL_MT);
   t->term=bterm_create(cols,rows,history,reply,t);
   if (!t->term) luaL_error(L,"cannot allocate terminal");
@@ -248,8 +249,16 @@ static int l_open(lua_State *L) {
   char *argv[1026]; argv[0]=(char *)command;
   for (size_t i=0;i<count;i++) { lua_rawgeti(L,args_index,(lua_Integer)i+1); argv[i+1]=(char *)spawn_string(L,-1); }
   argv[count+1]=NULL;
-  terminal *t=create_terminal(L,cols,rows,history); int error;
-  t->process=bpty_open(loop,t->term,(bpty_options){command,cwd,argv},&error);
+  lua_getfield(L,1,"control");bool control=lua_toboolean(L,-1);lua_pop(L,1);
+  terminal *t=create_terminal(L,cols,rows,history);int terminal_index=lua_gettop(L),error,child_fd=-1;
+  if(control) {
+    error=boggart_channel_pair(L,loop,&child_fd);
+    lua_setiuservalue(L,terminal_index,1);t=luaL_checkudata(L,terminal_index,TERMINAL_MT);
+    if(error){bterm_destroy(t->term);t->term=NULL;lua_pushnil(L);lua_pushstring(L,uv_strerror(error));return 2;}
+  }
+  t->process=bpty_open(loop,t->term,(bpty_options){command,cwd,argv,child_fd},&error);
+  bchannel_close_fd(child_fd);
+  if(!t->process){lua_getiuservalue(L,terminal_index,1);boggart_channel_close(L,-1);lua_pop(L,1);}
   if (!t->process) { bterm_destroy(t->term); t->term=NULL; lua_pushnil(L); lua_pushstring(L,uv_strerror(error)); return 2; }
   return 1;
 }
@@ -275,10 +284,12 @@ static int l_foreground_group(lua_State *L) {
   lua_pushinteger(L,group); return 1;
 }
 static int l_close(lua_State *L) {
+  lua_getiuservalue(L,1,1);boggart_channel_close(L,-1);lua_pop(L,1);
   terminal *t = luaL_checkudata(L, 1, TERMINAL_MT);
   bpty_destroy(t->process); t->process=NULL;
   bterm_destroy(t->term); t->term = NULL; t->reply_length = 0; free(t->events); t->events = NULL; t->dropped = 0; return 0;
 }
+static int l_channel(lua_State *L){check(L);lua_getiuservalue(L,1,1);return 1;}
 static int l_feed(lua_State *L) {
   terminal *t = check(L); luaL_checktype(L, 2, LUA_TSTRING);
   size_t n; const char *bytes = lua_tolstring(L, 2, &n);
@@ -560,7 +571,7 @@ int luaopen_boggart_terminal(lua_State *L) {
     {"row", l_row}, {"snapshot", l_snapshot}, {"damage", l_damage}, {"ack_damage", l_ack},
     {"replies", l_replies}, {"key", l_key}, {"mouse", l_mouse}, {"input_state", l_input_state}, {"events", l_events}, {"clipboard_policy", l_clipboard_policy},
     {"paste", l_paste}, {"paste_safe", l_paste_safe}, {"focus", l_focus},
-    {"write",l_write}, {"process_state",l_process_state}, {"foreground_group",l_foreground_group},
+    {"write",l_write}, {"process_state",l_process_state}, {"foreground_group",l_foreground_group}, {"channel",l_channel},
     {"geometry",l_geometry}, {"process_revision",l_process_revision},
     {"width",l_width}, {"take",l_take},
     {"clipboard_reply", l_clipboard_reply}, {"usage", l_usage}, {"close", l_close}, {"__gc", l_close}, {"__close", l_close}, {NULL, NULL} };

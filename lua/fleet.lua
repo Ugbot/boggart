@@ -46,7 +46,7 @@ function Registry:bind(id, generation, owner)
   assert(rec.generation==generation and not ended[rec.state], "stale agent runtime")
   assert(not self.owners[id], "agent runtime already has an adapter")
   assert(type(owner)=="table", "invalid agent adapter")
-  for _,action in ipairs{"poll","focus","stop"} do
+  for _,action in ipairs{"poll","focus","stop","prompt","interrupt","approve"} do
     assert(owner[action]==nil or type(owner[action])=="function", "invalid adapter capability")
   end
   self.owners[id]=owner
@@ -56,10 +56,18 @@ function Registry:update(id, generation, fields)
   local rec=self.agents[id]
   if not rec or rec.generation~=generation then return nil,"stale agent runtime" end
   if fields.state then assert(states[fields.state], "invalid agent state") end
-  for _,key in ipairs{"state","pid","exit_status","term_signal","bytes","activity","error"} do
+  for _,key in ipairs{"state","pid","exit_status","term_signal","bytes","activity","error","session_id","model","input_revision","draft_bytes","request","control_result"} do
     if fields[key]~=nil then rec[key]=fields[key] end
   end
-  if ended[rec.state] then rec.t_end=rec.t_end or os.time(); rec.capabilities.stop=false end
+  if fields.capabilities then
+    local owner=self.owners[id] or {}
+    for _,action in ipairs{'prompt','interrupt','approve'}do rec.capabilities[action]=fields.capabilities[action]==true and type(owner[action])=='function' end
+  end
+  if ended[rec.state] then
+    rec.t_end=rec.t_end or os.time()
+    for _,action in ipairs{'stop','prompt','interrupt','approve'}do rec.capabilities[action]=false end
+    rec.request=false
+  end
   return rec
 end
 function Registry:retire(id, generation, state, error)
@@ -69,13 +77,13 @@ function Registry:retire(id, generation, state, error)
   self.owners[id]=nil; rec.capabilities={}
   return rec
 end
-function Registry:control(id, generation, action)
+function Registry:control(id, generation, action, payload)
   local rec=self.agents[id]; local owner=self.owners[id]
   if not rec or rec.generation~=generation then return nil,"stale agent runtime" end
   if not owner or not rec.capabilities[action] or type(owner[action])~="function" then
     return nil,"agent does not support "..tostring(action)
   end
-  return owner[action](rec)
+  return owner[action](rec,payload)
 end
 function Registry:poll()
   for _,id in ipairs(self.order) do

@@ -2,8 +2,10 @@
 
 Status: staged design, 2026-10-14. The BMUX workspace, native terminal controls,
 New agent launcher and common internal/external Fleet roster are implemented.
-Structured runtime control, manual-shell hooks, rich provider adapters and
-persistence remain proposed follow-up work. See the
+Launched Boggart TUIs now have private native-channel session/status reporting
+and same-session prompt/steer/interrupt/approval controls. Manual-shell hooks,
+child-worker mirroring, rich foreign-provider adapters and persistence remain
+follow-up work. See [native control](../../bmux-agent-channel.md) and the
 [launcher implementation plan](../plans/2026-10-14-bmux-agent-launcher.md).
 
 ## Product shape

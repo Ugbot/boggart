@@ -9,6 +9,7 @@ typedef struct bpty bpty;
 typedef struct {
   const char *command, *cwd;
   char *const *argv; /* argv[0] included; NULL terminated */
+  int control_fd; /* >2: sole inherited control capability; caller closes parent copy */
 } bpty_options;
 typedef struct {
   int64_t pid;

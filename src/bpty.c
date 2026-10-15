@@ -248,7 +248,7 @@ static int command_path(bpty_options options,char out[PATH_MAX]) {
     path=end+1;
   }
 }
-static int inherited_fds(int **out,size_t *count,int keep) {
+static int inherited_fds(int **out,size_t *count,int keep,int control) {
   DIR *dir=opendir("/dev/fd");
   if (!dir) dir=opendir("/proc/self/fd");
   if (!dir) return uv_translate_sys_error(errno);
@@ -262,7 +262,7 @@ static int inherited_fds(int **out,size_t *count,int keep) {
       break;
     }
     char *end; long fd=strtol(entry->d_name,&end,10);
-    if (*end || fd<3 || fd>INT_MAX || fd==keep || fd==dirfd(dir)) continue;
+    if (*end || fd<3 || fd>INT_MAX || fd==keep || fd==control || fd==dirfd(dir)) continue;
     if (*count==capacity) {
       if (capacity>SIZE_MAX/2/sizeof *fds) { free(fds); closedir(dir); return UV_ENOMEM; }
       capacity*=2; int *next=realloc(fds,capacity*sizeof *fds);
@@ -278,10 +278,13 @@ bpty *bpty_open(uv_loop_t *loop,bterm *core,bpty_options options,int *error_out)
   if (!loop || !core || !options.command || !*options.command || !options.argv || !options.argv[0]) goto done;
   char command[PATH_MAX]; if ((error=command_path(options,command))) goto done;
   size_t env_count=0; while (environ[env_count]) env_count++;
-  if (env_count>(SIZE_MAX/sizeof *environment)-3) { error=UV_ENOMEM; goto done; }
-  environment=malloc((env_count+3)*sizeof *environment); if (!environment) { error=UV_ENOMEM; goto done; }
+  if (env_count>(SIZE_MAX/sizeof *environment)-4) { error=UV_ENOMEM; goto done; }
+  environment=malloc((env_count+4)*sizeof *environment); if (!environment) { error=UV_ENOMEM; goto done; }
   size_t used=0;
-  for (size_t i=0;i<env_count;i++) if (strncmp(environ[i],"TERM=",5) && strncmp(environ[i],"COLORTERM=",10)) environment[used++]=environ[i];
+  for (size_t i=0;i<env_count;i++) if (strncmp(environ[i],"TERM=",5) && strncmp(environ[i],"COLORTERM=",10)
+    && strncmp(environ[i],"BOGGART_AGENT_CHANNEL_FD=",25)) environment[used++]=environ[i];
+  char channel_env[64];
+  if(options.control_fd>2){snprintf(channel_env,sizeof channel_env,"BOGGART_AGENT_CHANNEL_FD=%d",options.control_fd);environment[used++]=channel_env;}
   environment[used++]="TERM=xterm-256color"; environment[used++]="COLORTERM=truecolor"; environment[used]=NULL;
   t=calloc(1,sizeof *t); if (!t) { error=UV_ENOMEM; goto done; }
   t->loop=loop; t->registry_next=registry; registry=t;
@@ -293,7 +296,7 @@ bpty *bpty_open(uv_loop_t *loop,bterm *core,bpty_options options,int *error_out)
   t->timer_init=true; t->handles++; t->kill_timer.data=t;
   if (pipe(pipefd)<0) { error=uv_translate_sys_error(errno); goto done; }
   if (fcntl(pipefd[0],F_SETFD,FD_CLOEXEC)<0 || fcntl(pipefd[1],F_SETFD,FD_CLOEXEC)<0) { error=uv_translate_sys_error(errno); goto done; }
-  if ((error=inherited_fds(&fds,&count,pipefd[1]))) goto done;
+  if ((error=inherited_fds(&fds,&count,pipefd[1],options.control_fd))) goto done;
   const lpage_screen *screen=bterm_screen(core); struct winsize size={0};
   size.ws_col=(unsigned short)lpage_columns(screen); size.ws_row=(unsigned short)lpage_rows(screen);
   pid_t child=forkpty(&t->master,NULL,NULL,&size);
@@ -304,6 +307,7 @@ bpty *bpty_open(uv_loop_t *loop,bterm *core,bpty_options options,int *error_out)
     for (size_t i=0;i<sizeof signals/sizeof *signals;i++) sigaction(signals[i],&action,NULL);
     sigset_t mask; sigemptyset(&mask); sigprocmask(SIG_SETMASK,&mask,NULL);
     for (size_t i=0;i<count;i++) close(fds[i]);
+    if(options.control_fd>2 && fcntl(options.control_fd,F_SETFD,0)<0)goto child_error;
     if (options.cwd && chdir(options.cwd)<0) goto child_error;
     execve(command,options.argv,environment);
 child_error: {
