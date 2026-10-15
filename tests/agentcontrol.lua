@@ -38,5 +38,18 @@ do
   local x,_,send_state,_,channel=fixture();send_state(1);x:poll();channel:close()
   local fields=x:poll();assert(fields.state=='alive' and not fields.capabilities.prompt and not x:command('interrupt'))
 end
+do
+  local x,add,send_state=fixture()
+  send_state(1,{capabilities={prompt=true,interrupt=false,approve=false,worker_stop=true}});x:poll()
+  local worker={session_id=101,incarnation=3,parent_session_id=44,name='Worker',model='fixture',
+    state='running',activity='running',can_stop=true,error=false}
+  add{v=1,type='worker',id='runtime',generation=2,sequence=1,worker=worker}
+  assert(x:poll().workers[1].session_id==101)
+  local sent,id=x:command('worker_stop',{worker_session_id=101,worker_incarnation=3});assert(sent)
+  add{v=1,type='result',id='runtime',generation=2,command_id=id,accepted=true}
+  local fields=x:poll();assert(fields.worker_results[1].worker_incarnation==3 and not fields.control_result)
+  add{v=1,type='worker',id='runtime',generation=2,sequence=1,worker=worker}
+  assert(x:poll().error=='invalid worker state','worker sequence replay fails closed')
+end
 print('Agent host: bind/metadata, command identity/revision, bounded pending requests, malformed/stale frames and channel-loss capabilities pass')
 return 0

@@ -29,7 +29,9 @@ panes and registers them in the same Fleet roster, with process status and
 working focus/stop controls. Launched Boggart TUIs also report their actual
 session/model and offer **Send prompt**, **Interrupt**, and live **Approve/Reject**
 controls in Fleet. Prompts preserve human drafts; approvals target one current
-request. Foreign-provider adapters and manual-launch hooks remain follow-ups.
+request. Workers inside those TUIs appear beneath their owner in Fleet, with
+**Focus pane** and **Cancel worker** controls. Foreign-provider adapters and
+manual-launch hooks remain follow-ups.
 
 ![The conversation is the application](docs/images/chat.png)
 

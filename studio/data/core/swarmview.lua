@@ -473,7 +473,7 @@ function SwarmView:draw_roster(font, charw, x, y, lh, voff, cols, rows)
     local quiet = sel and style.text or style.dim
     if sel and colour == style.dim then colour = style.text end
     cell(font, charw, x, y + voff, C.id, rec.short_id or tostring(rec.id), style.text, 4)
-    cell(font, charw, x, y + voff, C.kind, rec.kind or "agent", style.accent,
+    cell(font, charw, x, y + voff, C.kind, (rec.worker and '↳ ' or '')..(rec.kind or "agent"), style.accent,
          (C.state - C.kind) - 1)
     cell(font, charw, x, y + voff, C.state, word, colour,
          ((wide and C.model or C.act) - C.state) - 1)
@@ -596,7 +596,7 @@ function SwarmView:draw_detail(font, charw, x, y, lh, voff, cols, rows)
     local items = {}
     for _, entry in ipairs { { "focus", "Focus pane" }, { "prompt", "Send prompt" },
       { "interrupt", "Interrupt", style.error }, { "approve", "Approve" },
-      { "approve", "Reject", style.error }, { "stop", "Stop", style.error } } do
+      { "approve", "Reject", style.error }, { "stop", rec.worker and "Cancel worker" or "Stop", style.error } } do
       if rec.capabilities[entry[1]] then
         local action, id, generation = entry[1], rec.id, rec.generation
         local input_revision=rec.input_revision
@@ -620,9 +620,9 @@ function SwarmView:draw_detail(font, charw, x, y, lh, voff, cols, rows)
     end
     for _,hit in ipairs(widgets.row(font,items,x,y,self.mouse)) do self.hits[#self.hits+1]=hit end
     y = y + widgets.height(font)
-    for _,text in ipairs { "pane: " .. (rec.short_id or rec.id), "cwd: " .. (rec.cwd or "?"),
+    for _,text in ipairs { rec.worker and ("owning TUI: "..tostring((registry.agents[rec.parent] or {}).short_id or rec.parent)) or ("pane: " .. (rec.short_id or rec.id)), "cwd: " .. (rec.cwd or "?"),
       "session: " .. tostring(rec.session_id or "?") .. "  model: " .. tostring(rec.model or "?"),
-      "process: " .. tostring(rec.pid or "?") .. (rec.exit_status and rec.exit_status>=0 and ("  exit: " .. rec.exit_status) or ""),
+      rec.worker and ("parent session: "..tostring(rec.parent_session_id or '?')) or ("process: " .. tostring(rec.pid or "?") .. (rec.exit_status and rec.exit_status>=0 and ("  exit: " .. rec.exit_status) or "")),
       rec.activity==rec.state and phase or rec.activity or "agent activity unknown",
       rec.request and ('Approval: '..rec.request.summary) or '',
       rec.control_result and (rec.control_result.accepted and 'Action accepted' or 'Action rejected: '..(rec.control_result.error or 'unknown reason')) or '',

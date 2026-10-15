@@ -35,7 +35,7 @@ function Bridge:publish()
     or (st.running or self.prompt) and 'running' or 'idle'
   local value={type='state',session_id=st.coord.session.id,model=st.coord.session.model,
     state=phase,input_revision=self.revision,draft_bytes=#self.draft,
-    capabilities={prompt=true,interrupt=st.running==true,approve=self.pending~=nil}}
+    capabilities={prompt=true,interrupt=st.running==true,approve=self.pending~=nil,worker_stop=self.workers~=nil}}
   if self.pending then
     value.request={id=self.request_id,kind='approval',name=tostring(self.pending.name or ''):sub(1,256),
       summary=tostring(self.pending.summary or ''):sub(1,2048)}
@@ -43,6 +43,10 @@ function Bridge:publish()
   local signature=json.encode(value)
   if signature~=self.signature then
     self.signature=signature;self.state_serial=self.state_serial+1;value.sequence=self.state_serial;self:send(value)
+  end
+  if self.workers then
+    local ok,error=self.workers:poll(function(message)return self:send(message)end)
+    if not ok then self.channel:close();self.worker_error=error end
   end
 end
 function Bridge:command(cmd)
@@ -66,6 +70,9 @@ function Bridge:command(cmd)
   elseif cmd.action=='interrupt' then
     if not st.running then return nil,'no active turn' end
     st.abort=true;return true
+  elseif cmd.action=='worker_stop' then
+    if not self.workers then return nil,'worker control is unavailable'end
+    return self.workers:stop(cmd.worker_session_id,cmd.worker_incarnation)
   elseif cmd.action=='approve' then
     if not self.pending or cmd.request_id~=self.request_id then return nil,'stale approval request' end
     if cmd.decision~='approve' and cmd.decision~='reject' then return nil,'invalid approval decision' end
@@ -82,6 +89,7 @@ function Bridge:poll()
     if not self.id and cmd.type=='bind' and text(cmd.id,128) and type(cmd.generation)=='number'
       and cmd.generation%1==0 and cmd.generation>=1 then
       self.id,self.generation=cmd.id,cmd.generation
+      if type(cmd.features)=='table' and cmd.features.workers==true then self.workers=require('tui.fleetworkers').new(self.st)end
     elseif self.id and cmd.type=='command' and text(cmd.command_id,128) then
       local accepted,error=self:command(cmd)
       self:send{type='result',command_id=cmd.command_id,accepted=accepted==true,error=error}
@@ -91,5 +99,5 @@ function Bridge:poll()
   self:publish()
 end
 function Bridge:take_prompt()local prompt=self.prompt;self.prompt=nil;return prompt end
-function Bridge:close()self.channel:close()end
+function Bridge:close()if self.workers then self.workers:close()end;self.channel:close()end
 return M

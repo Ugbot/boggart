@@ -204,8 +204,15 @@ rejected. A running session accepts steering into its existing inbox.
 The TUI remains interactive in its BMUX pane. Interrupt cancels its turn and
 keeps that process/session open; Stop closes the process. Approvals identify
 the exact live request and never synthesize terminal keys or enable blanket
-approval. Hooks for agents started manually in shells, rich foreign-provider
-adapters and registration of a child TUI's own workers remain subsequent stages.
+approval. Workers started inside that TUI also register beneath it, including
+workers that complete or fail between UI polls. Their details show the actual
+worker session/model and native parent session. **Focus pane** opens the owning
+TUI; **Cancel worker** stops only that worker, preserving its coordinator and
+other workers. Finished rows remain inspectable within bounded Fleet history.
+Losing the control channel marks live workers unreachable and removes Cancel;
+closing the owning pane retires their controls. They share the TUI's terminal;
+dedicated worker panes remain future work. Hooks for agents started manually in
+shells and rich foreign-provider adapters remain subsequent stages.
 See [channel ownership and protocol](bmux-agent-channel.md).
 
 `lua/fleet.lua` owns bounded metadata, adapter capabilities and generation checks;

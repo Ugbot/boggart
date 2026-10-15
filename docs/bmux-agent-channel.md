@@ -57,8 +57,34 @@ launches the actual TUI/session/scheduler/permission gate with local model
 fixtures; it never calls a model API. It exercises keyboard draft contention,
 stale revisions/generations/request IDs, steering, interrupt, approval and the
 visible Fleet controls. Persistent server ownership, manual-shell registration,
-child-worker mirroring, durable reconnect and foreign structured adapters are
+durable reconnect and foreign structured adapters are
 not supplied by this channel.
+
+The host requests `features.workers=true` in `bind` before the TUI observes or
+reports child agents. Worker messages carry a separate ordered sequence and
+bounded metadata: native session ID, per-start incarnation, parent session,
+name/model, state and cancellation eligibility. Start/stop events retain even
+workers that finish in one scheduler sweep; live scans backfill existing agents.
+At most 512 live/dirty records are retained, with at most 32 reports per publish.
+Completed pending records drop their coroutine/transcript references. Reporting
+overflow or lost observation closes semantic control rather than claiming a
+complete roster.
+
+`lua/fleetworkers.lua` maps native worker references to opaque Fleet IDs beneath
+their owning TUI. Child Cancel routes `worker_stop` through the same channel;
+the receiver checks both session/incarnation and the actual scheduler actor
+before using its supervisor. Responses attach to the child row. A worker's
+pending approval is rejected/cleared when it is cancelled, so the owner's UI
+does not stay parked. Natural completion, failure and cancellation release live
+slots and preserve distinct final states. Finished worker history can be
+evicted under the shared roster bound, and idle mirrors prune evicted references
+when the registry eviction revision changes. Channel loss marks live workers
+unreachable; process exit ends them without claiming successful completion.
+
+Worker coverage: `tests/fleetworkers.lua`, the worker protocol cases in
+`tests/agentcontrol.lua`, and `tests/studio_fleet_workers.lua` (actual TUI,
+local-model workers, nested/short-lived/failing agents, visible Cancel clicks,
+approval cancellation, repeated waves and loss/closure).
 
 The full normal checkpoint passed 162/162 tests (225.31s); the expanded focused
 normal run passed 18/18 (23.10s). Sanitizer checks passed 17/17 before the final

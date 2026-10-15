@@ -18,6 +18,7 @@ function TerminalView:try_close(done)
         local state=(rec.state=='exited' or rec.state=='failed') and rec.state or 'stopped'
         registry:retire(rec.id,rec.generation,state)
       end
+      if self.fleet_workers then self.fleet_workers:close('owning TUI pane closed',true)end
       self.dead=true
     end
     done()
@@ -41,10 +42,19 @@ function M.bind(rec,view)
   local revision=-1
   local channel=view.terminal:channel()
   local control=channel and require('agentcontrol').new(channel,rec.id,rec.generation)
+  local focus=function()return require('shell.workspaces.bmux').show(view)end
+  local workers=control and require('fleetworkers').new(registry,rec,control,focus)
+  view.fleet_workers=workers
   registry:bind(rec.id,rec.generation,{
     poll=function()
       if not view.terminal then return {state='stopped',activity='pane closed'}end
+      if workers then workers:prune()end
       local semantic=control and control:poll()
+      if semantic and workers then
+        local applied,error=workers:apply(semantic.workers,semantic.worker_results)
+        if not applied then semantic=control:fail(error)end
+        if control.error then workers:unreachable(control.error)end
+      end
       local current=view.terminal:process_revision()
       if current==revision and not semantic then return end
       revision=current
@@ -53,6 +63,7 @@ function M.bind(rec,view)
       local status=control and control.status and control.status.state or 'alive'
       if state.error then status='failed'
       elseif state.exited and state.eof then status=state.exit_status==0 and state.term_signal==0 and 'exited' or 'failed' end
+      if workers and (status=='exited' or status=='failed')then workers:close('owning TUI exited')end
       local activity=status=='alive' and 'process alive; agent activity unknown' or status
       local changed=rec.state~=status or rec.bytes~=state.bytes_read
       if changed or semantic then core.redraw=true end
@@ -62,7 +73,7 @@ function M.bind(rec,view)
       if state.error then fields.error=state.error end
       return fields
     end,
-    focus=function()return require('shell.workspaces.bmux').show(view)end,
+    focus=focus,
     stop=function()
       view:try_close(function()core.redraw=true end)
       return true

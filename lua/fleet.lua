@@ -2,7 +2,7 @@
 local M = {}; local Registry = {}; Registry.__index = Registry
 local ended = { exited = true, failed = true, stopped = true }
 local states = { starting=true, alive=true, unknown=true, running=true, idle=true,
-  waiting_for_approval=true, waiting_for_answer=true, unreachable=true,
+  waiting_for_approval=true, waiting_for_answer=true, paused=true, unreachable=true,
   exited=true, failed=true, stopped=true }
 local function label(value, fallback)
   value = value or fallback
@@ -14,7 +14,7 @@ function M.new(opts)
   local limit=opts.max_records or 512
   assert(type(limit)=='number' and limit%1==0 and limit>=1 and limit<=4096,'invalid Fleet capacity')
   return setmetatable({ prefix=opts.prefix or serve.token(8), serial=0,
-    max_records=limit, order={}, agents={}, owners={}, sources={} }, Registry)
+    max_records=limit, order={}, agents={}, owners={}, sources={}, evictions=0 }, Registry)
 end
 function Registry:set_source(name, source)
   assert(type(name)=="string" and type(source)=="function", "invalid fleet source")
@@ -25,8 +25,9 @@ function Registry:register(opts)
   local provider, name = label(opts.provider, "custom"), label(opts.name, "agent")
   if #self.order >= self.max_records then
     for i,id in ipairs(self.order) do
-      if ended[self.agents[id].state] and not self.owners[id] then
-        table.remove(self.order,i); self.agents[id]=nil; break
+      local owner=self.owners[id]
+      if ended[self.agents[id].state] and (not owner or owner.evictable_history==true) then
+        table.remove(self.order,i);self.agents[id]=nil;self.owners[id]=nil;self.evictions=self.evictions+1;break
       end
     end
     assert(#self.order < self.max_records, "Fleet capacity reached")
@@ -38,7 +39,14 @@ function Registry:register(opts)
     session_id=opts.session_id, parent=opts.parent, state="starting",
     activity="starting process", capabilities={}, bytes=0, tools=0,
     t0=os.time(), lines={}, partial="" }
-  self.agents[id]=rec; self.order[#self.order+1]=id
+  self.agents[id]=rec
+  local position=#self.order+1
+  if rec.parent then
+    for i,other in ipairs(self.order)do
+      if other==rec.parent or self.agents[other].parent==rec.parent then position=i+1 end
+    end
+  end
+  if position<=#self.order then table.insert(self.order,position,id)else self.order[#self.order+1]=id end
   return rec
 end
 function Registry:bind(id, generation, owner)
@@ -46,6 +54,7 @@ function Registry:bind(id, generation, owner)
   assert(rec.generation==generation and not ended[rec.state], "stale agent runtime")
   assert(not self.owners[id], "agent runtime already has an adapter")
   assert(type(owner)=="table", "invalid agent adapter")
+  assert(owner.evictable_history==nil or type(owner.evictable_history)=='boolean','invalid history policy')
   for _,action in ipairs{"poll","focus","stop","prompt","interrupt","approve"} do
     assert(owner[action]==nil or type(owner[action])=="function", "invalid adapter capability")
   end
@@ -56,7 +65,7 @@ function Registry:update(id, generation, fields)
   local rec=self.agents[id]
   if not rec or rec.generation~=generation then return nil,"stale agent runtime" end
   if fields.state then assert(states[fields.state], "invalid agent state") end
-  for _,key in ipairs{"state","pid","exit_status","term_signal","bytes","activity","error","session_id","model","input_revision","draft_bytes","request","control_result"} do
+  for _,key in ipairs{"state","pid","exit_status","term_signal","bytes","activity","error","session_id","model","input_revision","draft_bytes","request","control_result","parent_session_id"} do
     if fields[key]~=nil then rec[key]=fields[key] end
   end
   if fields.capabilities then
