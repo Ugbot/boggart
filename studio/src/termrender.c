@@ -1,4 +1,5 @@
 #include "termrender.h"
+#include "fontglyph.h"
 static RenFont *cell_font(RenFont *font,const tg_cell *cell) {
   unsigned style=0;
   if(cell->style.attrs&LP_BOLD)style|=REN_STYLE_BOLD;
@@ -47,7 +48,8 @@ void tg_draw(const tg_row *row,RenFont *font,const tg_theme *theme,double x,int 
     RenColor fg,bg,line;colors(cell,theme,&fg,&bg,&line);int px=(int)(x+(double)i*cw),width=cell->width*cw;
     if(cell->length && !(cell->style.attrs&LP_INVISIBLE)){
       RenFont *variant=cell_font(font,cell);
-      if(variant)ren_draw_cluster(variant,tg_text(row,cell),cell->length,px,y,width,fg);
+      if(variant)ren_draw_cluster_intensity(variant,tg_text(row,cell),cell->length,px,y,width,fg,
+        cell->style.attrs&LP_FAINT ? 127 : 255);
     }
     unsigned underline=(cell->style.attrs&LP_UNDERLINE_MASK)>>LP_UNDERLINE_SHIFT;
     if(underline){

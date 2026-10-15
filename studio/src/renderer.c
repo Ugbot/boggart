@@ -415,12 +415,15 @@ int ren_draw_text(RenFont *font, const char *text, int x, int y, RenColor color)
   }
   return end;
 }
-void ren_draw_glyph(RenGlyph glyph,float x,float y,float scale,RenColor color) {
+void ren_draw_glyph_intensity(RenGlyph glyph,float x,float y,float scale,RenColor color,uint8_t intensity) {
   if(clip_empty || !renderer || !color.a || !glyph.texture || !glyph.tw || !glyph.th)return;
   bind_target();
-  if(glyph.colored)color.r=color.g=color.b=255;
+  if(glyph.colored)color.r=color.g=color.b=intensity;
   float x0=x+glyph.xoff*scale,y0=y+glyph.yoff;
   float w=(float)(glyph.x1-glyph.x0)*scale,h=(float)(glyph.y1-glyph.y0);
   if(w>0 && h>0)glyph_batch_push(glyph.texture,x0,y0,x0+w,y0+h,
     (float)glyph.x0/glyph.tw,(float)glyph.y0/glyph.th,(float)glyph.x1/glyph.tw,(float)glyph.y1/glyph.th,fcolor(color));
+}
+void ren_draw_glyph(RenGlyph glyph,float x,float y,float scale,RenColor color) {
+  ren_draw_glyph_intensity(glyph,x,y,scale,color,255);
 }

@@ -12,7 +12,7 @@ typedef struct {
   int tw, th;
   unsigned short x0, y0, x1, y1;
   float xoff, yoff, xadvance;
-  bool colored; /* Intrinsic straight-alpha RGB, only caller opacity applies. */
+  bool colored; /* Intrinsic straight-alpha RGB, independent of foreground tint. */
 } RenGlyph;
 typedef struct { int height, baseline, underline; unsigned style; } RenFontMetrics;
 typedef struct {
@@ -33,4 +33,9 @@ bool ren_font_face_shape(RenFont *font,unsigned index,struct FontShape **out);
 bool ren_font_face_color(RenFont *font,unsigned index);
 bool ren_font_glyph_id(RenFont *font,unsigned face,uint32_t id,int phase,RenGlyph *out);
 void ren_draw_glyph(RenGlyph glyph,float x,float y,float scale,RenColor color);
+/* Foreground is already resolved (including faint) for monochrome ink and
+ * decorations. Intrinsic-color ink instead uses the separate RGB intensity;
+ * both retain the caller's opacity. Default drawing uses intensity 255. */
+void ren_draw_glyph_intensity(RenGlyph glyph,float x,float y,float scale,RenColor color,uint8_t intensity);
+void ren_draw_cluster_intensity(RenFont *font,const char *text,size_t length,int x,int y,int advance,RenColor color,uint8_t intensity);
 #endif

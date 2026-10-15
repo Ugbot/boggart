@@ -13,6 +13,7 @@ static unsigned char *pixels(size_t *bytes) {
   glyph_batch_flush();SDL_SetRenderTarget(renderer,target);
   SDL_Surface *surface=SDL_RenderReadPixels(renderer,NULL);CHECK(surface);
   SDL_Surface *rgba=SDL_ConvertSurface(surface,SDL_PIXELFORMAT_RGBA32);CHECK(rgba);
+  CHECK(rgba->w==640 && rgba->h==240 && rgba->pitch==640*4);
   SDL_DestroySurface(surface);surface=rgba;
   *bytes=(size_t)surface->pitch*(size_t)surface->h;
   unsigned char *copy=malloc(*bytes);CHECK(copy);memcpy(copy,surface->pixels,*bytes);SDL_DestroySurface(surface);return copy;
@@ -26,7 +27,8 @@ static unsigned char *draw_cell(RenFont *font,const char *text,int width,size_t 
 static unsigned char *draw_emoji(RenFont *font,const char *text,int width,RenColor color,size_t *bytes) {
   ren_draw_rect((RenRect){0,0,640,240},(RenColor){.a=255});
   ren_draw_cluster(font,text,strlen(text),20,20,width,color);
-  ren_draw_text(font,"X",20+width,20,(RenColor){.r=255,.a=255});
+  /* X overhangs left in the bundled face and contaminates chromatic counts. */
+  ren_draw_text(font,".",20+width,20,(RenColor){.r=255,.a=255});
   return pixels(bytes);
 }
 static unsigned chromatic(const unsigned char *rgba,int width) {
@@ -37,11 +39,59 @@ static unsigned chromatic(const unsigned char *rgba,int width) {
   }
   return count;
 }
+static unsigned char *draw_terminal_emoji(RenFont *font,const char *text,unsigned style,
+                                         const char *intensity,bool black,size_t *bytes) {
+  bterm *term=bterm_create(16,1,0,NULL,NULL);CHECK(term);
+  char input[256];int length=snprintf(input,sizeof input,
+    "\033[38;2;31;211;83;48;2;%s%s%sm%s%s\033[0m.",
+    black ? "0;0;0" : "23;47;71",style&REN_STYLE_BOLD ? ";1" : "",
+    style&REN_STYLE_ITALIC ? ";3" : "",intensity,text);
+  CHECK(length>0 && (size_t)length<sizeof input);
+  CHECK(bterm_feed(term,(const uint8_t *)input,(size_t)length));
+  tg_row *row=tg_capture(term,lpage_visible(bterm_screen(term),0),16);CHECK(row);
+  CHECK(row->cells[0].width==2 && row->cells[2].width==1);
+  CHECK(!(row->cells[2].style.attrs&LP_FAINT));
+  tg_theme theme={.foreground={255,255,255,255}};theme.palette[15]=theme.foreground;
+  ren_draw_rect((RenRect){0,0,640,240},(RenColor){.a=255});
+  tg_draw(row,font,&theme,20,20,font->cell,font->height);
+  unsigned char *result=pixels(bytes);tg_release(row);bterm_destroy(term);return result;
+}
+static void check_faint(RenFont *font,const char *text,unsigned style) {
+  size_t a,b,c,d,e;
+  unsigned char *normal=draw_terminal_emoji(font,text,style,"",false,&a);
+  unsigned char *faint=draw_terminal_emoji(font,text,style,"\033[2m",false,&b);
+  unsigned char *reset=draw_terminal_emoji(font,text,style,"\033[2m\033[22m",false,&c);
+  unsigned char *black=draw_terminal_emoji(font,text,style,"",true,&d);
+  unsigned char *black_faint=draw_terminal_emoji(font,text,style,"\033[2m",true,&e);
+  CHECK(a==b && a==c && a==d && a==e); /* SGR 22 also resets bold. */
+  if(!(style&REN_STYLE_BOLD))CHECK(!memcmp(normal,reset,a));
+  unsigned changed=0;int width=2*font->cell;
+  for(size_t i=0;i<a;i+=4) {
+    int x=(int)(i/4%640),y=(int)(i/4/640);
+    if(x>=20 && x<20+width && y>=20 && y<20+font->height) {
+      for(unsigned ch=0;ch<3;ch++) {
+        /* Black isolates RGB intensity. Background contribution must remain
+         * identical, including antialiased edges: faint does not change alpha.
+         * Allow two levels for SDL's blend quantization. */
+        int expected=(int)black[i+ch]*127/255;
+        if(abs((int)black_faint[i+ch]-expected)>2)
+          fprintf(stderr,"faint %s style %u pixel %d,%d channel %u: normal %u faint %u expected %d\n",
+            text,style,x,y,ch,black[i+ch],black_faint[i+ch],expected);
+        CHECK(abs((int)black_faint[i+ch]-expected)<=2);
+        CHECK(abs(((int)faint[i+ch]-black_faint[i+ch])-((int)normal[i+ch]-black[i+ch]))<=2);
+        changed+=normal[i+ch]!=faint[i+ch];
+      }
+      CHECK(normal[i+3]==faint[i+3]);
+    } else CHECK(!memcmp(normal+i,faint+i,4));
+  }
+  CHECK(changed>0);free(normal);free(faint);free(reset);free(black);free(black_faint);
+}
 int main(int argc,char **argv) {
   CHECK(argc==3 || argc==4);CHECK(SDL_Init(SDL_INIT_VIDEO));
   SDL_Window *win=SDL_CreateWindow("cluster test",640,240,SDL_WINDOW_HIDDEN);CHECK(win);ren_init(win);
   RenFont *font=ren_load_font(argv[1],16,NULL);CHECK(font);
   if(argc==4) {
+    printf("color emoji backend: %s (%dx%d)\n",SDL_GetRendererName(renderer),target_w,target_h);
     const unsigned char half_red[]={0,0,128,128},transparent[]={255,128,10,0};
     RenColor straight=color_pixel(half_red);CHECK(straight.r==255 && straight.g==0 && straight.b==0 && straight.a==128);
     straight=color_pixel(transparent);CHECK(!straight.r && !straight.g && !straight.b && !straight.a);
@@ -63,8 +113,11 @@ int main(int argc,char **argv) {
         unsigned char *green=draw_emoji(variant,emoji[e],width,(RenColor){0,255,0,255},&b);
         unsigned char *dim=draw_emoji(variant,emoji[e],width,(RenColor){255,255,255,100},&c);
         CHECK(a==b && a==c && !memcmp(white,green,a) && memcmp(white,dim,a));
-        CHECK(chromatic(white,width)>0);
+        /* The pinned Noto family's intrinsic artwork is grayscale. The
+         * opacity comparison above still proves real, nonempty glyph ink. */
+        if(e+1<sizeof emoji/sizeof *emoji)CHECK(chromatic(white,width)>0);
         free(white);free(green);free(dim);
+        check_faint(font,emoji[e],flags);
       }
     }
     const RenCluster *text=ren_font_cluster(font,"©︎",strlen("©︎"));
@@ -92,7 +145,7 @@ int main(int argc,char **argv) {
     }
     ren_free_font(font);CHECK(!glyphcache_bytes());
     SDL_DestroyTexture(target);SDL_DestroyRenderer(renderer);SDL_DestroyWindow(win);SDL_Quit();
-    puts("color emoji: ZWJ/flags/selectors/skin tones, scaled strikes, native/grid pixels, intrinsic color and opacity pass");return 0;
+    puts("color emoji: ZWJ/flags/selectors/skin tones, scaled strikes, native/grid pixels, intrinsic color, opacity and ANSI faint pass");return 0;
   }
   const char *texts[]={"日","é","Ω","👩‍💻","🇬🇧","क्‍ष"};
   for(unsigned i=0;i<sizeof texts/sizeof *texts;i++) {
