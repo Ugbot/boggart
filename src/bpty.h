@@ -38,6 +38,9 @@ int bpty_write(bpty *term, const uint8_t *bytes, size_t length);
 int bpty_resize(bpty *term, unsigned columns, unsigned rows);
 /* Status reads cached state and does no read/waitpid syscall. */
 bpty_status bpty_state(const bpty *term);
+/* Owning-loop notification only: the callback must schedule work, never enter
+ * Lua or destroy this transport. NULL unregisters before owner teardown. */
+void bpty_set_notify(bpty *term,void (*notify)(void *),void *context);
 /* Explicit ioctl query; result is the foreground process group, not an
  * individual foreground process. Exited/closed transports return UV_EPIPE. */
 int bpty_foreground_group(const bpty *term, int64_t *group);

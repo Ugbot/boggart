@@ -72,6 +72,7 @@ extern uv_loop_t *luv_loop(lua_State *L);
 #define MAX_HEADER_BYTES (64 * 1024)
 #define MAX_BODY_BYTES   (8 * 1024 * 1024)
 #define MAX_CONNS        256
+#define MAX_WRITE_QUEUE (8u * 1024u * 1024u)
 
 typedef struct Conn Conn;
 typedef struct Server Server;
@@ -82,6 +83,7 @@ struct Conn {
   char      *buf;        /* accumulated request bytes */
   size_t     len, cap;
   int        is_stream;  /* upgraded to SSE: kept open, fed by broadcast */
+  char channel[129];     /* empty = global events; otherwise exact private tag */
   int        closing;
   Conn      *next;       /* server's connection list */
   size_t queued_bytes;
@@ -194,20 +196,20 @@ static void on_write(uv_write_t *req, int status) {
   if(c)c->queued_bytes-=w->length;
   free(w->data);
   free(w);
-  if (status < 0 && c && !c->is_stream) conn_close(c);
+  if (status < 0 && c) conn_close(c);
 }
 
 static int conn_write(Conn *c, char *owned, size_t n) {
   if (c->closing) { free(owned); return -1; }
-  if(n>1024u*1024u-c->queued_bytes){free(owned);conn_close(c);return -1;}
+  if(n>MAX_WRITE_QUEUE-c->queued_bytes){free(owned);conn_close(c);return -1;}
   WriteReq *w = calloc(1, sizeof(*w));
-  if (!w) { free(owned); return -1; }
+  if (!w) { free(owned);conn_close(c);return -1; }
   w->data = owned;
   w->length=n;c->queued_bytes+=n;
   w->req.data = c;
   uv_buf_t b = uv_buf_init(owned, (unsigned int)n);
   int r = uv_write(&w->req,conn_stream(c),&b,1,on_write);
-  if (r != 0) { c->queued_bytes-=n;free(owned);free(w);return -1; }
+  if (r != 0) { c->queued_bytes-=n;free(owned);free(w);conn_close(c);return -1; }
   return 0;
 }
 static void on_shutdown(uv_shutdown_t *request,int status) {
@@ -254,8 +256,22 @@ static void respond(Conn *c, int status, const char *ctype,
   }
 }
 
-/* Upgrade this connection to an event stream and keep it. */
-static void respond_stream(Conn *c) {
+static void alloc_cb(uv_handle_t *h,size_t suggested,uv_buf_t *buf);
+static void stream_read(uv_stream_t *stream,ssize_t nread,const uv_buf_t *buf) {
+  Conn *c=stream->data;free(buf->base);
+  if(nread!=0)conn_close(c); /* EOF or unexpected client input after upgrade. */
+}
+static int stream_write(Conn *c,const char *event,size_t event_length,const char *data,size_t length) {
+  if(length>MAX_WRITE_QUEUE-256){conn_close(c);return -1;}
+  size_t capacity=length+event_length+32;char *frame=malloc(capacity);
+  if(!frame){conn_close(c);return -1;}
+  int prefix=snprintf(frame,capacity,"event: %s\ndata: ",event);
+  if(prefix<0 || (size_t)prefix+length+2>capacity){free(frame);conn_close(c);return -1;}
+  memcpy(frame+prefix,data,length);frame[prefix+length]='\n';frame[prefix+length+1]='\n';
+  return conn_write(c,frame,(size_t)prefix+length+2);
+}
+/* Upgrade only after Lua has authorized the exact channel and initial frame. */
+static void respond_stream(Conn *c,const char *initial,size_t initial_length) {
   static const char hdr[] =
     "HTTP/1.1 200 OK\r\n"
     "Content-Type: text/event-stream\r\n"
@@ -268,7 +284,9 @@ static void respond_stream(Conn *c) {
   if (!copy) { conn_close(c); return; }
   memcpy(copy, hdr, n);
   c->is_stream = 1;
-  conn_write(c, copy, n);
+  if(conn_write(c,copy,n))return;
+  if(initial && stream_write(c,"message",7,initial,initial_length))return;
+  if(uv_read_start(conn_stream(c),alloc_cb,stream_read))conn_close(c);
 }
 
 /* ---- request parsing ------------------------------------------------------ */
@@ -476,8 +494,16 @@ static void handle_request(Conn *c, Req *r) {
 
   /* handler -> "stream", or (status, body, headers) */
   if (lua_type(L, -3) == LUA_TSTRING && strcmp(lua_tostring(L, -3), "stream") == 0) {
+    size_t channel_length=0,initial_length=0;
+    const char *channel=lua_isnil(L,-2) ? "" : lua_type(L,-2)==LUA_TSTRING ? lua_tolstring(L,-2,&channel_length) : NULL;
+    const char *initial=lua_isnil(L,-1) ? NULL : lua_type(L,-1)==LUA_TSTRING ? lua_tolstring(L,-1,&initial_length) : NULL;
+    if(!channel || channel_length>128 || memchr(channel,0,channel_length) || memchr(channel,'\r',channel_length) || memchr(channel,'\n',channel_length)
+      || (!lua_isnil(L,-1) && !initial) || initial_length>MAX_WRITE_QUEUE-256) {
+      lua_settop(L,top);respond(c,500,"text/plain; charset=utf-8","invalid stream\n",15,NULL);return;
+    }
+    memcpy(c->channel,channel,channel_length);c->channel[channel_length]=0;
+    respond_stream(c,initial,initial_length);
     lua_settop(L, top);
-    respond_stream(c);
     return;
   }
   int status = (int)luaL_optinteger(L, -3, 200);
@@ -540,6 +566,7 @@ static void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
   if (c->buf) c->buf[0] = 0;
   handle_request(c, &r);
   req_free(&r);
+  if(c->is_stream){free(c->buf);c->buf=NULL;c->cap=c->len=0;}
 }
 
 static void on_connection(uv_stream_t *server, int status) {
@@ -686,7 +713,8 @@ static int l_listen(lua_State *L) {
   ServerOwner *owner=lua_newuserdatauv(L,sizeof *owner,0);owner->native=NULL;
   luaL_setmetatable(L,SERVER_MT);
   Server *s=calloc(1,sizeof *s);if(!s)return luaL_error(L,"server allocation failed");
-  owner->native=s;s->L=L;s->handler_ref=LUA_NOREF;s->loop=loop;s->body_limit=(size_t)body_limit;
+  owner->native=s;lua_rawgeti(L,LUA_REGISTRYINDEX,LUA_RIDX_MAINTHREAD);s->L=lua_tothread(L,-1);lua_pop(L,1);
+  s->handler_ref=LUA_NOREF;s->loop=loop;s->body_limit=(size_t)body_limit;
   s->unix_socket=pathbuf[0]!=0;memcpy(s->socket_path,pathbuf,strlen(pathbuf)+1);
   s->next=servers;servers=s;
   lua_pushvalue(L,handler_index);s->handler_ref=luaL_ref(L,LUA_REGISTRYINDEX);
@@ -732,24 +760,23 @@ static int l_port(lua_State *L) {
   return 1;
 }
 
-/* One SSE frame to every attached stream. Returns how many got it. */
+static const char *channel_argument(lua_State *L,int index) {
+  size_t length=0;const char *channel=luaL_checklstring(L,index,&length);
+  luaL_argcheck(L,length<=128 && !memchr(channel,0,length) && !memchr(channel,'\r',length) && !memchr(channel,'\n',length),index,"invalid stream channel");
+  return channel;
+}
+/* One SSE frame to the exact channel (empty = global). */
 static int l_broadcast(lua_State *L) {
   Server *s = check_server(L, 1);
-  const char *event = luaL_checkstring(L, 2);
+  size_t event_length=0;const char *event=luaL_checklstring(L,2,&event_length);
+  luaL_argcheck(L,event_length>0 && event_length<=128 && !memchr(event,0,event_length) && !memchr(event,'\r',event_length) && !memchr(event,'\n',event_length),2,"invalid SSE event name");
   size_t dlen = 0;
   const char *data = luaL_optlstring(L, 3, "", &dlen);
+  const char *channel=lua_isnoneornil(L,4) ? "" : channel_argument(L,4);
   int sent = 0;
   for (Conn *c = s->conns; c; c = c->next) {
-    if (!c->is_stream || c->closing) continue;
-    size_t cap = dlen + strlen(event) + 32;
-    char *frame = malloc(cap);
-    if (!frame) continue;
-    int n = snprintf(frame, cap, "event: %s\ndata: ", event);
-    if (n < 0 || (size_t)n + dlen + 2 > cap) { free(frame); continue; }
-    memcpy(frame + n, data, dlen);
-    frame[n + dlen] = '\n';
-    frame[n + dlen + 1] = '\n';
-    if (conn_write(c, frame, (size_t)n + dlen + 2) == 0) sent++;
+    if (!c->is_stream || c->closing || strcmp(c->channel,channel)) continue;
+    if(stream_write(c,event,event_length,data,dlen)==0)sent++;
   }
   lua_pushinteger(L, sent);
   return 1;
@@ -757,10 +784,16 @@ static int l_broadcast(lua_State *L) {
 
 static int l_clients(lua_State *L) {
   Server *s = check_server(L, 1);
+  const char *channel=lua_isnoneornil(L,2) ? NULL : channel_argument(L,2);
   int n = 0;
-  for (Conn *c = s->conns; c; c = c->next) if (c->is_stream && !c->closing) n++;
+  for (Conn *c = s->conns; c; c = c->next) if (c->is_stream && !c->closing && (!channel || !strcmp(channel,c->channel))) n++;
   lua_pushinteger(L, n);
   return 1;
+}
+static int l_close_streams(lua_State *L) {
+  Server *s=check_server(L,1);const char *channel=lua_isnoneornil(L,2) ? NULL : channel_argument(L,2);int count=0;
+  for(Conn *c=s->conns;c;c=c->next)if(c->is_stream && !c->closing && (!channel || !strcmp(channel,c->channel))){conn_close(c);count++;}
+  lua_pushinteger(L,count);return 1;
 }
 
 static void on_server_closed(uv_handle_t *h) {
@@ -834,6 +867,7 @@ static const luaL_Reg server_methods[] = {
   { "socket",    l_socket },
   { "broadcast", l_broadcast },
   { "clients",   l_clients },
+  { "close_streams",l_close_streams },
   { "stop",      l_stop },
   { NULL, NULL }
 };

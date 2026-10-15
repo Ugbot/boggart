@@ -43,7 +43,7 @@ function Registry:status(entry)
     cols=entry.cols,rows=entry.rows,history=entry.history,pid=entry.pid,exit_status=entry.exit_status,
     term_signal=entry.term_signal,bytes=entry.bytes or 0,queued_bytes=entry.queued_bytes or 0,
     process_exited=entry.process_exited,eof=entry.eof,error=entry.error,closed=entry.closed or false,
-    attachment_controlled=entry.controlled==true,revision=entry.revision or 0}
+    attachment_controlled=entry.controlled==true,push_error=entry.push_error,revision=entry.revision or 0}
 end
 function Registry:find(id,generation)
   if self.closed then return failure(503,'terminal registry stopped')end

@@ -10,6 +10,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <stdio.h>
 #include "terminal-source.h"
 #define TERMINAL_MT "boggart.terminal"
 #define REPLY_CAPACITY 65536
@@ -17,9 +18,11 @@
 #define EVENT_BYTES 65536
 #define PASTE_LIMIT (32u * 1024u * 1024u)
 typedef struct { size_t count, used; bterm_event events[EVENT_CAPACITY]; uint8_t bytes[EVENT_BYTES]; } event_queue;
+typedef struct terminal_watch terminal_watch;
 typedef struct {
   bterm *term; bpty *process; size_t reply_length; uint8_t replies[REPLY_CAPACITY];
   event_queue *events; size_t dropped; lua_Integer clipboard_generation; bool clipboard_read, clipboard_write;
+  terminal_watch *watch; uint64_t notifications; char watch_error[256];
 } terminal;
 static void dropped(terminal *t) { if (t->dropped < (size_t)LLONG_MAX) t->dropped++; }
 static bosc_slice copy_slice(event_queue *q, bosc_slice s) {
@@ -197,7 +200,7 @@ static void pending(lua_State *L, const lvt_parser *p) {
   lua_setfield(L, -2, "osc");
 }
 static terminal *create_terminal(lua_State *L,size_t cols,size_t rows,size_t history) {
-  terminal *t=lua_newuserdatauv(L,sizeof *t,1); memset(t,0,sizeof *t);
+  terminal *t=lua_newuserdatauv(L,sizeof *t,2); memset(t,0,sizeof *t);
   luaL_setmetatable(L,TERMINAL_MT);
   t->term=bterm_create(cols,rows,history,reply,t);
   if (!t->term) luaL_error(L,"cannot allocate terminal");
@@ -214,10 +217,94 @@ static int l_new(lua_State *L) {
 extern uv_loop_t *luv_loop(lua_State *L);
 extern int luaopen_luv(lua_State *L);
 static char process_loop_started,process_loop_shutdown;
+struct terminal_watch {
+  uv_async_t async; lua_State *L; terminal *owner; terminal_watch *next;
+  bool closing,pending;
+};
+static _Thread_local terminal_watch *watches;
+static char watch_owners;
+static void watch_closed(uv_handle_t *handle) {
+  terminal_watch *w=handle->data,**slot=&watches;
+  while(*slot && *slot!=w)slot=&(*slot)->next;
+  if(*slot)*slot=w->next;free(w);
+}
+static void watch_stop(terminal_watch *w) {
+  if(!w || w->closing)return;
+  w->closing=true;
+  /* __gc stops an active watch before freeing its owner. The weak mapping
+   * prevents a callback closure from rooting that owner forever. */
+  if(w->owner && w->owner->watch==w) {
+    bpty_set_notify(w->owner->process,NULL,NULL);w->owner->watch=NULL;
+  }
+  w->owner=NULL;
+  lua_rawgetp(w->L,LUA_REGISTRYINDEX,&watch_owners);
+  if(lua_istable(w->L,-1)){lua_pushnil(w->L);lua_rawsetp(w->L,-2,w);}
+  lua_pop(w->L,1);uv_close((uv_handle_t *)&w->async,watch_closed);
+}
+static void watch_schedule(void *context) {
+  terminal_watch *w=context;if(!w || w->closing)return;
+  if(!w->pending){w->pending=true;uv_ref((uv_handle_t *)&w->async);}
+  (void)uv_async_send(&w->async);
+}
+static void watch_deliver(uv_async_t *async) {
+  terminal_watch *w=async->data;if(w->closing)return;
+  w->pending=false;uv_unref((uv_handle_t *)async);
+  lua_State *L=w->L;int top=lua_gettop(L);
+  if(!lua_checkstack(L,8)){watch_stop(w);return;}
+  lua_rawgetp(L,LUA_REGISTRYINDEX,&watch_owners);lua_rawgetp(L,-1,w);lua_remove(L,-2);
+  terminal *t=luaL_testudata(L,-1,TERMINAL_MT);
+  if(!t || t->watch!=w || !t->term){watch_stop(w);lua_settop(L,top);return;}
+  int owner=lua_gettop(L);lua_getiuservalue(L,owner,2);
+  if(!lua_isfunction(L,-1)){watch_stop(w);lua_settop(L,top);return;}
+  t->notifications++;lua_pushvalue(L,owner);
+  if(lua_pcall(L,1,0,0)!=LUA_OK && t->watch==w) {
+    const char *error=lua_tostring(L,-1);
+    snprintf(t->watch_error,sizeof t->watch_error,"%s",error ? error : "terminal watch callback failed");
+    watch_stop(w);lua_pushnil(L);lua_setiuservalue(L,owner,2);
+  }
+  lua_settop(L,top);
+}
+static int l_watch(lua_State *L) {
+  terminal *t=luaL_checkudata(L,1,TERMINAL_MT);
+  if(lua_isnoneornil(L,2)) {
+    watch_stop(t->watch);lua_pushnil(L);lua_setiuservalue(L,1,2);lua_pushboolean(L,true);return 1;
+  }
+  luaL_checktype(L,2,LUA_TFUNCTION);(void)check(L);
+  lua_rawgetp(L,LUA_REGISTRYINDEX,&process_loop_shutdown);bool shutdown=lua_toboolean(L,-1);lua_pop(L,1);
+  if(shutdown)return luaL_error(L,"terminal process loop is shutting down");
+  luaL_requiref(L,"uv",luaopen_luv,0);lua_pop(L,1);uv_loop_t *loop=luv_loop(L);
+  lua_pushboolean(L,true);lua_rawsetp(L,LUA_REGISTRYINDEX,&process_loop_started);
+  lua_rawgetp(L,LUA_REGISTRYINDEX,&watch_owners);
+  if(!lua_istable(L,-1)) {
+    lua_pop(L,1);lua_newtable(L);lua_newtable(L);lua_pushliteral(L,"v");lua_setfield(L,-2,"__mode");
+    lua_setmetatable(L,-2);lua_pushvalue(L,-1);lua_rawsetp(L,LUA_REGISTRYINDEX,&watch_owners);
+  }
+  t=check(L);watch_stop(t->watch);
+  terminal_watch *w=calloc(1,sizeof *w);if(!w)return luaL_error(L,"terminal watch allocation failed");
+  int error=uv_async_init(loop,&w->async,watch_deliver);
+  if(error){free(w);return luaL_error(L,"terminal watch: %s",uv_strerror(error));}
+  lua_rawgeti(L,LUA_REGISTRYINDEX,LUA_RIDX_MAINTHREAD);w->L=lua_tothread(L,-1);lua_pop(L,1);
+  w->owner=t;w->async.data=w;w->next=watches;watches=w;t->watch=w;
+  uv_unref((uv_handle_t *)&w->async);lua_pushvalue(L,1);lua_rawsetp(L,-2,w);lua_pop(L,1);
+  t=check(L);
+  if(t->watch!=w)return luaL_error(L,"terminal watch replaced during setup");
+  lua_pushvalue(L,2);lua_setiuservalue(L,1,2);t->watch_error[0]=0;
+  bpty_set_notify(t->process,watch_schedule,w);watch_schedule(w);lua_pushboolean(L,true);return 1;
+}
+static int l_watch_state(lua_State *L) {
+  terminal *t=luaL_checkudata(L,1,TERMINAL_MT);
+  lua_createtable(L,0,3);boolean(L,"active",t->watch!=NULL);integer(L,"callbacks",(lua_Integer)t->notifications);
+  if(t->watch_error[0]){lua_pushstring(L,t->watch_error);lua_setfield(L,-2,"error");}return 1;
+}
 void boggart_terminal_shutdown(lua_State *L) {
   lua_rawgetp(L,LUA_REGISTRYINDEX,&process_loop_started); bool started=lua_toboolean(L,-1); lua_pop(L,1);
   if (!started) return; /* Preserve lazy loop creation for parser-only users. */
   lua_pushboolean(L,true); lua_rawsetp(L,LUA_REGISTRYINDEX,&process_loop_shutdown);
+  for(terminal_watch *w=watches;w;w=w->next)if(w->L==L)watch_stop(w);
+  for(;;) {
+    bool pending=false;for(terminal_watch *w=watches;w;w=w->next)if(w->L==L){pending=true;break;}
+    if(!pending)break;uv_run(luv_loop(L),UV_RUN_NOWAIT);
+  }
   bpty_shutdown(luv_loop(L));
 }
 static const char *spawn_string(lua_State *L,int index) {
@@ -308,6 +395,7 @@ static int l_foreground_group(lua_State *L) {
 static int l_close(lua_State *L) {
   lua_getiuservalue(L,1,1);boggart_channel_close(L,-1);lua_pop(L,1);
   terminal *t = luaL_checkudata(L, 1, TERMINAL_MT);
+  watch_stop(t->watch);lua_pushnil(L);lua_setiuservalue(L,1,2);
   bpty_destroy(t->process); t->process=NULL;
   bterm_destroy(t->term); t->term = NULL; t->reply_length = 0; free(t->events); t->events = NULL; t->dropped = 0; return 0;
 }
@@ -316,9 +404,10 @@ static int l_feed(lua_State *L) {
   terminal *t = check(L); luaL_checktype(L, 2, LUA_TSTRING);
   size_t n; const char *bytes = lua_tolstring(L, 2, &n);
   if (!bterm_feed(t->term, (const uint8_t *)bytes, n)) return luaL_error(L, "terminal allocation or reply queue failure; drain replies and reset");
+  watch_schedule(t->watch);
   return 0;
 }
-static int l_finish(lua_State *L) { if (!bterm_finish(check(L)->term)) return luaL_error(L, "terminal failed; reset required"); return 0; }
+static int l_finish(lua_State *L) { terminal *t=check(L);if (!bterm_finish(t->term)) return luaL_error(L, "terminal failed; reset required");watch_schedule(t->watch);return 0; }
 static int l_resize(lua_State *L) {
   lua_Integer columns=luaL_checkinteger(L,2),rows=luaL_checkinteger(L,3);
   luaL_argcheck(L,columns>0 && columns<=4096,2,"columns must be in 1..4096");
@@ -327,16 +416,18 @@ static int l_resize(lua_State *L) {
   if (t->process && !bpty_state(t->process).eof) {
     int error=bpty_resize(t->process,(unsigned)columns,(unsigned)rows);
     if (error) return luaL_error(L,"terminal/PTY resize failed: %s",uv_strerror(error));
+    watch_schedule(t->watch);
     return 0;
   }
   if (!bterm_resize(t->term,(size_t)columns,(size_t)rows))
     return luaL_error(L,"terminal resize allocation failure; geometry preserved");
+  watch_schedule(t->watch);
   return 0;
 }
 static int l_reset(lua_State *L) {
   terminal *t = check(L); t->reply_length = 0;
   if (t->events) t->events->count = t->events->used = 0; t->dropped = 0;
-  if (!bterm_reset(t->term)) return luaL_error(L, "terminal reset failed"); return 0;
+  if (!bterm_reset(t->term)) return luaL_error(L, "terminal reset failed");watch_schedule(t->watch);return 0;
 }
 static int l_state(lua_State *L) { state(L, bterm_state(check(L)->term)); return 1; }
 static int l_geometry(lua_State *L) {
@@ -614,6 +705,7 @@ int luaopen_boggart_terminal(lua_State *L) {
     {"paste", l_paste}, {"paste_safe", l_paste_safe}, {"focus", l_focus},
     {"write",l_write}, {"process_state",l_process_state}, {"foreground_group",l_foreground_group}, {"channel",l_channel},
     {"geometry",l_geometry}, {"process_revision",l_process_revision},
+    {"watch",l_watch},{"watch_state",l_watch_state},
     {"width",l_width}, {"take",l_take},
     {"clipboard_reply", l_clipboard_reply}, {"usage", l_usage}, {"close", l_close}, {"__gc", l_close}, {"__close", l_close}, {NULL, NULL} };
   luaL_newmetatable(L, TERMINAL_MT); luaL_setfuncs(L, methods, 0); lua_pushvalue(L, -1); lua_setfield(L, -2, "__index"); lua_pop(L, 1);

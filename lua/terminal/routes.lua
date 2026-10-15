@@ -68,5 +68,16 @@ function M.install(control)
     function(host,entry,body)return host:control(entry,body)end,'explicitly acquire, renew or take over the input/resize lease')
   attached('POST',prefix..'/detach',{generation=true,attachment_token=true},
     function(host,entry,body)return host:detach(entry,body)end,'detach a viewer without closing the terminal')
+  route('POST',prefix..'/stream',function(registry,req,id,attachment_id)
+    local body,why=object(req,{generation=true,attachment_token=true,after=true,control_token=true})
+    if not body then return response(nil,why)end
+    if type(body.generation)~='number' or body.generation%1~=0 or body.generation<1 then return response(nil,{status=400,message='terminal generation required'})end
+    local entry,error=registry:find(id,body.generation);if not entry then return response(nil,error)end
+    body.attachment_id=attachment_id
+    if not registry.attachments.streams then return response(nil,{status=503,message='terminal push unavailable'})end
+    local kind,channel,frame=registry.attachments.streams:open(entry,body)
+    if not kind then return response(nil,channel)end
+    return kind,channel,frame
+  end,'authorize attachment cursor replay and targeted native-change SSE frames')
 end
 return M
