@@ -90,6 +90,13 @@ headers/comments cannot satisfy it. After the first event idle streams have no
 periodic client timer. Native libuv handles are closed on completion,
 cancellation, deadline, peer EOF, write/read error or consumer error.
 
+The client and native listener request 256KiB UDS send/receive buffers when the
+current setting is smaller. These are best-effort kernel hints, independent of
+application framing/queue bounds; OS clamping/refusal leaves the connection
+usable. Larger existing settings are preserved. TCP settings are unchanged.
+Unix buffer reporting differs by OS (Linux may return twice the request), so
+this is not an exact kernel allocation or RSS guarantee.
+
 The replica checks version/runtime/reader identity and cursor continuity,
 1..4096 geometry, 32768 cells including history, at most 256 history rows,
 row indices/lengths, Unicode scalar/UTF-8 cell text, styles/links, cursor/margins
@@ -101,8 +108,12 @@ Tests: [`terminal_transport`](../tests/terminal_transport.lua),
 [`terminal_replica`](../tests/terminal_replica.lua),
 [`terminal_client`](../tests/terminal_client.lua). The last uses a separate real
 daemon and killed client process, 80×24 screen and a nonempty 32-row tail. Its
-timing output is evidence, not an assertion that the parent <50ms gate passes.
-See [measured verification](benchmarks/2026-10-15-native-client-verification.md).
+timing output records protocol and cold-process costs separately. Set
+`BMUX_RECONNECT_GATE=1` to assert both validated attach/replay and kill/reap/rejoin
+below 50ms. Set `BMUX_RECONNECT_TRACE=1` for bounded chunk/phase diagnostics;
+these test-only probes wrap the existing code and keep policy/evidence enabled.
+See [client correctness](benchmarks/2026-10-15-native-client-verification.md)
+and [the measured latency gate](benchmarks/2026-10-15-reconnect-latency.md).
 
 Transport references: [libuv pipes](https://docs.libuv.org/en/v1.x/pipe.html),
 [streams](https://docs.libuv.org/en/v1.x/stream.html), and the vendored

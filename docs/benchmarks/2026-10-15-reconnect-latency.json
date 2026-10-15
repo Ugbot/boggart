@@ -1,0 +1,133 @@
+{
+  "task": "BMUX-73",
+  "base_commit": "a5ff9f0",
+  "date": "2026-10-15",
+  "platform": "macOS arm64",
+  "profile": "normal",
+  "method": "Eight predeclared serial terminal_client runs with BMUX_RECONNECT_GATE=1; no concurrent build or sanitizer job from this session.",
+  "strict_limit_ms": 50,
+  "screen": {
+    "cols": 80,
+    "rows": 24,
+    "tail": 32,
+    "history_capacity": 128
+  },
+  "samples": [
+    {
+      "sample": 1,
+      "attach_replay_ms": 32.292,
+      "kill_rejoin_ms": 33.916,
+      "cold_process_file_ms": 94.332,
+      "child_protocol_ms": 27.414,
+      "image_cells": 4480,
+      "history_total": 45,
+      "result": "pass"
+    },
+    {
+      "sample": 2,
+      "attach_replay_ms": 28.788,
+      "kill_rejoin_ms": 32.806,
+      "cold_process_file_ms": 215.679,
+      "child_protocol_ms": 28.14,
+      "image_cells": 4480,
+      "history_total": 45,
+      "result": "pass"
+    },
+    {
+      "sample": 3,
+      "attach_replay_ms": 32.964,
+      "kill_rejoin_ms": 42.317,
+      "cold_process_file_ms": 198.488,
+      "child_protocol_ms": 27.97,
+      "image_cells": 4480,
+      "history_total": 45,
+      "result": "pass"
+    },
+    {
+      "sample": 4,
+      "attach_replay_ms": 41.692,
+      "kill_rejoin_ms": 46.352,
+      "cold_process_file_ms": 169.743,
+      "child_protocol_ms": 26.471,
+      "image_cells": 4480,
+      "history_total": 45,
+      "result": "pass"
+    },
+    {
+      "sample": 5,
+      "attach_replay_ms": 33.277,
+      "kill_rejoin_ms": 34.712,
+      "cold_process_file_ms": 131.666,
+      "child_protocol_ms": 26.866,
+      "image_cells": 4480,
+      "history_total": 45,
+      "result": "pass"
+    },
+    {
+      "sample": 6,
+      "attach_replay_ms": 34.144,
+      "kill_rejoin_ms": 44.347,
+      "cold_process_file_ms": 148.147,
+      "child_protocol_ms": 28.6,
+      "image_cells": 4480,
+      "history_total": 45,
+      "result": "pass"
+    },
+    {
+      "sample": 7,
+      "attach_replay_ms": 28.279,
+      "kill_rejoin_ms": 31.715,
+      "cold_process_file_ms": 192.582,
+      "child_protocol_ms": 26.427,
+      "image_cells": 4480,
+      "history_total": 45,
+      "result": "pass"
+    },
+    {
+      "sample": 8,
+      "attach_replay_ms": 30.605,
+      "kill_rejoin_ms": 35.902,
+      "cold_process_file_ms": 201.514,
+      "child_protocol_ms": 27.336,
+      "image_cells": 4480,
+      "history_total": 45,
+      "result": "pass"
+    }
+  ],
+  "source_sha256": {
+    "src/lserve.c": "63230e6c0117f612bf3568c77d3c9cdfa355f06035dabe7b2de2ad2b3da74549",
+    "lua/terminal/transport.lua": "10d064e5b27f40954d941329ed1d21911a7d188b2aff22357d49427a8e77204f",
+    "tests/terminal_client.lua": "a1e133925cddb8e47a0f6007fe51a12992d9f2425ccc1e6e8a55383326553da7"
+  },
+  "control_health_observations": [
+    {
+      "benchmark": "control_unix_health",
+      "max": 127.375,
+      "median": 14.5,
+      "min": 10.375,
+      "p95": 33.625,
+      "p99": 66.417,
+      "route": "manual Fleet registrar health",
+      "samples": 1000,
+      "scope": "same-process libuv client/listener, connect through response EOF; no Studio frame scheduling or process startup",
+      "transport": "HTTP/1.1 over UDS",
+      "unit": "microseconds",
+      "warmup": 100
+    },
+    {
+      "benchmark": "control_unix_health",
+      "max": 22659.25,
+      "median": 975.5,
+      "min": 569.667,
+      "p95": 1855.125,
+      "p99": 3279.458,
+      "route": "full policy-scoped control health",
+      "samples": 1000,
+      "scope": "same-process libuv client/listener, connect through response EOF; no Studio frame scheduling or process startup",
+      "transport": "HTTP/1.1 over UDS",
+      "unit": "microseconds",
+      "warmup": 100
+    }
+  ],
+  "control_health_target_note": "Full-policy 100 microsecond target remains unmet (BMUX-36); these observations are not a controlled before/after attribution."
+}

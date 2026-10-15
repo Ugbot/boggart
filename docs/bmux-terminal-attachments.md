@@ -7,9 +7,10 @@ snapshot, including Unicode clusters, styles, links, wrapping and a bounded
 scrollback tail. The server remains the sole parser/process owner.
 
 BMUX-71 adds native-driven targeted SSE delivery. BMUX-72 supplies the
-[native Lua/libuv client](bmux-terminal-client.md). BMUX-32 remains in progress
-for its measured kill-client/sub-50ms reconnect gate; attached Studio/cTUI
-views remain BMUX-34/35.
+[native Lua/libuv client](bmux-terminal-client.md). BMUX-73 removes the small-UDS-
+buffer transfer bottleneck and passes the BMUX-32 kill-client/sub-50ms gate in
+[eight serial normal samples](benchmarks/2026-10-15-reconnect-latency.md).
+Attached Studio/cTUI views remain BMUX-34/35.
 
 ## Attach, update and detach
 

@@ -103,6 +103,12 @@ function M.request(opts,callback)
       if op.done then return end
       if why then op:finish({kind='transport',message='control socket connect failed'});return end
       guarded(op,function()
+        -- Grow small Unix socket buffers at both ends; keep larger OS/user
+        -- settings. Refusal is only a missed performance hint, not an error.
+        local receive=op.pipe:recv_buffer_size()
+        if receive and receive<256*1024 then op.pipe:recv_buffer_size(256*1024)end
+        local send=op.pipe:send_buffer_size()
+        if send and send<256*1024 then op.pipe:send_buffer_size(256*1024)end
         assert(op.pipe:read_start(function(error,data)
           if op.done then return end
           if error then op:finish({kind='transport',message='control socket read failed'})

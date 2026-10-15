@@ -3,6 +3,11 @@ local uv=require 'uv';local proc=require 'proc';local json=require 'json';local 
 local function q(s)return "'"..s:gsub("'","'\\''").."'"end
 local dir=assert(uv.fs_mkdtemp('/tmp/bmux-client-XXXXXX'));local socket=dir..'/sock';local ready=dir..'/ready.json'
 assert(uv.fs_mkdir(dir..'/home',448))
+local tracing=os.getenv('BMUX_RECONNECT_TRACE')=='1'
+if tracing then
+  assert(uv.fs_mkdir(dir..'/home/.boggart',448));assert(uv.fs_mkdir(dir..'/home/.boggart/lua',448))
+  assert(uv.fs_copyfile('tests/fixtures/terminal_server_probe.lua',dir..'/home/.boggart/lua/control.lua'))
+end
 local daemon=proc.start('exec env HOME='..q(dir..'/home')..' BOGGART_HOME='..q(dir..'/home/.boggart')..' '
   ..q(uv.exepath())..' serve --socket '..q(socket),60)
 local viewer;local clients={}
@@ -118,7 +123,7 @@ local ok,failure=xpcall(function()
   assert(saved.pid==record.pid and json.encode(saved.screen)==json.encode(a:view().screen)
     and json.encode(saved.scrollback)==json.encode(a:view().scrollback))
   local killed_at=uv.hrtime();viewer:kill('sigkill');local killed=viewer:wait();assert(killed.code~=0)
-  local R=require 'terminal.replica';local decoded_ms,applied_ms,request_ms=0,0,0
+  local R=require 'terminal.replica';local decoded_ms,applied_ms,request_ms=0,0,0;local traces={}
   local original_decode,original_new=R.decode,R.new
   R.decode=function(raw)local tick=uv.hrtime();local result,why=original_decode(raw);decoded_ms=decoded_ms+(uv.hrtime()-tick)/1e6;return result,why end
   R.new=function(...)
@@ -128,7 +133,19 @@ local ok,failure=xpcall(function()
   end
   T.request=function(opts,callback)
     local tick=uv.hrtime()
-    return original(opts,function(...)request_ms=request_ms+(uv.hrtime()-tick)/1e6;callback(...)end)
+    local op=original(opts,function(...)request_ms=request_ms+(uv.hrtime()-tick)/1e6;callback(...)end)
+    if tracing then
+      local trace={stage=opts.stream and 'stream' or 'snapshot',chunks=0,bytes=0,sizes={},held_ms=0}
+      traces[#traces+1]=trace;local feed=op.parser.feed
+      op.parser.feed=function(parser,data)
+        local before=uv.hrtime();trace.chunks=trace.chunks+1;trace.bytes=trace.bytes+#data
+        trace.first_ms=trace.first_ms or (before-tick)/1e6;trace.last_ms=(before-tick)/1e6
+        trace.sizes[tostring(#data)]=true
+        trace.send_buffer=op.pipe:send_buffer_size();trace.receive_buffer=op.pipe:recv_buffer_size()
+        feed(parser,data);trace.held_ms=trace.held_ms+(uv.hrtime()-before)/1e6
+      end
+    end
+    return op
   end
   local fresh_client=new_client();local started=uv.hrtime();local fresh=attach(fresh_client)
   R.decode=original_decode;R.new=original_new;T.request=original
@@ -138,6 +155,10 @@ local ok,failure=xpcall(function()
   print(string.format('terminal_client timing: attach+validated-replay=%.3fms kill+rejoin=%.3fms cold-process+file=%.3fms child-protocol=%.3fms cells=%d history=%d',
     reconnect_ms,kill_rejoin_ms,cold_ms,saved.elapsed_ms,80*(24+32),saved.scrollback.total))
   print(string.format('terminal_client phases: HTTP-to-body=%.3fms decode=%.3fms apply=%.3fms',request_ms,decoded_ms,applied_ms))
+  if tracing then print('BMUX_CLIENT_TRACE '..json.encode(traces))end
+  if os.getenv('BMUX_RECONNECT_GATE')=='1' then
+    assert(reconnect_ms<50 and kill_rejoin_ms<50,'BMUX-32 actual client-death/rejoin exceeds 50ms')
+  end
   -- Same-reader replay and explicit stale-cursor failure (no hidden takeover).
   fresh:disconnect();assert(fresh.status=='disconnected');good(function(cb)fresh:reconnect(cb)end)
   good(function(cb)b:resize(72,12,cb)end)
@@ -170,6 +191,7 @@ end,debug.traceback)
 for _,c in ipairs(clients)do c:close()end
 if viewer and not viewer.done then viewer:kill('sigkill');viewer:wait()end
 if not daemon.done then daemon:kill('sigkill');daemon:wait()end
+if tracing then for line in daemon:result().out:gmatch('[^\r\n]+')do if line:match('^BMUX_PROBE ')then print(line)end end end
 if not ok then error(failure)end
 print('terminal_client: actual daemon, independent process death/rejoin, exact screen/history, controller takeover, uncertain command retry, resize/exit and lifecycle pass')
 return 0

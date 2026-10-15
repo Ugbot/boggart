@@ -1,9 +1,12 @@
 # Native attachment client verification — 2026-10-15
 
 BMUX-72 implements the [Lua/libuv client](../bmux-terminal-client.md) for
-BMUX-32. No new runtime, subprocess HTTP transport or upstream Ito code is used.
-Studio/cTUI attached views remain BMUX-34/35. **The <50ms reconnect gate is not
-met and BMUX-32 remains in progress.**
+BMUX-32 at commit `a5ff9f0`. No new runtime, subprocess HTTP transport or upstream
+Ito code is used. Studio/cTUI attached views remain BMUX-34/35. **At this
+checkpoint the <50ms gate was not met.** The later BMUX-73
+[latency investigation and eight-sample gate](2026-10-15-reconnect-latency.md)
+resolves the small-socket-buffer bottleneck; historical numbers below remain
+the pre-fix evidence.
 
 ## Correctness scope
 

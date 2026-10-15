@@ -83,10 +83,11 @@ forcibly aborted by this change. Native teardown escalates owned children that
 ignore HUP. SIGKILL, server crashes and machine restart do not preserve these
 PTYs; durable restore is separate from live client disconnect survival.
 
-Server-side Fleet/provider-hook attachment, native terminal CLI verbs, the product
-attach client and automatic Studio reconnect are still open
-roadmap work. The existing Studio manual registrar remains separate. Windows
-ConPTY remains BMUX-22.
+The [product native attachment client](bmux-terminal-client.md) and snapshot/
+replay transport now exist, including the measured normal-build reconnect gate.
+Server-side Fleet/provider-hook attachment, native terminal CLI verbs and
+automatic Studio reconnect remain roadmap work. The existing Studio manual
+registrar remains separate. Windows ConPTY remains BMUX-22.
 
 See [the persistent-host design](tmux.md),
 [native control/authentication](control-surfaces.md), and
