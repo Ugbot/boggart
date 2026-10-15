@@ -1592,7 +1592,7 @@ elseif bog.mode == "serve" then
   bog.new_session()
   local control = require "control"
   local srv, url = control.start{
-    host = boggart.host, port = boggart.port, token = boggart.token,
+    host = boggart.host, port = boggart.port, token = boggart.token, socket=boggart.socket,
   }
   if not srv then
     io.stderr:write("boggart serve: " .. tostring(url) .. "\n")

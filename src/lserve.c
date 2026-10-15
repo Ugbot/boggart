@@ -47,12 +47,23 @@
  *   status:number, body:string, headers:table   -- an ordinary response
  * or the string "stream"                        -- keep it open as SSE
  */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
 #include <lua.h>
 #include <lauxlib.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <uv.h>
+#ifndef _WIN32
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#endif
 
 extern uv_loop_t *luv_loop(lua_State *L);
 
@@ -66,17 +77,18 @@ typedef struct Conn Conn;
 typedef struct Server Server;
 
 struct Conn {
-  uv_tcp_t   tcp;
+  union { uv_tcp_t tcp; uv_pipe_t pipe; } io;
   Server    *srv;
   char      *buf;        /* accumulated request bytes */
   size_t     len, cap;
   int        is_stream;  /* upgraded to SSE: kept open, fed by broadcast */
   int        closing;
   Conn      *next;       /* server's connection list */
+  size_t queued_bytes;
 };
 
 struct Server {
-  uv_tcp_t   tcp;
+  union { uv_tcp_t tcp; uv_pipe_t pipe; } io;
   lua_State *L;
   int        handler_ref;
   char      *token;      /* NULL = no auth (loopback only) */
@@ -85,7 +97,31 @@ struct Server {
   int        nconns;
   Conn      *conns;
   int        stopped;
+  int        unix_socket, initialized, released, handles;
+  uv_loop_t *loop;
+  Server *next;
+  char socket_path[256];
+  uint64_t socket_dev, socket_ino;
+  size_t body_limit;
 };
+typedef struct { Server *native; } ServerOwner;
+static _Thread_local Server *servers;
+static char server_started,server_shutdown;
+static uv_stream_t *server_stream(Server *s){return s->unix_socket ? (uv_stream_t *)&s->io.pipe : (uv_stream_t *)&s->io.tcp;}
+static uv_stream_t *conn_stream(Conn *c){return c->srv->unix_socket ? (uv_stream_t *)&c->io.pipe : (uv_stream_t *)&c->io.tcp;}
+static void server_free(Server *s) {
+  if(!s->released || s->handles)return;
+  Server **entry=&servers;while(*entry && *entry!=s)entry=&(*entry)->next;
+  if(*entry)*entry=s->next;free(s);
+}
+static void unlink_socket(Server *s) {
+#ifndef _WIN32
+  struct stat info;
+  if(s->socket_ino && !lstat(s->socket_path,&info) && S_ISSOCK(info.st_mode)
+    && (uint64_t)info.st_dev==s->socket_dev && (uint64_t)info.st_ino==s->socket_ino)unlink(s->socket_path);
+#endif
+  s->socket_ino=0;
+}
 
 #define SERVER_MT "boggart.serve.server"
 
@@ -107,7 +143,7 @@ static int ct_equal(const char *a, size_t alen, const char *b, size_t blen) {
 }
 
 static int conn_append(Conn *c, const char *data, size_t n) {
-  if (c->len + n > MAX_HEADER_BYTES + MAX_BODY_BYTES) return -1;
+  if (n>MAX_HEADER_BYTES+c->srv->body_limit-c->len) return -1;
   if (c->len + n + 1 > c->cap) {
     size_t want = c->cap ? c->cap : 4096;
     while (want < c->len + n + 1) want *= 2;
@@ -132,27 +168,30 @@ static void unlink_conn(Server *s, Conn *c) {
 static void on_conn_closed(uv_handle_t *h) {
   Conn *c = (Conn *)h->data;
   if (!c) return;
-  if (c->srv) unlink_conn(c->srv, c);
+  Server *s=c->srv;
+  if (s) unlink_conn(s,c);
   free(c->buf);
   free(c);
+  if(s){s->handles--;server_free(s);}
 }
 
 static void conn_close(Conn *c) {
   if (c->closing) return;
   c->closing = 1;
-  uv_read_stop((uv_stream_t *)&c->tcp);
-  if (!uv_is_closing((uv_handle_t *)&c->tcp)) {
-    uv_close((uv_handle_t *)&c->tcp, on_conn_closed);
+  uv_read_stop(conn_stream(c));
+  if (!uv_is_closing((uv_handle_t *)conn_stream(c))) {
+    uv_close((uv_handle_t *)conn_stream(c), on_conn_closed);
   }
 }
 
 /* ---- writing -------------------------------------------------------------- */
 
-typedef struct { uv_write_t req; char *data; } WriteReq;
+typedef struct { uv_write_t req; char *data; size_t length; } WriteReq;
 
 static void on_write(uv_write_t *req, int status) {
   WriteReq *w = (WriteReq *)req;
   Conn *c = (Conn *)req->data;
+  if(c)c->queued_bytes-=w->length;
   free(w->data);
   free(w);
   if (status < 0 && c && !c->is_stream) conn_close(c);
@@ -160,18 +199,24 @@ static void on_write(uv_write_t *req, int status) {
 
 static int conn_write(Conn *c, char *owned, size_t n) {
   if (c->closing) { free(owned); return -1; }
+  if(n>1024u*1024u-c->queued_bytes){free(owned);conn_close(c);return -1;}
   WriteReq *w = calloc(1, sizeof(*w));
   if (!w) { free(owned); return -1; }
   w->data = owned;
+  w->length=n;c->queued_bytes+=n;
   w->req.data = c;
   uv_buf_t b = uv_buf_init(owned, (unsigned int)n);
-  int r = uv_write(&w->req, (uv_stream_t *)&c->tcp, &b, 1, on_write);
-  if (r != 0) { free(owned); free(w); return -1; }
+  int r = uv_write(&w->req,conn_stream(c),&b,1,on_write);
+  if (r != 0) { c->queued_bytes-=n;free(owned);free(w);return -1; }
   return 0;
+}
+static void on_shutdown(uv_shutdown_t *request,int status) {
+  (void)status;Conn *c=request->data;free(request);conn_close(c);
 }
 
 static void respond(Conn *c, int status, const char *ctype,
                     const char *body, size_t blen, const char *extra) {
+  uv_read_stop(conn_stream(c));
   const char *reason = status == 200 ? "OK"
                      : status == 201 ? "Created"
                      : status == 204 ? "No Content"
@@ -202,7 +247,9 @@ static void respond(Conn *c, int status, const char *ctype,
     uv_shutdown_t *sd = calloc(1, sizeof(*sd));
     if (sd) {
       sd->data = c;
-      uv_shutdown(sd, (uv_stream_t *)&c->tcp, NULL);
+      if(uv_shutdown(sd,conn_stream(c),on_shutdown)){free(sd);conn_close(c);}
+    } else {
+      conn_close(c);
     }
   }
 }
@@ -304,7 +351,7 @@ static int parse_request(Conn *c, Req *out, size_t *consumed) {
       for (const char *k=v;k<end;k++) {
         if (*k<'0' || *k>'9') return -1;
         content_len=content_len*10+(size_t)(*k-'0');
-        if (content_len>MAX_BODY_BYTES) return -1;
+        if (content_len>c->srv->body_limit) return -1;
       }
     } else if (nlen==17 && strncasecmp(p,"transfer-encoding",17)==0) return -1;
     else {
@@ -353,7 +400,8 @@ static void push_request(lua_State *L, Conn *c, Req *r) {
   struct sockaddr_storage ss;
   int nlen = (int)sizeof(ss);
   char ip[INET6_ADDRSTRLEN] = {0};
-  if (uv_tcp_getpeername(&c->tcp, (struct sockaddr *)&ss, &nlen) == 0) {
+  if(c->srv->unix_socket){lua_pushliteral(L,"unix");lua_setfield(L,-2,"remote");}
+  else if (uv_tcp_getpeername(&c->io.tcp, (struct sockaddr *)&ss, &nlen) == 0) {
     if (ss.ss_family == AF_INET) {
       uv_ip4_name((struct sockaddr_in *)&ss, ip, sizeof(ip));
     } else if (ss.ss_family == AF_INET6) {
@@ -372,13 +420,14 @@ static void handle_request(Conn *c, Req *r) {
    * A browser Origin, when supplied, must be exactly this HTTP origin. */
   struct sockaddr_storage addr;
   int addrlen=sizeof(addr), port=0;
-  if (uv_tcp_getsockname(&s->tcp,(struct sockaddr *)&addr,&addrlen)==0)
+  if (!s->unix_socket && uv_tcp_getsockname(&s->io.tcp,(struct sockaddr *)&addr,&addrlen)==0)
     port=addr.ss_family==AF_INET ? ntohs(((struct sockaddr_in *)&addr)->sin_port)
       : ntohs(((struct sockaddr_in6 *)&addr)->sin6_port);
   char expected[160], origin[176];
   snprintf(expected,sizeof(expected),strchr(s->host,':') ? "[%s]:%d" : "%s:%d",s->host,port);
   int valid_host=r->host && strcmp(r->host,expected)==0;
-  if (!valid_host && (!strcmp(s->host,"127.0.0.1") || !strcmp(s->host,"localhost"))) {
+  if(s->unix_socket)valid_host=r->host && (!strcmp(r->host,"localhost") || !strcmp(r->host,"localhost:80"));
+  if (!s->unix_socket && !valid_host && (!strcmp(s->host,"127.0.0.1") || !strcmp(s->host,"localhost"))) {
     snprintf(expected,sizeof(expected),"localhost:%d",port);
     valid_host=r->host && strcmp(r->host,expected)==0;
     if (!valid_host) {
@@ -387,7 +436,7 @@ static void handle_request(Conn *c, Req *r) {
     }
   }
   snprintf(origin,sizeof(origin),"http://%s",r->host ? r->host : "");
-  if (!valid_host || (r->origin && strcmp(r->origin,origin)!=0)) {
+  if (!valid_host || (r->origin && (s->unix_socket || strcmp(r->origin,origin)!=0))) {
     respond(c,403,"text/plain; charset=utf-8","forbidden origin or host\n",25,NULL);
     return;
   }
@@ -420,7 +469,8 @@ static void handle_request(Conn *c, Req *r) {
     char msg[512];
     int n = snprintf(msg, sizeof(msg), "handler error: %s\n", err ? err : "?");
     lua_settop(L, top);
-    respond(c, 500, "text/plain; charset=utf-8", msg, (size_t)(n > 0 ? n : 0), NULL);
+    respond(c, 500, "text/plain; charset=utf-8", msg,
+      n<0 ? 0 : (size_t)n<sizeof msg ? (size_t)n : sizeof msg-1, NULL);
     return;
   }
 
@@ -442,6 +492,7 @@ static void handle_request(Conn *c, Req *r) {
   }
   /* copy the body out before settop lets Lua collect it */
   char *bcopy = malloc(blen ? blen : 1);
+  if(!bcopy){lua_settop(L,top);conn_close(c);return;}
   if (bcopy && blen) memcpy(bcopy, body, blen);
   char ctbuf[128];
   snprintf(ctbuf, sizeof(ctbuf), "%s", ctype);
@@ -494,38 +545,82 @@ static void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
 static void on_connection(uv_stream_t *server, int status) {
   Server *s = (Server *)server->data;
   if (status != 0 || s->stopped) return;
-  if (s->nconns >= MAX_CONNS) {
-    /* Accept and immediately drop, so the backlog does not wedge. */
-    uv_tcp_t tmp;
-    uv_tcp_init(server->loop, &tmp);
-    if (uv_accept(server, (uv_stream_t *)&tmp) == 0) {
-      uv_close((uv_handle_t *)&tmp, NULL);
-    }
-    return;
-  }
   Conn *c = calloc(1, sizeof(*c));
   if (!c) return;
   c->srv = s;
-  if (uv_tcp_init(server->loop, &c->tcp) != 0) { free(c); return; }
-  c->tcp.data = c;
-  if (uv_accept(server, (uv_stream_t *)&c->tcp) != 0) {
-    uv_close((uv_handle_t *)&c->tcp, on_conn_closed);
+  int initialized=s->unix_socket ? uv_pipe_init(server->loop,&c->io.pipe,0) : uv_tcp_init(server->loop,&c->io.tcp);
+  if(initialized){free(c);return;}
+  s->handles++;conn_stream(c)->data=c;
+  if (uv_accept(server,conn_stream(c)) != 0 || s->nconns>=MAX_CONNS) {
+    conn_close(c);
     return;
   }
+#ifndef _WIN32
+  if(s->unix_socket) {
+    uv_os_fd_t fd;uid_t uid=(uid_t)-1;
+    if(uv_fileno((uv_handle_t *)conn_stream(c),&fd)){conn_close(c);return;}
+#if defined(__linux__)
+    struct ucred credentials;socklen_t length=sizeof credentials;
+    if(!getsockopt(fd,SOL_SOCKET,SO_PEERCRED,&credentials,&length))uid=credentials.uid;
+#else
+    gid_t gid;if(getpeereid(fd,&uid,&gid))uid=(uid_t)-1;
+#endif
+    if(uid!=geteuid()){conn_close(c);return;}
+  }
+#endif
   c->next = s->conns;
   s->conns = c;
   s->nconns++;
-  uv_read_start((uv_stream_t *)&c->tcp, alloc_cb, on_read);
+  if(uv_read_start(conn_stream(c),alloc_cb,on_read))conn_close(c);
 }
 
 /* ---- Lua surface ---------------------------------------------------------- */
 
 static Server *check_server(lua_State *L, int idx) {
-  return (Server *)luaL_checkudata(L, idx, SERVER_MT);
+  ServerOwner *owner=luaL_checkudata(L,idx,SERVER_MT);
+  luaL_argcheck(L,owner->native!=NULL,idx,"closed server");return owner->native;
+}
+static void stop_server(Server *s,lua_State *L);
+static int bind_socket(Server *s) {
+#ifdef _WIN32
+  (void)s;return UV_ENOSYS;
+#else
+  struct sockaddr_un address={0};size_t length=strlen(s->socket_path);
+  if(!length || length>=sizeof address.sun_path || s->socket_path[0]!='/')return UV_EINVAL;
+  char parent[sizeof s->socket_path];memcpy(parent,s->socket_path,length+1);
+  char *slash=strrchr(parent,'/');if(!slash || slash==parent)return UV_EACCES;*slash=0;
+  struct stat info;
+  if(lstat(parent,&info)<0)return uv_translate_sys_error(errno);
+  if(!S_ISDIR(info.st_mode) || info.st_uid!=geteuid() || (info.st_mode&077))return UV_EACCES;
+  if(!lstat(s->socket_path,&info))return UV_EEXIST;
+  if(errno!=ENOENT)return uv_translate_sys_error(errno);
+  int fd=socket(AF_UNIX,SOCK_STREAM,0);if(fd<0)return uv_translate_sys_error(errno);
+  int error=0;
+  address.sun_family=AF_UNIX;memcpy(address.sun_path,s->socket_path,length+1);
+  if(fcntl(fd,F_SETFD,FD_CLOEXEC)<0 || bind(fd,(struct sockaddr *)&address,sizeof address)<0)error=uv_translate_sys_error(errno);
+  else if(lstat(s->socket_path,&info)<0)error=uv_translate_sys_error(errno);
+  else if(!S_ISSOCK(info.st_mode) || info.st_uid!=geteuid())error=UV_EACCES;
+  else {
+    s->socket_dev=(uint64_t)info.st_dev;s->socket_ino=(uint64_t)info.st_ino;
+    if(chmod(s->socket_path,0600)<0)error=uv_translate_sys_error(errno);
+    else error=uv_pipe_open(&s->io.pipe,fd);
+  }
+  if(error)close(fd);
+  /* Opening an already-bound fd leaves libuv's pipe_fname unset. Boggart owns
+   * inode-checked unlink; uv_pipe_bind would unlink replacement paths on close. */
+  return error;
+#endif
 }
 
 static int l_listen(lua_State *L) {
   luaL_checktype(L, 1, LUA_TTABLE);
+  lua_rawgetp(L,LUA_REGISTRYINDEX,&server_shutdown);int shutting_down=lua_toboolean(L,-1);lua_pop(L,1);
+  if(shutting_down)return luaL_error(L,"control server loop is shutting down");
+
+  lua_getfield(L,1,"socket");size_t path_len=0;const char *path=luaL_optlstring(L,-1,"",&path_len);
+  char pathbuf[256];
+  if(path_len>=sizeof pathbuf || strlen(path)!=path_len)return luaL_error(L,"invalid socket path");
+  memcpy(pathbuf,path,path_len+1);lua_pop(L,1);
 
   lua_getfield(L, 1, "host");
   const char *host = luaL_optstring(L, -1, "127.0.0.1");
@@ -534,8 +629,12 @@ static int l_listen(lua_State *L) {
   lua_pop(L, 1);
 
   lua_getfield(L, 1, "port");
-  int port = (int)luaL_optinteger(L, -1, 0);
+  lua_Integer requested_port=luaL_optinteger(L,-1,0);
+  if(requested_port<0 || requested_port>65535)return luaL_error(L,"invalid server port");
+  int port=(int)requested_port;
   lua_pop(L, 1);
+  lua_getfield(L,1,"body_limit");lua_Integer body_limit=luaL_optinteger(L,-1,MAX_BODY_BYTES);lua_pop(L,1);
+  if(body_limit<1 || body_limit>MAX_BODY_BYTES)return luaL_error(L,"invalid body limit");
 
   lua_getfield(L, 1, "token");
   const char *token = lua_isstring(L, -1) ? lua_tostring(L, -1) : NULL;
@@ -557,7 +656,7 @@ static int l_listen(lua_State *L) {
   int trusted=profile && strcmp(profile,"trusted_local")==0;
   if (profile && !trusted && strcmp(profile,"authenticated")!=0) return luaL_error(L,"unknown control profile");
   lua_pop(L,1);
-  if ((!loopback || !trusted) && tokbuf[0] == 0) {
+  if (!pathbuf[0] && (!loopback || !trusted) && tokbuf[0] == 0) {
     lua_pushnil(L);
     lua_pushfstring(L, "refusing to bind %s without a token: a control plane "
                        "reachable off this machine must be authenticated", hostbuf);
@@ -569,73 +668,61 @@ static int l_listen(lua_State *L) {
     lua_pop(L, 1);
     return luaL_error(L, "serve.listen: handler must be a function");
   }
-  int handler_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+  int handler_index=lua_gettop(L);
 
   /* the loop, materialised the same way every other module does it */
   lua_getglobal(L, "require");
   lua_pushliteral(L, "uv");
   if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
     lua_pop(L, 1);
-    luaL_unref(L, LUA_REGISTRYINDEX, handler_ref);
     return luaL_error(L, "serve.listen: no uv loop");
   }
   lua_pop(L, 1);
   uv_loop_t *loop = luv_loop(L);
   if (!loop) {
-    luaL_unref(L, LUA_REGISTRYINDEX, handler_ref);
     return luaL_error(L, "serve.listen: no uv loop");
   }
 
-  Server *s = (Server *)lua_newuserdatauv(L, sizeof(Server), 0);
-  memset(s, 0, sizeof(*s));
-  s->L = L;
-  s->handler_ref = handler_ref;
+  ServerOwner *owner=lua_newuserdatauv(L,sizeof *owner,0);owner->native=NULL;
+  luaL_setmetatable(L,SERVER_MT);
+  Server *s=calloc(1,sizeof *s);if(!s)return luaL_error(L,"server allocation failed");
+  owner->native=s;s->L=L;s->handler_ref=LUA_NOREF;s->loop=loop;s->body_limit=(size_t)body_limit;
+  s->unix_socket=pathbuf[0]!=0;memcpy(s->socket_path,pathbuf,strlen(pathbuf)+1);
+  s->next=servers;servers=s;
+  lua_pushvalue(L,handler_index);s->handler_ref=luaL_ref(L,LUA_REGISTRYINDEX);
+  lua_pushboolean(L,1);lua_rawsetp(L,LUA_REGISTRYINDEX,&server_started);
   snprintf(s->host,sizeof(s->host),"%s",hostbuf);
   if (tokbuf[0]) {
     s->token_len = strlen(tokbuf);
     s->token = malloc(s->token_len + 1);
-    if (!s->token) return luaL_error(L,"token allocation failed");
+    if (!s->token) {stop_server(s,L);return luaL_error(L,"token allocation failed");}
     memcpy(s->token, tokbuf, s->token_len + 1);
   }
-  luaL_getmetatable(L, SERVER_MT);
-  lua_setmetatable(L, -2);
-
-  if (uv_tcp_init(loop, &s->tcp) != 0) {
-    lua_pushnil(L); lua_pushliteral(L, "tcp init failed"); return 2;
+  int rc=s->unix_socket ? uv_pipe_init(loop,&s->io.pipe,0) : uv_tcp_init(loop,&s->io.tcp);
+  if(!rc){s->initialized=1;s->handles++;server_stream(s)->data=s;}
+  if(!rc && s->unix_socket)rc=bind_socket(s);
+  else if(!rc) {
+    struct sockaddr_storage addr;
+    const char *bind_host=strcmp(hostbuf,"localhost")==0 ? "127.0.0.1" : hostbuf;
+    rc=uv_ip4_addr(bind_host,port,(struct sockaddr_in *)&addr);
+    if(rc)rc=uv_ip6_addr(bind_host,port,(struct sockaddr_in6 *)&addr);
+    if(!rc)rc=uv_tcp_bind(&s->io.tcp,(const struct sockaddr *)&addr,0);
   }
-  s->tcp.data = s;
-
-  struct sockaddr_storage addr;
-  const char *bind_host = strcmp(hostbuf, "localhost") == 0 ? "127.0.0.1" : hostbuf;
-  int rc = uv_ip4_addr(bind_host, port, (struct sockaddr_in *)&addr);
-  if (rc != 0) rc = uv_ip6_addr(bind_host, port, (struct sockaddr_in6 *)&addr);
-  if (rc != 0) {
-    lua_pushnil(L);
-    lua_pushfstring(L, "bad address %s", bind_host);
-    return 2;
-  }
-  if ((rc = uv_tcp_bind(&s->tcp, (const struct sockaddr *)&addr, 0)) != 0) {
-    lua_pushnil(L);
-    lua_pushfstring(L, "bind %s:%d failed: %s", bind_host, port, uv_strerror(rc));
-    return 2;
-  }
-  if ((rc = uv_listen((uv_stream_t *)&s->tcp, 64, on_connection)) != 0) {
-    lua_pushnil(L);
-    lua_pushfstring(L, "listen failed: %s", uv_strerror(rc));
-    return 2;
-  }
+  if(!rc)rc=uv_listen(server_stream(s),64,on_connection);
+  if(rc){stop_server(s,L);lua_pushnil(L);lua_pushfstring(L,"listen failed: %s",uv_strerror(rc));return 2;}
   /* The listener must not by itself keep the process alive: a REPL that has
    * finished should still exit. Whatever wants the server up (serve mode)
    * holds the loop open on its own terms. */
-  uv_unref((uv_handle_t *)&s->tcp);
+  uv_unref((uv_handle_t *)server_stream(s));
   return 1;
 }
 
 static int l_port(lua_State *L) {
   Server *s = check_server(L, 1);
+  if(s->unix_socket || s->stopped || !s->initialized){lua_pushnil(L);return 1;}
   struct sockaddr_storage ss;
   int nlen = (int)sizeof(ss);
-  if (uv_tcp_getsockname(&s->tcp, (struct sockaddr *)&ss, &nlen) != 0) {
+  if (uv_tcp_getsockname(&s->io.tcp, (struct sockaddr *)&ss, &nlen) != 0) {
     lua_pushnil(L); return 1;
   }
   int port = 0;
@@ -676,40 +763,47 @@ static int l_clients(lua_State *L) {
   return 1;
 }
 
-static void on_server_closed(uv_handle_t *h) { (void)h; }
+static void on_server_closed(uv_handle_t *h) {
+  Server *s=h->data;s->initialized=0;s->handles--;server_free(s);
+}
+static void stop_server(Server *s,lua_State *L) {
+  if(s->stopped)return;
+  s->stopped=1;
+  for(Conn *c=s->conns;c;){Conn *next=c->next;conn_close(c);c=next;}
+  unlink_socket(s);
+  if(s->initialized && !uv_is_closing((uv_handle_t *)server_stream(s)))uv_close((uv_handle_t *)server_stream(s),on_server_closed);
+  if(s->handler_ref!=LUA_NOREF){luaL_unref(L,LUA_REGISTRYINDEX,s->handler_ref);s->handler_ref=LUA_NOREF;}
+  free(s->token);s->token=NULL;
+}
 
 static int l_stop(lua_State *L) {
   Server *s = check_server(L, 1);
-  if (s->stopped) { lua_pushboolean(L, 0); return 1; }
-  s->stopped = 1;
-  Conn *c = s->conns;
-  while (c) { Conn *next = c->next; conn_close(c); c = next; }
-  if (!uv_is_closing((uv_handle_t *)&s->tcp)) {
-    uv_close((uv_handle_t *)&s->tcp, on_server_closed);
-  }
-  if (s->handler_ref != LUA_NOREF) {
-    luaL_unref(L, LUA_REGISTRYINDEX, s->handler_ref);
-    s->handler_ref = LUA_NOREF;
-  }
-  free(s->token);
-  s->token = NULL;
-  lua_pushboolean(L, 1);
+  int changed=!s->stopped;stop_server(s,L);lua_pushboolean(L,changed);
   return 1;
 }
 
 static int l_gc(lua_State *L) {
-  Server *s = (Server *)luaL_testudata(L, 1, SERVER_MT);
-  if (s && !s->stopped) {
-    s->stopped = 1;
-    Conn *c = s->conns;
-    while (c) { Conn *next = c->next; conn_close(c); c = next; }
-    if (!uv_is_closing((uv_handle_t *)&s->tcp)) {
-      uv_close((uv_handle_t *)&s->tcp, on_server_closed);
-    }
-    free(s->token);
-    s->token = NULL;
-  }
+  ServerOwner *owner=luaL_testudata(L,1,SERVER_MT);
+  if(owner && owner->native){Server *s=owner->native;owner->native=NULL;stop_server(s,L);s->released=1;server_free(s);}
   return 0;
+}
+void boggart_serve_shutdown(lua_State *L) {
+  lua_rawgetp(L,LUA_REGISTRYINDEX,&server_started);int active=lua_toboolean(L,-1);lua_pop(L,1);if(!active)return;
+  lua_pushboolean(L,1);lua_rawsetp(L,LUA_REGISTRYINDEX,&server_shutdown);
+  uv_loop_t *loop=luv_loop(L);
+  for(Server *s=servers;s;s=s->next)if(s->loop==loop)stop_server(s,L);
+  for(;;) {
+    int pending=0;for(Server *s=servers;s;s=s->next)if(s->loop==loop && s->handles){pending=1;break;}
+    if(!pending)break;uv_run(loop,UV_RUN_NOWAIT);
+  }
+}
+static int l_socket(lua_State *L) {
+  Server *s=check_server(L,1);char path[sizeof s->socket_path];memcpy(path,s->socket_path,sizeof path);
+  if(!path[0])lua_pushnil(L);else lua_pushstring(L,path);return 1;
+}
+static int l_verify_token(lua_State *L) {
+  size_t a,b;const char *expected=luaL_checklstring(L,1,&a),*actual=luaL_checklstring(L,2,&b);
+  lua_pushboolean(L,ct_equal(expected,a,actual,b));return 1;
 }
 
 /* Real entropy, hex-encoded. In C because a CSPRNG is a syscall (uv_random),
@@ -737,6 +831,7 @@ static int l_token(lua_State *L) {
 
 static const luaL_Reg server_methods[] = {
   { "port",      l_port },
+  { "socket",    l_socket },
   { "broadcast", l_broadcast },
   { "clients",   l_clients },
   { "stop",      l_stop },
@@ -746,6 +841,7 @@ static const luaL_Reg server_methods[] = {
 static const luaL_Reg serve_lib[] = {
   { "listen", l_listen },
   { "token",  l_token },
+  { "verify_token", l_verify_token },
   { NULL, NULL }
 };
 

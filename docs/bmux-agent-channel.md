@@ -56,9 +56,10 @@ Verification is in `tests/c/agent_channel.c`, `tests/agentbridge.lua`,
 launches the actual TUI/session/scheduler/permission gate with local model
 fixtures; it never calls a model API. It exercises keyboard draft contention,
 stale revisions/generations/request IDs, steering, interrupt, approval and the
-visible Fleet controls. Persistent server ownership, manual-shell registration,
-durable reconnect and foreign structured adapters are
-not supplied by this channel.
+visible Fleet controls. Persistent server ownership, durable reconnect and foreign
+structured adapters are not supplied by this channel.
+[Manual shell registration](bmux-manual-agents.md) uses a separate native wrapper
+and private local registrar.
 
 The host requests `features.workers=true` in `bind` before the TUI observes or
 reports child agents. Worker messages carry a separate ordered sequence and

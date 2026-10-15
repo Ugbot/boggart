@@ -419,7 +419,7 @@ function M.start(opts)
   local host = opts.host or os.getenv("BOGGART_SERVE_HOST") or "127.0.0.1"
   local port = tonumber(opts.port or os.getenv("BOGGART_SERVE_PORT")) or 0
   local token = opts.token or os.getenv("BOGGART_SERVE_TOKEN")
-  if token == nil and opts.profile ~= "trusted_local" then
+  if token == nil and not opts.socket and opts.profile ~= "trusted_local" then
     token = serve.token(24)   -- C: real entropy, not math.random
   end
 
@@ -433,7 +433,7 @@ function M.start(opts)
   deferred.register(client_binding,client_state)
   client_context=invocation.context({state=client_state})
   local srv, why = serve.listen{
-    host = host, port = port, token = token, profile=opts.profile,
+    host = host, port = port, socket=opts.socket, token = token, profile=opts.profile,
     handler = function(req)
       local okd, a, b, c = pcall(dispatch, req)
       if not okd then
@@ -447,7 +447,7 @@ function M.start(opts)
 
   M.server, client_token = srv, token
   install_bridge()
-  local url = string.format("http://%s:%d", host, srv:port())
+  local url = opts.socket and 'http://localhost' or string.format("http://%s:%d", host, srv:port())
   bog.events.emit("serve:started", { url = url, authenticated=token~=nil })
   return srv, url
 end

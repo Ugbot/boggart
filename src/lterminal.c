@@ -245,10 +245,32 @@ static int l_open(lua_State *L) {
   lua_getfield(L,1,"cwd"); const char *cwd=lua_isnil(L,-1) ? NULL : spawn_string(L,-1);
   lua_getfield(L,1,"args"); int args_index=lua_gettop(L); size_t count=0;
   if (!lua_isnil(L,args_index)) { luaL_checktype(L,args_index,LUA_TTABLE); count=lua_rawlen(L,args_index); }
-  if (count>1024 || !lua_checkstack(L,(int)count+8)) return luaL_error(L,"terminal argv too large");
+  if (count>1024 || !lua_checkstack(L,(int)count+80)) return luaL_error(L,"terminal argv too large");
   char *argv[1026]; argv[0]=(char *)command;
   for (size_t i=0;i<count;i++) { lua_rawgeti(L,args_index,(lua_Integer)i+1); argv[i+1]=(char *)spawn_string(L,-1); }
   argv[count+1]=NULL;
+  lua_getfield(L,1,"env");int env_index=lua_gettop(L);size_t env_count=0;
+  if(!lua_isnil(L,env_index)){luaL_checktype(L,env_index,LUA_TTABLE);env_count=lua_rawlen(L,env_index);}
+  if(env_count>64)return luaL_error(L,"too many terminal environment entries");
+  if(env_count || !lua_isnil(L,env_index)) {
+    size_t keys=0;lua_pushnil(L);
+    while(lua_next(L,env_index)) {
+      if(!lua_isinteger(L,-2) || lua_tointeger(L,-2)<1 || (lua_Unsigned)lua_tointeger(L,-2)>env_count)return luaL_error(L,"terminal environment must be a dense array");
+      keys++;lua_pop(L,1);
+    }
+    if(keys!=env_count)return luaL_error(L,"terminal environment must be a dense array");
+  }
+  char *environment[65];size_t env_bytes=0;
+  for(size_t i=0;i<env_count;i++) {
+    lua_rawgeti(L,env_index,(lua_Integer)i+1);const char *value=spawn_string(L,-1);
+    const char *equal=strchr(value,'=');
+    if(!equal || equal==value || equal-value>128)return luaL_error(L,"invalid terminal environment key");
+    for(const char *p=value;p<equal;p++)if(!((*p>='A' && *p<='Z') || (*p>='a' && *p<='z') || *p=='_' || (p>value && *p>='0' && *p<='9')))return luaL_error(L,"invalid terminal environment key");
+    for(size_t j=0;j<i;j++)if(!strncmp(environment[j],value,(size_t)(equal-value)) && environment[j][equal-value]=='=')return luaL_error(L,"duplicate terminal environment key");
+    env_bytes+=strlen(value);if(env_bytes>65536)return luaL_error(L,"terminal environment too large");
+    environment[i]=(char *)value;
+  }
+  environment[env_count]=NULL;
   lua_getfield(L,1,"control");bool control=lua_toboolean(L,-1);lua_pop(L,1);
   terminal *t=create_terminal(L,cols,rows,history);int terminal_index=lua_gettop(L),error,child_fd=-1;
   if(control) {
@@ -256,7 +278,7 @@ static int l_open(lua_State *L) {
     lua_setiuservalue(L,terminal_index,1);t=luaL_checkudata(L,terminal_index,TERMINAL_MT);
     if(error){bterm_destroy(t->term);t->term=NULL;lua_pushnil(L);lua_pushstring(L,uv_strerror(error));return 2;}
   }
-  t->process=bpty_open(loop,t->term,(bpty_options){command,cwd,argv,child_fd},&error);
+  t->process=bpty_open(loop,t->term,(bpty_options){command,cwd,argv,child_fd,environment},&error);
   bchannel_close_fd(child_fd);
   if(!t->process){lua_getiuservalue(L,terminal_index,1);boggart_channel_close(L,-1);lua_pop(L,1);}
   if (!t->process) { bterm_destroy(t->term); t->term=NULL; lua_pushnil(L); lua_pushstring(L,uv_strerror(error)); return 2; }
