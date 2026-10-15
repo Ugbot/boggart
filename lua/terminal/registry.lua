@@ -129,6 +129,19 @@ function Registry:resize(id,generation,cols,rows,credentials)
     return self:status(entry)
   end)
 end
+function Registry:input_events(id,generation,events,credentials)
+  local entry,why=self:find(id,generation);if not entry then return nil,why end
+  if not integer(generation,1,9007199254740991)then return failure(400,'invalid terminal generation')end
+  local valid,message=require('terminal.input').validate(events)
+  if not valid then return failure(400,message)end
+  return self.attachments:command(entry,credentials,'events',{events=events},function()
+    if not entry.term or self:status(entry).process_exited then return failure(409,'terminal is not running')end
+    local ok,bytes,error=pcall(entry.term.send_events,entry.term,events)
+    if not ok then return failure(400,'invalid native input event')end
+    if bytes==nil then return failure(409,error)end
+    return {id=id,generation=generation,accepted_bytes=bytes,accepted_events=#events}
+  end)
+end
 function Registry:screen(id,first,count)
   local entry,why=self:find(id);if not entry then return nil,why end
   if not entry.term then return failure(409,'terminal grid is closed')end

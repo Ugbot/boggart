@@ -167,10 +167,14 @@ function Session:_send(callback)
   local pending=self.pending
   return self:_post('command_request',self.base..'/'..pending.kind,pending.body,function(why,result,status)
     if self.closed then return end
-    if not why and (result.id~=self.id or result.generation~=self.generation
-      or pending.kind=='input' and result.accepted_bytes~=pending.bytes
-      or pending.kind=='resize' and (result.cols~=pending.cols or result.rows~=pending.rows))then
-      why=problem('protocol','invalid terminal command acknowledgement')
+    if not why then
+      local valid=result.id==self.id and result.generation==self.generation
+      if pending.event_count then
+        local n=result.accepted_bytes
+        valid=valid and result.accepted_events==pending.event_count and type(n)=='number' and n%1==0 and n>=0 and n<=65536
+      elseif pending.kind=='input'then valid=valid and result.accepted_bytes==pending.bytes
+      elseif pending.kind=='resize'then valid=valid and result.cols==pending.cols and result.rows==pending.rows end
+      if not valid then why=problem('protocol','invalid terminal command acknowledgement')end
     end
     if not why then self.sequence=pending.sequence;self.pending=nil
       if self.controller then self.controller.expires=clock()+self.controller.seconds end
@@ -187,7 +191,8 @@ function Session:_command(kind,payload,callback)
     or self.pending or self.control_request or self.sequence>=9007199254740991 then callback(problem('state','live controller required with no pending command'));return end
   local body=self:_credentials();body.attachment_id=self.attachment_id;body.control_token=self.controller.token;body.command_seq=self.sequence+1
   for key,value in pairs(payload)do body[key]=value end
-  self.pending={kind=kind,sequence=body.command_seq,body=json.encode(body),bytes=payload.text and #payload.text,cols=payload.cols,rows=payload.rows}
+  self.pending={kind=kind,sequence=body.command_seq,body=json.encode(body),bytes=payload.text and #payload.text,
+    event_count=payload.events and #payload.events,cols=payload.cols,rows=payload.rows}
   return self:_send(callback)
 end
 function Session:input(text,callback)
@@ -197,6 +202,12 @@ end
 function Session:resize(cols,rows,callback)
   assert(type(cols)=='number' and cols%1==0 and cols>=1 and cols<=4096 and type(rows)=='number' and rows%1==0 and rows>=1 and rows<=4096,'invalid terminal geometry')
   return self:_command('resize',{cols=cols,rows=rows},callback)
+end
+function Session:events(events,callback)
+  assert(type(callback)=='function','events callback required')
+  local valid,message=require('terminal.input').validate(events)
+  if not valid then callback(problem('request',message));return end
+  return self:_command('input',{events=events},callback)
 end
 function Session:retry(callback)
   assert(type(callback)=='function','retry callback required')

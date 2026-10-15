@@ -49,6 +49,15 @@ local function process(p,id,generation,cols,rows)
   for _,key in ipairs{'error','push_error'}do if p[key]~=nil then out[key]=text(p[key],65536)end end
   return out
 end
+local function input_state(input)
+  object(input)
+  local modes={none=true,x10=true,normal=true,button=true,any=true}
+  local formats={x10=true,utf8=true,sgr=true,urxvt=true,pixels=true}
+  need(type(input.mouse_mode)=='string' and modes[input.mouse_mode] and type(input.mouse_format)=='string' and formats[input.mouse_format],'invalid mouse mode')
+  local out={mouse_mode=input.mouse_mode,mouse_format=input.mouse_format,kitty_flags=number(input.kitty_flags,0,31)}
+  for _,key in ipairs{'backarrow','ignore_keypad_numlock','alt_prefix','modify_other_keys_2','bracketed_paste','focus_reporting','focused'}do out[key]=boolean(input[key])end
+  return out
+end
 function M.new(id,generation)
   identifier(id);number(generation,1,MAX)
   return setmetatable({id=id,generation=generation,view={cursor=0}},Replica)
@@ -90,6 +99,8 @@ function Replica:validate(frame)
   out.state=state(frame.state,cols,rows)
   need(frame.kind=='snapshot' or out.state.alternate==self.view.state.alternate,'delta changed screen buffer')
   out.process=process(frame.process,self.id,self.generation,cols,rows)
+  if frame.input_state~=nil then out.input_state=input_state(frame.input_state)
+  else need(self.view.input_state==nil,'input mode state missing')end
   need(out.scrollback.total<=out.process.history,'history exceeds capacity')
   return out,true
 end

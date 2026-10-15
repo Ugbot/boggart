@@ -29,6 +29,9 @@ Attachment IDs/tokens are separate random capabilities, never roster metadata.
 Attach returns a frozen JSON frame with `v=1`, terminal `id`, `generation`,
 `attachment_id`, `attachment_token`, `reader_seconds`, `after=0`, `cursor=1`,
 `kind="snapshot"`, `cols`, `rows`, `screen`, `state`, `process` and `scrollback`.
+BMUX-74 also supplies validated native `input_state` negotiation metadata on
+changed frames; mode-only changes participate in capture and push. See
+[server-native input](bmux-terminal-input.md).
 `screen` is the native row array; each row contains `wrapped` and `cells`, with
 the existing native text/width/flags/style/link fields. `state` supplies cursor,
 modes and alternate-screen state. `scrollback={first,total,rows}` is the current

@@ -65,6 +65,10 @@ objects require explicit close; a live stream intentionally retains its handles.
   input/resize. Malformed successful acknowledgements and server errors also
   stay uncertain, since failure can occur after the effect was accepted.
   Do not infer rejection from a disconnect. No replay occurs across a new lease.
+- `session:events(events, callback)` uses the same controller and command queue
+  for [atomic server-native key/paste/focus/mouse batches](bmux-terminal-input.md).
+  The server encodes using current negotiated modes. Views also carry validated
+  `input_state` metadata, including mode-only and zero-byte focus changes.
 - `session:close()` cancels local operations and suppresses subsequent session
   callbacks, leaving the daemon PTY running. `:detach(callback)` additionally
   asks the host to release its reader/cache/controller; its callback still runs.
