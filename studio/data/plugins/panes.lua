@@ -36,22 +36,24 @@ command.add(unlocked, {
   end,
 
   ["root:next-pane"] = function()
+    local active=active_node();if active.bmux_owner then active.bmux_owner:cycle(1);return end
     local leaves = root():get_leaves()
     local node = active_node()
     for i, n in ipairs(leaves) do
       if n == node then
-        core.set_active_view(leaves[i % #leaves + 1].active_view)
+        leaves[i % #leaves + 1]:set_active_view(leaves[i % #leaves + 1].active_view)
         return
       end
     end
   end,
 
   ["root:previous-pane"] = function()
+    local active=active_node();if active.bmux_owner then active.bmux_owner:cycle(-1);return end
     local leaves = root():get_leaves()
     local node = active_node()
     for i, n in ipairs(leaves) do
       if n == node then
-        core.set_active_view(leaves[(i - 2) % #leaves + 1].active_view)
+        local target=leaves[(i - 2) % #leaves + 1];target:set_active_view(target.active_view)
         return
       end
     end

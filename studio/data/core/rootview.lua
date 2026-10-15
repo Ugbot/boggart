@@ -392,12 +392,11 @@ function RootView:on_mouse_pressed(button, x, y, clicks)
     -- the tab); otherwise the tab just becomes active.
     local cx, cy, cs = node:get_tab_close_rect(idx)
     local on_close = x >= cx and x < cx + cs and y >= cy and y < cy + cs
-    node:set_active_view(node.views[idx])
     if button == "middle" or (button == "left" and on_close) then
-      node:close_active_view(self.root_node)
-    end
+      node:close_view(node.views[idx],self.root_node)
+    else node:set_active_view(node.views[idx]) end
   else
-    core.set_active_view(node.active_view)
+    node:set_active_view(node.active_view)
     node.active_view:on_mouse_pressed(button, x, y, clicks)
   end
 end

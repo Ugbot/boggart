@@ -30,7 +30,13 @@ local function full_layout_node()
 end
 
 function M.remember_focus()
-  if core.active_view and core.active_view:is(TerminalView) then M.focused = core.active_view end
+  if require('shell').current~='bmux'then return end
+  local root=core.root_view.root_node;local view=core.active_view;local node=root:get_node_for_view(view)
+  if node and node.locked then view=core.last_active_view;node=root:get_node_for_view(view)end
+  if node and not node.locked then
+    M.last_content_view=view
+    if view:is(TerminalView)then M.focused=view end
+  end
 end
 
 local function shell_cwd()
@@ -48,6 +54,10 @@ end
 
 function M.open(dir, options)
   options = options or nil
+  if M.session then
+    if options and options.fleet_agent then M.session:disconnect()
+    else return M.session:open_terminal(dir,options)end
+  end
   local shell = require "shell"
   if shell.current ~= "bmux" then
     M.suppress_initial=options and options.attachment~=nil
@@ -72,6 +82,7 @@ function M.open(dir, options)
 end
 
 function M.show(view)
+  if M.session and M.session.local_tree and M.session.local_tree:get_node_for_view(view)then M.session:disconnect()end
   require("shell").switch("bmux")
   local root = core.root_view.root_node
   local node = root:get_node_for_view(view)
@@ -91,6 +102,7 @@ function M.enter()
     core.root_view:get_primary_node():split("up", M.toolbar, true)
   end
   M.toolbar.visible = true
+  if M.session then M.session:apply();return end
   local root = core.root_view.root_node
   if not (core.active_view and core.active_view:is(TerminalView) and root:get_node_for_view(core.active_view)) then
     local node = M.focused and root:get_node_for_view(M.focused)
@@ -119,16 +131,19 @@ command.add(in_bmux, {
   ["bmux:split-right"] = function() M.open("right") end,
   ["bmux:split-down"] = function() M.open("down") end,
   ["bmux:close-terminal"] = function()
+    if M.session then target_node():close_active_view(core.root_view.root_node);return end
     local node = full_layout_node()
     node:close_active_view(core.root_view.root_node)
     M.focused = core.active_view
   end,
   ["bmux:zoom"] = function()
+    if M.session then M.session:command('pane_zoom',{pane_id=M.session:focused_pane()});return end
     local node = target_node(); node:set_active_view(node.active_view)
     node:get_content_root(core.root_view.root_node):toggle_zoom()
     core.redraw = true
   end,
   ["bmux:next-pane"] = function()
+    if M.session then M.session:cycle(1);return end
     local node = target_node(); node:set_active_view(node.active_view)
     command.perform("root:next-pane"); M.remember_focus()
   end,

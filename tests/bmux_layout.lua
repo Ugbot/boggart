@@ -81,6 +81,11 @@ pane_command('view_move',{pane_id=right,view_id=first_view,target_pane_id=first_
 surface=current();assert(surface.tree.type=='leaf' and surface.tree.id==first_pane and #surface.tree.views==2)
 pane_command('view_move',{pane_id=first_pane,view_id=first_view,target_pane_id=first_pane,index=1})
 assert(current().tree.views[1].id==first_view)
+pane_command('view_add',{pane_id=first_pane,view={kind='agent',agent_id='foreign-agent'}})
+local background=current().tree.views[3].id
+pane_command('pane_focus',{pane_id=first_pane,view_id=first_view})
+pane_command('view_close',{pane_id=first_pane,view_id=background})
+assert(current().tree.active_view_id==first_view and #current().tree.views==2,'named close is atomic and preserves foreground selection')
 pane_command('view_close',{pane_id=first_pane});assert(#current().tree.views==1)
 pane_command('view_close',{pane_id=first_pane});assert(current().tree.views==json.array)
 pane_command('pane_split',{pane_id=first_pane,direction='down'});surface=current();local empty_pane=surface.tree.b.id

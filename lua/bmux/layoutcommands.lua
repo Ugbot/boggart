@@ -22,7 +22,7 @@ local schemas = {
   surface_select={workspace_id='id',surface_id='id'},
   surface_rename={workspace_id='id',surface_id='id',title='title'},
   surface_remove={workspace_id='id',surface_id='id'},
-  view_add={pane_id='integer',view='view'}, view_close={pane_id='integer'},
+  view_add={pane_id='integer',view='view'}, view_close={pane_id='integer',view_id='id?'},
   view_move={pane_id='integer',view_id='id',target_pane_id='integer',index='integer?'},
   pane_split={pane_id='integer',direction='direction',view='view?'},
   pane_focus={pane_id='integer',view_id='id?'},
@@ -163,7 +163,7 @@ local function pane_effect(host, c, surface, node, depth)
   if c.op=='pane_focus' or c.op=='pane_zoom' then
     return function(tree) tree:find_node(c.pane_id):set_active_view(view) end
   end
-  if c.op=='view_close' then return function(tree) tree:find_node(c.pane_id):close_active_view(tree) end end
+  if c.op=='view_close' then return function(tree) tree:find_node(c.pane_id):close_view(view,tree) end end
   local target = host:_canonical(surface):find_node(c.target_pane_id)
   if not target or target.type~='leaf' then return failure(404,'unknown destination pane') end
   if c.op=='pane_swap' then

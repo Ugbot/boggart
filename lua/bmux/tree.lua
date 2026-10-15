@@ -123,9 +123,9 @@ function Node:_remove_view(view,root,activate)
   end
   return true
 end
-function Node:close_active_view(root)
-  if self.type~='leaf' or self.locked or self.active_view==nil then return false end
-  local view=self.active_view;local a=adapter(self);local done=false
+function Node:close_view(view,root)
+  if self.type~='leaf' or self.locked or view==nil or not self:get_view_idx(view) then return false end
+  local a=adapter(self);local done=false
   local function remove()
     if done then return end;done=true;local activate=focused(root)==view;root:unzoom()
     local current=root:get_node_for_view(view)
@@ -133,6 +133,7 @@ function Node:close_active_view(root)
   end
   if a.close then a.close(view,remove)else remove()end;return true
 end
+function Node:close_active_view(root)return self:close_view(self.active_view,root)end
 function Node:swap_views(target)
   if self.type~='leaf' or not target or target.type~='leaf' or self.locked or target.locked then return false end
   self.views,target.views=target.views,self.views

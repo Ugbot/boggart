@@ -92,7 +92,7 @@ local ok,err=xpcall(function()
   mode_key('1');assert(shell.current=='agent','Ctrl-Alt-1 leaves raw terminal')
   mode_key('4');assert(shell.current=='bmux','Ctrl-Alt-4 enters Bmux')
   system.set_window_size(520,600);frame(5)
-  assert(#ws.toolbar.hits==8,'narrow window keeps every control, including Attach')
+  assert(#ws.toolbar.hits==9,'narrow window keeps every control, including Attach and Join layout')
   for _,r in ipairs(ws.toolbar.hits)do
     assert(r.x>=ws.toolbar.position.x and r.x+r.w<=ws.toolbar.position.x+ws.toolbar.size.x+1,'control stays within width')
     assert(r.y+r.h<=ws.toolbar.position.y+ws.toolbar.size.y+1,'wrapped controls stay within height')

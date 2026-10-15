@@ -9,6 +9,11 @@ local TerminalView = require "core.terminalview"
 
 command.add(nil, {
   ["terminal:attach"] = function() require('core.terminalattach').choose()end,
+  ['bmux:join-layout']=function()require('core.bmuxlayoutui').join()end,
+  ['bmux:server-workspaces']=function()require('core.bmuxlayoutui').workspaces()end,
+  ['bmux:server-surfaces']=function()require('core.bmuxlayoutui').surfaces()end,
+  ['bmux:refresh-layout']=function()require('core.bmuxlayoutui').refresh()end,
+  ['bmux:disconnect-layout']=function()require('core.bmuxlayoutui').disconnect()end,
   ["terminal:open"] = function()
     local shell = package.loaded["shell"]
     if shell and shell.current == "bmux" then
