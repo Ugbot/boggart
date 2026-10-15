@@ -33,6 +33,14 @@ Use **New agent → Boggart TUI** for the existing semantic prompt, interrupt,
 approval and worker controls; a manually wrapped TUI currently reports process
 lifecycle only.
 
+Detected `claude` commands and **New agent → Claude Code** also receive a private,
+session-local plugin. Fleet shows reported working, idle, approval and question
+states, with `!` when attention is needed. **Focus pane** acknowledges attention
+and takes you to the provider's own controls. These observations do not grant
+Fleet approval, prompt or interrupt capabilities. Other foreign providers retain
+process-only status until their adapters are implemented. Explicit `ctl run`
+does not automatically add a provider plugin.
+
 Help/version and listed first-argument maintenance commands bypass registration.
 The Codex/Claude exclusions were checked against installed `codex-cli 0.162.1`
 and `Claude Code 2.1.294` help output. This is a small command profile, not a
@@ -69,10 +77,14 @@ current user and inaccessible to group/other users. Accepted peers must have the
 same effective UID. Browser Origin headers are refused. Pane and lease secrets
 are compared in C and never returned in roster listings.
 
-Registration returns a fresh agent ID and lease. The wrapper heartbeats each
+Registration returns a fresh agent ID, process lease and separate event token.
+Only the event identity/token are forwarded to the provider; the wrapper retains
+the process lease. The wrapper heartbeats each
 second; more than four seconds without a heartbeat changes the registration to
 **unreachable**, with process outcome unknown. A paused wrapper can recover its
-live lease. Finish invalidates the lease; old heartbeats cannot revive it.
+live lease. Heartbeats preserve the last provider phase; expiry clears that phase
+to unknown until another event arrives. Finish invalidates both capabilities;
+old heartbeats and hook events cannot revive it.
 Closing the pane revokes all its registrations and removes their controls.
 Unconfirmed process outcomes remain unknown after retirement and can be evicted
 as history under Fleet's bound. A supplied PID is metadata and grants no Stop
@@ -92,6 +104,18 @@ CLI, Studio and worker interpreters close transport handles before luv destroys
 their loops. `serve.listen{socket=path, body_limit=bytes, handler=fn}` also serves
 the existing Lua control route table through `control.start{socket=path}`.
 Studio's narrow registrar only exposes health and manual-agent routes.
+
+The Claude plugin adds command hooks through `--plugin-dir`; it never rewrites
+user/project settings or bypasses provider trust/policy. Its JSON and private
+directories are removed with the wrapper set. `boggart ctl notify --provider
+claude` accepts at most 256KiB of JSON on stdin and forwards only bounded event,
+session, agent, tool and notification metadata. Prompts, tool input/output,
+messages and transcript paths are discarded. It emits no stdout/decision JSON
+and exits zero on reporting failures. The private event capability is scoped to
+one Fleet record and pane; it cannot heartbeat, finish or approve the process.
+Older reports, retired sessions and subagent reports for a bound root are
+rejected. A reported SessionEnd is not proof of process exit; native PTY/wrapper
+outcomes take precedence. Hooks may be absent, delayed or disabled by policy.
 
 `terminal.open{env={'KEY=value', ...}}` supplies bounded literal environment
 overrides: at most 64 unique entries/64KiB, dense indexes and valid variable
@@ -122,7 +146,7 @@ policy-scoped health median 574.542µs/p99 2952.084µs. These measure 1,000 warm
 same-process libuv connection/response round trips, excluding process startup
 and Studio frame scheduling. The full control route still misses the provisional
 100µs target; BMUX-36/11 remain open. BMUX-39 still needs the broader hot verbs
-and shell completion. Provider notify hooks, foreign semantic controls, and
+and shell completion. Additional provider hooks, foreign semantic controls, and
 server-owned persistent/reconnectable terminals remain separate roadmap work.
 Commands reached through the installed wrappers or explicit wrapping register
 through this manual-shell path. Arbitrary unknown programs, external absolute
@@ -137,3 +161,12 @@ nested agents, New agent deduplication, rejected-pane fallback, real exit 125,
 per-launch/whole-Studio opt-out and cleanup. No model service is called.
 See the [automatic-wrapper verification ledger](benchmarks/2026-10-15-agent-hooks-verification.md)
 for exact normal/sanitizer outcomes and the loaded-host timing failures.
+
+`tests/providerevents.lua` and `tests/provider_notify.lua` exercise event
+authentication, metadata projection, ordering, heartbeat preservation, expiry
+and native outcomes. `tests/studio_provider_events.lua` runs the actual generated
+plugin commands in ordinary and managed launches through the application loop.
+The opt-in `tests/provider_claude_loader.lua` checks the installed provider's real
+plugin loader using an isolated home and `--init-only`, without a model turn.
+See [provider event verification](benchmarks/2026-10-15-provider-events-verification.md)
+for exact commands, outcomes, official sources and remaining adapter work.

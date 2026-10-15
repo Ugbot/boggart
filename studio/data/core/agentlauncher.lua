@@ -30,8 +30,9 @@ function M.launch(profile,opts)
   local ok,view=pcall(function()
     local manual=require 'core.manualagents';manual.start()
     local executable=manual.hooks and manual.hooks.commands[profile.cmd] or profile.cmd
+    local launch_args=manual.hooks and manual.hooks:arguments(profile.provider,args) or args
     return require('shell.workspaces.bmux').open(opts.dir,
-      {cmd=executable,args=args,title=profile.name,cwd=opts.cwd,control=profile.provider=='boggart'})
+      {cmd=executable,args=launch_args,title=profile.name,cwd=opts.cwd,control=profile.provider=='boggart',fleet_agent=rec})
   end)
   if not ok then agents.registry:retire(rec.id,rec.generation,'failed',tostring(view));return nil,view end
   rec.cwd=view.bmux_cwd

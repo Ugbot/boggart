@@ -57,7 +57,8 @@ function M.open(dir, options)
   local node = full_layout_node()
   local cwd = (options and options.cwd) or shell_cwd()
   local view = TerminalView { cwd=cwd, cmd=options and options.cmd,
-    args=options and options.args, title=options and options.title, control=options and options.control, bmux_context=true }
+    args=options and options.args, title=options and options.title, control=options and options.control,
+    fleet_agent=options and options.fleet_agent,bmux_context=true }
   M.serial = (M.serial or 0) + 1
   view.title = (options and options.title) or ("Terminal " .. M.serial)
   view.bmux_cwd = cwd

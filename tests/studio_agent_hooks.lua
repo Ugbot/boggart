@@ -29,7 +29,7 @@ local ok,err=xpcall(function()
   local original_path=os.getenv('PATH');local fixture=assert(uv.fs_mkdtemp('/tmp/bmux-provider-fixture-XXXXXX'))
   for _,provider in ipairs{'codex','claude','opencode','gemini'}do
     local f=assert(io.open(fixture..'/'..provider,'w'))
-    f:write('#!/bin/sh\ncase "${1-}" in --help) printf "HELP\\n"; exit 0;; esac\n',
+    f:write('#!/bin/sh\ncase "${1-}" in --plugin-dir=*) shift;; esac\ncase "${1-}" in --help) printf "HELP\\n"; exit 0;; esac\n',
       'if [ "${1-}" = nested ]; then claude child; exit $?; fi\n',
       'printf "%s:<%s>\\n" '..q(provider)..' "$1"\nIFS= read -r input\nprintf "INPUT:%s\\n" "$input"\n',
       'if [ "${1-}" = exit125 ]; then exit 125; fi\nexit 7\n')
