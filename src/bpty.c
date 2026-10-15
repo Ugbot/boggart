@@ -35,11 +35,16 @@ struct bpty {
   bpty_status state;
   uint8_t *queue;
   size_t queue_capacity, queue_head, queue_length;
+  void (*notify)(void *); void *notify_context;
 };
 /* All APIs/callbacks run on their owning loop thread. Thread-local ownership
  * also covers worker Lua states without sharing a mutable global registry. */
 static _Thread_local bpty *registry;
 static _Thread_local uv_loop_t *shutdown_loop;
+static void changed(bpty *t) { t->state.revision++;if(t->notify)t->notify(t->notify_context); }
+void bpty_set_notify(bpty *t,void (*notify)(void *),void *context) {
+  if(t){t->notify=notify;t->notify_context=context;}
+}
 static void freed(bpty *t) {
   if (t->released && !t->handles && !t->child) {
     bpty **entry=&registry; while (*entry && *entry!=t) entry=&(*entry)->registry_next;
@@ -68,7 +73,7 @@ static void terminate_child(bpty *t) {
 }
 static void failed(bpty *t,int error) {
   if (!t->state.error) t->state.error=error;
-  t->state.eof=true; t->state.revision++; stop_io(t); terminate_child(t);
+  t->state.eof=true; changed(t); stop_io(t); terminate_child(t);
 }
 static void reap_mode(bpty *t,int flags) {
   if (!t->child) return;
@@ -81,7 +86,7 @@ static void reap_mode(bpty *t,int flags) {
     if (WIFEXITED(status)) t->state.exit_status=WEXITSTATUS(status);
     if (WIFSIGNALED(status)) t->state.term_signal=WTERMSIG(status);
   } else if (!t->state.error) t->state.error=UV_ESRCH;
-  t->state.revision++;
+  changed(t);
   if (t->signal_init) { uv_signal_stop(&t->signal); close_handle((uv_handle_t *)&t->signal); }
   if (t->timer_init) { uv_timer_stop(&t->kill_timer); close_handle((uv_handle_t *)&t->kill_timer); }
 }
@@ -95,6 +100,7 @@ static void kill_deadline(uv_timer_t *h) {
 }
 static int refresh(bpty *t);
 static int flush(bpty *t) {
+  size_t queued=t->queue_length;
   size_t budget=IO_BUDGET;
   while (t->queue_length && budget) {
     size_t count=t->queue_length<budget ? t->queue_length : budget;
@@ -105,6 +111,7 @@ static int flush(bpty *t) {
     int error=n<0 ? uv_translate_sys_error(errno) : UV_EIO; failed(t,error); return error;
   }
   if (!t->queue_length) t->queue_head=0;
+  if(t->queue_length!=queued)changed(t);
   return refresh(t);
 }
 static void ready(uv_poll_t *h,int status,int events) {
@@ -115,14 +122,14 @@ static void ready(uv_poll_t *h,int status,int events) {
     while (budget && t->master>=0) {
       ssize_t n=read(t->master,bytes,sizeof bytes);
       if (n>0) {
-        budget-=(size_t)n; t->state.bytes_read+=(uint64_t)n; t->state.revision++;
+        budget-=(size_t)n; t->state.bytes_read+=(uint64_t)n; changed(t);
         if (t->core && !bterm_feed(t->core,bytes,(size_t)n)) { failed(t,UV_ENOMEM); return; }
         continue;
       }
       if (n<0 && errno==EINTR) continue;
       if (n<0 && (errno==EAGAIN || errno==EWOULDBLOCK)) break;
       if (!n || (n<0 && errno==EIO)) {
-        t->state.eof=true; t->state.revision++;
+        t->state.eof=true; changed(t);
         if (t->core && !bterm_finish(t->core) && !t->state.error) t->state.error=UV_ENOMEM;
         stop_io(t); return;
       }
@@ -153,6 +160,7 @@ int bpty_write(bpty *t,const uint8_t *bytes,size_t length) {
     memmove(t->queue,t->queue+t->queue_head,t->queue_length); t->queue_head=0;
   }
   memcpy(t->queue+t->queue_head+t->queue_length,bytes,length); t->queue_length+=length;
+  changed(t);
   /* Once accepted, completion/errors are asynchronous state, never a partial
    * success return that could make the caller resend already-written bytes. */
   (void)flush(t); return 0;
@@ -169,7 +177,7 @@ int bpty_resize(bpty *t,unsigned columns,unsigned rows) {
   if (!t || t->master<0 || t->released || !t->core) return UV_EPIPE;
   resize_request request={t,columns,rows,0};
   if (!bterm_resize_guarded(t->core,columns,rows,resize_kernel,&request)) return request.error ? request.error : UV_ENOMEM;
-  t->state.revision++; return 0;
+  changed(t); return 0;
 }
 int bpty_foreground_group(const bpty *t,int64_t *group) {
   if (!group) return UV_EINVAL;
@@ -184,7 +192,7 @@ bpty_status bpty_state(const bpty *t) {
 }
 void bpty_destroy(bpty *t) {
   if (!t || t->released) return;
-  t->released=true; t->core=NULL;
+  t->released=true; t->core=NULL;t->notify=NULL;t->notify_context=NULL;
   if (t->child && t->master>=0) {
     pid_t foreground=tcgetpgrp(t->master);
     if (foreground>0 && foreground!=t->child) (void)kill(-foreground,SIGHUP);
@@ -200,6 +208,7 @@ void bpty_destroy(bpty *t) {
 void bpty_shutdown(uv_loop_t *loop) {
   shutdown_loop=loop;
   for (bpty *t=registry;t;t=t->registry_next) if (t->loop==loop) {
+    t->notify=NULL;t->notify_context=NULL;
     t->core=NULL; t->state.eof=true; t->state.revision++; stop_io(t);
     reap(t);
     if (t->child) {
@@ -347,6 +356,7 @@ done:
 }
 #else
 struct bpty { int unused; };
+void bpty_set_notify(bpty *t,void (*notify)(void *),void *context) { (void)t;(void)notify;(void)context; }
 bpty *bpty_open(uv_loop_t *loop,bterm *core,bpty_options options,int *error) { (void)loop;(void)core;(void)options;if(error)*error=UV_ENOSYS;return NULL; }
 void bpty_destroy(bpty *t) { (void)t; }
 void bpty_shutdown(uv_loop_t *loop) { (void)loop; }

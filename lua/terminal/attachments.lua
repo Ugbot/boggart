@@ -18,10 +18,12 @@ end
 function Host:drop(reader)
   self.readers[reader.id]=nil;self.count=self.count-1;self.bytes=self.bytes-#reader.frame
   if reader.entry.controller and reader.entry.controller.reader==reader.id then reader.entry.controller=nil end
+  if self.streams then self.streams:remove(reader)end
 end
 function Host:expire()
   local now=self.clock()
   for _,reader in pairs(self.readers)do
+    if self.streams and self.streams:connected(reader)then reader.expires=now+self.ttl end
     if reader.expires<=now or self.registry.entries[reader.entry.id]~=reader.entry then self:drop(reader)end
   end
 end
@@ -94,6 +96,7 @@ function Host:updates(entry,opts)
   end
   if opts.after==reader.cursor-1 then return reader.frame end
   local frame,error=self:capture(reader)
+  if frame and self.streams then self.streams:send(reader,frame)end
   if frame~=false then return frame,error end
   return json.encode{v=1,id=entry.id,generation=entry.generation,attachment_id=reader.id,after=reader.cursor,cursor=reader.cursor,kind='unchanged'}
 end

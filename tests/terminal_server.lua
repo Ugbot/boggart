@@ -1,5 +1,6 @@
 if package.config:sub(1,1)=='\\'then return end
 local uv=require 'uv';local proc=require 'proc';local json=require 'json';local control=require 'control'
+local Stream=dofile('tests/fixtures/terminal_stream_client.lua')
 local function q(s)return "'"..s:gsub("'","'\\''").."'"end
 local dir=assert(uv.fs_mkdtemp('/tmp/bmux-server-XXXXXX'));local socket=dir..'/control.sock'
 local input=dir..'/request.json'
@@ -22,6 +23,7 @@ local attach_route='/terminals/'..viewed.id..'/attachments'
 local attached,viewer=request('POST',attach_route,{generation=1,tail=0});assert(attached==200,tostring(attached)..' '..json.encode(viewer))
 assert(request('POST',attach_route..'/'..viewer.attachment_id..'/updates',{generation=1,attachment_token=viewer.attachment_token,after=1})==200)
 assert(request('POST',attach_route..'/'..viewer.attachment_id..'/control',{generation=1,attachment_token=viewer.attachment_token})==403,'a view-only route grant does not confer controller authority')
+assert(request('POST',attach_route..'/'..viewer.attachment_id..'/stream',{generation=1,attachment_token=viewer.attachment_token,after=1})==403,'stream subscription has its own policy grant')
 assert(request('POST','/terminals/'..viewed.id..'/input',{generation=1,text='forbidden\n'})==403)
 control.stop();uv.run('nowait')
 assert(control.start{socket=socket,token='fixture-token'})
@@ -71,6 +73,15 @@ local success,failure=xpcall(function()
   local ca,owner=request('POST',attach_path..'/'..a.attachment_id..'/control',{generation=1,attachment_token=a.attachment_token});assert(ca==200)
   assert(request('POST',attach_path..'/'..b.attachment_id..'/control',{generation=1,attachment_token=b.attachment_token})==409)
   local cb,controller=request('POST',attach_path..'/'..b.attachment_id..'/control',{generation=1,attachment_token=b.attachment_token,takeover=true});assert(cb==200)
+  local broad=Stream.connect(socket,'/events')
+  local stream_a=Stream.connect(socket,attach_path..'/'..a.attachment_id..'/stream',{generation=1,attachment_token=a.attachment_token,after=1},a)
+  local stream_b=Stream.connect(socket,attach_path..'/'..b.attachment_id..'/stream',{generation=1,attachment_token=b.attachment_token,after=1,control_token=controller.control_token},b)
+  await(function()return broad.status==200 and stream_a.status==200 and stream_b.status==200 end)
+  -- Disconnect a viewer and attach a fresh replica without affecting the PID.
+  stream_a:close()
+  local fresh_code,fresh=request('POST',attach_path,{generation=1,tail=0});assert(fresh_code==200 and fresh.process.pid==terminal.pid)
+  stream_a=Stream.connect(socket,attach_path..'/'..fresh.attachment_id..'/stream',{generation=1,attachment_token=fresh.attachment_token,after=1},fresh)
+  await(function()return stream_a.status==200 end)
   assert(request('POST','/terminals/'..terminal.id..'/input',{generation=1,text='OLD_OWNER\n',attachment_id=a.attachment_id,attachment_token=a.attachment_token,control_token=owner.control_token,command_seq=1})==403)
   local credentials={generation=1,attachment_id=b.attachment_id,attachment_token=b.attachment_token,control_token=controller.control_token,command_seq=1,cols=72,rows=12}
   assert(request('POST','/terminals/'..terminal.id..'/resize',credentials)==200)
@@ -80,10 +91,15 @@ local success,failure=xpcall(function()
   local output=screen(terminal.id)
   assert(output:find('FROM_SECOND_CLIENT 🦊',1,true) and output:find('12 72',1,true))
   assert(select(2,request('GET','/terminals/'..terminal.id)).exit_status==7)
-  local update,frame=request('POST',attach_path..'/'..a.attachment_id..'/updates',{generation=1,attachment_token=a.attachment_token,after=1})
-  assert(update==200 and frame.kind=='snapshot' and frame.cols==72 and frame.process.exit_status==7,'independent reader catches up after resize and native exit')
-  assert(request('POST',attach_path..'/'..a.attachment_id..'/detach',{generation=1,attachment_token=a.attachment_token})==200)
+  await(function()return stream_a.view.process.exit_status==7 and stream_b.view.process.exit_status==7 end)
+  local reference_code,reference=request('POST',attach_path,{generation=1,tail=0});assert(reference_code==200)
+  assert(json.encode(stream_a.view.screen)==json.encode(reference.screen) and json.encode(stream_b.view.screen)==json.encode(reference.screen),'two pushed replicas match the exact current native screen')
+  assert(stream_a.view.cols==72 and stream_b.view.rows==12)
+  for _,event in ipairs(broad.events)do assert(not(event.data.v==1 and event.data.cursor),'global event stream cannot receive private terminal frames')end
+  assert(request('POST',attach_path..'/'..fresh.attachment_id..'/detach',{generation=1,attachment_token=fresh.attachment_token})==200)
+  await(function()return stream_a.closed end);assert(not stream_b.closed)
   assert(request('POST','/terminals/'..terminal.id..'/close',{generation=1})==200)
+  await(function()return stream_b.closed end);broad:close()
   local _,held=request('POST','/terminals',{cmd='/bin/sh',args={'-c','trap "" HUP; printf SHUTDOWN_READY; while :; do sleep 1; done'},cols=40,rows=4,history=0})
   await(function()return screen(held.id):find('SHUTDOWN_READY',1,true)end)
   assert(uv.kill(daemon.pid,'sigterm'));local result=daemon:wait()

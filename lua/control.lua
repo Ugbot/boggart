@@ -450,6 +450,7 @@ function M.start(opts)
 
   M.terminals=terminals
   M.server, client_token = srv, token
+  require('terminal.push').new(terminals,srv)
   install_bridge()
   local url = opts.socket and 'http://localhost' or string.format("http://%s:%d", host, srv:port())
   bog.events.emit("serve:started", { url = url, authenticated=token~=nil })
@@ -467,7 +468,10 @@ function M.stop()
   return true
 end
 
-function M.revoke() if client_binding then deferred.revoke(client_binding) end end
+function M.revoke()
+  if client_binding then deferred.revoke(client_binding)end
+  if M.server then M.server:close_streams()end
+end
 
 -- Trusted host-only retrieval; never exposed by routes or event payloads.
 function M.client_token() return client_token end

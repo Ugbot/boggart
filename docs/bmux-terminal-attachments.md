@@ -6,8 +6,9 @@ keeps an independent cursor and receives the same native cell data as a local
 snapshot, including Unicode clusters, styles, links, wrapping and a bounded
 scrollback tail. The server remains the sole parser/process owner.
 
-BMUX-32 remains in progress. These routes do not yet supply native push/SSE
-delivery, an attached Studio view, or evidence for its sub-50ms reconnect gate.
+BMUX-71 adds native-driven targeted SSE delivery. BMUX-32 remains in progress
+for the product attach client and its measured kill-client/sub-50ms reconnect
+gate; an attached Studio view remains BMUX-34.
 
 ## Attach, update and detach
 
@@ -19,6 +20,7 @@ Attachment IDs/tokens are separate random capabilities, never roster metadata.
 | --- | --- |
 | `/terminals/:id/attachments` | `generation`, optional `tail` (default 32, maximum 256) |
 | `/terminals/:id/attachments/:attachment/updates` | `generation`, `attachment_token`, `after`, optional `control_token` |
+| `/terminals/:id/attachments/:attachment/stream` | Same fields as updates; authorized SSE replay plus native-driven changes |
 | `/terminals/:id/attachments/:attachment/control` | `generation`, `attachment_token`, optional `control_token`, optional `takeover` boolean |
 | `/terminals/:id/attachments/:attachment/detach` | `generation`, `attachment_token` |
 
@@ -47,8 +49,9 @@ frame, with no event-loop yield in between. It returns 409 rather than publish
 a mixed image if the source changes during capture. Native damage flags are
 never consumed for cursor tracking. Two readers cannot clear each other's work.
 
-Readers expire after 30 seconds without valid activity by default. Update,
-control and accepted commands renew the reader lifetime; detach/expiry drops
+Readers expire after 30 seconds without valid activity by default. Connected
+streams retain read lifetime; update, control and accepted commands also renew
+it. Detach/expiry drops
 its cache and controller capability while leaving the PTY running. Terminal
 close, eviction or server shutdown invalidates its attachments. Tokens are
 local capabilities, not identities to persist in layouts or logs.
@@ -98,4 +101,53 @@ owns snapshots/cursors/leases; `terminal.registry` remains the PTY owner and
 `terminal.routes` stays under `control` authentication/policy. No reader owns a
 native terminal handle, and no per-reader polling timer was added.
 
-See [verification](benchmarks/2026-10-15-attachment-cursors-verification.md).
+## Native push stream
+
+Open `/stream` with the last applied cursor. Its first SSE `message` event
+contains the cached/current frame or unchanged acknowledgement, followed by
+`message` events carrying the same `v=1` frames on native changes. Subscription
+authorizes the exact attachment and captures replay before enabling its private
+channel. Output between initial snapshot and subscription is replayed; later
+changes schedule delivery without a polling timer. Separate viewers should use
+separate attachments; connections for one attachment share its cursor.
+
+Apply complete frames whose `after` matches the local cursor. Ignore an
+already-applied cursor, since HTTP updates/retries and SSE can deliver the same
+frame. Stale cursors require a new snapshot. Stream capture/cache failure retires
+the attachment and closes its stream. Transport failure closes the connection;
+its retained frame may still allow replay. Reconnect from the last applied
+cursor, and reattach if it is unavailable.
+
+Frames never traverse global `/events` broadcasts. The transport targets only
+the exact channel authorized by the stream route. It reads streams solely for
+peer EOF/unexpected input and closes write failures or backpressure at an 8MiB
+queued-write bound, which fits a 4MiB frame. Detach, terminal retirement and
+control-client revocation close open streams. Disconnect leaves the PTY alive.
+A disconnected reader's unreferenced watch is retired on the next terminal/server
+activity; it does not poll or wake while idle. Reader/cache quotas still apply.
+
+Streaming retains observation lifetime and does not renew controller authority.
+The controller must explicitly renew through updates/control or accepted commands.
+Stream subscription has its own exact policy grant, separate from attach/update
+and execution routes.
+
+## Native embedding hooks
+
+`terminal:watch(callback|nil)` queues one initial notification and coalesces later
+PTY/feed/resize changes into a deferred callback receiving its terminal owner.
+Feeding never calls Lua. Pending work references the loop until delivered; idle
+watches are unreferenced. A callback may unwatch, replace itself or close its
+owner. Errors disable the watch while leaving the terminal usable;
+`watch_state()` reports active state, callback count and a bounded diagnostic.
+Weak ownership permits abandoned terminal/callback cycles to collect. Callbacks
+use the interpreter's main Lua state, so collecting the creating coroutine is
+safe. Interpreter/worker teardown closes pending handles before luv finalization.
+
+Generic SSE handlers may return `"stream", channel, initial_json`.
+`server:broadcast(event,data,channel)` targets one channel; omitted channel
+targets global streams. `clients()` counts all streams, `clients(channel)`
+counts one channel, and `close_streams(channel)` closes it (omitted channel closes
+all). Channel/event names are bounded and reject NUL/newlines.
+
+See [cursor verification](benchmarks/2026-10-15-attachment-cursors-verification.md)
+and [push/lifetime evidence](benchmarks/2026-10-15-terminal-push-verification.md).

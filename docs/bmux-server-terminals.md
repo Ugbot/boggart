@@ -83,8 +83,8 @@ forcibly aborted by this change. Native teardown escalates owned children that
 ignore HUP. SIGKILL, server crashes and machine restart do not preserve these
 PTYs; durable restore is separate from live client disconnect survival.
 
-Server-side Fleet/provider-hook attachment, native terminal CLI verbs, push
-delivery and automatic Studio reconnect are still open
+Server-side Fleet/provider-hook attachment, native terminal CLI verbs, the product
+attach client and automatic Studio reconnect are still open
 roadmap work. The existing Studio manual registrar remains separate. Windows
 ConPTY remains BMUX-22.
 
