@@ -1625,6 +1625,14 @@ elseif bog.mode == "serve" then
   end, { desc="serve: queue workflow occasions", source="boot.lua" })
 
   local stop = false
+  local shutdown_signals={}
+  if sys.caps().process_groups then
+    local uv=require 'uv'
+    for _,name in ipairs{'sigint','sigterm'}do
+      local signal=uv.new_signal();signal:start(name,function()stop=true end)
+      shutdown_signals[#shutdown_signals+1]=signal
+    end
+  end
   bog.events.on("serve:shutdown", function() stop = true end,
     { desc = "serve: stop the service", source = "boot.lua" })
 
@@ -1676,6 +1684,7 @@ elseif bog.mode == "serve" then
   bog.sched.add("serve", co)
   bog.sched.run()
 
+  for _,signal in ipairs(shutdown_signals)do signal:stop();signal:close()end
   triggers.stop()
   control.stop()
   return 0

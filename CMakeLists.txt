@@ -1206,13 +1206,14 @@ foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor 
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
 
-foreach(suite control_unix manualfleet terminal_environment agenthooks providerevents provider_notify actionfocus)
+foreach(suite control_unix manualfleet terminal_environment agenthooks providerevents provider_notify actionfocus terminal_registry terminal_server)
   add_test(NAME ${suite}
     COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite}
       $<TARGET_FILE:boggart> --eval tests/${suite}.lua
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   set_tests_properties(${suite} PROPERTIES TIMEOUT 20)
 endforeach()
+set_tests_properties(terminal_server PROPERTIES TIMEOUT 45)
 
 if(TARGET boggart-studio)
   set(_process_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/terminal_process_studio)
