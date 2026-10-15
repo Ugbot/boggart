@@ -12,8 +12,15 @@ function M.start()
     handler=function(req)return M.service:handle(req)end}
   if not server then uv.fs_rmdir(directory);error(why)end
   M.server,M.directory,M.socket=server,directory,directory..'/control.sock'
+  if os.getenv('BOGGART_AGENT_HOOKS')~='0' then
+    local why
+    M.hooks,why=require('agenthooks').install{directory=directory,
+      executable=require('core.agentlauncher').boggart_command(),path=os.getenv('PATH'),cwd=uv.cwd(),
+      previous_bin=os.getenv('BOGGART_AGENT_BIN')}
+    if not M.hooks then core.log('Automatic agent wrappers unavailable: %s',tostring(why))end
+  end
   core.add_thread(function()
-    while M.server do M.service:expire();coroutine.yield(.25)end
+    while M.server==server do M.service:expire();coroutine.yield(.25)end
   end)
 end
 function M.attach(view,cwd)
@@ -26,7 +33,9 @@ function M.attach(view,cwd)
       return alive
     end}
   view.manual_pane=pane.id
-  return {'BOGGART_SOCKET='..M.socket,'BOGGART_PANE_ID='..pane.id,'BOGGART_PANE_TOKEN='..pane.token}
+  local env={'BOGGART_SOCKET='..M.socket,'BOGGART_PANE_ID='..pane.id,'BOGGART_PANE_TOKEN='..pane.token}
+  if M.hooks then env[#env+1]='PATH='..M.hooks.path;env[#env+1]='BOGGART_AGENT_BIN='..M.hooks.bin end
+  return env
 end
 function M.revoke(view)
   if M.service and view.manual_pane then M.service:revoke(view.manual_pane);view.manual_pane=nil end
@@ -34,7 +43,9 @@ end
 function M.shutdown()
   if not M.server then return end
   for id in pairs(M.service.panes)do M.service:revoke(id)end
-  M.server:stop();M.server=nil;uv.fs_rmdir(M.directory)
+  M.server:stop();M.server=nil
+  if M.hooks then M.hooks:cleanup();M.hooks=nil end
+  uv.fs_rmdir(M.directory)
 end
 local quit=core.quit
 function core.quit(...)

@@ -8,6 +8,7 @@
 #include <string.h>
 #include <signal.h>
 #ifndef _WIN32
+#include <errno.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -89,20 +90,67 @@ static int copy_field(cJSON *object,const char *key,char *out,size_t capacity) {
   if(!cJSON_IsString(value) || !value->valuestring || !*value->valuestring || strlen(value->valuestring)>=capacity)return 0;
   memcpy(out,value->valuestring,strlen(value->valuestring)+1);return 1;
 }
-static int run(wrapper *w,const char *provider,const char *name,char **argv) {
-  cJSON *body=context(w);if(!body)return 125;
+/* Explicit wrapping must not re-enter an automatic wrapper. Only the root
+ * executable lookup skips the private bin; children retain PATH for nested
+ * agents. Directory identity also handles aliases/trailing slashes in PATH. */
+static const char *command_file(const char *command,char resolved[4096]) {
+#ifndef _WIN32
+  const char *bin=getenv("BOGGART_AGENT_BIN");struct stat wrapper_dir;
+  if(bin && !stat(bin,&wrapper_dir) && S_ISDIR(wrapper_dir.st_mode)) {
+    const char *slash=strrchr(command,'/');
+    if(slash) {
+      size_t length=(size_t)(slash-command);char directory[4096];struct stat info;
+      if(length>=sizeof directory)return command;
+      if(!length){directory[0]='/';length=1;}else memcpy(directory,command,length);
+      directory[length]=0;
+      if(stat(directory,&info) || info.st_dev!=wrapper_dir.st_dev || info.st_ino!=wrapper_dir.st_ino)return command;
+      command=slash+1;
+    }
+    const char *path=getenv("PATH");if(!path)path="/usr/bin:/bin";
+    for(;;) {
+      const char *end=strchr(path,':');size_t n=end ? (size_t)(end-path) : strlen(path);
+      if(n<4096) {
+        char directory[4096];memcpy(directory,path,n);directory[n]=0;
+        struct stat info;const char *dir=n ? directory : ".";
+        int wrapper=!stat(dir,&info) && info.st_dev==wrapper_dir.st_dev && info.st_ino==wrapper_dir.st_ino;
+        int size=snprintf(resolved,4096,"%s/%s",dir,command);
+        if(!wrapper && size>0 && size<4096 && !stat(resolved,&info) && S_ISREG(info.st_mode) && !access(resolved,X_OK))return resolved;
+      }
+      if(!end)break;path=end+1;
+    }
+    /* The injected boggart command also exists when no installation is on PATH. */
+    size_t size=4096;if(!strcmp(command,"boggart") && !uv_exepath(resolved,&size))return resolved;
+    return NULL;
+  }
+#else
+  (void)resolved;
+#endif
+  return command;
+}
+static int unregistered(char **argv) {
+  fputs("bmux: Fleet unavailable; starting agent without registration\n",stderr);
+#ifndef _WIN32
+  char resolved[4096];const char *file=command_file(argv[0],resolved);
+  if(file)execvp(file,argv);
+  fprintf(stderr,"bmux: launch failed: %s\n",file ? strerror(errno) : "command not found");return 127;
+#else
+  (void)argv;return 125;
+#endif
+}
+static int run(wrapper *w,const char *provider,const char *name,char **argv,int best_effort) {
+  cJSON *body=context(w);if(!body)return best_effort ? unregistered(argv) : 125;
   cJSON_AddStringToObject(body,"provider",provider);cJSON_AddStringToObject(body,"name",name);
   char cwd[4096];size_t size=sizeof cwd;if(!uv_cwd(cwd,&size))cJSON_AddStringToObject(body,"cwd",cwd);
   response out={0};int status=request(w->socket,"/bmux/agents/register",body,&out);cJSON_Delete(body);
   cJSON *result=out.data ? cJSON_ParseWithLength(out.data,out.length) : NULL;
   int valid=status==201 && result && copy_field(result,"agent_id",w->agent,sizeof w->agent) && copy_field(result,"lease",w->lease,sizeof w->lease);
   cJSON_Delete(result);free(out.data);
-  if(!valid){fputs("bmux: agent registration unavailable\n",stderr);return 125;}
+  if(!valid){if(best_effort)return unregistered(argv);fputs("bmux: agent registration unavailable\n",stderr);return 125;}
   if(uv_loop_init(&w->loop)){w->exit_status=127;report(w,"/bmux/agents/finish",1);return 127;}
   uv_stdio_container_t stdio[3]={0};for(int i=0;i<3;i++){stdio[i].flags=UV_INHERIT_FD;stdio[i].data.fd=i;}
-  uv_process_options_t opts={0};opts.file=argv[0];opts.args=argv;opts.stdio=stdio;opts.stdio_count=3;opts.exit_cb=exited;
+  char resolved[4096];uv_process_options_t opts={0};opts.file=command_file(argv[0],resolved);opts.args=argv;opts.stdio=stdio;opts.stdio_count=3;opts.exit_cb=exited;
   w->process.data=w;
-  int error=uv_spawn(&w->loop,&w->process,&opts);
+  int error=opts.file ? uv_spawn(&w->loop,&w->process,&opts) : UV_ENOENT;
   if(error) {
     fprintf(stderr,"bmux: launch failed: %s\n",uv_strerror(error));w->exit_status=127;
     if(w->process.type==UV_PROCESS)uv_close((uv_handle_t *)&w->process,NULL);
@@ -124,13 +172,32 @@ static int run(wrapper *w,const char *provider,const char *name,char **argv) {
 static int usage(void) {
   fputs("usage: boggart ctl [--socket PATH] health|agents\n"
         "       boggart ctl [--socket PATH] agents [--offset N] [--limit N]\n"
-        "       boggart ctl [--socket PATH] run [--provider NAME] [--name LABEL] -- COMMAND [ARG...]\n",stderr);return 2;
+        "       boggart ctl [--socket PATH] run [--best-effort] [--provider NAME] [--name LABEL] -- COMMAND [ARG...]\n",stderr);return 2;
+}
+static int run_command(wrapper *w,int argc,char **argv,int i) {
+  const char *provider="custom",*name=NULL;int best_effort=0;
+  while(i<argc && strcmp(argv[i],"--")) {
+    if(!strcmp(argv[i],"--provider") && i+1<argc){provider=argv[i+1];i+=2;}
+    else if(!strcmp(argv[i],"--name") && i+1<argc){name=argv[i+1];i+=2;}
+    else if(!strcmp(argv[i],"--best-effort")){best_effort=1;i++;}
+    else break;
+  }
+  if(i>=argc || strcmp(argv[i],"--") || ++i>=argc || argc-i>1024 || !*provider || strlen(provider)>128)return usage();
+  if(!name){const char *slash=strrchr(argv[i],'/');name=slash ? slash+1 : argv[i];}
+  if(!*name || strlen(name)>256)return usage();
+  if(!private_socket(w->socket) || !w->pane || !*w->pane || strlen(w->pane)>128 || !w->token || !*w->token || strlen(w->token)>128) {
+    if(best_effort)return unregistered(&argv[i]);
+    fputs("bmux: private control socket or pane context unavailable\n",stderr);return 125;
+  }
+  if(curl_global_init(CURL_GLOBAL_DEFAULT)!=CURLE_OK){if(best_effort)return unregistered(&argv[i]);return 125;}
+  int code=run(w,provider,name,&argv[i],best_effort);curl_global_cleanup();return code;
 }
 int boggart_ctl_main(int argc,char **argv) {
   wrapper w={0};w.socket=getenv("BOGGART_SOCKET");w.pane=getenv("BOGGART_PANE_ID");w.token=getenv("BOGGART_PANE_TOKEN");
   int i=0;if(argc>1 && !strcmp(argv[0],"--socket")){w.socket=argv[1];i=2;}
   if(i>=argc)return usage();const char *verb=argv[i++];
   if(!strcmp(verb,"--help") || !strcmp(verb,"help")){usage();return 0;}
+  if(!strcmp(verb,"run"))return run_command(&w,argc,argv,i);
   if(!w.socket || !private_socket(w.socket)){fputs("bmux: private control socket unavailable\n",stderr);return 1;}
   if(curl_global_init(CURL_GLOBAL_DEFAULT)!=CURLE_OK)return 1;
   int code=1;
@@ -155,18 +222,6 @@ int boggart_ctl_main(int argc,char **argv) {
     response out={0};int status=body ? request(w.socket,"/bmux/agents/list",body,&out) : -1;
     cJSON_Delete(body);if(status==200){if(out.data)fwrite(out.data,1,out.length,stdout);fputc('\n',stdout);code=0;}
     else fprintf(stderr,"bmux: agent list failed (%d)\n",status);free(out.data);
-  } else if(!strcmp(verb,"run")) {
-    const char *provider="custom",*name=NULL;
-    while(i<argc && strcmp(argv[i],"--")) {
-      if(!strcmp(argv[i],"--provider") && i+1<argc){provider=argv[i+1];i+=2;}
-      else if(!strcmp(argv[i],"--name") && i+1<argc){name=argv[i+1];i+=2;}
-      else break;
-    }
-    if(i>=argc || strcmp(argv[i],"--") || ++i>=argc || argc-i>1024 || !*provider || strlen(provider)>128)code=usage();
-    else {
-      if(!name){const char *slash=strrchr(argv[i],'/');name=slash ? slash+1 : argv[i];}
-      if(!*name || strlen(name)>256)code=usage();else code=run(&w,provider,name,&argv[i]);
-    }
   } else code=usage();
   curl_global_cleanup();return code;
 }
