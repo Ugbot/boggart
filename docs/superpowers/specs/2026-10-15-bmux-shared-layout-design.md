@@ -1,5 +1,10 @@
 # Shared Bmux layout
 
+**Progress:** BMUX-78 extracted the actual Studio tree. BMUX-80 adds server-owned
+workspace/surface containers and revisioned commands; see
+[the host contract](../../bmux-layout-host.md). Actual Studio and cTUI attachment
+to that hierarchy remains open BMUX-31 work.
+
 BMUX-31 requires workspace → surface → split tree → pane, shared by Studio and
 the cTUI. The server ultimately owns session layout; terminal processes remain
 independent of layout. This carries forward `docs/tmux.md`'s one-model/two-

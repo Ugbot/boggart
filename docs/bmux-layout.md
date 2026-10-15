@@ -3,8 +3,9 @@
 `lua/bmux/tree.lua` owns structural pane operations. Studio's RootView nodes are
 instances of this model, with UI methods added to the adapter class. There is
 no second mutable pane tree alongside RootView. This completes the structural
-extraction in BMUX-78; workspace/surface hierarchy, server ownership and real
-cTUI consumers remain required by BMUX-31.
+extraction in BMUX-78. The server hierarchy and revisioned API are documented
+in [server-owned layout](bmux-layout-host.md). Actual Studio and cTUI attachment
+to that hierarchy remains required by BMUX-31.
 
 ## Model and adapter
 
