@@ -73,6 +73,7 @@ extern uv_loop_t *luv_loop(lua_State *L);
 #define MAX_BODY_BYTES   (8 * 1024 * 1024)
 #define MAX_CONNS        256
 #define MAX_WRITE_QUEUE (8u * 1024u * 1024u)
+#define UDS_SOCKET_BUFFER (256 * 1024)
 
 typedef struct Conn Conn;
 typedef struct Server Server;
@@ -593,6 +594,17 @@ static void on_connection(uv_stream_t *server, int status) {
     gid_t gid;if(getpeereid(fd,&uid,&gid))uid=(uid_t)-1;
 #endif
     if(uid!=geteuid()){conn_close(c);return;}
+    /* Small UDS defaults (8KiB on macOS) turn snapshots into one short read
+     * per client loop turn. Grow both directions, never shrink an existing
+     * larger buffer. This is a best-effort hint, independent of queue caps. */
+    int size=0;
+    if(!uv_send_buffer_size((uv_handle_t *)conn_stream(c),&size) && size<UDS_SOCKET_BUFFER) {
+      size=UDS_SOCKET_BUFFER;(void)uv_send_buffer_size((uv_handle_t *)conn_stream(c),&size);
+    }
+    size=0;
+    if(!uv_recv_buffer_size((uv_handle_t *)conn_stream(c),&size) && size<UDS_SOCKET_BUFFER) {
+      size=UDS_SOCKET_BUFFER;(void)uv_recv_buffer_size((uv_handle_t *)conn_stream(c),&size);
+    }
   }
 #endif
   c->next = s->conns;
