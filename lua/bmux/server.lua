@@ -1,8 +1,11 @@
 -- Authentication and capability policy remain in control.dispatch.
 local json = require 'json'
 local M = {}
-function M.new(terminals)
-  return require('bmux.layout').new{resolve=function(view)
+function M.new(terminals,server)
+  return require('bmux.layout').new{changed=function(snapshot)
+    local channel='layout:'..snapshot.host_id
+    if server:clients(channel)>0 then server:broadcast('message',json.encode(snapshot),channel) end
+  end,resolve=function(view)
     if view.kind=='terminal' then
       local entry,why=terminals:find(view.terminal_id,view.generation)
       if not entry then return nil,why end
@@ -29,6 +32,9 @@ function M.install(control)
   end
   route('GET','/layout',function(host) return response(host:snapshot()) end,
     'read the bounded server-owned workspace/surface/pane hierarchy')
+  route('GET','/layout/stream',function(host)
+    return 'stream','layout:'..host.host_id,json.encode(host:snapshot())
+  end,'observe initial and committed layout snapshots on a dedicated native channel')
   route('POST','/layout/commands',function(host,req)
     local text=req.body or ''
     if #text>8192 or not text:match('^%s*{') then return response(nil,{status=400,message='layout command object required'}) end

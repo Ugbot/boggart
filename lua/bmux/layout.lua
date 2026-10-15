@@ -37,7 +37,7 @@ function M.new(opts)
     limits[key] = n
   end
   local self = setmetatable({host_id=opts.host_id or serve.token(16), revision=0,
-    serial=0, workspaces={}, resolve=opts.resolve, limits=limits}, Host)
+    serial=0, workspaces={}, resolve=opts.resolve, limits=limits, changed=opts.changed}, Host)
   self.Node = Tree.class {
     empty=function() return {empty=true} end,
     is_empty=function(view) return view.empty end,
@@ -129,7 +129,9 @@ function Host:command(command)
   end
   effect()
   self.revision = self.revision + 1
-  return self:snapshot()
+  local snapshot=self:snapshot()
+  if self.changed then self.changed(snapshot) end
+  return snapshot
 end
 
 return M

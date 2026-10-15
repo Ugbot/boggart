@@ -450,7 +450,7 @@ function M.start(opts)
   if not srv then return nil, why end
 
   M.terminals=terminals
-  M.layout=require('bmux.server').new(terminals)
+  M.layout=require('bmux.server').new(terminals,srv)
   M.server, client_token = srv, token
   require('terminal.push').new(terminals,srv)
   install_bridge()

@@ -7,10 +7,10 @@ native client, preserving terminal execution and attachment identities.
 `lua/bmux/client.lua` owns observation and revisioned requests;
 `lua/bmux/server.lua` publishes on a dedicated native channel.
 
-- [ ] Add strict bounded snapshot copies and projection into `bmux.tree`
+- [x] Add strict bounded snapshot copies and projection into `bmux.tree`
   adapter nodes. Exercise malformed membership, cycles, sparse collections,
   reference identity, zoom and side-effect-free staging in `tests/bmux_snapshot.lua`.
-- [ ] Add server layout streaming and client single-flight commands, monotonic
+- [x] Add server layout streaming and client single-flight commands, monotonic
   publication, conflict refresh, explicit uncertainty recovery and teardown.
   Verify actual UDS observers and existing host/terminal policy tests in
   `tests/bmux_layout_client.lua`, normal and sanitizer builds; commit/push.
