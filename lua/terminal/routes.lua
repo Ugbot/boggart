@@ -20,9 +20,9 @@ local function query(control,req,allowed)
 end
 function M.install(control)
   local function route(method,path,fn,description)
-    control.route(method,path,function(req,id)
+    control.route(method,path,function(req,...)
       if not control.terminals then return response(nil,{status=503,message='terminal host unavailable'})end
-      return fn(control.terminals,req,id)
+      return fn(control.terminals,req,...)
     end,description)
   end
   route('POST','/terminals',function(registry,req)
@@ -39,13 +39,34 @@ function M.install(control)
     return response(registry:screen(id,q.first,q.count))
   end,'non-destructive bounded visible cell-grid page')
   for _,verb in ipairs{'input','resize','close'}do
-    local allowed=verb=='input' and {generation=true,text=true} or verb=='resize' and {generation=true,cols=true,rows=true} or {generation=true}
+    local allowed=verb=='input' and {generation=true,text=true,attachment_id=true,attachment_token=true,control_token=true,command_seq=true}
+      or verb=='resize' and {generation=true,cols=true,rows=true,attachment_id=true,attachment_token=true,control_token=true,command_seq=true} or {generation=true}
     route('POST','/terminals/([%w_-]+)/'..verb,function(registry,req,id)
       local body,why=object(req,allowed);if not body then return response(nil,why)end
-      if verb=='input'then return response(registry:write(id,body.generation,body.text))end
-      if verb=='resize'then return response(registry:resize(id,body.generation,body.cols,body.rows))end
+      if verb=='input'then return response(registry:write(id,body.generation,body.text,body))end
+      if verb=='resize'then return response(registry:resize(id,body.generation,body.cols,body.rows,body))end
       return response(registry:close(id,body.generation))
     end,verb..' a terminal using its exact runtime generation')
   end
+  local function attached(method,pattern,allowed,fn,description)
+    route(method,pattern,function(registry,req,id,attachment_id)
+      local body,why=object(req,allowed);if not body then return response(nil,why)end
+      if type(body.generation)~='number' or body.generation%1~=0 or body.generation<1 then return response(nil,{status=400,message='terminal generation required'})end
+      local entry,error=registry:find(id,body.generation);if not entry then return response(nil,error)end
+      if attachment_id then body.attachment_id=attachment_id end
+      local encoded,failure=fn(registry.attachments,entry,body)
+      if not encoded then return response(nil,failure)end
+      return 200,encoded,{content_type='application/json'}
+    end,description)
+  end
+  attached('POST','/terminals/([%w_-]+)/attachments',{generation=true,tail=true},
+    function(host,entry,body)return host:attach(entry,body)end,'attach a read-only client with a frozen grid/tail and independent cursor')
+  local prefix='/terminals/([%w_-]+)/attachments/([%w_-]+)'
+  attached('POST',prefix..'/updates',{generation=true,attachment_token=true,after=true,control_token=true},
+    function(host,entry,body)return host:updates(entry,body)end,'read independent terminal deltas or retry the last immutable frame')
+  attached('POST',prefix..'/control',{generation=true,attachment_token=true,control_token=true,takeover=true},
+    function(host,entry,body)return host:control(entry,body)end,'explicitly acquire, renew or take over the input/resize lease')
+  attached('POST',prefix..'/detach',{generation=true,attachment_token=true},
+    function(host,entry,body)return host:detach(entry,body)end,'detach a viewer without closing the terminal')
 end
 return M
