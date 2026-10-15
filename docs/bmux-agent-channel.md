@@ -51,6 +51,33 @@ capabilities and reports unknown activity while retaining focus/stop. The
 existing Fleet also keeps foreign/custom processes whose adapters only know
 process liveness.
 
+## Keyboard controls in Fleet
+
+Use **Up/Down** or **j/k** to select an agent, then **Tab / Shift-Tab** to move
+through the toolbar and that agent's supported actions. The focused button has
+an accent border; **Enter** or **Space** activates it. **Escape** returns to the
+roster. Stopping agents uses the explicit Stop/Kill action. Space on the roster
+retains the shell's leader shortcuts. Menus and text entry keep keyboard priority.
+
+Send prompt and New agent use the existing command/chooser field. Submitting or
+cancelling returns focus to the same action when it still exists. Pasted newlines
+do not submit the field. New roster entries preserve the selected agent/action;
+replaced runtime or approval identities drop focus rather than transferring a
+pending activation. Unsupported or clipped actions do not enter traversal.
+Toolbar/detail rows wrap in narrow windows. Mouse and keyboard use the same
+action descriptors and existing owner checks; internal approvals also validate
+the exact pending request object before deciding.
+
+`tests/studio_fleet_keyboard.lua` sends SDL events through the real application
+loop to a native Boggart TUI with deterministic local turns. It covers chooser
+and prompt return, paste, interrupt, approval/rejection, worker cancellation,
+foreign attention/focus/stop, in-process actor pause/resume/kill, narrow layout
+and stale runtime/request actions. `tests/actionfocus.lua` verifies key-based
+focus preservation, replacement, revocation and traversal. See the
+[verification ledger](benchmarks/2026-10-15-fleet-keyboard-verification.md).
+
+## Channel verification and worker reporting
+
 Verification is in `tests/c/agent_channel.c`, `tests/agentbridge.lua`,
 `tests/studio_agent_control.lua` and the normal launcher test. The Studio test
 launches the actual TUI/session/scheduler/permission gate with local model
