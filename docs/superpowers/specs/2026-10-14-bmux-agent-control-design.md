@@ -3,10 +3,12 @@
 Status: staged design, 2026-10-14. The BMUX workspace, native terminal controls,
 New agent launcher and common internal/external Fleet roster are implemented.
 Launched Boggart TUIs now have private native-channel session/status reporting
-and same-session prompt/steer/interrupt/approval controls. Manual-shell hooks,
-rich foreign-provider adapters and persistence remain
+and same-session prompt/steer/interrupt/approval controls. Manual shells now have
+explicit and automatic command wrappers feeding the common Fleet; provider
+notify hooks, rich foreign-provider adapters and persistence remain
 follow-up work. See [native control](../../bmux-agent-channel.md) and the
 [launcher implementation plan](../plans/2026-10-14-bmux-agent-launcher.md).
+See [manual/automatic shell registration](../../bmux-manual-agents.md).
 
 Scheduler workers inside launched TUIs are mirrored into the same Fleet under
 their owner. The private channel negotiates worker reports; per-start
@@ -134,10 +136,12 @@ Acceptance should cover Fleet registration for non-Boggart agents, direct TUI
 typing, same-session structured control, stale-generation/request rejection,
 human drafts, provider crashes, mode switches and restart/resume distinction.
 
-Current gaps confirmed locally: `SwarmView` reads `bog.sched`; control routes have
-global prompt/cancel and live SSE but no common external-agent registry; PTY
-spawn inherits environment and closes extraneous descriptors, so child identity/
-IPC needs an explicit C extension. The TUI already supports `--resume`.
+Initial gaps observed before implementation: `SwarmView` read `bog.sched`;
+control routes had global prompt/cancel and live SSE without a common external
+registry. PTY spawn inherited environment and closed extraneous descriptors,
+requiring explicit native child-identity and IPC extensions. The implementation
+links above record the registry, per-child context and control bridge now added.
+The TUI already supported `--resume`.
 See [control](../../../lua/control.lua), [supervisor](../../../lua/supervisor.lua),
 [TUI](../../../lua/tui.lua), [PTY](../../../src/bpty.c) and the
 [pinned source research](../../research/2026-10-14-bmux-agent-control-sources.md).

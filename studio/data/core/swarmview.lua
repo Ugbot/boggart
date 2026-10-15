@@ -620,7 +620,7 @@ function SwarmView:draw_detail(font, charw, x, y, lh, voff, cols, rows)
     end
     for _,hit in ipairs(widgets.row(font,items,x,y,self.mouse)) do self.hits[#self.hits+1]=hit end
     y = y + widgets.height(font)
-    for _,text in ipairs { rec.worker and ("owning TUI: "..tostring((registry.agents[rec.parent] or {}).short_id or rec.parent)) or ("pane: " .. (rec.short_id or rec.id)), "cwd: " .. (rec.cwd or "?"),
+    for _,text in ipairs { rec.worker and ("owning TUI: "..tostring((registry.agents[rec.parent] or {}).short_id or rec.parent)) or ("pane: " .. (rec.pane_id or rec.short_id or rec.id)), "cwd: " .. (rec.cwd or "?"),
       "session: " .. tostring(rec.session_id or "?") .. "  model: " .. tostring(rec.model or "?"),
       rec.worker and ("parent session: "..tostring(rec.parent_session_id or '?')) or ("process: " .. tostring(rec.pid or "?") .. (rec.exit_status and rec.exit_status>=0 and ("  exit: " .. rec.exit_status) or "")),
       rec.activity==rec.state and phase or rec.activity or "agent activity unknown",
