@@ -1191,7 +1191,7 @@ add_custom_target(ghostty-oracle
   COMMENT "Building the pinned test oracle and verifying resize fixtures"
   USES_TERMINAL)
 
-foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents agentbridge agentcontrol grapheme_edit vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable typesafe judge ladder toolroute ladder_sites harden policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast mining_recognition mining_compile mining_jobs learning_evaluate learning_promote learning_route learning_monitor workflow_slack workflow_novel workflow_triggers searchroute tracker story story_model story_geo story_geosql story_style auth_file looplag http_body json_c store_save hash_c fileview termbench terminal terminal_input_route terminal_process terminal_process_shutdown terminal_graphemes terminal_resize terminal_resize_cached terminal_resize_api terminal_resize_large ghostty_page_growth ghostty_bitmap)
+foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents agentbridge agentcontrol fleetworkers grapheme_edit vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable typesafe judge ladder toolroute ladder_sites harden policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast mining_recognition mining_compile mining_jobs learning_evaluate learning_promote learning_route learning_monitor workflow_slack workflow_novel workflow_triggers searchroute tracker story story_model story_geo story_geosql story_style auth_file looplag http_body json_c store_save hash_c fileview termbench terminal terminal_input_route terminal_process terminal_process_shutdown terminal_graphemes terminal_resize terminal_resize_cached terminal_resize_api terminal_resize_large ghostty_page_growth ghostty_bitmap)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home}
@@ -1214,7 +1214,7 @@ if(TARGET boggart-studio)
       $<TARGET_FILE:boggart-studio> .
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   set_tests_properties(terminal_process_studio PROPERTIES TIMEOUT 30)
-  set(_pane_suites studio_terminal_native studio_terminal_shutdown studio_terminal_render studio_terminal_clusters studio_grid_text studio_agent_clusters studio_color_emoji studio_grapheme_edit studio_bmux studio_fleet_agents studio_agent_control)
+  set(_pane_suites studio_terminal_native studio_terminal_shutdown studio_terminal_render studio_terminal_clusters studio_grid_text studio_agent_clusters studio_color_emoji studio_grapheme_edit studio_bmux studio_fleet_agents studio_agent_control studio_fleet_workers)
   if(UNIX AND EXISTS /usr/bin/vim)
     list(APPEND _pane_suites studio_terminal_vim)
   endif()
@@ -1224,7 +1224,7 @@ if(TARGET boggart-studio)
     if(_pane_suite STREQUAL "studio_color_emoji")
       list(APPEND _pane_shell_env BOGGART_STUDIO_FONTS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fonts/NotoColorEmoji-subset.ttf)
     endif()
-    if(_pane_suite STREQUAL "studio_bmux" OR _pane_suite STREQUAL "studio_fleet_agents" OR _pane_suite STREQUAL "studio_agent_control")
+    if(_pane_suite STREQUAL "studio_bmux" OR _pane_suite STREQUAL "studio_fleet_agents" OR _pane_suite STREQUAL "studio_agent_control" OR _pane_suite STREQUAL "studio_fleet_workers")
       # Test interactive input without inheriting a user's shell startup scripts.
       set(_pane_shell_env SHELL=/bin/sh)
     endif()

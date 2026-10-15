@@ -8,6 +8,7 @@ local st={box=Input.new(),coord={session={id=123,model='fixture',inbox={}}},entr
 local bridge=Bridge.new(st,channel);local serial=0
 queue[1]=json.encode{v=1,type='bind',id='runtime',generation=4};bridge:poll()
 assert(sent[#sent].type=='state' and sent[#sent].state=='idle')
+assert(not bridge.workers and sent[#sent].capabilities.worker_stop==false,'worker reports require feature negotiation')
 local function command(action,fields)
   serial=serial+1
   local c={v=1,type='command',id='runtime',generation=4,command_seq=serial,command_id='cmd'..serial,

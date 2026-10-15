@@ -4,9 +4,15 @@ Status: staged design, 2026-10-14. The BMUX workspace, native terminal controls,
 New agent launcher and common internal/external Fleet roster are implemented.
 Launched Boggart TUIs now have private native-channel session/status reporting
 and same-session prompt/steer/interrupt/approval controls. Manual-shell hooks,
-child-worker mirroring, rich foreign-provider adapters and persistence remain
+rich foreign-provider adapters and persistence remain
 follow-up work. See [native control](../../bmux-agent-channel.md) and the
 [launcher implementation plan](../plans/2026-10-14-bmux-agent-launcher.md).
+
+Scheduler workers inside launched TUIs are mirrored into the same Fleet under
+their owner. The private channel negotiates worker reports; per-start
+incarnations protect routed cancellation. Completed history is bounded, and
+loss/closure removes stale control. Workers currently focus their shared TUI
+pane. See [worker implementation](../plans/2026-10-15-bmux-worker-fleet.md).
 
 ## Product shape
 

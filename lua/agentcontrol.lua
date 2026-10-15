@@ -2,9 +2,19 @@
 local json=require 'json'
 local M={};local Control={};Control.__index=Control
 local phases={idle=true,running=true,waiting_for_approval=true,waiting_for_answer=true}
+local worker_states={running=true,paused=true,waiting_for_approval=true,exited=true,failed=true,stopped=true}
+local function positive(value)return type(value)=='number' and value%1==0 and value>0 and value<=9007199254740991 end
+local function worker_valid(w)
+  return type(w)=='table' and positive(w.session_id) and positive(w.incarnation) and positive(w.parent_session_id)
+    and type(w.name)=='string' and #w.name>0 and #w.name<=128 and not w.name:find('\0',1,true)
+    and type(w.model)=='string' and #w.model<=256 and worker_states[w.state]
+    and type(w.activity)=='string' and #w.activity<=128 and type(w.can_stop)=='boolean'
+    and (w.error==false or type(w.error)=='string' and #w.error<=512)
+    and (w.can_stop==false or w.state=='running' or w.state=='paused' or w.state=='waiting_for_approval')
+end
 function M.new(channel,id,generation)
   local self=setmetatable({channel=channel,id=id,generation=generation,serial=0,sequence=0,pending={},pending_count=0},Control)
-  assert(channel:send(json.encode{v=1,type='bind',id=id,generation=generation}))
+  assert(channel:send(json.encode{v=1,type='bind',id=id,generation=generation,features={workers=true}}))
   return self
 end
 function Control:fail(reason)
@@ -31,6 +41,7 @@ function Control:poll()
       for _,action in ipairs{'prompt','interrupt','approve'}do
         if type(value.capabilities[action])~='boolean' then return self:fail('invalid agent capability')end
       end
+      if value.capabilities.worker_stop~=nil and type(value.capabilities.worker_stop)~='boolean' then return self:fail('invalid worker capability')end
       if value.request and (type(value.request)~='table' or type(value.request.id)~='string'
         or #value.request.id>128 or value.request.kind~='approval' or type(value.request.name)~='string'
         or #value.request.name>256 or type(value.request.summary)~='string'
@@ -38,11 +49,23 @@ function Control:poll()
       self.sequence=value.sequence;self.status=value
       fields=fields or {};for _,key in ipairs{'state','session_id','model','input_revision','draft_bytes','capabilities'}do fields[key]=value[key]end
       fields.request=value.request or false;fields.activity=value.state;fields.error=false
+    elseif value.type=='worker' then
+      if not self.status or self.status.capabilities.worker_stop~=true then return self:fail('unnegotiated worker state')end
+      if not positive(value.sequence) or value.sequence<=(self.worker_sequence or 0) or not worker_valid(value.worker) then
+        return self:fail('invalid worker state')
+      end
+      self.worker_sequence=value.sequence
+      fields=fields or {};fields.workers=fields.workers or {};fields.workers[#fields.workers+1]=value.worker
     elseif value.type=='result' then
       if type(value.command_id)~='string' or not self.pending[value.command_id] or type(value.accepted)~='boolean'
         or value.error~=nil and (type(value.error)~='string' or #value.error>1024) then return self:fail('invalid command result')end
+      local target=self.pending[value.command_id]
       self.pending[value.command_id]=nil;self.pending_count=self.pending_count-1
-      fields=fields or {};fields.control_result={id=value.command_id,accepted=value.accepted,error=value.error}
+      fields=fields or {};local result={id=value.command_id,accepted=value.accepted,error=value.error}
+      if type(target)=='table' then
+        result.worker_session_id=target.worker_session_id;result.worker_incarnation=target.worker_incarnation
+        fields.worker_results=fields.worker_results or {};fields.worker_results[#fields.worker_results+1]=result
+      else fields.control_result=result end
     else return self:fail('unsupported agent control frame')end
   end
   local revision=self.channel:revision()
@@ -67,8 +90,12 @@ function Control:command(action,payload)
   elseif action=='approve' then
     if type(payload)~='table' then return nil,'approval request required' end
     cmd.request_id=payload.request_id;cmd.decision=payload.decision
+  elseif action=='worker_stop' then
+    if type(payload)~='table' or not positive(payload.worker_session_id) or not positive(payload.worker_incarnation) then return nil,'invalid worker runtime'end
+    cmd.worker_session_id=payload.worker_session_id;cmd.worker_incarnation=payload.worker_incarnation
   elseif action~='interrupt' then return nil,'unsupported command' end
   local sent,error=self.channel:send(json.encode(cmd));if not sent then return nil,error end
-  self.pending[command_id]=true;self.pending_count=self.pending_count+1;return true,command_id
+  self.pending[command_id]=action=='worker_stop' and {worker_session_id=cmd.worker_session_id,worker_incarnation=cmd.worker_incarnation} or true
+  self.pending_count=self.pending_count+1;return true,command_id
 end
 return M
