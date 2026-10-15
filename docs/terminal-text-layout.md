@@ -200,8 +200,9 @@ result allocations. `sys.cell_first(text)` consumes one whole effective cluster
 when a glyph exceeds a narrow wrapping budget.
 
 Transcript, choices and composer use paired cell metrics/grid painting. Mouse
-selection snaps to whole cluster boundaries. Composer keyboard motions still
-use their existing scalar editing behavior; grapheme editing is separate work.
+selection snaps to whole cluster boundaries. Composer keyboard motions and
+deletion now use whole-cluster editing; see
+[`studio_grapheme_edit.lua`](../tests/studio_grapheme_edit.lua).
 
 Direct binding checks cover every byte boundary inside accent/emoji/flag/selector
 clusters and invalid token offsets. Styled layout checks cover head ownership,
@@ -210,7 +211,10 @@ retained cells and verify the real transcript paints visible pixels. Nine focuse
 checks pass in both builds; the Studio suite passes separately in normal and
 ASan/UBSan builds after concurrent runs collided on its existing timestamp-named
 temporary file. Controlled SDL window, C11 warnings and attribution checks pass.
-Color emoji remains unsupported in the current font pipeline.
+The font pipeline now handles intrinsic BGRA/color emoji, including faint
+styling; see [`studio_color_emoji.lua`](../tests/studio_color_emoji.lua). This
+does not establish Unicode/rendering parity for generic Fleet text consumers
+or every platform/font combination.
 
 CLI/TUI consumers still need an explicit external-terminal policy before switching
 their helpers. Criterion 1500, full performance gates and the overall BMUX goal
