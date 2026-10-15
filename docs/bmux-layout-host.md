@@ -6,9 +6,9 @@ with an empty pane. Empty panes are represented without a synthetic view on
 the wire. Removing a workspace may leave the host empty; a workspace must retain
 at least one surface.
 
-This is BMUX-80's server/API increment. Studio already shares structural tree
-operations, but it does not yet attach to this hierarchy. Studio and cTUI
-hierarchy consumers remain BMUX-31; restart persistence remains BMUX-33.
+The server/API increment is BMUX-80. Studio's
+[Join layout](bmux-studio-layout.md) now attaches to this hierarchy. The cTUI
+consumer remains BMUX-31/BMUX-35; restart persistence remains BMUX-33.
 
 ## Control protocol
 
@@ -65,7 +65,7 @@ All commands include `host_id`, `revision` and `op`. Optional fields below use
 | `surface_rename` | workspace/surface IDs, `title` | Change title |
 | `surface_remove` | workspace/surface IDs | Drop surface references; select first remaining surface if needed |
 | `view_add` | scope, `pane_id`, `view` | Add/select a tab |
-| `view_close` | scope, `pane_id` | Close active tab; collapse empty pane into sibling, retaining one final empty pane |
+| `view_close` | scope, `pane_id`, `view_id?` | Close named or active tab; collapse empty pane into sibling, retaining one final empty pane |
 | `view_move` | scope, `pane_id`, `view_id`, `target_pane_id`, `index?` | Move/reorder a tab and follow it |
 | `pane_split` | scope, `pane_id`, `direction`, `view?` | Split with an empty pane or referenced view |
 | `pane_focus` | scope, `pane_id`, `view_id?` | Select pane and optionally one of its tabs |
@@ -74,7 +74,8 @@ All commands include `host_id`, `revision` and `op`. Optional fields below use
 | `split_resize` | scope, `split_id`, `ratio` | Set split ratio in `[0.01, 0.99]` |
 | `balance` | scope | Reset all split ratios to `0.5` |
 
-Directions are `left`, `right`, `up` and `down`. An explicit tab index is
+Named closure preserves background-tab selection and does not focus the tab
+before removing it. Directions are `left`, `right`, `up` and `down`. An explicit tab index is
 one-based, at most destination tab count plus one. Structural edits and focusing
 a hidden pane restore the full tree before applying the operation. Each surface
 retains its own selection; editing an inactive surface does not select its

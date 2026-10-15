@@ -9,9 +9,10 @@ API rather than inventing one.
 [`lua/bmux/tree.lua`](../lua/bmux/tree.lua), used directly by RootView's node
 class. Split/close, tab movement, swaps, direction, resizing, dock bounds and
 zoom share that implementation. Studio retains rendering and leaf presentation.
-See [the current model contract](bmux-layout.md). Workspace/surface hierarchy,
-server layout ownership and the cTUI consumer remain open BMUX-31 work; this
-extraction does not deliver persistence.
+See [the current model contract](bmux-layout.md) and
+[Studio Join layout](bmux-studio-layout.md) for the server-owned hierarchy and
+actual Studio client. The cTUI consumer remains open BMUX-31/BMUX-35 work;
+persistence remains BMUX-33.
 
 ## Context
 

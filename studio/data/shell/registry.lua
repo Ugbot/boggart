@@ -97,6 +97,11 @@ M.tree = {
   },
   Bmux = {
     { "Open Bmux",        "shell:workspace-bmux" },
+    { "Join server layout", "bmux:join-layout" },
+    { "Server workspaces", "bmux:server-workspaces" },
+    { "Server surfaces", "bmux:server-surfaces" },
+    { "Refresh layout", "bmux:refresh-layout" },
+    { "Disconnect layout", "bmux:disconnect-layout" },
     M.SEP,
     { "New terminal",     "bmux:new-terminal" },
     { "New agent",        "bmux:new-agent" },

@@ -124,10 +124,11 @@ function shell.switch(name)
     if shell.current_ws and shell.current_ws.preserve_layout then
       local content = node:get_content_root(root)
       local Node = getmetatable(content)
-      local saved = Node()
+      local saved = Node._blank('leaf')
       saved:consume(content)
       shell._stash[shell.current].tree = saved
-      content:consume(Node())
+      local Base=getmetatable(root);Base=Base.local_class or Base
+      content:consume(Base());setmetatable(content,Base)
       node = primary()
       leaves = each_content_leaf(root, {})
     end
@@ -153,6 +154,7 @@ function shell.switch(name)
   local st = shell._stash[name]
   if st and st.tree then
     node:consume(st.tree)
+    setmetatable(node,getmetatable(st.tree))
     if st.active and node:get_node_for_view(st.active) then
       core.set_active_view(st.active)
     end

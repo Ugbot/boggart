@@ -4,7 +4,8 @@
 native private-UDS transport. It does not own PTYs or create a second mutable
 layout authority. `lua/bmux/snapshot.lua` validates the full hierarchy before
 publication and projects a selected surface into shared-model adapter nodes.
-Actual Studio/cTUI hierarchy consumers remain BMUX-31 work.
+Studio now consumes the hierarchy through [Join layout](bmux-studio-layout.md).
+The actual cTUI hierarchy consumer remains BMUX-31/BMUX-35 work.
 
 ```lua
 local client=require('bmux.client').new{

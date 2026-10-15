@@ -14,12 +14,12 @@ native client, preserving terminal execution and attachment identities.
   publication, conflict refresh, explicit uncertainty recovery and teardown.
   Verify actual UDS observers and existing host/terminal policy tests in
   `tests/bmux_layout_client.lua`, normal and sanitizer builds; commit/push.
-- [ ] Create `studio/data/core/bmuxlayout.lua` for a joined layout session and
+- [x] Create `studio/data/core/bmuxlayout.lua` for a joined layout session and
   a RootView-derived replica node class. Route structural methods to server
   commands, stage snapshots and reuse views by immutable view ID/reference.
   Preserve local mode trees on join/disconnect, and update inactive Bmux stash
   without replacing an EDIT/AGENT/FLEET tree. Avoid modal focus theft.
-- [ ] Expose Join layout, workspace/surface selection and disconnect controls;
+- [x] Expose Join layout, workspace/surface selection and disconnect controls;
   route Bmux terminal creation/splits through server when joined. Verify real
   SDL panes, tab/focus/move/resize/zoom, mode-switch/rejoin and same-PID input.
 - [ ] Add the actual cTUI consumer and keep BMUX-31 open until both client

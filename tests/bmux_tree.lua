@@ -30,6 +30,8 @@ root:split('right',d);assert(not root.zoomed and #root:get_leaves()==before+1 an
 root:get_node_for_view(c):set_active_view(c);root:toggle_zoom();root:close_active_view(root);pending[c]()
 assert(not root.zoomed and not root:get_node_for_view(c) and root:get_node_for_view(b))
 local single=Node();single:add_view(a);single:close_active_view(single);pending[a]();assert(#single.views==0 and not single.active_view)
+local tabs=Node();tabs:add_view(a);tabs:add_view(b);tabs:close_view(a,tabs);pending[a]()
+assert(tabs.active_view==b and selected==b and #tabs.views==1,'closing a named background tab does not focus it first')
 local content=Node();content:add_view(b);content:split('left',{width=10,height=20},true)
 local dock=content.a;local body=content.b;assert(dock:is_locked() and #content:get_leaves()==1)
 assert(not dock:swap_views(body));body:close_active_view(content);pending[b]()

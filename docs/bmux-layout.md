@@ -4,8 +4,9 @@
 instances of this model, with UI methods added to the adapter class. There is
 no second mutable pane tree alongside RootView. This completes the structural
 extraction in BMUX-78. The server hierarchy and revisioned API are documented
-in [server-owned layout](bmux-layout-host.md). Actual Studio and cTUI attachment
-to that hierarchy remains required by BMUX-31.
+in [server-owned layout](bmux-layout-host.md). Studio's actual
+[Join layout](bmux-studio-layout.md) consumes that hierarchy. The cTUI consumer
+remains required by BMUX-31/BMUX-35.
 
 ## Model and adapter
 
@@ -41,7 +42,7 @@ shared model operations.
 
 - `split(direction, view?, locked?)` preserves the existing leaf and creates a
   sibling. Locked leaves can subdivide into locked docks, preserving focus.
-- `close_active_view(root)` captures the requested view; admission resolves its
+- `close_view(view, root)` or `close_active_view(root)` captures the requested view; admission resolves its
   current location even after movement. Repeated admission callbacks are
   harmless. Background closure preserves the currently focused view. Last
   closure retains an empty pane and never consumes a locked sibling.
