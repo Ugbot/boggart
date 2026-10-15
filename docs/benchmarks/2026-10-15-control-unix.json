@@ -1,0 +1,19 @@
+{
+  "date": "2026-10-15",
+  "platform": "macOS arm64",
+  "benchmark": "tests/bench_control_unix.lua",
+  "unit": "microseconds",
+  "samples_per_route": 1000,
+  "warmup_per_route": 100,
+  "scope": "Same-process libuv client/listener; new HTTP/1.1 UDS connection through response EOF. Excludes process startup and Studio scheduling.",
+  "routes": [
+    {"route": "manual Fleet registrar health", "min": 9.333, "median": 10.125, "p95": 12.166, "p99": 16.75, "max": 50.333},
+    {"route": "full policy-scoped control health", "min": 516.125, "median": 574.542, "p95": 1062.125, "p99": 2952.084, "max": 7956.375}
+  ],
+  "provisional_target_us": 100,
+  "full_control_target_met": false,
+  "reproduce": [
+    "BOGGART_HOME=<isolated-home> ./boggart --eval tests/bench_control_unix.lua",
+    "BMUX_BENCH_REGISTRAR=1 BOGGART_HOME=<isolated-home> ./boggart --eval tests/bench_control_unix.lua"
+  ]
+}

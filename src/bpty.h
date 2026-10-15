@@ -10,6 +10,7 @@ typedef struct {
   const char *command, *cwd;
   char *const *argv; /* argv[0] included; NULL terminated */
   int control_fd; /* >2: sole inherited control capability; caller closes parent copy */
+  char *const *env; /* NULL-terminated KEY=value overrides; borrowed during open */
 } bpty_options;
 typedef struct {
   int64_t pid;

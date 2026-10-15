@@ -278,11 +278,18 @@ bpty *bpty_open(uv_loop_t *loop,bterm *core,bpty_options options,int *error_out)
   if (!loop || !core || !options.command || !*options.command || !options.argv || !options.argv[0]) goto done;
   char command[PATH_MAX]; if ((error=command_path(options,command))) goto done;
   size_t env_count=0; while (environ[env_count]) env_count++;
-  if (env_count>(SIZE_MAX/sizeof *environment)-4) { error=UV_ENOMEM; goto done; }
-  environment=malloc((env_count+4)*sizeof *environment); if (!environment) { error=UV_ENOMEM; goto done; }
+  size_t extra=0;if(options.env)while(options.env[extra])extra++;
+  if(extra>64 || env_count>(SIZE_MAX/sizeof *environment)-extra-4){error=UV_ENOMEM;goto done;}
+  environment=malloc((env_count+extra+4)*sizeof *environment); if (!environment) { error=UV_ENOMEM; goto done; }
   size_t used=0;
   for (size_t i=0;i<env_count;i++) if (strncmp(environ[i],"TERM=",5) && strncmp(environ[i],"COLORTERM=",10)
-    && strncmp(environ[i],"BOGGART_AGENT_CHANNEL_FD=",25)) environment[used++]=environ[i];
+    && strncmp(environ[i],"BOGGART_AGENT_CHANNEL_FD=",25)) {
+      bool overridden=false;
+      for(size_t j=0;j<extra;j++){const char *equal=strchr(options.env[j],'=');if(equal && !strncmp(environ[i],options.env[j],(size_t)(equal-options.env[j])+1)){overridden=true;break;}}
+      if(!overridden)environment[used++]=environ[i];
+    }
+  for(size_t i=0;i<extra;i++)if(strncmp(options.env[i],"TERM=",5) && strncmp(options.env[i],"COLORTERM=",10)
+    && strncmp(options.env[i],"BOGGART_AGENT_CHANNEL_FD=",25))environment[used++]=options.env[i];
   char channel_env[64];
   if(options.control_fd>2){snprintf(channel_env,sizeof channel_env,"BOGGART_AGENT_CHANNEL_FD=%d",options.control_fd);environment[used++]=channel_env;}
   environment[used++]="TERM=xterm-256color"; environment[used++]="COLORTERM=truecolor"; environment[used]=NULL;

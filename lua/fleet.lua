@@ -26,7 +26,7 @@ function Registry:register(opts)
   if #self.order >= self.max_records then
     for i,id in ipairs(self.order) do
       local owner=self.owners[id]
-      if ended[self.agents[id].state] and (not owner or owner.evictable_history==true) then
+      if (ended[self.agents[id].state] or self.agents[id].retired) and (not owner or owner.evictable_history==true) then
         table.remove(self.order,i);self.agents[id]=nil;self.owners[id]=nil;self.evictions=self.evictions+1;break
       end
     end
@@ -51,7 +51,7 @@ function Registry:register(opts)
 end
 function Registry:bind(id, generation, owner)
   local rec = assert(self.agents[id], "unknown agent")
-  assert(rec.generation==generation and not ended[rec.state], "stale agent runtime")
+  assert(rec.generation==generation and not ended[rec.state] and not rec.retired, "stale agent runtime")
   assert(not self.owners[id], "agent runtime already has an adapter")
   assert(type(owner)=="table", "invalid agent adapter")
   assert(owner.evictable_history==nil or type(owner.evictable_history)=='boolean','invalid history policy')
@@ -80,10 +80,10 @@ function Registry:update(id, generation, fields)
   return rec
 end
 function Registry:retire(id, generation, state, error)
-  assert(ended[state or "stopped"], "retirement requires a terminal state")
+  assert(ended[state or "stopped"] or state=='unreachable', "retirement requires a terminal state")
   local rec,err=self:update(id,generation,{state=state or "stopped",error=error})
   if not rec then return nil,err end
-  self.owners[id]=nil; rec.capabilities={}
+  self.owners[id]=nil;rec.capabilities={};rec.retired=true;rec.t_end=rec.t_end or os.time()
   return rec
 end
 function Registry:control(id, generation, action, payload)
