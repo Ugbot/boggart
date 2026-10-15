@@ -16,6 +16,7 @@
 --   mutation: delete_range, insert_at, set_lines
 --   undo/reg: begin_undo, end_undo, undo, redo, get_register, set_register
 --   optional: motion (core supplies the default below), on_command_done,
+--             pattern_units (search units matching the adapter columns),
 --             set_enabled (a TUI-only extension for ":set vim"/":set novim")
 --
 -- Phases 1-4 (docs/tui-vim.md section 8): normal/insert + core motions (incl.
@@ -499,7 +500,8 @@ end
 -- ---- search: / ? n N * # (plain substring, case-insensitive) ----------------
 -- Character-by-character, via get_char/next_pos, never Lua's byte-based
 -- string.find -- so this never has to convert a byte offset back to a column.
-local function pat_chars(pat)
+local function pat_chars(a,pat)
+  if a.pattern_units then return a:pattern_units(pat) end
   local chars = {}
   if utf8 then
     for _, cp in utf8.codes(pat) do chars[#chars + 1] = utf8.char(cp):lower() end
@@ -579,7 +581,7 @@ local function search_bwd(a, chars, y, x)
   return nil
 end
 local function do_search_jump(a, dir, pat)
-  local chars = pat_chars(pat)
+  local chars = pat_chars(a,pat)
   if #chars == 0 then return end
   local y, x = a:get_cursor()
   local ty, tx
@@ -813,8 +815,12 @@ end
 -- so a draft in progress survives a search or an ex command untouched. This is
 -- scratch text, not buffer content, so it is edited with plain UTF-8 chopping
 -- rather than going through the adapter.
-local function drop_last_char(s)
+local function drop_last_char(s,a)
   if s == "" then return s end
+  if a.pattern_units then
+    local units=a:pattern_units(s)
+    return s:sub(1,#s-#units[#units])
+  end
   if not utf8 then return s:sub(1, #s - 1) end
   local n = utf8.len(s)
   if not n or n <= 1 then return "" end
@@ -863,7 +869,7 @@ local function handle_prompt(a, vs, ev)
   local p = vs.prompt
   if ev.key == "esc" or ev.key == "escape" then vs.prompt = nil; return true end
   if ev.key == "backspace" then
-    if p.text == "" then vs.prompt = nil else p.text = drop_last_char(p.text) end
+    if p.text == "" then vs.prompt = nil else p.text = drop_last_char(p.text,a) end
     return true
   end
   if ev.key == "enter" then

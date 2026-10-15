@@ -42,6 +42,7 @@ local vimmode = require "vimmode"
 -- adapter over {lines, cy, cx, edit_mode} lives below (search "Vim adapter"),
 -- so normal/visual-mode keys run the SAME engine the cTUI composer uses.
 local vim = require "vim"
+local grapheme = require "grapheme"
 
 local AgentView = View:extend()
 
@@ -537,6 +538,7 @@ function AgentView:composer_selection()
   if not a then return nil end
   local ay, ax, by, bx = a.cy, a.cx, self.cy, self.cx
   if ay > by or (ay == by and ax > bx) then ay, ax, by, bx = by, bx, ay, ax end
+  ax=grapheme.snap(self.lines[ay] or '',ax);bx=grapheme.snap(self.lines[by] or '',bx,true)
   if ay == by then return (self.lines[ay] or ""):sub(ax, bx - 1) end
   local parts = { (self.lines[ay] or ""):sub(ax) }
   for i = ay + 1, by - 1 do parts[#parts + 1] = self.lines[i] or "" end
@@ -549,11 +551,12 @@ function AgentView:delete_composer_selection()
   if not a then return false end
   local ay, ax, by, bx = a.cy, a.cx, self.cy, self.cx
   if ay > by or (ay == by and ax > bx) then ay, ax, by, bx = by, bx, ay, ax end
+  ax=grapheme.snap(self.lines[ay] or '',ax);bx=grapheme.snap(self.lines[by] or '',bx,true)
   local head = (self.lines[ay] or ""):sub(1, ax - 1)
   local tail = (self.lines[by] or ""):sub(bx)
   for _ = ay + 1, by do table.remove(self.lines, ay + 1) end
   self.lines[ay] = head .. tail
-  self.cy, self.cx = ay, ax
+  self.cy, self.cx = ay,grapheme.snap(self.lines[ay],ax)
   self.sel_anchor = nil
   core.redraw = true
   return true
@@ -916,7 +919,7 @@ function AgentView:voice_replace_span(text)
   local b = math.min(a + v.len, #line + 1)
   self.lines[v.cy] = line:sub(1, a - 1) .. text .. line:sub(b)
   v.len = #text
-  self.cy, self.cx = v.cy, a + #text
+  self.cy,self.cx=v.cy,grapheme.snap(self.lines[v.cy],a+#text,true)
   complete.dismiss(self)
   core.redraw = true
 end
@@ -1044,37 +1047,22 @@ function AgentView:jump_user(dir)
 end
 
 -- Caret arithmetic. self.cx is a byte offset into the line -- the same index
--- string.sub wants -- but it must always sit on a character boundary.
+-- string.sub wants -- but it must always sit on a native cluster boundary.
 function AgentView:prev_char(line, i)
-  i = i - 1
-  while i > 1 do
-    local b = line:byte(i)
-    if b < 0x80 or b >= 0xc0 then break end
-    i = i - 1
-  end
-  return math.max(1, i)
+  return grapheme.prev(line,i)
 end
 
 function AgentView:next_char(line, i)
-  local len = #line
-  i = i + 1
-  while i <= len do
-    local b = line:byte(i)
-    if b < 0x80 or b >= 0xc0 then break end
-    i = i + 1
-  end
-  return math.min(i, len + 1)
+  return grapheme.next(line,i)
 end
 
 -- Keep the caret inside the current line and on a boundary, after a move that
 -- changed which line it is on.
 function AgentView:clamp_caret()
   local l = self.lines[self.cy] or ""
-  if self.cx > #l + 1 then self.cx = #l + 1 end
-  if self.cx < 1 then self.cx = 1 end
-  if self.cx <= #l then
-    local b = l:byte(self.cx)
-    if b >= 0x80 and b < 0xc0 then self.cx = self:prev_char(l, self.cx + 1) end
+  self.cx=grapheme.snap(l,self.cx)
+  if self.edit_mode=='normal' or self.edit_mode=='visual' or self.edit_mode=='vline' then
+    self.cx=math.min(self.cx,grapheme.prev(l,#l+1))
   end
 end
 
@@ -1082,12 +1070,12 @@ end
 -- Vim adapter (docs/vim-unify.md P2): presents this composer's own
 -- {lines, cy, cx, edit_mode} buffer to the shared modal grammar in lua/vim.lua,
 -- so normal/visual-mode keys run the SAME engine the cTUI composer drives
--- (lua/tui/vim.lua is the sibling adapter over the same shape, codepoint- not
--- byte-indexed). One adapter per view, created lazily and cached on self._va
+-- (lua/tui/vim.lua is the sibling adapter over codepoint-indexed fields).
+-- Both expose virtual grapheme columns to the grammar while preserving their
+-- original public cursor fields. One adapter per view is cached on self._va
 -- so the grammar's own pending-command state (attached to the adapter as
 -- a._vs -- counts, a half-typed operator, the "/"/":" prompt) persists across
--- keystrokes. Byte-indexed columns throughout, matching prev_char/next_char
--- above; a snapshot undo stack (self._undo/._redo), since the draft is short
+-- keystrokes. Snapshot undo (self._undo/._redo), since the draft is short
 -- text, not a document; the unnamed register mirrored to the system
 -- clipboard, matching studio/data/core/vim.lua's DocView engine.
 local Adapter = {}
@@ -1101,46 +1089,52 @@ end
 -- reading
 function Adapter:line_count() return #self.buf.lines end
 function Adapter:get_line(y) return self.buf.lines[y] or "" end
-function Adapter:line_len(y) return #(self.buf.lines[y] or "") end
+function Adapter:line_len(y) return grapheme.count(self.buf.lines[y] or "") end
 function Adapter:first_nonblank(y)
   local line = self.buf.lines[y] or ""
-  for i = 1, #line do
-    local b = line:byte(i)
+  for i = 1, grapheme.count(line) do
+    local b = grapheme.char(line,i):byte(1)
     if b ~= 32 and b ~= 9 then return i end
   end
   return 1
 end
 function Adapter:get_char(y, x)
-  local buf, line = self.buf, self.buf.lines[y] or ""
-  if x < 1 or x > #line then return "" end
-  return line:sub(x, buf:next_char(line, x) - 1)
+  local line = self.buf.lines[y] or ""
+  if x < 1 or x > grapheme.count(line) then return "" end
+  return grapheme.char(line,x)
 end
 function Adapter:next_pos(y, x)
   local buf, line = self.buf, self.buf.lines[y] or ""
-  if x <= #line then return y, buf:next_char(line, x) end
+  if x <= grapheme.count(line) then return y,x+1 end
   if y < #buf.lines then return y + 1, 1 end
   return nil
 end
 function Adapter:prev_pos(y, x)
   local buf = self.buf
-  if x > 1 then return y, buf:prev_char(buf.lines[y] or "", x) end
-  if y > 1 then return y - 1, #(buf.lines[y - 1] or "") + 1 end
+  if x > 1 then return y,x-1 end
+  if y > 1 then return y-1,grapheme.count(buf.lines[y-1] or '')+1 end
   return nil
 end
 function Adapter:get_text(l1, c1, l2, c2)
   local buf = self.buf
+  c1=grapheme.byte(buf.lines[l1] or '',c1);c2=grapheme.byte(buf.lines[l2] or '',c2)
   if l1 == l2 then return (buf.lines[l1] or ""):sub(c1, c2 - 1) end
   local parts = { (buf.lines[l1] or ""):sub(c1) }
   for i = l1 + 1, l2 - 1 do parts[#parts + 1] = buf.lines[i] or "" end
   parts[#parts + 1] = (buf.lines[l2] or ""):sub(1, c2 - 1)
   return table.concat(parts, "\n")
 end
+function Adapter:pattern_units(pat) return grapheme.units(pat) end
 
 -- cursor and mode -- proxies onto the fields draw() and the mouse code
 -- already read directly, so a visual selection paints and copies with no
 -- more plumbing than a normal-mode caret move needed.
-function Adapter:get_cursor() return self.buf.cy, self.buf.cx end
-function Adapter:set_cursor(y, x) self.buf.cy, self.buf.cx = y, x end
+function Adapter:get_cursor()
+  local buf=self.buf;return buf.cy,grapheme.index(buf.lines[buf.cy] or '',buf.cx)
+end
+function Adapter:set_cursor(y, x)
+  local buf=self.buf;buf.cy,buf.cx=y,grapheme.byte(buf.lines[y] or '',x)
+end
 function Adapter:clamp_caret() self.buf:clamp_caret() end
 function Adapter:mode() return self.buf.edit_mode end
 function Adapter:set_mode(m) self.buf:set_edit_mode(m) end
@@ -1148,12 +1142,15 @@ function Adapter:set_mode(m) self.buf:set_edit_mode(m) end
 -- composer_selection()/delete_composer_selection() already read; the cursor
 -- itself is tracked by get_cursor/set_cursor above, so only the anchor half
 -- of the pair needs setting here.
-function Adapter:set_selection(ay, ax) self.buf.sel_anchor = { cy = ay, cx = ax } end
+function Adapter:set_selection(ay, ax)
+  self.buf.sel_anchor={cy=ay,cx=grapheme.byte(self.buf.lines[ay] or '',ax)}
+end
 function Adapter:clear_selection() self.buf.sel_anchor = nil end
 
 -- mutation (all ranges half-open [start, end), per the interface)
 function Adapter:delete_range(l1, c1, l2, c2)
   local buf = self.buf
+  c1=grapheme.byte(buf.lines[l1] or '',c1);c2=grapheme.byte(buf.lines[l2] or '',c2)
   if l1 == l2 then
     local line = buf.lines[l1] or ""
     local n = #line
@@ -1161,8 +1158,9 @@ function Adapter:delete_range(l1, c1, l2, c2)
     c2 = math.max(c1, math.min(c2, n + 1))
     buf.lines[l1] = line:sub(1, c1 - 1) .. line:sub(c2)
   else
-    local head = (buf.lines[l1] or ""):sub(1, c1 - 1)
-    local tail = (buf.lines[l2] or ""):sub(c2)
+    local first,last=buf.lines[l1] or '',buf.lines[l2] or ''
+    local head = first:sub(1, c1 - 1)
+    local tail = last:sub(c2)
     buf.lines[l1] = head .. tail
     for i = l2, l1 + 1, -1 do table.remove(buf.lines, i) end
   end
@@ -1173,19 +1171,18 @@ end
 function Adapter:insert_at(y, x, text)
   local buf = self.buf
   local line = buf.lines[y] or ""
-  local n = #line
-  local ic = math.max(1, math.min(x, n + 1))
+  local ic = grapheme.byte(line,x)
   local before, tail = line:sub(1, ic - 1), line:sub(ic)
   local parts = {}
   for ln in (text .. "\n"):gmatch("(.-)\n") do parts[#parts + 1] = ln end
   if #parts == 1 then
     buf.lines[y] = before .. parts[1] .. tail
-    return y, ic + #parts[1]
+    return y,grapheme.index(buf.lines[y],ic+#parts[1],true)
   end
   buf.lines[y] = before .. parts[1]
   for i = 2, #parts - 1 do table.insert(buf.lines, y + i - 1, parts[i]) end
   table.insert(buf.lines, y + #parts - 1, parts[#parts] .. tail)
-  return y + #parts - 1, #parts[#parts] + 1
+  return y+#parts-1,grapheme.index(buf.lines[y+#parts-1],#parts[#parts]+1,true)
 end
 -- Replace whole lines [y1, y2] (inclusive) with `list`, the linewise
 -- primitive; y2 < y1 inserts `list` before y1 without removing anything.
@@ -1331,6 +1328,7 @@ function AgentView:on_text_input(text)
   local l = self.lines[self.cy]
   self.lines[self.cy] = l:sub(1, self.cx - 1) .. text .. l:sub(self.cx)
   self.cx = self.cx + #text
+  self.cx=grapheme.snap(self.lines[self.cy],self.cx,true)
   complete.refresh(self)
   core.redraw = true
 end
@@ -1417,6 +1415,7 @@ function AgentView:on_key_pressed(key)
         self.cx = #lines[#lines] + 1
       end
       self.sel_anchor = nil
+      self.cx=grapheme.snap(self.lines[self.cy],self.cx,true)
       complete.refresh(self)
       core.redraw = true
     end
@@ -1482,9 +1481,21 @@ function AgentView:on_key_pressed(key)
       table.remove(self.lines, self.cy)
       self.cy = self.cy - 1
     end
+    self.cx=grapheme.snap(self.lines[self.cy],self.cx)
     complete.refresh(self)
     core.redraw = true
     return true
+
+  elseif key == 'delete' then
+    if self.sel_anchor then self:delete_composer_selection();return true end
+    local line=self.lines[self.cy]
+    if self.cx<=#line then
+      self.lines[self.cy]=line:sub(1,self.cx-1)..line:sub(self:next_char(line,self.cx))
+    elseif self.cy<#self.lines then
+      self.lines[self.cy]=line..self.lines[self.cy+1];table.remove(self.lines,self.cy+1)
+    end
+    self.cx=grapheme.snap(self.lines[self.cy],self.cx)
+    complete.refresh(self);core.redraw=true;return true
 
   elseif key == "ctrl+backspace" or key == "alt+backspace" then
     -- The tail has to be taken before the caret moves. Reading l:sub(self.cx)
@@ -1493,6 +1504,7 @@ function AgentView:on_key_pressed(key)
     -- silently left the caret in the middle of the line.
     local l = self.lines[self.cy]
     local head = l:sub(1, self.cx - 1):gsub("%s*%S+%s*$", "")
+    head=l:sub(1,grapheme.snap(l,#head+1)-1)
     self.lines[self.cy] = head .. l:sub(self.cx)
     self.cx = #head + 1
     complete.refresh(self)

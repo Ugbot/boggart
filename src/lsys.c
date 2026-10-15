@@ -650,6 +650,19 @@ static int l_cell_first(lua_State *L) {
   size_t bytes=btunicode_text_next(text,length,true,NULL);
   lua_pushlstring(L,text,bytes);return 1;
 }
+/* Offset iterator: no Lua substring or result-string allocation. The caller
+ * may bound a physical line so ignored controls never swallow its newline. */
+static int l_cell_next(lua_State *L) {
+  size_t length;const char *text=luaL_checklstring(L,1,&length);
+  luaL_argcheck(L,length<(size_t)LUA_MAXINTEGER,1,"text too long");
+  lua_Integer pos=luaL_checkinteger(L,2);
+  lua_Integer end=luaL_optinteger(L,3,(lua_Integer)length+1);
+  luaL_argcheck(L,end>=1 && (lua_Unsigned)end<=length+1,3,"end outside text");
+  luaL_argcheck(L,pos>=1 && pos<=end,2,"position outside range");
+  size_t start=(size_t)pos-1,remaining=(size_t)(end-pos);
+  size_t bytes=btunicode_text_next(text+start,remaining,true,NULL);
+  lua_pushinteger(L,pos+(lua_Integer)bytes);return 1;
+}
 typedef struct { size_t start,length,owner; } cell_span;
 /* Partition whole text by native clusters and the token owning each head.
  * End offsets and ranges live in rooted userdata before any result allocation;
@@ -874,6 +887,7 @@ static const luaL_Reg sys_lib[] = {
   {"cell_width", l_cell_width},
   {"cell_take", l_cell_take},
   {"cell_first", l_cell_first},
+  {"cell_next", l_cell_next},
   {"cell_partition", l_cell_partition},
   {NULL, NULL},
 };

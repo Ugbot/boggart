@@ -193,9 +193,20 @@ instead of launched twice.
 Process liveness and agent activity are separate: external rows say
 **alive / unknown** until a runtime integration supplies semantic status. The
 launcher does not infer tasks, model names, approvals or completion from screen
-text. It does not send semantic prompts or automate approval keys. Child runtime
-IPC, hooks for agents started manually in shells, rich provider adapters and
-registration of a child TUI's own workers are subsequent integration stages.
+text. Launched **Boggart TUIs** use a private native channel to report their
+actual session/model and idle/running/approval/question state. Select their
+Fleet row to **Send prompt**, **Interrupt** a running turn, or **Approve/Reject**
+the displayed tool request. The result of each action appears in the details.
+Prompts use the same conversation and refuse to overwrite a human draft or
+enter an owned dialog; a draft changed since the prompt dialog opened is also
+rejected. A running session accepts steering into its existing inbox.
+
+The TUI remains interactive in its BMUX pane. Interrupt cancels its turn and
+keeps that process/session open; Stop closes the process. Approvals identify
+the exact live request and never synthesize terminal keys or enable blanket
+approval. Hooks for agents started manually in shells, rich foreign-provider
+adapters and registration of a child TUI's own workers remain subsequent stages.
+See [channel ownership and protocol](bmux-agent-channel.md).
 
 `lua/fleet.lua` owns bounded metadata, adapter capabilities and generation checks;
 `core.fleetagents` connects native PTYs and cached scheduler records to that

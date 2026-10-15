@@ -9,29 +9,11 @@
 -- normal/visual/vline mode, plain "char" events are the only things ever
 -- intercepted; insert-mode typing and a bare Enter are untouched.
 --
--- Codepoint-indexed columns throughout (matching tui/input.lua's own
--- cursor/line model), snapshot-based undo, one unnamed register.
+-- The grammar sees grapheme columns; public Input cursor/cx stay codepoint
+-- indexed. The adapter converts at its boundary. Snapshot undo, one register.
 local M = {}
 
-local input = require("tui.input")
-local cp_at, ulen = input.cp_at, input.ulen
-
--- ---- codepoint-indexed substring helpers ------------------------------------
--- Byte offset of the i-th (1-based) codepoint of s; i = ulen(s)+1 is valid and
--- gives the byte position just past the end (matches Lua's own utf8.offset).
-local function cpbyte(s, i)
-  if i < 1 then i = 1 end
-  if not utf8 then return math.min(i, #s + 1) end
-  return utf8.offset(s, i) or (#s + 1)
-end
--- 1-based INCLUSIVE codepoint range [from, to], clamped to s's length.
-local function sub_cp(s, from, to)
-  local n = ulen(s)
-  from = math.max(1, from)
-  to = math.min(n, to)
-  if to < from then return "" end
-  return s:sub(cpbyte(s, from), cpbyte(s, to + 1) - 1)
-end
+local grapheme=require('grapheme')
 
 -- ---- the unnamed register + undo ---------------------------------------------
 -- Module-level like the old engine's M.register, so it carries over naturally
@@ -65,46 +47,54 @@ end
 -- reading
 function Adapter:line_count() return #self.buf.lines end
 function Adapter:get_line(y) return self.buf.lines[y] or "" end
-function Adapter:line_len(y) return ulen(self.buf.lines[y] or "") end
--- Column of the first non-blank codepoint on a line, or 1 if there is none.
+function Adapter:line_len(y) return grapheme.count(self.buf.lines[y] or "") end
+-- Column of the first cluster with a non-blank head, or 1 if there is none.
 function Adapter:first_nonblank(y)
   local line = self.buf.lines[y] or ""
-  local n = ulen(line)
+  local n = grapheme.count(line)
   for i = 1, n do
-    local cp = cp_at(line, i - 1)
-    if cp ~= 32 and cp ~= 9 then return i end
+    local head=grapheme.char(line,i):byte(1)
+    if head~=32 and head~=9 then return i end
   end
   return 1
 end
 function Adapter:get_char(y, x)
   local line = self.buf.lines[y] or ""
-  if x < 1 or x > ulen(line) then return "" end
-  return sub_cp(line, x, x)
+  if x < 1 or x > grapheme.count(line) then return "" end
+  return grapheme.char(line,x)
 end
 function Adapter:next_pos(y, x)
   local buf = self.buf
-  if x <= self:line_len(y) then return y, x + 1 end
+  if x <= self:line_len(y) then return y,x+1 end
   if y < #buf.lines then return y + 1, 1 end
   return nil
 end
 function Adapter:prev_pos(y, x)
-  if x > 1 then return y, x - 1 end
+  if x > 1 then return y,x-1 end
   if y > 1 then return y - 1, self:line_len(y - 1) + 1 end
   return nil
 end
-function Adapter:get_text(l1, c1, l2, c2)
-  local buf = self.buf
-  if l1 == l2 then return sub_cp(buf.lines[l1] or "", c1, c2 - 1) end
-  local parts = { sub_cp(buf.lines[l1] or "", c1, math.huge) }
-  for i = l1 + 1, l2 - 1 do parts[#parts + 1] = buf.lines[i] or "" end
-  parts[#parts + 1] = sub_cp(buf.lines[l2] or "", 1, c2 - 1)
-  return table.concat(parts, "\n")
+function Adapter:get_text(l1,c1,l2,c2)
+  local buf=self.buf
+  if l1==l2 then return grapheme.slice(buf.lines[l1] or '',c1,c2) end
+  local first=buf.lines[l1] or ''
+  local parts={first:sub(grapheme.byte(first,c1))}
+  for i=l1+1,l2-1 do parts[#parts+1]=buf.lines[i] or '' end
+  parts[#parts+1]=grapheme.slice(buf.lines[l2] or '',1,c2)
+  return table.concat(parts,'\n')
 end
+function Adapter:pattern_units(pat) return grapheme.units(pat) end
 
--- cursor and mode -- straight proxies onto the Input fields tui.lua and
--- tui/input.lua already read directly for the status chip and caret paint.
-function Adapter:get_cursor() return self.buf.cy, self.buf.cx end
-function Adapter:set_cursor(y, x) self.buf.cy, self.buf.cx = y, x end
+-- Cursor columns convert between the grammar's graphemes and the Input's
+-- public codepoint fields; mode stays a direct proxy.
+function Adapter:get_cursor()
+  local buf=self.buf;local line=buf.lines[buf.cy] or ''
+  return buf.cy,grapheme.index(line,grapheme.byte_at(line,buf.cx-1))
+end
+function Adapter:set_cursor(y,x)
+  local line=self.buf.lines[y] or ''
+  self.buf.cy,self.buf.cx=y,grapheme.cp_at(line,grapheme.byte(line,x))+1
+end
 function Adapter:clamp_caret() self.buf:clamp_caret() end
 function Adapter:mode() return self.buf.edit_mode end
 function Adapter:set_mode(m) self.buf.edit_mode = m end
@@ -115,43 +105,25 @@ function Adapter:set_selection() end
 function Adapter:clear_selection() end
 
 -- mutation (all ranges half-open [start, end), per the interface)
-function Adapter:delete_range(l1, c1, l2, c2)
-  local buf = self.buf
-  if l1 == l2 then
-    local line = buf.lines[l1] or ""
-    local n = ulen(line)
-    c1 = math.max(1, math.min(c1, n + 1))
-    c2 = math.max(c1, math.min(c2, n + 1))
-    buf.lines[l1] = sub_cp(line, 1, c1 - 1) .. sub_cp(line, c2, n)
-  else
-    local first, last = buf.lines[l1] or "", buf.lines[l2] or ""
-    local n1, n2 = ulen(first), ulen(last)
-    local head = sub_cp(first, 1, math.min(c1, n1 + 1) - 1)
-    local tail = sub_cp(last, math.min(c2, n2 + 1), n2)
-    buf.lines[l1] = head .. tail
-    for i = l2, l1 + 1, -1 do table.remove(buf.lines, i) end
-  end
+function Adapter:delete_range(l1,c1,l2,c2)
+  local buf=self.buf;local first,last=buf.lines[l1] or '',buf.lines[l2] or ''
+  local head=grapheme.slice(first,1,c1);local tail=last:sub(grapheme.byte(last,c2))
+  buf.lines[l1]=head..tail
+  for i=l2,l1+1,-1 do table.remove(buf.lines,i) end
 end
--- Beyond the base interface: returns the position right after the inserted
--- text, so the core can place the paste cursor without measuring an
--- arbitrary string in adapter-column units itself. Optional -- a caller that
--- ignores the return values still gets a correct edit, just no cursor move.
-function Adapter:insert_at(y, x, text)
-  local buf = self.buf
-  local line = buf.lines[y] or ""
-  local n = ulen(line)
-  local ic = math.max(1, math.min(x, n + 1))
-  local before, tail = sub_cp(line, 1, ic - 1), sub_cp(line, ic, n)
-  local parts = {}
-  for ln in (text .. "\n"):gmatch("(.-)\n") do parts[#parts + 1] = ln end
-  if #parts == 1 then
-    buf.lines[y] = before .. parts[1] .. tail
-    return y, ic + ulen(parts[1])
+function Adapter:insert_at(y,x,text)
+  local buf=self.buf;local line=buf.lines[y] or '';local byte=grapheme.byte(line,x)
+  local before,tail=line:sub(1,byte-1),line:sub(byte)
+  local parts={}
+  for ln in (text..'\n'):gmatch('(.-)\n') do parts[#parts+1]=ln end
+  if #parts==1 then
+    buf.lines[y]=before..parts[1]..tail
+    return y,grapheme.index(buf.lines[y],byte+#parts[1],true)
   end
-  buf.lines[y] = before .. parts[1]
-  for i = 2, #parts - 1 do table.insert(buf.lines, y + i - 1, parts[i]) end
-  table.insert(buf.lines, y + #parts - 1, parts[#parts] .. tail)
-  return y + #parts - 1, ulen(parts[#parts]) + 1
+  buf.lines[y]=before..parts[1]
+  for i=2,#parts-1 do table.insert(buf.lines,y+i-1,parts[i]) end
+  table.insert(buf.lines,y+#parts-1,parts[#parts]..tail)
+  return y+#parts-1,grapheme.index(buf.lines[y+#parts-1],#parts[#parts]+1,true)
 end
 -- Replace whole lines [y1, y2] (inclusive) with `list`, the linewise
 -- primitive; y2 < y1 inserts `list` before y1 without removing anything.

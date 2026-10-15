@@ -28,7 +28,7 @@ function M.launch(profile,opts)
   end
   local rec=agents.registry:register{provider=profile.provider,name=profile.name,cwd=opts.cwd or core.project_dir,session_id=opts.session_id}
   local ok,view=pcall(require('shell.workspaces.bmux').open,opts.dir,
-    {cmd=profile.cmd,args=args,title=profile.name,cwd=opts.cwd})
+    {cmd=profile.cmd,args=args,title=profile.name,cwd=opts.cwd,control=profile.provider=='boggart'})
   if not ok then agents.registry:retire(rec.id,rec.generation,'failed',tostring(view));return nil,view end
   rec.cwd=view.bmux_cwd
   agents.bind(rec,view)
@@ -40,7 +40,8 @@ function M.boggart(resume_id)
   if resume_id then args[#args+1]='--resume';args[#args+1]=tostring(resume_id)end
   if resume_id then
     for _,rec in ipairs(agents.registry:records())do
-      if rec.provider=='boggart' and tostring(rec.session_id)==tostring(resume_id) and rec.capabilities and rec.capabilities.focus and rec.state=='alive' then
+      if rec.provider=='boggart' and tostring(rec.session_id)==tostring(resume_id) and rec.capabilities and rec.capabilities.focus
+        and rec.state~='exited' and rec.state~='failed' and rec.state~='stopped' then
         agents.registry:control(rec.id,rec.generation,'focus');return rec
       end
     end

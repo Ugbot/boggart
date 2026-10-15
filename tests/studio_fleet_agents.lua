@@ -43,7 +43,9 @@ local ok,err=xpcall(function()
   local native=assert(registry.agents[native_view.fleet_agent_id],'chooser launches and registers agent')
   assert(native.provider=='boggart' and native_view.custom_title=='Boggart TUI')
   until_true(function()return native_view.state and native_view.state.alternate and text(native_view):find('ctx ',1,true)end)
-  assert(native.state=='alive' and native.pid>0,'actual Boggart TUI is tracked')
+  local ready,why=pcall(until_true,function()return native.state=='idle' and native.session_id and native.capabilities.prompt end)
+  assert(ready,tostring(why)..'\n'..require('json').encode(native)..'\n'..text(native_view)..'\n'..require('json').encode(native_view.terminal:channel():state()))
+  assert(native.pid>0,'actual Boggart TUI is tracked')
   system._test_event{type='textinput',text='/quit'}
   system._test_event{type='keypressed',key='Return'};system._test_event{type='keyreleased',key='Return'}
   until_true(function()return native.state=='exited'end)

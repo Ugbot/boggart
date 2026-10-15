@@ -2,6 +2,7 @@
 -- Events are tc.poll / tests: ev.key, ev.char, shift/alt/ctrl, type="paste".
 -- Pure state. Lua 5.5: never table.insert(t, 1, x) on an empty table.
 local M = {}
+local grapheme=require('grapheme')
 local Input = {}
 Input.__index = Input
 
@@ -38,7 +39,7 @@ local function is_word(cp)
       or (cp >= 97 and cp <= 122) or cp == 95
 end
 local function vis_w(s)
-  if sys and sys.width then return sys.width(s) end
+  if sys and sys.cell_width then return sys.cell_width(s) end
   return ulen(s)
 end
 local function safe(fn, arg)
@@ -76,22 +77,28 @@ end
 
 function Input:_insert(str)
   if str == nil or str == "" then return end
+  self.cursor=grapheme.snap_cp(self.line,self.cursor)
   local bp = byteat(self.line, self.cursor)
   self.line = self.line:sub(1, bp - 1) .. str .. self.line:sub(bp)
   self.cursor = self.cursor + ulen(str)
+  self.cursor = grapheme.snap_cp(self.line,self.cursor,true)
   self:_refresh_menu()
 end
 function Input:_backspace()
+  self.cursor=grapheme.snap_cp(self.line,self.cursor)
   if self.cursor <= 0 then return end
-  local a, b = byteat(self.line, self.cursor - 1), byteat(self.line, self.cursor)
+  local previous=grapheme.prev_cp(self.line,self.cursor)
+  local a, b = byteat(self.line,previous), byteat(self.line,self.cursor)
   self.line = self.line:sub(1, a - 1) .. self.line:sub(b)
-  self.cursor = self.cursor - 1
+  self.cursor = grapheme.snap_cp(self.line,previous)
   self:_refresh_menu()
 end
 function Input:_delete()
+  self.cursor=grapheme.snap_cp(self.line,self.cursor)
   if self.cursor >= ulen(self.line) then return end
-  local a, b = byteat(self.line, self.cursor), byteat(self.line, self.cursor + 1)
+  local a, b = byteat(self.line,self.cursor),byteat(self.line,grapheme.next_cp(self.line,self.cursor))
   self.line = self.line:sub(1, a - 1) .. self.line:sub(b)
+  self.cursor = grapheme.snap_cp(self.line,self.cursor)
   self:_refresh_menu()
 end
 function Input:_set(text)
@@ -106,6 +113,7 @@ function Input:paste(text) self:_insert(text or "") end
 -- is off, and every other method here (history, kill ring, completion, voice's
 -- replace_span) keeps working on line/cursor untouched.
 function Input:_sync_lines()
+  self.cursor=grapheme.snap_cp(self.line,self.cursor)
   local lines = {}
   for ln in (self.line .. "\n"):gmatch("([^\n]*)\n") do lines[#lines + 1] = ln end
   if #lines == 0 then lines[1] = "" end
@@ -123,6 +131,7 @@ function Input:_sync_from_lines()
   local total = 0
   for i = 1, self.cy - 1 do total = total + ulen(self.lines[i] or "") + 1 end
   self.cursor = total + (self.cx - 1)
+  self.cursor=grapheme.snap_cp(self.line,self.cursor)
   self._menu = nil -- a line may have been split/joined (o/O); any menu offset is stale
 end
 
@@ -135,6 +144,7 @@ function Input:clamp_caret()
   local tight = em == "normal" or em == "visual" or em == "vline"
   local maxcx = tight and math.max(1, n) or (n + 1)
   self.cx = math.max(1, math.min(self.cx, maxcx))
+  self.cx = grapheme.snap_cp(self.lines[self.cy] or '',self.cx-1)+1
 end
 
 -- Replace the codepoint span [start, start+len) with `str`, leaving the cursor
@@ -150,6 +160,7 @@ function Input:replace_span(start, len, str)
   local a, b = byteat(self.line, start), byteat(self.line, stop)
   self.line = self.line:sub(1, a - 1) .. str .. self.line:sub(b)
   self.cursor = start + ulen(str)
+  self.cursor = grapheme.snap_cp(self.line,self.cursor,true)
   self._menu = nil
   return ulen(str)
 end
@@ -168,13 +179,13 @@ function Input:_word_left()
   local i = self.cursor
   while i > 0 and not is_word(cp_at(self.line, i - 1)) do i = i - 1 end
   while i > 0 and is_word(cp_at(self.line, i - 1)) do i = i - 1 end
-  return i
+  return grapheme.snap_cp(self.line,i)
 end
 function Input:_word_right()
   local i, n = self.cursor, ulen(self.line)
   while i < n and not is_word(cp_at(self.line, i)) do i = i + 1 end
   while i < n and is_word(cp_at(self.line, i)) do i = i + 1 end
-  return i
+  return grapheme.snap_cp(self.line,i,true)
 end
 function Input:_kill(from, to)
   if to <= from then return end
@@ -207,6 +218,7 @@ function Input:_prev_line()
   local p_bol = p_end
   while p_bol > 0 and cp_at(self.line, p_bol - 1) ~= 10 do p_bol = p_bol - 1 end
   self.cursor = math.min(p_bol + col, p_end)
+  self.cursor = grapheme.snap_cp(self.line,self.cursor)
 end
 function Input:_next_line()
   local n = ulen(self.line)
@@ -215,6 +227,7 @@ function Input:_next_line()
   local nbol = self:_eol() + 1
   self.cursor = nbol
   self.cursor = math.min(nbol + col, self:_eol())
+  self.cursor = grapheme.snap_cp(self.line,self.cursor)
 end
 function Input:_save_hist(value)
   if value == "" then return end
@@ -247,6 +260,7 @@ function Input:_apply_item(item)
   local newhead = head:sub(1, #head - #word) .. item_text(item)
   self.line = newhead .. tail
   self.cursor = ulen(newhead)
+  self.cursor = grapheme.snap_cp(self.line,self.cursor,true)
 end
 
 function Input:_complete(opts)
@@ -272,6 +286,7 @@ function Input:_complete(opts)
       local newhead = head:sub(1, #head - #word) .. lcp
       self.line = newhead .. tail
       self.cursor = ulen(newhead)
+      self.cursor = grapheme.snap_cp(self.line,self.cursor,true)
       return self:_complete({ hops = hops + 1 })
     end
   end
@@ -300,8 +315,8 @@ function Input:_ctrl(ch)
   ch = (ch or ""):lower()
   if ch == "a" then self.cursor = self:_bol()
   elseif ch == "e" then self.cursor = self:_eol()
-  elseif ch == "b" then if self.cursor > 0 then self.cursor = self.cursor - 1 end
-  elseif ch == "f" then if self.cursor < ulen(self.line) then self.cursor = self.cursor + 1 end
+  elseif ch == "b" then self.cursor=grapheme.prev_cp(self.line,self.cursor)
+  elseif ch == "f" then self.cursor=grapheme.next_cp(self.line,self.cursor)
   elseif ch == "k" then self:_kill(self.cursor, self:_eol())
   elseif ch == "u" then self:_kill(self:_bol(), self.cursor)
   elseif ch == "w" then self:_kill(self:_word_left(), self.cursor)
@@ -334,6 +349,7 @@ end
 
 function Input:key(ev)
   if type(ev) ~= "table" then return nil end
+  self.cursor=grapheme.snap_cp(self.line,self.cursor)
   if ev.type == "paste" then self:_insert(ev.text or ""); return nil end
 
   if self._search then
@@ -353,7 +369,7 @@ function Input:key(ev)
     end
     if k == "backspace" then
       local q = self._search.q
-      self._search.q = q:sub(1, math.max(0, #q - 1)); return nil
+      self._search.q = q:sub(1,grapheme.prev(q,#q+1)-1); return nil
     end
     if k == "char" and ev.char then self._search.q = self._search.q .. ev.char end
     return nil
@@ -409,9 +425,9 @@ function Input:key(ev)
   elseif k == "backspace" then self:_backspace()
   elseif k == "delete" or k == "del" then self:_delete()
   elseif k == "left" then
-    self.cursor = ev.alt and self:_word_left() or math.max(0, self.cursor - 1)
+    self.cursor = ev.alt and self:_word_left() or grapheme.prev_cp(self.line,self.cursor)
   elseif k == "right" then
-    self.cursor = ev.alt and self:_word_right() or math.min(ulen(self.line), self.cursor + 1)
+    self.cursor = ev.alt and self:_word_right() or grapheme.next_cp(self.line,self.cursor)
   elseif k == "home" then self.cursor = self:_bol()
   elseif k == "end" then self.cursor = self:_eol()
   elseif k == "up" then
@@ -451,12 +467,12 @@ function Input:_cells()
     return nil
   end
   local cells = {}
-  if utf8 then
-    for bytepos, cp in utf8.codes(line) do
-      cells[#cells + 1] = { ch = utf8.char(cp), fg = fg_at(bytepos - 1) }
-    end
-  else
-    for i = 1, #line do cells[#cells + 1] = { ch = line:sub(i, i), fg = fg_at(i - 1) } end
+  local offsets=grapheme.boundaries(line);local cp=0
+  for i=1,#offsets-1 do
+    local bytepos=offsets[i];local text=line:sub(bytepos,offsets[i+1]-1)
+    local count=ulen(text)
+    cells[#cells+1]={ch=text,fg=fg_at(bytepos-1),cp0=cp,cp1=cp+count}
+    cp=cp+count
   end
   return cells
 end
@@ -476,18 +492,24 @@ end
 -- so the cursor stays visible. Newlines render as the glyph the tests never see.
 function Input:runs(width)
   local cells = self:_cells()
-  local total, pw = #cells, ulen(self.prompt)
+  local total, pw = #cells, vis_w(self.prompt)
   local avail = (width and width > pw) and (width - pw) or nil
-  local start = 0
-  if avail and total > avail then
-    if self.cursor > avail then start = self.cursor - avail end
-    if start > total - avail then start = total - avail end
-    if start < 0 then start = 0 end
+  local start,cursor_width=0,0
+  for _,cell in ipairs(cells) do
+    if cell.cp1<=self.cursor then cursor_width=cursor_width+vis_w(cell.ch) end
   end
-  local last = avail and math.min(total, start + avail) or total
+  while avail and cursor_width>avail and start<total do
+    start=start+1;cursor_width=cursor_width-vis_w(cells[start].ch)
+  end
+  local last,used=start,0
+  for i=start+1,total do
+    local cw=vis_w(cells[i].ch)
+    if avail and used+cw>avail then break end
+    used=used+cw;last=i
+  end
   local runs = { { text = self.prompt, fg = nil, bg = nil, attr = nil } }
   for _, r in ipairs(coalesce(cells, start + 1, last)) do runs[#runs + 1] = r end
-  return runs, pw + (self.cursor - start)
+  return runs, pw + cursor_width
 end
 
 -- Wrapped visual rows for the frame. First return is a list of Contract-B lines.
@@ -507,10 +529,14 @@ function Input:visual(width)
   -- Map cursor (codepoint index) onto a physical line + column.
   local cpi, p_i, p_col = 0, 1, 0
   for pi, row in ipairs(phys) do
-    local n = #row
-    if self.cursor <= cpi + n then p_i, p_col = pi, self.cursor - cpi; break end
+    local n=0;for _,cell in ipairs(row) do n=n+cell.cp1-cell.cp0 end
+    if self.cursor <= cpi + n then
+      p_i,p_col=pi,0
+      for i,cell in ipairs(row) do if cell.cp1<=self.cursor then p_col=i else break end end
+      break
+    end
     cpi = cpi + n + 1 -- the newline
-    p_i, p_col = pi, n
+    p_i, p_col = pi, #row
   end
   local vis, cursor_row, cursor_col = {}, 1, pw
   for pi, row in ipairs(phys) do
@@ -525,8 +551,13 @@ function Input:visual(width)
           if w + cw > inner and w > 0 then break end
           w = w + cw; j = j + 1
         end
-        chunks[#chunks + 1] = { from = i, to = j - 1 }
+        chunks[#chunks + 1] = { from = i, to = j - 1,width=w }
         i = j
+      end
+      -- A caret after a full row belongs on the next visual row. Leaving its
+      -- column at `width` makes the frame clamp onto the last glyph's cell.
+      if pi==p_i and p_col==#row and chunks[#chunks].width==inner then
+        chunks[#chunks+1]={from=#row+1,to=#row,width=0}
       end
     end
     for ci, ch in ipairs(chunks) do

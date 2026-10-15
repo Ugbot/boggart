@@ -523,6 +523,7 @@ add_executable(boggart
   src/lhash.c
   src/lview.c
   src/lterminal.c
+  src/lchannel.c src/bchannel.c
   src/lhttp.c
   src/lsys.c
   src/ldb.c
@@ -768,6 +769,7 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
     src/lhash.c
     src/lview.c
     src/lterminal.c
+    src/lchannel.c src/bchannel.c
     ${STUDIO_ASSETS_C}
     src/lhttp.c
     src/lsys.c
@@ -948,9 +950,16 @@ add_executable(unicode_test tests/c/unicode.c)
 target_link_libraries(unicode_test PRIVATE boggart_unicode)
 add_test(NAME unicode COMMAND unicode_test
   ${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY/unicode/16.0.0/auxiliary/GraphemeBreakTest.txt)
+if(UNIX)
+  add_executable(agent_channel_test tests/c/agent_channel.c src/bchannel.c)
+  target_include_directories(agent_channel_test PRIVATE src)
+  target_link_libraries(agent_channel_test PRIVATE uv_a boggart_warnings)
+  boggart_apply_sanitizer(agent_channel_test)
+  add_test(NAME agent_channel COMMAND agent_channel_test)
+endif()
 # Embed the sources actually compiled into this terminal backend. Benchmarks
 # reject a stale executable instead of attributing it to current disk contents.
-set(BMUX_TERMINAL_SOURCE_FILES src/bpty.c src/bpty.h src/lvt.c src/vt_table.h src/lstyle.c src/llink.c src/lpage.c src/lpage_resize.c src/lpage_layout.c src/lpage_layout.h src/lidmap.c src/lidmap.h src/lbitmap.c src/lbitmap.h
+set(BMUX_TERMINAL_SOURCE_FILES src/bchannel.c src/bchannel.h src/lchannel.c src/lchannel.h src/bpty.c src/bpty.h src/lvt.c src/vt_table.h src/lstyle.c src/llink.c src/lpage.c src/lpage_resize.c src/lpage_layout.c src/lpage_layout.h src/lidmap.c src/lidmap.h src/lbitmap.c src/lbitmap.h
   src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c src/lterminal.c src/lterminal.h
   src/lvt.h src/lstyle.h src/llink.h src/lpage.h src/lpage_internal.h src/bosc.h src/bmouse.h src/bkey.h src/bpaste.h src/bterm.h src/bterm_internal.h
   src/bunicode.c src/bunicode.h src/bunicode_data.h src/btunicode.c src/btunicode.h src/btunicode_data.h src/lgrapheme.c src/lgrapheme.h)
@@ -1182,7 +1191,7 @@ add_custom_target(ghostty-oracle
   COMMENT "Building the pinned test oracle and verifying resize fixtures"
   USES_TERMINAL)
 
-foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable typesafe judge ladder toolroute ladder_sites harden policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast mining_recognition mining_compile mining_jobs learning_evaluate learning_promote learning_route learning_monitor workflow_slack workflow_novel workflow_triggers searchroute tracker story story_model story_geo story_geosql story_style auth_file looplag http_body json_c store_save hash_c fileview termbench terminal terminal_input_route terminal_process terminal_process_shutdown terminal_graphemes terminal_resize terminal_resize_cached terminal_resize_api terminal_resize_large ghostty_page_growth ghostty_bitmap)
+foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents agentbridge agentcontrol grapheme_edit vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable typesafe judge ladder toolroute ladder_sites harden policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast mining_recognition mining_compile mining_jobs learning_evaluate learning_promote learning_route learning_monitor workflow_slack workflow_novel workflow_triggers searchroute tracker story story_model story_geo story_geosql story_style auth_file looplag http_body json_c store_save hash_c fileview termbench terminal terminal_input_route terminal_process terminal_process_shutdown terminal_graphemes terminal_resize terminal_resize_cached terminal_resize_api terminal_resize_large ghostty_page_growth ghostty_bitmap)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home}
@@ -1205,7 +1214,7 @@ if(TARGET boggart-studio)
       $<TARGET_FILE:boggart-studio> .
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   set_tests_properties(terminal_process_studio PROPERTIES TIMEOUT 30)
-  set(_pane_suites studio_terminal_native studio_terminal_shutdown studio_terminal_render studio_terminal_clusters studio_grid_text studio_agent_clusters studio_color_emoji studio_bmux studio_fleet_agents)
+  set(_pane_suites studio_terminal_native studio_terminal_shutdown studio_terminal_render studio_terminal_clusters studio_grid_text studio_agent_clusters studio_color_emoji studio_grapheme_edit studio_bmux studio_fleet_agents studio_agent_control)
   if(UNIX AND EXISTS /usr/bin/vim)
     list(APPEND _pane_suites studio_terminal_vim)
   endif()
@@ -1215,7 +1224,7 @@ if(TARGET boggart-studio)
     if(_pane_suite STREQUAL "studio_color_emoji")
       list(APPEND _pane_shell_env BOGGART_STUDIO_FONTS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fonts/NotoColorEmoji-subset.ttf)
     endif()
-    if(_pane_suite STREQUAL "studio_bmux" OR _pane_suite STREQUAL "studio_fleet_agents")
+    if(_pane_suite STREQUAL "studio_bmux" OR _pane_suite STREQUAL "studio_fleet_agents" OR _pane_suite STREQUAL "studio_agent_control")
       # Test interactive input without inheriting a user's shell startup scripts.
       set(_pane_shell_env SHELL=/bin/sh)
     endif()

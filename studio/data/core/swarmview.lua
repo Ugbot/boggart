@@ -77,6 +77,9 @@ local STATE = {
   exited   = { "exited",              "dim"     },
   failed   = { "failed",              "error"   },
   unreachable = { "unreachable",      "warn"    },
+  running = { "running",             "good"    },
+  waiting_for_approval = { "waiting on approval", "warn" },
+  waiting_for_answer = { "waiting for answer", "warn" },
 }
 
 function SwarmView:new()
@@ -482,13 +485,14 @@ function SwarmView:draw_roster(font, charw, x, y, lh, voff, cols, rows)
     -- A row waiting on approval says so where its activity would be, in warn,
     -- so the request is legible from the index without opening the detail pane.
     -- The state column already reads "waiting on approval"; this is the what.
-    local pend = self:pending_for(rec.id)
+    local pend = rec.fleet_origin=='external' and rec.request or self:pending_for(rec.id)
     if pend then
       cell(font, charw, x, y + voff, C.act,
         "approve? " .. pend.name .. " " .. (pend.summary or ""):gsub("%s+", " "),
         style.warn, cols - C.act)
     else
-      cell(font, charw, x, y + voff, C.act, rec.activity or dash.activity(rec), style.text, cols - C.act)
+      local activity=rec.activity==rec.state and word or rec.activity or dash.activity(rec)
+      cell(font, charw, x, y + voff, C.act, activity, style.text, cols - C.act)
     end
     local id = rec.id
     self.hits[#self.hits + 1] = {
@@ -586,14 +590,29 @@ function SwarmView:draw_detail(font, charw, x, y, lh, voff, cols, rows)
 
   if rec.fleet_origin == "external" then
     local registry = require("core.fleetagents").registry
-    cell(font, charw, x, y + voff, 0, rec.name .. "  " .. rec.provider .. "  " .. rec.state, style.accent, cols)
+    local phase=select(1,state_word(rec.state))
+    cell(font, charw, x, y + voff, 0, rec.name .. "  " .. rec.provider .. "  " .. phase, style.accent, cols)
     y = y + lh
     local items = {}
-    for _, entry in ipairs { { "focus", "Focus pane" }, { "stop", "Stop", style.error } } do
+    for _, entry in ipairs { { "focus", "Focus pane" }, { "prompt", "Send prompt" },
+      { "interrupt", "Interrupt", style.error }, { "approve", "Approve" },
+      { "approve", "Reject", style.error }, { "stop", "Stop", style.error } } do
       if rec.capabilities[entry[1]] then
         local action, id, generation = entry[1], rec.id, rec.generation
+        local input_revision=rec.input_revision
+        local request_id=rec.request and rec.request.id
+        local decision=entry[2]=='Reject' and 'reject' or 'approve'
         items[#items + 1] = { label=entry[2], tone=entry[3], action=function()
-          local ok,err=registry:control(id,generation,action)
+          if action=='prompt' then
+            core.command_view:enter('Prompt for '..rec.name,function(text)
+              local ok,err=registry:control(id,generation,action,{text=text,input_revision=input_revision})
+              if not ok then self:note(err or 'prompt failed',true)end
+              core.redraw=true
+            end)
+            return
+          end
+          local payload=action=='approve' and {request_id=request_id,decision=decision} or nil
+          local ok,err=registry:control(id,generation,action,payload)
           if not ok then self:note(err or "agent action failed",true) end
           core.redraw=true
         end }
@@ -602,8 +621,12 @@ function SwarmView:draw_detail(font, charw, x, y, lh, voff, cols, rows)
     for _,hit in ipairs(widgets.row(font,items,x,y,self.mouse)) do self.hits[#self.hits+1]=hit end
     y = y + widgets.height(font)
     for _,text in ipairs { "pane: " .. (rec.short_id or rec.id), "cwd: " .. (rec.cwd or "?"),
+      "session: " .. tostring(rec.session_id or "?") .. "  model: " .. tostring(rec.model or "?"),
       "process: " .. tostring(rec.pid or "?") .. (rec.exit_status and rec.exit_status>=0 and ("  exit: " .. rec.exit_status) or ""),
-      rec.activity or "agent activity unknown", rec.error or "" } do
+      rec.activity==rec.state and phase or rec.activity or "agent activity unknown",
+      rec.request and ('Approval: '..rec.request.summary) or '',
+      rec.control_result and (rec.control_result.accepted and 'Action accepted' or 'Action rejected: '..(rec.control_result.error or 'unknown reason')) or '',
+      rec.error or "" } do
       if y + lh > self.position.y + self.size.y - style.padding.y then break end
       cell(font,charw,x,y+voff,0,text,style.text,cols);y=y+lh
     end
@@ -703,6 +726,7 @@ local TALLY = {
   { "done", "done" }, { "err", "crashed" },
   { "alive", "alive (activity unknown)" }, { "starting", "starting" },
   { "exited", "exited" }, { "failed", "failed" }, { "unreachable", "unreachable" },
+  { "idle", "idle" }, { "approve", "waiting on approval" }, { "waiting_for_answer", "waiting for answer" },
 }
 local ALWAYS = { run = true, io = true, mail = true, done = true, err = true }
 
@@ -715,6 +739,7 @@ function SwarmView:draw_totals(font, charw, x, y, cols)
   local n = {}
   for _, rec in ipairs(self:records()) do
     local s = self:state_of(rec)
+    if s=='running' then s='run' elseif s=='waiting_for_approval' then s='approve' end
     n[s] = (n[s] or 0) + 1
   end
   local parts = { { string.format("%d agent%s", t.n, t.n == 1 and "" or "s"), style.text } }

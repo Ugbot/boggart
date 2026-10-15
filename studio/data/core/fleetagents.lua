@@ -39,28 +39,37 @@ function M.bind(rec,view)
     return
   end
   local revision=-1
+  local channel=view.terminal:channel()
+  local control=channel and require('agentcontrol').new(channel,rec.id,rec.generation)
   registry:bind(rec.id,rec.generation,{
     poll=function()
       if not view.terminal then return {state='stopped',activity='pane closed'}end
+      local semantic=control and control:poll()
       local current=view.terminal:process_revision()
-      if current==revision then return end
+      if current==revision and not semantic then return end
       revision=current
       local state=view.terminal:process_state()
       if not state then return {state='unreachable',activity='no process state'}end
-      local status='alive'
+      local status=control and control.status and control.status.state or 'alive'
       if state.error then status='failed'
       elseif state.exited and state.eof then status=state.exit_status==0 and state.term_signal==0 and 'exited' or 'failed' end
       local activity=status=='alive' and 'process alive; agent activity unknown' or status
       local changed=rec.state~=status or rec.bytes~=state.bytes_read
-      if changed then core.redraw=true end
-      return {state=status,pid=state.pid,bytes=state.bytes_read,exit_status=state.exit_status,
-        term_signal=state.term_signal,activity=activity,error=state.error}
+      if changed or semantic then core.redraw=true end
+      local fields=semantic or {}
+      fields.state=status;fields.pid=state.pid;fields.bytes=state.bytes_read;fields.exit_status=state.exit_status
+      fields.term_signal=state.term_signal;fields.activity=fields.activity or activity
+      if state.error then fields.error=state.error end
+      return fields
     end,
     focus=function()return require('shell.workspaces.bmux').show(view)end,
     stop=function()
       view:try_close(function()core.redraw=true end)
       return true
     end,
+    prompt=control and function(_,payload)return control:command('prompt',payload)end,
+    interrupt=control and function()return control:command('interrupt')end,
+    approve=control and function(_,payload)return control:command('approve',payload)end,
   })
   registry:poll()
 end

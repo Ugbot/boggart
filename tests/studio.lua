@@ -437,6 +437,39 @@ if loaded then
   end
 
   -- ---- the composer ------------------------------------------------------
+  for _,cluster in ipairs({'é','👩‍💻','👍🏽','🇬🇧','❤️','क्‍ष','क्ष'}) do
+    v:set_input('A'..cluster..'B')
+    v:on_key_pressed('left');v:on_key_pressed('left')
+    ok(v.cx==2,'composer left skips complete cluster '..cluster)
+    v:on_key_pressed('right');ok(v.cx==2+#cluster,'composer right skips complete cluster '..cluster)
+    v:on_key_pressed('backspace');ok(v:input_text()=='AB' and v.cx==2,'composer backspace removes cluster '..cluster)
+    v:set_input('A'..cluster..'B');v:on_key_pressed('home');v:on_key_pressed('right')
+    v:on_key_pressed('delete');ok(v:input_text()=='AB' and v.cx==2,'composer delete removes cluster '..cluster)
+    v:set_input('A'..cluster..'B');v:on_key_pressed('home');v:on_key_pressed('right')
+    v:on_key_pressed('shift+right')
+    ok(v:composer_selection()==cluster,'composer selection preserves complete cluster '..cluster)
+    v:on_key_pressed('delete');ok(v:input_text()=='AB','composer selected delete '..cluster)
+  end
+  do
+    local modes=require('vimmode');local enabled=modes.enabled
+    modes.enabled=function()return true end
+    for _,cluster in ipairs({'é','👩‍💻','👍🏽','🇬🇧','❤️','क्‍ष','क्ष'}) do
+      v:set_input('A'..cluster..cluster..'B');v.edit_mode='insert';v:on_key_pressed('escape')
+      v:on_text_input('0');v:on_text_input('l');v:on_text_input('l')
+      ok(v.cx==2+#cluster,'modal motions use grapheme columns '..cluster)
+      v:on_text_input('h');v:on_text_input('2');v:on_text_input('x')
+      ok(v:input_text()=='AB','modal count deletes two complete clusters '..cluster)
+      v:on_text_input('P');ok(v:input_text()=='A'..cluster..cluster..'B','modal paste preserves clusters '..cluster)
+      v:on_text_input('u');ok(v:input_text()=='AB','modal Unicode undo '..cluster)
+      v:set_input('A'..cluster..'B');v.edit_mode='insert';v:on_key_pressed('escape')
+      v:on_text_input('0');v:on_text_input('l');v:on_text_input('a');v:on_text_input('X')
+      ok(v:input_text()=='A'..cluster..'XB','modal append follows whole cluster '..cluster)
+      v:on_key_pressed('escape');v:on_text_input('0');v:on_text_input('/');v:on_text_input(cluster)
+      v:on_key_pressed('return');ok(v.cx==2,'modal search finds complete cluster '..cluster)
+    end
+    modes.enabled=enabled;v.edit_mode='insert'
+  end
+
   v:set_input("hello world again")
   v:on_key_pressed("ctrl+backspace")
   ok(v:input_text() == "hello world",
@@ -950,7 +983,7 @@ if okdoc and package.loaded.fileview then
   local config = require("core.config")
   local saved = config.large_file_mb
   config.large_file_mb = 1
-  local TMPL = sys.tmpdir() .. "/large-doc-" .. tostring(os.time()) .. ".log"
+  local TMPL = os.tmpname() -- Normal/ASAN suites may run concurrently.
   local fl = io.open(TMPL, "wb")
   for i = 1, 60000 do fl:write(string.format("line %06d of a large file, padded out a bit\r\n", i)) end
   fl:close()
@@ -972,7 +1005,7 @@ if okdoc and package.loaded.fileview then
   d:save(TMPL)
   local fl2 = io.open(TMPL, "rb"); local head = fl2:read(12); fl2:close()
   ok(head == "line 000001 ", "save is refused: the file is untouched")
-  local SMALL = sys.tmpdir() .. "/small-doc-" .. tostring(os.time()) .. ".txt"
+  local SMALL = os.tmpname()
   local fs = io.open(SMALL, "wb"); fs:write("a\nb\n"); fs:close()
   local small = Doc(SMALL)
   ok(small.large == nil and type(rawget(small, "lines")) == "table", "small files are unchanged")
