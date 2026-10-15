@@ -14,7 +14,7 @@ static void diagnostic(RenFont *font,int advance,int x,int y,RenColor color) {
   ren_draw_rect((RenRect){x+left+w-1,y+top,1,h},color);
 }
 static bool layout(RenFont *font,const char *text,size_t length,int advance,
-                   bool paint,int x,int y,RenColor color,RenRect *bounds) {
+                   bool paint,int x,int y,RenColor color,uint8_t intensity,RenRect *bounds) {
   if(!font || !text || !length || advance<=0 || advance>8192)return false;
   RenFontMetrics metrics=ren_font_metrics(font);
   float left=0,top=0,right=(float)advance,bottom=(float)metrics.height;
@@ -49,7 +49,7 @@ static bool layout(RenFont *font,const char *text,size_t length,int advance,
       if(x0<left)left=x0;if(y0<top)top=y0;
       if(x0+(float)w*scale>right)right=x0+(float)w*scale;
       if(y0+(float)h>bottom)bottom=y0+(float)h;
-      if(paint)ren_draw_glyph(glyph,(float)x+px,(float)y+py,scale,color);
+      if(paint)ren_draw_glyph_intensity(glyph,(float)x+px,(float)y+py,scale,color,intensity);
     }
   }
   if(metrics.style&REN_STYLE_UNDERLINE) {
@@ -72,9 +72,9 @@ bool ren_get_cluster_bounds(RenFont *font,const char *text,size_t length,int adv
     char legacy[FONT_SHAPE_BYTES+1];memcpy(legacy,text,length);legacy[length]=0;
     *bounds=ren_get_text_bounds(font,legacy);return true;
   }
-  return layout(font,text,length,advance,false,0,0,(RenColor){0},bounds);
+  return layout(font,text,length,advance,false,0,0,(RenColor){0},255,bounds);
 }
-void ren_draw_cluster(RenFont *font,const char *text,size_t length,int x,int y,int advance,RenColor color) {
+void ren_draw_cluster_intensity(RenFont *font,const char *text,size_t length,int x,int y,int advance,RenColor color,uint8_t intensity) {
   if(!cluster_shaping && text && length && length<=FONT_SHAPE_BYTES) {
     char legacy[FONT_SHAPE_BYTES+1];memcpy(legacy,text,length);legacy[length]=0;
     ren_draw_text(font,legacy,x,y,color);return;
@@ -83,5 +83,8 @@ void ren_draw_cluster(RenFont *font,const char *text,size_t length,int x,int y,i
     && !(ren_font_metrics(font).style&(REN_STYLE_UNDERLINE|REN_STYLE_STRIKETHROUGH))) {
     char scalar[2]={text[0],0};ren_draw_text(font,scalar,x,y,color);return;
   }
-  if(!layout(font,text,length,advance,true,x,y,color,NULL))diagnostic(font,advance,x,y,color);
+  if(!layout(font,text,length,advance,true,x,y,color,intensity,NULL))diagnostic(font,advance,x,y,color);
+}
+void ren_draw_cluster(RenFont *font,const char *text,size_t length,int x,int y,int advance,RenColor color) {
+  ren_draw_cluster_intensity(font,text,length,x,y,advance,color,255);
 }
