@@ -492,7 +492,7 @@ function SwarmView:draw_roster(font, charw, x, y, lh, voff, cols, rows)
         style.warn, cols - C.act)
     else
       local activity=rec.activity==rec.state and word or rec.activity or dash.activity(rec)
-      cell(font, charw, x, y + voff, C.act, activity, style.text, cols - C.act)
+      cell(font, charw, x, y + voff, C.act, (rec.attention and '! ' or '')..activity, rec.attention and style.warn or style.text, cols - C.act)
     end
     local id = rec.id
     self.hits[#self.hits + 1] = {
@@ -624,6 +624,8 @@ function SwarmView:draw_detail(font, charw, x, y, lh, voff, cols, rows)
       "session: " .. tostring(rec.session_id or "?") .. "  model: " .. tostring(rec.model or "?"),
       rec.worker and ("parent session: "..tostring(rec.parent_session_id or '?')) or ("process: " .. tostring(rec.pid or "?") .. (rec.exit_status and rec.exit_status>=0 and ("  exit: " .. rec.exit_status) or "")),
       rec.activity==rec.state and phase or rec.activity or "agent activity unknown",
+      rec.reported_event and ('Last provider event: '..rec.reported_event) or '',
+      rec.attention and 'Attention: focus the pane to respond' or '',
       rec.request and ('Approval: '..rec.request.summary) or '',
       rec.control_result and (rec.control_result.accepted and 'Action accepted' or 'Action rejected: '..(rec.control_result.error or 'unknown reason')) or '',
       rec.error or "" } do

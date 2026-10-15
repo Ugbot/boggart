@@ -36,7 +36,7 @@ function TerminalView:new(opts)
   local cmd=opts.cmd or os.getenv('SHELL') or '/bin/sh'; self.title=opts.title or cmd:match('([^/]+)$') or 'terminal'
   self.owns_terminal=opts.terminal==nil; self.terminal=opts.terminal
   if not self.terminal then
-    local env=opts.bmux_context and require('core.manualagents').attach(self,opts.cwd) or opts.env
+    local env=opts.bmux_context and require('core.manualagents').attach(self,opts.cwd,opts.fleet_agent) or opts.env
     local t,err=terminal.open{cmd=cmd,args=opts.args,cwd=opts.cwd,env=env,control=opts.control,cols=self.cols,rows=self.rows,history=opts.history or 2000}
     self.terminal=t; if not t then self.dead=true; self.spawn_error=err end
     if not t and self.manual_pane then require('core.manualagents').revoke(self)end

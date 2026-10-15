@@ -1206,7 +1206,7 @@ foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor 
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
 
-foreach(suite control_unix manualfleet terminal_environment agenthooks)
+foreach(suite control_unix manualfleet terminal_environment agenthooks providerevents provider_notify)
   add_test(NAME ${suite}
     COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite}
       $<TARGET_FILE:boggart> --eval tests/${suite}.lua
@@ -1223,7 +1223,7 @@ if(TARGET boggart-studio)
       $<TARGET_FILE:boggart-studio> .
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   set_tests_properties(terminal_process_studio PROPERTIES TIMEOUT 30)
-  set(_pane_suites studio_terminal_native studio_terminal_shutdown studio_terminal_render studio_terminal_clusters studio_grid_text studio_agent_clusters studio_color_emoji studio_grapheme_edit studio_bmux studio_fleet_agents studio_agent_control studio_fleet_workers studio_manual_agents studio_agent_hooks)
+  set(_pane_suites studio_terminal_native studio_terminal_shutdown studio_terminal_render studio_terminal_clusters studio_grid_text studio_agent_clusters studio_color_emoji studio_grapheme_edit studio_bmux studio_fleet_agents studio_agent_control studio_fleet_workers studio_manual_agents studio_agent_hooks studio_provider_events)
   if(UNIX AND EXISTS /usr/bin/vim)
     list(APPEND _pane_suites studio_terminal_vim)
   endif()
@@ -1233,7 +1233,7 @@ if(TARGET boggart-studio)
     if(_pane_suite STREQUAL "studio_color_emoji")
       list(APPEND _pane_shell_env BOGGART_STUDIO_FONTS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fonts/NotoColorEmoji-subset.ttf)
     endif()
-    if(_pane_suite STREQUAL "studio_bmux" OR _pane_suite STREQUAL "studio_fleet_agents" OR _pane_suite STREQUAL "studio_agent_control" OR _pane_suite STREQUAL "studio_fleet_workers" OR _pane_suite STREQUAL "studio_manual_agents" OR _pane_suite STREQUAL "studio_agent_hooks")
+    if(_pane_suite STREQUAL "studio_bmux" OR _pane_suite STREQUAL "studio_fleet_agents" OR _pane_suite STREQUAL "studio_agent_control" OR _pane_suite STREQUAL "studio_fleet_workers" OR _pane_suite STREQUAL "studio_manual_agents" OR _pane_suite STREQUAL "studio_agent_hooks" OR _pane_suite STREQUAL "studio_provider_events")
       # Test interactive input without inheriting a user's shell startup scripts.
       set(_pane_shell_env SHELL=/bin/sh)
     endif()
@@ -1245,7 +1245,7 @@ if(TARGET boggart-studio)
         $<TARGET_FILE:boggart-studio> .
       WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     set_tests_properties(${_pane_suite} PROPERTIES TIMEOUT 15)
-    if(_pane_suite STREQUAL "studio_agent_hooks")
+    if(_pane_suite STREQUAL "studio_agent_hooks" OR _pane_suite STREQUAL "studio_provider_events")
       set_tests_properties(${_pane_suite} PROPERTIES TIMEOUT 90)
     endif()
   endforeach()

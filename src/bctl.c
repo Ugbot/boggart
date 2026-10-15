@@ -15,7 +15,7 @@
 #define RESPONSE_LIMIT 65536u
 typedef struct {char *data;size_t length;} response;
 typedef struct {
-  const char *socket,*pane,*token;char agent[160],lease[128];
+  const char *socket,*pane,*token;char agent[160],lease[128],event_token[128];
   uv_loop_t loop;uv_process_t process;uv_timer_t timer;uv_signal_t signals[3];
   int timers,signal_count,exit_status,term_signal,heartbeat_failed;
 } wrapper;
@@ -57,7 +57,8 @@ static int request(const char *socket,const char *path,cJSON *body,response *out
 static cJSON *context(wrapper *w) {
   cJSON *body=cJSON_CreateObject();if(!body)return NULL;
   cJSON_AddStringToObject(body,"pane",w->pane);cJSON_AddStringToObject(body,"pane_token",w->token);
-  if(w->agent[0]){cJSON_AddStringToObject(body,"agent_id",w->agent);cJSON_AddStringToObject(body,"lease",w->lease);}
+  if(w->agent[0])cJSON_AddStringToObject(body,"agent_id",w->agent);
+  if(w->lease[0])cJSON_AddStringToObject(body,"lease",w->lease);
   return body;
 }
 static int report(wrapper *w,const char *path,int finish) {
@@ -130,11 +131,25 @@ static const char *command_file(const char *command,char resolved[4096]) {
 static int unregistered(char **argv) {
   fputs("bmux: Fleet unavailable; starting agent without registration\n",stderr);
 #ifndef _WIN32
+  uv_os_unsetenv("BOGGART_AGENT_ID");uv_os_unsetenv("BOGGART_AGENT_EVENT_TOKEN");uv_os_unsetenv("BOGGART_AGENT_PROVIDER");
   char resolved[4096];const char *file=command_file(argv[0],resolved);
   if(file)execvp(file,argv);
   fprintf(stderr,"bmux: launch failed: %s\n",file ? strerror(errno) : "command not found");return 127;
 #else
   (void)argv;return 125;
+#endif
+}
+static char **event_environment(char *identity,char *token,char *provider) {
+#ifndef _WIN32
+  extern char **environ;size_t count=0;while(environ[count])count++;
+  if(count>SIZE_MAX/sizeof(char *)-4)return NULL;
+  char **env=malloc((count+4)*sizeof *env);if(!env)return NULL;
+  size_t n=0;
+  for(size_t i=0;i<count;i++)if(strncmp(environ[i],"BOGGART_AGENT_ID=",17)
+    && strncmp(environ[i],"BOGGART_AGENT_EVENT_TOKEN=",26) && strncmp(environ[i],"BOGGART_AGENT_PROVIDER=",23))env[n++]=environ[i];
+  env[n++]=identity;env[n++]=token;env[n++]=provider;env[n]=NULL;return env;
+#else
+  (void)identity;(void)token;(void)provider;return NULL;
 #endif
 }
 static int run(wrapper *w,const char *provider,const char *name,char **argv,int best_effort) {
@@ -144,13 +159,20 @@ static int run(wrapper *w,const char *provider,const char *name,char **argv,int 
   response out={0};int status=request(w->socket,"/bmux/agents/register",body,&out);cJSON_Delete(body);
   cJSON *result=out.data ? cJSON_ParseWithLength(out.data,out.length) : NULL;
   int valid=status==201 && result && copy_field(result,"agent_id",w->agent,sizeof w->agent) && copy_field(result,"lease",w->lease,sizeof w->lease);
+  if(valid)copy_field(result,"event_token",w->event_token,sizeof w->event_token);
   cJSON_Delete(result);free(out.data);
   if(!valid){if(best_effort)return unregistered(argv);fputs("bmux: agent registration unavailable\n",stderr);return 125;}
   if(uv_loop_init(&w->loop)){w->exit_status=127;report(w,"/bmux/agents/finish",1);return 127;}
   uv_stdio_container_t stdio[3]={0};for(int i=0;i<3;i++){stdio[i].flags=UV_INHERIT_FD;stdio[i].data.fd=i;}
   char resolved[4096];uv_process_options_t opts={0};opts.file=command_file(argv[0],resolved);opts.args=argv;opts.stdio=stdio;opts.stdio_count=3;opts.exit_cb=exited;
+  char identity[192],event_token[160],provider_env[160];
+  snprintf(identity,sizeof identity,"BOGGART_AGENT_ID=%s",w->agent);
+  snprintf(event_token,sizeof event_token,"BOGGART_AGENT_EVENT_TOKEN=%s",w->event_token);
+  snprintf(provider_env,sizeof provider_env,"BOGGART_AGENT_PROVIDER=%s",provider);
+  char **env=event_environment(identity,event_token,provider_env);opts.env=env;
   w->process.data=w;
-  int error=opts.file ? uv_spawn(&w->loop,&w->process,&opts) : UV_ENOENT;
+  int error=!env ? UV_ENOMEM : opts.file ? uv_spawn(&w->loop,&w->process,&opts) : UV_ENOENT;
+  free(env);
   if(error) {
     fprintf(stderr,"bmux: launch failed: %s\n",uv_strerror(error));w->exit_status=127;
     if(w->process.type==UV_PROCESS)uv_close((uv_handle_t *)&w->process,NULL);
@@ -169,9 +191,51 @@ static int run(wrapper *w,const char *provider,const char *name,char **argv,int 
   (void)report(w,"/bmux/agents/finish",1);
   return w->term_signal ? 128+w->term_signal : w->exit_status;
 }
+/* Observational hooks always exit zero and never print decision JSON. */
+static int notify(wrapper *w,int argc,char **argv,int i) {
+  uint64_t stamp=uv_hrtime()/1000;
+  if(argc-i!=2 || strcmp(argv[i],"--provider") || !*argv[i+1] || strlen(argv[i+1])>128) {
+    fputs("bmux: notify requires --provider NAME and JSON on stdin\n",stderr);return 0;
+  }
+  const char *id=getenv("BOGGART_AGENT_ID"),*token=getenv("BOGGART_AGENT_EVENT_TOKEN");
+  if(!id || !*id || strlen(id)>=sizeof w->agent || !token || !*token || strlen(token)>=sizeof w->event_token
+    || !w->pane || !*w->pane || strlen(w->pane)>128 || !w->token || !*w->token || strlen(w->token)>128 || !private_socket(w->socket)) {
+    fputs("bmux: event reporting context unavailable\n",stderr);return 0;
+  }
+#ifndef _WIN32
+  if(isatty(0)){fputs("bmux: notify expects piped hook JSON\n",stderr);return 0;}
+#endif
+  const size_t limit=256u*1024u;char *input=malloc(limit+1);if(!input)return 0;
+  size_t length=fread(input,1,limit+1,stdin);
+  if(ferror(stdin) || !length || length>limit || memchr(input,0,length)){free(input);fputs("bmux: invalid or oversized hook input\n",stderr);return 0;}
+  input[length]=0;cJSON *raw=cJSON_ParseWithLengthOpts(input,length+1,NULL,1);free(input);
+  cJSON *event=cJSON_CreateObject();int valid=cJSON_IsObject(raw) && event;
+  const struct {const char *name;size_t limit;} fields[]={{"hook_event_name",64},{"session_id",128},{"agent_id",128},
+    {"tool_name",128},{"tool_use_id",128},{"notification_type",64},{"source",32},{"model",128}};
+  for(size_t n=0;valid && n<sizeof fields/sizeof *fields;n++) {
+    cJSON *value=cJSON_GetObjectItemCaseSensitive(raw,fields[n].name);
+    if(value && !cJSON_IsNull(value) && !cJSON_IsString(value)){valid=0;break;}
+    if(cJSON_IsString(value)) {
+      if(strlen(value->valuestring)>fields[n].limit || !cJSON_AddStringToObject(event,fields[n].name,value->valuestring))valid=0;
+    }
+  }
+  cJSON_Delete(raw);
+  memcpy(w->agent,id,strlen(id)+1);
+  cJSON *body=valid ? context(w) : NULL;
+  if(body) {
+    cJSON_AddStringToObject(body,"event_token",token);cJSON_AddStringToObject(body,"provider",argv[i+1]);
+    cJSON_AddNumberToObject(body,"stamp",(double)stamp);cJSON_AddItemToObject(body,"event",event);event=NULL;
+    if(curl_global_init(CURL_GLOBAL_DEFAULT)==CURLE_OK) {
+      response out={0};int status=request(w->socket,"/bmux/agents/notify",body,&out);free(out.data);curl_global_cleanup();
+      if(status!=200)fputs("bmux: provider event was not accepted\n",stderr);
+    }
+  } else fputs("bmux: invalid hook JSON\n",stderr);
+  cJSON_Delete(body);cJSON_Delete(event);return 0;
+}
 static int usage(void) {
   fputs("usage: boggart ctl [--socket PATH] health|agents\n"
         "       boggart ctl [--socket PATH] agents [--offset N] [--limit N]\n"
+        "       boggart ctl [--socket PATH] notify --provider NAME < hook.json\n"
         "       boggart ctl [--socket PATH] run [--best-effort] [--provider NAME] [--name LABEL] -- COMMAND [ARG...]\n",stderr);return 2;
 }
 static int run_command(wrapper *w,int argc,char **argv,int i) {
@@ -198,6 +262,7 @@ int boggart_ctl_main(int argc,char **argv) {
   if(i>=argc)return usage();const char *verb=argv[i++];
   if(!strcmp(verb,"--help") || !strcmp(verb,"help")){usage();return 0;}
   if(!strcmp(verb,"run"))return run_command(&w,argc,argv,i);
+  if(!strcmp(verb,"notify"))return notify(&w,argc,argv,i);
   if(!w.socket || !private_socket(w.socket)){fputs("bmux: private control socket unavailable\n",stderr);return 1;}
   if(curl_global_init(CURL_GLOBAL_DEFAULT)!=CURLE_OK)return 1;
   int code=1;

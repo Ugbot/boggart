@@ -7,7 +7,7 @@ function M.start()
   local template=bog.userdir..'/bmux-XXXXXX'
   if #template>80 then template='/tmp/boggart-bmux-XXXXXX'end
   local directory,why_dir=uv.fs_mkdtemp(template);assert(directory,why_dir)
-  M.service=require('manualfleet').new{registry=registry,clock=system.get_time}
+  M.service=require('manualfleet').new{registry=registry,clock=system.get_time,changed=function()core.redraw=true end}
   local server,why=serve.listen{socket=directory..'/control.sock',body_limit=32768,
     handler=function(req)return M.service:handle(req)end}
   if not server then uv.fs_rmdir(directory);error(why)end
@@ -23,7 +23,7 @@ function M.start()
     while M.server==server do M.service:expire();coroutine.yield(.25)end
   end)
 end
-function M.attach(view,cwd)
+function M.attach(view,cwd,rec)
   M.start();local revision=-1;local alive=true
   local pane=M.service:pane{cwd=cwd,focus=function()return require('shell.workspaces.bmux').show(view)end,
     alive=function()
@@ -34,6 +34,11 @@ function M.attach(view,cwd)
     end}
   view.manual_pane=pane.id
   local env={'BOGGART_SOCKET='..M.socket,'BOGGART_PANE_ID='..pane.id,'BOGGART_PANE_TOKEN='..pane.token}
+  if rec and rec.provider=='claude' then
+    local entry=M.service:observe(rec,pane);view.provider_events=entry.events
+    env[#env+1]='BOGGART_AGENT_ID='..rec.id;env[#env+1]='BOGGART_AGENT_EVENT_TOKEN='..entry.event_token
+    env[#env+1]='BOGGART_AGENT_PROVIDER='..rec.provider;rec.pane_id=pane.id
+  end
   if M.hooks then env[#env+1]='PATH='..M.hooks.path;env[#env+1]='BOGGART_AGENT_BIN='..M.hooks.bin end
   return env
 end

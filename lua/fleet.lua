@@ -65,14 +65,16 @@ function Registry:update(id, generation, fields)
   local rec=self.agents[id]
   if not rec or rec.generation~=generation then return nil,"stale agent runtime" end
   if fields.state then assert(states[fields.state], "invalid agent state") end
-  for _,key in ipairs{"state","pid","exit_status","term_signal","bytes","activity","error","session_id","model","input_revision","draft_bytes","request","control_result","parent_session_id"} do
+  for _,key in ipairs{"state","pid","exit_status","term_signal","bytes","activity","error","session_id","model","input_revision","draft_bytes","request","control_result","parent_session_id","attention","reported_event","reported_at"} do
     if fields[key]~=nil then rec[key]=fields[key] end
   end
+  if fields.attention==true and fields.reported_at and fields.reported_at==rec.attention_seen then rec.attention=false end
   if fields.capabilities then
     local owner=self.owners[id] or {}
     for _,action in ipairs{'prompt','interrupt','approve'}do rec.capabilities[action]=fields.capabilities[action]==true and type(owner[action])=='function' end
   end
   if ended[rec.state] then
+    rec.attention=false
     rec.t_end=rec.t_end or os.time()
     for _,action in ipairs{'stop','prompt','interrupt','approve'}do rec.capabilities[action]=false end
     rec.request=false
@@ -83,7 +85,7 @@ function Registry:retire(id, generation, state, error)
   assert(ended[state or "stopped"] or state=='unreachable', "retirement requires a terminal state")
   local rec,err=self:update(id,generation,{state=state or "stopped",error=error})
   if not rec then return nil,err end
-  self.owners[id]=nil;rec.capabilities={};rec.retired=true;rec.t_end=rec.t_end or os.time()
+  self.owners[id]=nil;rec.capabilities={};rec.retired=true;rec.attention=false;rec.t_end=rec.t_end or os.time()
   return rec
 end
 function Registry:control(id, generation, action, payload)
@@ -92,7 +94,9 @@ function Registry:control(id, generation, action, payload)
   if not owner or not rec.capabilities[action] or type(owner[action])~="function" then
     return nil,"agent does not support "..tostring(action)
   end
-  return owner[action](rec,payload)
+  local result,why=owner[action](rec,payload)
+  if action=='focus' and result then rec.attention=false;rec.attention_seen=rec.reported_at end
+  return result,why
 end
 function Registry:poll()
   for _,id in ipairs(self.order) do

@@ -42,6 +42,7 @@ function M.bind(rec,view)
   local revision=-1
   local channel=view.terminal:channel()
   local control=channel and require('agentcontrol').new(channel,rec.id,rec.generation)
+  local reporter=control or view.provider_events
   local focus=function()return require('shell.workspaces.bmux').show(view)end
   local workers=control and require('fleetworkers').new(registry,rec,control,focus)
   view.fleet_workers=workers
@@ -49,7 +50,7 @@ function M.bind(rec,view)
     poll=function()
       if not view.terminal then return {state='stopped',activity='pane closed'}end
       if workers then workers:prune()end
-      local semantic=control and control:poll()
+      local semantic=reporter and reporter:poll()
       if semantic and workers then
         local applied,error=workers:apply(semantic.workers,semantic.worker_results)
         if not applied then semantic=control:fail(error)end
@@ -60,7 +61,7 @@ function M.bind(rec,view)
       revision=current
       local state=view.terminal:process_state()
       if not state then return {state='unreachable',activity='no process state'}end
-      local status=control and control.status and control.status.state or 'alive'
+      local status=reporter and reporter.status and reporter.status.state or 'alive'
       if state.error then status='failed'
       elseif state.exited and state.eof then status=state.exit_status==0 and state.term_signal==0 and 'exited' or 'failed' end
       if workers and (status=='exited' or status=='failed')then workers:close('owning TUI exited')end
