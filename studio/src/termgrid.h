@@ -15,6 +15,9 @@ typedef struct tg_row {
   tg_cell cells[];
 } tg_row;
 tg_row *tg_capture(const bterm *term,const lpage_row *row,size_t columns);
+typedef struct { lpage_style style;const char *text;size_t length;uint8_t width,flags; } tg_value;
+/* Resolved immutable values, copied synchronously. No terminal/parser owner. */
+tg_row *tg_capture_values(const tg_value *values,size_t columns);
 bool tg_retain(tg_row *row);
 void tg_release(tg_row *row);
 bool tg_equal(const tg_row *a,const tg_row *b);
