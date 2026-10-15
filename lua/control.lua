@@ -413,6 +413,8 @@ end
 -- start{ host=, port=, token= } -> server, url
 -- Generate a token for every ordinary listener. Unauthenticated loopback
 -- requires the explicit trusted_local profile, checked again in C.
+require('terminal.routes').install(M)
+
 function M.start(opts)
   opts = opts or {}
   if M.server then return M.server end
@@ -432,6 +434,7 @@ function M.start(opts)
   local client_state={mode="auto",guards=false,policy=policy}
   deferred.register(client_binding,client_state)
   client_context=invocation.context({state=client_state})
+  local terminals=require('terminal.registry').new(opts.terminal_limits)
   local srv, why = serve.listen{
     host = host, port = port, socket=opts.socket, token = token, profile=opts.profile,
     handler = function(req)
@@ -445,6 +448,7 @@ function M.start(opts)
   }
   if not srv then return nil, why end
 
+  M.terminals=terminals
   M.server, client_token = srv, token
   install_bridge()
   local url = opts.socket and 'http://localhost' or string.format("http://%s:%d", host, srv:port())
@@ -456,6 +460,7 @@ function M.stop()
   if not M.server then return false end
   remove_bridge()
   deferred.revoke(client_binding)
+  if M.terminals then M.terminals:shutdown();M.terminals=nil end
   M.server:stop()
   M.server, client_token, client_context = nil, nil, nil
   bog.events.emit("serve:stopped", {})

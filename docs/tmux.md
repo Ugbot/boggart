@@ -1,6 +1,11 @@
 # The tmux story -- boggart as a persistent, reattachable session host
 
-**Status: design, drafted 2026-09-18.** Thinking, not implementation. The prompt
+**Status: staged implementation; original design drafted 2026-09-18.**
+BMUX-30 now supplies a [server-owned terminal registry](bmux-server-terminals.md)
+with real PTY/grid lifecycle and authenticated HTTP access. Independent clients
+can control the same live shell after disconnecting. Studio/cTUI live attachment,
+snapshot/replay and durable layout restore remain open; the older observations
+below describe the starting point and intended architecture. The prompt
 was: "the tmux story could simply be part of boggart. but that needs thinking."
 This is the thinking. It builds on what ships: the studio pane tree
 (`docs/studio-panels.md`, `studio/data/core/rootview.lua`), the embedded PTY
