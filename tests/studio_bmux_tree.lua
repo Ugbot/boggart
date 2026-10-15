@@ -44,6 +44,16 @@ local ok,err=xpcall(function()
   assert(command.perform('root:switch-to-left') and core.active_view==a,'directional command uses shared geometry')
   assert(command.perform('root:move-pane-right') and whole:get_node_for_view(a).id==b_id,'pane swap command follows its unchanged terminal view')
   assert(a.terminal==first and b.terminal==second,'tree edits preserve terminal source identities')
+  local divider=whole:get_node_for_view(a):get_content_root(whole)
+  local x,y,w,h=divider:get_divider_rect();local px,py=math.floor(x+w/2),math.floor(y+h/2)
+  local ratio,span=divider.divider,divider.size.x
+  system._test_event{type='mousepressed',button=1,x=px,y=py}
+  system._test_event{type='mousemoved',x=px+10,y=py,dx=10,dy=0}
+  system._test_event{type='mousemoved',x=px+30,y=py,dx=20,dy=0}
+  system._test_event{type='mousereleased',button=1,x=px+30,y=py}
+  core.redraw=true;core.frame_start=system.get_time();core.step()
+  assert(math.abs(divider.divider-(ratio+30/span))<.0001 and not core.root_view.dragged_divider,
+    'coalesced motion is dispatched before the same-batch release')
   whole.position={x=0,y=0};whole.size={x=1,y=1};whole:update_layout()
   for _,leaf in ipairs(whole:get_leaves())do assert(leaf.size.x>=0 and leaf.size.y>=0 and leaf.active_view.size.y>=0)end
   print('studio_bmux_tree: actual shared model, stable IDs, native focus, dock/zoom, deferred moved close and source identity pass')

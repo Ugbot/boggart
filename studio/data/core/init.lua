@@ -935,8 +935,15 @@ function core.step()
   local did_keymap = false
   local mouse_moved = false
   local mouse = { x = 0, y = 0, dx = 0, dy = 0 }
+  local function flush_mouse()
+    if not mouse_moved then return end
+    core.try(core.on_event,"mousemoved",mouse.x,mouse.y,mouse.dx,mouse.dy)
+    mouse_moved=false;mouse.dx,mouse.dy=0,0
+  end
 
   for type, a,b,c,d in system.poll_event do
+    -- Coalesce adjacent motions without moving them past a release or key.
+    if type~="mousemoved" then flush_mouse()end
     if type == "mousemoved" then
       mouse_moved = true
       mouse.x, mouse.y = a, b
@@ -954,9 +961,7 @@ function core.step()
     core.frames_to_render = core.frames_to_render - 1
     core.redraw = true
   end
-  if mouse_moved then
-    core.try(core.on_event, "mousemoved", mouse.x, mouse.y, mouse.dx, mouse.dy)
-  end
+  flush_mouse()
   if core.active_view.flush_input then core.active_view:flush_input() end
 
   local width, height = renderer.get_size()
