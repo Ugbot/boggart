@@ -41,7 +41,8 @@ local ok,err=xpcall(function()
   system._test_event{type='keypressed',key='Return'};system._test_event{type='keyreleased',key='Return'};frame(3)
   local native_view=core.active_view
   local native=assert(registry.agents[native_view.fleet_agent_id],'chooser launches and registers agent')
-  assert(native.provider=='boggart' and native_view.custom_title=='Boggart TUI')
+  assert(native.provider=='boggart' and native_view.custom_title=='Boggart TUI',
+    'chooser selected provider='..tostring(native.provider)..' title='..tostring(native_view.custom_title))
   until_true(function()return native_view.state and native_view.state.alternate and text(native_view):find('ctx ',1,true)end)
   local ready,why=pcall(until_true,function()return native.state=='idle' and native.session_id and native.capabilities.prompt end)
   assert(ready,tostring(why)..'\n'..require('json').encode(native)..'\n'..text(native_view)..'\n'..require('json').encode(native_view.terminal:channel():state()))
