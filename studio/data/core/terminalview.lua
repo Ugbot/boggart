@@ -35,6 +35,24 @@ function TerminalView:new(opts)
   self.mouse_buttons={}; self.custom_title=opts.title
   local cmd=opts.cmd or os.getenv('SHELL') or '/bin/sh'; self.title=opts.title or cmd:match('([^/]+)$') or 'terminal'
   self.owns_terminal=opts.terminal==nil; self.terminal=opts.terminal
+  if opts.attachment then
+    assert(not opts.terminal,'choose a local terminal or remote attachment')
+    self.remote=require('core.terminalremote').new(opts.attachment,function()
+      if self.remote and self.input then
+        local controlling=self.remote:can_control()
+        if controlling~=self.controlling then
+          self.controlling=controlling
+          self.input.pending=nil;self.input.held={};self.input.composing=false
+          self.mouse_buttons={}
+          if controlling then
+            if core.active_view==self then self:on_focus_gained()else self:on_window_focus(false)end
+          end
+        end
+      end
+      core.redraw=true
+    end)
+    self.terminal=self.remote;self.remote_header=require('core.terminalremoteheader').new(self.remote)
+  end
   if not self.terminal then
     local env=opts.bmux_context and require('core.manualagents').attach(self,opts.cwd,opts.fleet_agent) or opts.env
     local t,err=terminal.open{cmd=cmd,args=opts.args,cwd=opts.cwd,env=env,control=opts.control,cols=self.cols,rows=self.rows,history=opts.history or 2000}
@@ -44,20 +62,26 @@ function TerminalView:new(opts)
   self.send_override=opts.send
   if self.terminal then
     self.render_theme={foreground=style.text,background=style.background,palette=PALETTE}
-    self.render_context=renderer.new_terminal(self.font,self.terminal,self.render_theme)
-    self.input=Input.new(self.terminal,function(bytes) return self:send(bytes) end,system.get_clipboard)
+    self.render_context=renderer.new_terminal(self.font,self.remote and self.remote.image or self.terminal,self.render_theme)
+    self.input=Input.new(self.terminal,function(bytes) return self:send(bytes) end,system.get_clipboard,
+      self.remote and function(kind,value)
+        local accepted=self.remote:event(kind,value)
+        if accepted and (kind=='key' or kind=='paste')then self:scroll_to_bottom()end
+        return accepted
+      end)
     self.terminal:focus(false); self:sync(true)
   end
 end
 function TerminalView:get_name() return self.title..(self.dead and ' [exited]' or '') end
-function TerminalView:is_text_input() return not self.dead end
+function TerminalView:is_text_input() return not self.dead and (not self.remote or self.remote:can_control()) end
 function TerminalView:try_close(close)
   if self.manual_pane then require('core.manualagents').revoke(self)end
   if self.terminal and self.owns_terminal then self.terminal:close() end
+  if self.render_context then getmetatable(self.render_context).__close(self.render_context)end
   self.terminal=nil; self.input=nil; self.render_context=nil; close()
 end
 function TerminalView:send(bytes)
-  if self.dead or not self.terminal or #bytes==0 then return false end
+  if self.dead or not self.terminal or #bytes==0 or self.remote and not self.remote:can_control()then return false end
   if self.send_override then return self.send_override(bytes) end
   local n,err=self.terminal:write(bytes)
   if not n then self.spawn_error=err; core.redraw=true; return false end
@@ -65,6 +89,7 @@ function TerminalView:send(bytes)
 end
 function TerminalView:on_key_pressed(stroke,event)
   if self.dead or not self.input then return false end
+  if self.remote and not self.remote:can_control()then return not stroke:find('ctrl+alt+',1,true),true end
   return self.input:key_pressed(stroke,event)
 end
 function TerminalView:on_key_released(key,event) if not self.dead and self.input then self.input:key_released(event) end end
@@ -79,18 +104,25 @@ function TerminalView:on_focus_gained()
 end
 function TerminalView:resize_to_fit()
   local cols=common.clamp(math.floor(self.size.x/self.cw),1,4096)
-  local rows=common.clamp(math.floor(self.size.y/self.lh),1,4096)
+  local rows=common.clamp(math.floor(self:body_height()/self.lh),1,4096)
+  if self.remote then self.remote:resize(cols,rows);return end
   if cols==self.cols and rows==self.rows then return end
   if self.terminal then self.terminal:resize(cols,rows) end
   self.cols,self.rows=cols,rows; self:sync(true)
 end
-function TerminalView:get_scrollable_size() return (self.history_rows+self.rows)*self.lh end
+function TerminalView:header_height()return self.remote_header and self.remote_header:height(self.size.x) or 0 end
+function TerminalView:body_height()return math.max(0,self.size.y-self:header_height())end
+function TerminalView:get_scrollable_size()
+  if self.remote then return self:header_height()+self.history_rows*self.lh+math.max(self.rows*self.lh,self:body_height())end
+  return (self.history_rows+self.rows)*self.lh
+end
 function TerminalView:at_bottom() return self.scroll.to.y>=self:get_scrollable_size()-self.size.y-self.lh end
 function TerminalView:scroll_to_bottom() self.scroll.to.y=math.max(0,self:get_scrollable_size()-self.size.y) end
 function TerminalView:sync(force)
   if not self.terminal then return end
   local revision=self.terminal:process_revision(); if not force and revision and revision==self.revision then return end
-  local was_bottom=self:at_bottom(); local state=self.terminal:state()
+  local was_bottom=not self.state or self:at_bottom(); local state=self.terminal:state()
+  if not state then self.revision=revision;core.redraw=true;return end
   local cols,rows,history=self.terminal:geometry()
   local geometry_changed=cols~=self.cols or rows~=self.rows or history~=self.history_rows or (self.state and self.state.alternate~=state.alternate)
   self.cols,self.rows,self.history_rows=cols,rows,history; self.state=state; self.revision=revision
@@ -110,8 +142,10 @@ function TerminalView:sync(force)
 end
 function TerminalView:update()
   TerminalView.super.update(self)
-  if self.size.x~=self.last_size.x or self.size.y~=self.last_size.y then
+  local header=self:header_height()
+  if self.size.x~=self.last_size.x or self.size.y~=self.last_size.y or header~=self.last_header_height then
     self.last_size.x,self.last_size.y=self.size.x,self.size.y
+    self.last_header_height=header
     if self.cw>0 and self.lh>0 then self:resize_to_fit() end
   end
   self:sync(false)
@@ -119,12 +153,16 @@ end
 local buttons={left=1,middle=2,right=3,x1=8,x2=9}
 function TerminalView:report_mouse(action,button,x,y)
   if self.dead or not self.input or not self:at_bottom() then return false end
+  if y<self.position.y+self:header_height()then return false end
   local pressed=false; for _,down in pairs(self.mouse_buttons) do if down then pressed=true end end
-  return self.input:mouse{action=action,button=button or 0,x=math.floor(x-self.position.x),y=math.floor(y-self.position.y),
+  return self.input:mouse{action=action,button=button or 0,x=math.floor(x-self.position.x),y=math.floor(y-self.position.y-self:header_height()),
     cell_width=math.max(1,math.floor(self.cw)),cell_height=math.max(1,math.floor(self.lh)),
     modifiers=(keymap.input_modifiers or 0)&7,any_button_pressed=pressed}
 end
 function TerminalView:on_mouse_pressed(button,x,y,clicks)
+  if self.remote_header and y<self.position.y+self:header_height()then
+    self.remote_header:pressed(button,x,y);return true
+  end
   if TerminalView.super.on_mouse_pressed(self,button,x,y,clicks) then return true end
   local number=buttons[button]; if not number then return false end
   self.mouse_buttons[number]=true; return self:report_mouse('press',number,x,y)
@@ -134,6 +172,7 @@ function TerminalView:on_mouse_released(button,x,y)
   local number=buttons[button]; if number then self.mouse_buttons[number]=nil; self:report_mouse('release',number,x,y) end
 end
 function TerminalView:on_mouse_moved(x,y,dx,dy)
+  if self.remote_header then self.remote_header.mouse={x=x,y=y}end
   TerminalView.super.on_mouse_moved(self,x,y,dx,dy)
   if not self.dragging_scrollbar then
     local number=0; for b,down in pairs(self.mouse_buttons) do if down then number=b; break end end
@@ -167,10 +206,14 @@ function TerminalView:visible_row(index)
 end
 function TerminalView:draw()
   self:draw_background(style.background); core.push_clip_rect(self.position.x,self.position.y,self.size.x,self.size.y)
-  if self.terminal then
+  local header=self:header_height()
+  if self.remote_header then self.remote_header:draw(self.position.x,self.position.y,self.size.x)end
+  core.push_clip_rect(self.position.x,self.position.y+header,self.size.x,self:body_height())
+  if self.terminal and self.state then
     local ox,oy=self:get_content_offset(); local count=self.history_rows+self.rows
+    oy=oy+header
     local first=common.clamp(math.floor(self.scroll.y/self.lh)+1,1,count)
-    local last=common.clamp(math.floor((self.scroll.y+self.size.y)/self.lh)+1,1,count)
+    local last=common.clamp(math.floor((self.scroll.y+self:body_height())/self.lh)+1,1,count)
     self.render_theme.foreground,self.render_theme.background=style.text,style.background
     self.render_context:draw(ox,oy,self.cw,self.lh,first,last)
     local state=self.state; local cursor=state and self.history_rows+state.row
@@ -182,7 +225,7 @@ function TerminalView:draw()
       else renderer.draw_rect(x,y,self.cw,self.lh,caret) end
     end
   end
-  core.pop_clip_rect(); self:draw_scrollbar()
+  core.pop_clip_rect();core.pop_clip_rect(); self:draw_scrollbar()
   if self.spawn_error then common.draw_text(style.font,style.error,self.spawn_error,'left',self.position.x+style.padding.x,self.position.y+style.padding.y,self.size.x,self.font:get_height()) end
 end
 return TerminalView

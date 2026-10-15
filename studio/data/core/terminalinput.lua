@@ -18,8 +18,14 @@ local function fallback(stroke)
   if ok and utf8.len(key)==1 then return {key='text',unshifted=scalar,base_layout=scalar,modifiers=mods,action='press',scancode=key} end
   return {key=named,modifiers=mods,action='press',scancode=key}
 end
-function Input.new(term,send,clipboard)
-  return setmetatable({term=term,send=send,clipboard=clipboard,held={},composing=false},Input)
+function Input.new(term,send,clipboard,dispatch)
+  return setmetatable({term=term,send=send,clipboard=clipboard,dispatch=dispatch,held={},composing=false},Input)
+end
+function Input:send_event(kind,value)
+  if self.dispatch then return self.dispatch(kind,value)end
+  local bytes=self.term[kind](self.term,value)
+  if #bytes==0 then return false end
+  self.send(bytes);return true
 end
 function Input:emit(event)
   if event.text and #event.text>4096 then
@@ -33,7 +39,7 @@ function Input:emit(event)
     end
     return
   end
-  local bytes=self.term:key(event); if #bytes>0 then self.send(bytes) end
+  self:send_event('key',event)
 end
 function Input:flush()
   local event=self.pending; self.pending=nil
@@ -52,7 +58,7 @@ function Input:key_pressed(stroke,metadata)
   self:flush()
   if stroke=='cmd+v' or stroke=='ctrl+shift+v' then
     local text=self.clipboard and self.clipboard()
-    if text and #text>0 then self.send(self.term:paste(text)) end
+    if text and #text>0 then self:send_event('paste',text) end
     return true,true
   end
   local event=metadata and copy(metadata) or fallback(stroke)
@@ -90,10 +96,9 @@ function Input:focus(focused)
     end
     self.held={}; self.composing=false
   end
-  local bytes=self.term:focus(focused); if #bytes>0 then self.send(bytes) end
+  self:send_event('focus',focused)
 end
 function Input:mouse(event)
-  local bytes=self.term:mouse(event); if #bytes==0 then return false end
-  self.send(bytes); return true
+  return self:send_event('mouse',event)
 end
 return Input

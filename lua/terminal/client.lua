@@ -36,8 +36,8 @@ function Client:request(method,path,body,callback,stream)
     if req.done then return end;req.done=true;self.requests[req]=nil;self.request_count=self.request_count-1
     local value
     if not why then
-      value,why=replica.decode(raw)
-      if not why and (status<200 or status>=300)then why=problem('http','control request refused',status)end
+      if status<200 or status>=300 then why=problem('http','control request refused',status)
+      else value,why=replica.decode(raw)end
     end
     callback(why,value,status)
   end

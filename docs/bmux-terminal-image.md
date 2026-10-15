@@ -30,6 +30,7 @@ generation, captures and closed state. `image:close()` releases the source;
 queued frame commands retain rows independently. `__gc` and `__close` also
 release the source. The renderer rejects drawing a closed source or font.
 
-This supplies the rendering foundation for BMUX-34. The visible remote-pane
-backend and attach/control actions remain separate work. See
+This supplies the rendering foundation for BMUX-34. The
+[Studio attached pane](bmux-studio-attachment.md) uses it for its visible
+attach/control flow. See
 [verification](benchmarks/2026-10-15-terminal-image-verification.md).

@@ -7,6 +7,7 @@ local Toolbar = View:extend()
 local items = {
   { label = "+ New terminal", command = "bmux:new-terminal" },
   { label = "+ New agent", command = "bmux:new-agent" },
+  { label = "Attach", command = "terminal:attach" },
   { label = "Split right", command = "bmux:split-right" },
   { label = "Split down", command = "bmux:split-down" },
   { label = "Close", command = "bmux:close-terminal" },
