@@ -47,7 +47,9 @@ object and unknown option/mutation fields are rejected.
 IDs include a random per-server prefix and monotonically increasing serial;
 they are never reused within that host. This version creates generation 1 and
 does not restart records in place. Input, resize and close require that exact
-generation. A PID is metadata, not authority. Creation may return a record with
+generation. After a client first attaches, input and resize also require its
+explicit controller lease; see [attachment cursors and ownership](bmux-terminal-attachments.md).
+A PID is metadata, not authority. Creation may return a record with
 `state=failed` when the executable/cwd cannot be started; inspect its error.
 Native exit status/signals and output EOF determine completion. Exited grids
 remain readable/resizable until closed or evicted. Close is idempotent and
@@ -81,8 +83,8 @@ forcibly aborted by this change. Native teardown escalates owned children that
 ignore HUP. SIGKILL, server crashes and machine restart do not preserve these
 PTYs; durable restore is separate from live client disconnect survival.
 
-Server-side Fleet/provider-hook attachment, native terminal CLI verbs, live
-client input arbitration/leases and automatic Studio reconnect are still open
+Server-side Fleet/provider-hook attachment, native terminal CLI verbs, push
+delivery and automatic Studio reconnect are still open
 roadmap work. The existing Studio manual registrar remains separate. Windows
 ConPTY remains BMUX-22.
 

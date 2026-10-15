@@ -368,6 +368,25 @@ static int l_row(lua_State *L) {
   snapshot_image *image=snapshot_copy(L,true,(size_t)index-1,lua_toboolean(L,3));
   row(L,image,0);lua_remove(L,-2);return 1;
 }
+/* Non-consuming generations for independent attached readers. Copy every
+ * borrowed row before constructing Lua tables (which may run finalizers). */
+static int l_row_versions(lua_State *L) {
+  lua_Integer requested=luaL_optinteger(L,2,32);
+  luaL_argcheck(L,requested>=0 && requested<=256,2,"history tail must be in 0..256");
+  const lpage_screen *s=bterm_screen(check(L)->term);
+  size_t cols=lpage_columns(s),rows=lpage_rows(s),history=lpage_history_count(s);
+  size_t tail=history<(size_t)requested ? history : (size_t)requested;
+  uint64_t versions[4096+256];
+  for(size_t y=0;y<rows;y++)versions[y]=lpage_visible(s,y)->revision;
+  for(size_t y=0;y<tail;y++)versions[rows+y]=lpage_history(s,history-tail+y)->revision;
+  lua_createtable(L,0,5);integer(L,"cols",(lua_Integer)cols);integer(L,"rows",(lua_Integer)rows);
+  integer(L,"history",(lua_Integer)history);
+  lua_createtable(L,(int)rows,0);
+  for(size_t y=0;y<rows;y++){lua_pushinteger(L,(lua_Integer)versions[y]);lua_rawseti(L,-2,(lua_Integer)y+1);}
+  lua_setfield(L,-2,"screen");lua_createtable(L,(int)tail,0);
+  for(size_t y=0;y<tail;y++){lua_pushinteger(L,(lua_Integer)versions[rows+y]);lua_rawseti(L,-2,(lua_Integer)y+1);}
+  lua_setfield(L,-2,"scrollback");return 1;
+}
 static int l_snapshot(lua_State *L) {
   snapshot_image *image=snapshot_copy(L,false,0,lua_toboolean(L,2));
   lua_createtable(L,0,6);integer(L,"cols",(lua_Integer)image->columns);integer(L,"rows",(lua_Integer)image->rows);
@@ -590,7 +609,7 @@ static int l_source(lua_State *L) {
 }
 int luaopen_boggart_terminal(lua_State *L) {
   const luaL_Reg methods[] = { {"feed", l_feed}, {"finish", l_finish}, {"reset", l_reset}, {"resize", l_resize}, {"state", l_state},
-    {"row", l_row}, {"snapshot", l_snapshot}, {"damage", l_damage}, {"ack_damage", l_ack},
+    {"row", l_row}, {"row_versions",l_row_versions}, {"snapshot", l_snapshot}, {"damage", l_damage}, {"ack_damage", l_ack},
     {"replies", l_replies}, {"key", l_key}, {"mouse", l_mouse}, {"input_state", l_input_state}, {"events", l_events}, {"clipboard_policy", l_clipboard_policy},
     {"paste", l_paste}, {"paste_safe", l_paste_safe}, {"focus", l_focus},
     {"write",l_write}, {"process_state",l_process_state}, {"foreground_group",l_foreground_group}, {"channel",l_channel},

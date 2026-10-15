@@ -24,8 +24,10 @@ function M.new(opts)
   if opts==nil then opts={}end
   local count,cells=opts.max_records or 256,opts.max_cells or 32*1024*1024
   assert(integer(count,1,4096) and integer(cells,1,128*1024*1024),'invalid terminal registry limits')
-  return setmetatable({prefix=serve.token(12),serial=0,entries={},order={},used=0,
+  local registry=setmetatable({prefix=serve.token(12),serial=0,entries={},order={},used=0,
     max_records=count,max_cells=cells,closed=false},Registry)
+  registry.attachments=require('terminal.attachments').new(registry,opts.attachments)
+  return registry
 end
 function Registry:status(entry)
   if entry.term then
@@ -40,7 +42,8 @@ function Registry:status(entry)
   return {id=entry.id,generation=entry.generation,state=entry.state,cmd=entry.cmd,cwd=entry.cwd,
     cols=entry.cols,rows=entry.rows,history=entry.history,pid=entry.pid,exit_status=entry.exit_status,
     term_signal=entry.term_signal,bytes=entry.bytes or 0,queued_bytes=entry.queued_bytes or 0,
-    process_exited=entry.process_exited,eof=entry.eof,error=entry.error,closed=entry.closed or false,revision=entry.revision or 0}
+    process_exited=entry.process_exited,eof=entry.eof,error=entry.error,closed=entry.closed or false,
+    attachment_controlled=entry.controlled==true,revision=entry.revision or 0}
 end
 function Registry:find(id,generation)
   if self.closed then return failure(503,'terminal registry stopped')end
@@ -50,6 +53,7 @@ function Registry:find(id,generation)
   return entry
 end
 function Registry:release(entry)
+  self.attachments:retire(entry)
   if entry.term then entry.term:close();entry.term=nil end
   self.used=self.used-entry.cost;entry.cost=0
 end
@@ -101,24 +105,29 @@ function Registry:list(offset,limit)
   return {terminals=#out>0 and out or require('json').array,total=#self.order,
     next_offset=offset+#out<#self.order and offset+#out or require('json').null}
 end
-function Registry:write(id,generation,text)
+function Registry:write(id,generation,text,credentials)
   local entry,why=self:find(id,generation);if not entry then return nil,why end
   if not integer(generation,1,9007199254740991) or type(text)~='string' or #text>65536 then return failure(400,'invalid terminal input')end
-  if not entry.term or self:status(entry).process_exited then return failure(409,'terminal is not running')end
-  local bytes,error=entry.term:write(text)
-  if not bytes then return failure(409,error)end
-  return {id=id,generation=generation,accepted_bytes=bytes}
+  return self.attachments:command(entry,credentials,'input',{text=text},function()
+    if not entry.term or self:status(entry).process_exited then return failure(409,'terminal is not running')end
+    local bytes,error=entry.term:write(text)
+    if not bytes then return failure(409,error)end
+    return {id=id,generation=generation,accepted_bytes=bytes}
+  end)
 end
-function Registry:resize(id,generation,cols,rows)
+function Registry:resize(id,generation,cols,rows,credentials)
   local entry,why=self:find(id,generation);if not entry then return nil,why end
   if not integer(generation,1,9007199254740991) or not integer(cols,1,4096) or not integer(rows,1,4096)then return failure(400,'invalid terminal geometry')end
-  if not entry.term then return failure(409,'terminal is closed')end
-  local cost=cols*(rows+entry.history);local extra=math.max(0,cost-entry.cost)
-  if not self:reserve(extra,entry)then return failure(503,'terminal registry capacity reached')end
-  local ok,error=pcall(entry.term.resize,entry.term,cols,rows)
-  if not ok then return failure(409,tostring(error))end
-  self.used=self.used+cost-entry.cost;entry.cost=cost;entry.cols=cols;entry.rows=rows
-  return self:status(entry)
+  return self.attachments:command(entry,credentials,'resize',{cols=cols,rows=rows},function()
+    if not entry.term then return failure(409,'terminal is closed')end
+    if entry.controlled and not self.attachments:resize_allowed(entry,cols,rows)then return failure(413,'attachment cell limit exceeded')end
+    local cost=cols*(rows+entry.history);local extra=math.max(0,cost-entry.cost)
+    if not self:reserve(extra,entry)then return failure(503,'terminal registry capacity reached')end
+    local ok,error=pcall(entry.term.resize,entry.term,cols,rows)
+    if not ok then return failure(409,tostring(error))end
+    self.used=self.used+cost-entry.cost;entry.cost=cost;entry.cols=cols;entry.rows=rows
+    return self:status(entry)
+  end)
 end
 function Registry:screen(id,first,count)
   local entry,why=self:find(id);if not entry then return nil,why end
