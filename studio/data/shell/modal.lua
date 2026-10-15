@@ -43,6 +43,7 @@ function modal.chooser(label, choices, on_pick)
     end
     if pick then on_pick(pick) end
   end, function(text)
+    if not text or text == '' then return choices end
     local ranked={}
     for i,choice in ipairs(choices)do
       local score=system.fuzzy_match(choice.text,text or '')
