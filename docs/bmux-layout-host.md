@@ -19,6 +19,7 @@ capability policy. An owned private UDS works with `terminal.client`'s generic
 | Route | Capability | Result |
 | --- | --- | --- |
 | `GET /layout` | `control:GET:/layout` | Copied full snapshot |
+| `GET /layout/stream` | `control:GET:/layout/stream` | Initial snapshot and committed snapshots over native SSE |
 | `POST /layout/commands` | `control:POST:/layout/commands` | Apply command and return the new full snapshot |
 
 No query parameters are supported. A command is a JSON object up to 8192 bytes:
@@ -42,7 +43,11 @@ Accepted commands increment revision once, including no-ops. A stale command
 returns 409 without changes. After a conflict, fetch and inspect a fresh
 snapshot. After an uncertain response, inspect the snapshot before deciding
 whether another mutation is appropriate; mutations are not transparently
-retried. No layout push/delta stream is delivered in this increment.
+retried. The dedicated stream sends complete snapshots, rather than deltas;
+reconnect starts from the current hierarchy without retained-history replay.
+Its permission is separate from ordinary layout reads and broad `/events`.
+Observers have no idle polling timer. Native server stop/revocation closes the
+streams, and native connection/backpressure limits still apply.
 
 ## Commands
 
