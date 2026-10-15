@@ -134,6 +134,10 @@ function modal.intercept(k)
 
   if typing() then return false end
 
+  -- A focused local control owns activation before read-only leader shortcuts.
+  local view=core.active_view
+  if view and view.on_action_key and view:on_action_key(stroke)then return true end
+
   -- Ctrl-w is the pane/window prefix on read-only surfaces, but in a text field
   -- it is the word-delete every editor binds -- so it is claimed only once the
   -- typing() guard above has let a field keep it.

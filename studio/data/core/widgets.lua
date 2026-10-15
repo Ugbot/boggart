@@ -91,7 +91,7 @@ end
 -- new line instead of being dropped. Returns hits and the y just below the
 -- last row, so a caller that has to share a band with a Send button can reserve
 -- height before it draws.
-function widgets.wrap_row(font, items, x, y, hover, limit)
+function widgets.wrap_layout(font, items, x, y, limit)
   local gap = style.padding.x * widgets.GAP
   local bh = widgets.height(font)
   local hits = {}
@@ -101,16 +101,20 @@ function widgets.wrap_row(font, items, x, y, hover, limit)
     if cx > x0 and limit and cx + w > limit then
       cx, cy = x0, cy + bh + gap
     end
-    local is_hover = hover and hover.x and widgets.inside(
-      { x = cx, y = cy, w = w, h = bh }, hover.x, hover.y)
-    local r = widgets.button(font, it.label, cx, cy, {
-      w = w, active = it.active, dim = it.dim, tone = it.tone, hover = is_hover,
-    })
-    r.item = it
-    hits[#hits + 1] = r
+    hits[#hits + 1] = {x=cx,y=cy,w=w,h=bh,item=it}
     cx = cx + w + gap
   end
   return hits, cy + bh
+end
+
+function widgets.wrap_row(font, items, x, y, hover, limit)
+  local hits,bottom=widgets.wrap_layout(font,items,x,y,limit)
+  for _,r in ipairs(hits)do
+    local it=r.item
+    widgets.button(font,it.label,r.x,r.y,{w=r.w,h=r.h,active=it.active,dim=it.dim,tone=it.tone,
+      hover=hover and hover.x and widgets.inside(r,hover.x,hover.y)})
+  end
+  return hits,bottom
 end
 
 function widgets.inside(r, x, y)

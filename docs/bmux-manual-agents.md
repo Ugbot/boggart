@@ -41,6 +41,10 @@ Fleet approval, prompt or interrupt capabilities. Other foreign providers retain
 process-only status until their adapters are implemented. Explicit `ctl run`
 does not automatically add a provider plugin.
 
+Fleet actions also work from the keyboard: select an agent with Up/Down or j/k,
+Tab/Shift-Tab to a supported action, then Enter/Space to activate. Escape returns
+to the roster. See [keyboard controls](bmux-agent-channel.md#keyboard-controls-in-fleet).
+
 Help/version and listed first-argument maintenance commands bypass registration.
 The Codex/Claude exclusions were checked against installed `codex-cli 0.162.1`
 and `Claude Code 2.1.294` help output. This is a small command profile, not a
