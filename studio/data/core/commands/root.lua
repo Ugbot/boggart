@@ -1,5 +1,4 @@
 local core = require "core"
-local style = require "core.style"
 local DocView = require "core.docview"
 local command = require "core.command"
 local common = require "core.common"
@@ -31,8 +30,7 @@ local t = {
     local node = core.root_view:get_active_node()
     local idx = node:get_view_idx(core.active_view)
     if idx > 1 then
-      table.remove(node.views, idx)
-      table.insert(node.views, idx - 1, core.active_view)
+      node:move_view(core.active_view, node, core.root_view.root_node, idx - 1)
     end
   end,
 
@@ -40,23 +38,24 @@ local t = {
     local node = core.root_view:get_active_node()
     local idx = node:get_view_idx(core.active_view)
     if idx < #node.views then
-      table.remove(node.views, idx)
-      table.insert(node.views, idx + 1, core.active_view)
+      node:move_view(core.active_view, node, core.root_view.root_node, idx + 1)
     end
   end,
 
   ["root:shrink"] = function()
     local node = core.root_view:get_active_node()
     local parent = node:get_parent_node(core.root_view.root_node)
+    if not parent then return end
     local n = (parent.a == node) and -0.1 or 0.1
-    parent.divider = common.clamp(parent.divider + n, 0.1, 0.9)
+    parent:set_divider(common.clamp(parent.divider + n, 0.1, 0.9))
   end,
 
   ["root:grow"] = function()
     local node = core.root_view:get_active_node()
     local parent = node:get_parent_node(core.root_view.root_node)
+    if not parent then return end
     local n = (parent.a == node) and 0.1 or -0.1
-    parent.divider = common.clamp(parent.divider + n, 0.1, 0.9)
+    parent:set_divider(common.clamp(parent.divider + n, 0.1, 0.9))
   end,
 }
 
@@ -84,18 +83,8 @@ for _, dir in ipairs { "left", "right", "up", "down" } do
 
   t["root:switch-to-" .. dir] = function()
     local node = core.root_view:get_active_node()
-    local x, y
-    if dir == "left" or dir == "right" then
-      y = node.position.y + node.size.y / 2
-      x = node.position.x + (dir == "left" and -1 or node.size.x + style.divider_size)
-    else
-      x = node.position.x + node.size.x / 2
-      y = node.position.y + (dir == "up"   and -1 or node.size.y + style.divider_size)
-    end
-    local node = core.root_view.root_node:get_child_overlapping_point(x, y)
-    if not node:get_locked_size() then
-      core.set_active_view(node.active_view)
-    end
+    local target = node:get_node_in_direction(core.root_view.root_node, dir)
+    if target then target:set_active_view(target.active_view) end
   end
 end
 

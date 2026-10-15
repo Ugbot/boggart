@@ -82,9 +82,12 @@ local ok,err=xpcall(function()
 
   local pidfile=dir..'/wrapper'
   first:send(quote(exe)..' ctl run --name Lost -- /bin/sh -c '..quote('printf "%s" "$PPID" > '..quote(pidfile)..'; exec /bin/sleep 30')..'\n')
-  local lost
-  await(function()lost=named('Lost');return lost and lost.state=='alive' and uv.fs_stat(pidfile)end)
-  local f=assert(io.open(pidfile));local wrapper_pid=assert(tonumber(f:read('*a')));f:close()
+  local lost,wrapper_pid
+  await(function()
+    lost=named('Lost');if not lost or lost.state~='alive' then return end
+    local f=io.open(pidfile);if not f then return end
+    wrapper_pid=tonumber(f:read('*a'));f:close();return wrapper_pid~=nil
+  end)
   assert(wrapper_pid~=lost.pid);assert(uv.kill(wrapper_pid,'sigkill'))
   manual.service.ttl=.1
   await(function()return lost.state=='unreachable'end)

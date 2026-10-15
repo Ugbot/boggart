@@ -5,6 +5,14 @@ on the layout code that already ships (`studio/data/core/rootview.lua`,
 `studio/data/core/commands/root.lua`, `studio/data/shell/`) and names the real
 API rather than inventing one.
 
+**Shared layout update (2026-10-15):** Structural pane operations now live in
+[`lua/bmux/tree.lua`](../lua/bmux/tree.lua), used directly by RootView's node
+class. Split/close, tab movement, swaps, direction, resizing, dock bounds and
+zoom share that implementation. Studio retains rendering and leaf presentation.
+See [the current model contract](bmux-layout.md). Workspace/surface hierarchy,
+server layout ownership and the cTUI consumer remain open BMUX-31 work; this
+extraction does not deliver persistence.
+
 ## Context
 
 boggart-studio is a lite-xl fork. lite-xl already has the hard part of a

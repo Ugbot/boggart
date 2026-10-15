@@ -81,9 +81,7 @@ for _, dir in ipairs { "left", "right", "up", "down" } do
       local node = active_node()
       local target = node:get_node_in_direction(root(), dir)
       if not target or target == node or target:get_locked_size() then return end
-      node.views, target.views = target.views, node.views
-      node.active_view, target.active_view = target.active_view, node.active_view
-      core.set_active_view(target.active_view)   -- follow the moved view
+      node:swap_views(target)
       core.redraw = true
     end,
   })
