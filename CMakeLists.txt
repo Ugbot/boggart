@@ -523,7 +523,7 @@ add_executable(boggart
   src/ljson.c
   src/lhash.c
   src/lview.c
-  src/lterminal.c
+  src/lterminal.c src/lterminal_input.c
   src/lchannel.c src/bchannel.c
   src/lhttp.c
   src/lsys.c
@@ -769,7 +769,7 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
     src/ljson.c
     src/lhash.c
     src/lview.c
-    src/lterminal.c
+    src/lterminal.c src/lterminal_input.c
     src/lchannel.c src/bchannel.c
     ${STUDIO_ASSETS_C}
     src/lhttp.c
@@ -961,7 +961,7 @@ endif()
 # Embed the sources actually compiled into this terminal backend. Benchmarks
 # reject a stale executable instead of attributing it to current disk contents.
 set(BMUX_TERMINAL_SOURCE_FILES src/bchannel.c src/bchannel.h src/lchannel.c src/lchannel.h src/bpty.c src/bpty.h src/lvt.c src/vt_table.h src/lstyle.c src/llink.c src/lpage.c src/lpage_resize.c src/lpage_layout.c src/lpage_layout.h src/lidmap.c src/lidmap.h src/lbitmap.c src/lbitmap.h
-  src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c src/lterminal.c src/lterminal.h
+  src/bterm.c src/bterm_input_batch.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c src/lterminal.c src/lterminal_input.c src/lterminal.h
   src/lvt.h src/lstyle.h src/llink.h src/lpage.h src/lpage_internal.h src/bosc.h src/bmouse.h src/bkey.h src/bpaste.h src/bterm.h src/bterm_internal.h
   src/bunicode.c src/bunicode.h src/bunicode_data.h src/btunicode.c src/btunicode.h src/btunicode_data.h src/lgrapheme.c src/lgrapheme.h)
 set(_terminal_source_header "/* Generated build identity; do not edit. */\nstatic const struct { const char *path, *sha256; } terminal_source_files[] = {\n")
@@ -988,7 +988,7 @@ if(TARGET boggart-studio)
   file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/terminalrender_source.h "${_renderer_source_header}")
 endif()
 add_library(boggart_vt STATIC src/lvt.c src/lstyle.c src/llink.c src/lpage.c src/lpage_resize.c src/lpage_layout.c src/lidmap.c src/lbitmap.c src/lgrapheme.c src/btunicode.c
-  src/bterm.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c)
+  src/bterm.c src/bterm_input_batch.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c)
 target_include_directories(boggart_vt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(boggart_vt PUBLIC boggart_unicode)
 add_library(boggart_pty STATIC src/bpty.c)
@@ -1206,7 +1206,7 @@ foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor 
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
 
-foreach(suite control_unix manualfleet terminal_environment agenthooks providerevents provider_notify actionfocus terminal_registry terminal_server terminal_attachments terminal_watch serve_streams terminal_push terminal_transport terminal_replica terminal_client)
+foreach(suite control_unix manualfleet terminal_environment agenthooks providerevents provider_notify actionfocus terminal_registry terminal_server terminal_attachments terminal_watch serve_streams terminal_push terminal_transport terminal_replica terminal_client terminal_input_events)
   add_test(NAME ${suite}
     COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite}
       $<TARGET_FILE:boggart> --eval tests/${suite}.lua

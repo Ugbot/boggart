@@ -46,6 +46,24 @@ bool bterm_focus(bterm *terminal, bool focused, uint8_t *output, size_t capacity
  * for the child PTY, distinct from the reply sink. Failure does not fail feed. */
 bool bterm_mouse(bterm *terminal, const bmouse_event *event, uint32_t cell_width, uint32_t cell_height,
                   uint8_t *output, size_t capacity, size_t *length);
+typedef enum { BT_INPUT_KEY, BT_INPUT_PASTE, BT_INPUT_FOCUS, BT_INPUT_MOUSE } bterm_input_kind;
+typedef struct {
+  bterm_input_kind kind;
+  bkey_event key;
+  bmouse_event mouse;
+  const uint8_t *text; size_t text_length;
+  uint32_t cell_width,cell_height;
+  bool focused,macos;
+  bkey_option option_as_alt;
+} bterm_input_event;
+#define BTERM_INPUT_EVENTS 64
+#define BTERM_INPUT_BYTES 65536
+/* Encode using current negotiated state, then call the sink exactly once.
+ * No sink call on malformed/overlarge batches. Rejected sink/encoding restores
+ * focus and mouse deduplication state; accepted empty output still calls sink.
+ * The sink must neither enter Lua nor mutate/re-enter this terminal. */
+bool bterm_send_events(bterm *terminal,const bterm_input_event *events,size_t count,
+                      bool (*send)(void *,const uint8_t *,size_t),void *context,size_t *length);
 /* Consume/copy the borrowed reply synchronously. Never re-enter the terminal
  * from this callback. A NULL sink intentionally discards replies. */
 typedef bool (*bterm_reply)(void *context, const uint8_t *bytes, size_t length);

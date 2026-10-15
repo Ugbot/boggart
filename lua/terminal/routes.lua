@@ -39,11 +39,17 @@ function M.install(control)
     return response(registry:screen(id,q.first,q.count))
   end,'non-destructive bounded visible cell-grid page')
   for _,verb in ipairs{'input','resize','close'}do
-    local allowed=verb=='input' and {generation=true,text=true,attachment_id=true,attachment_token=true,control_token=true,command_seq=true}
+    local allowed=verb=='input' and {generation=true,text=true,events=true,attachment_id=true,attachment_token=true,control_token=true,command_seq=true}
       or verb=='resize' and {generation=true,cols=true,rows=true,attachment_id=true,attachment_token=true,control_token=true,command_seq=true} or {generation=true}
     route('POST','/terminals/([%w_-]+)/'..verb,function(registry,req,id)
       local body,why=object(req,allowed);if not body then return response(nil,why)end
-      if verb=='input'then return response(registry:write(id,body.generation,body.text,body))end
+      if verb=='input'then
+        if body.events~=nil then
+          if body.text~=nil then return response(nil,{status=400,message='text and events are mutually exclusive'})end
+          return response(registry:input_events(id,body.generation,body.events,body))
+        end
+        return response(registry:write(id,body.generation,body.text,body))
+      end
       if verb=='resize'then return response(registry:resize(id,body.generation,body.cols,body.rows,body))end
       return response(registry:close(id,body.generation))
     end,verb..' a terminal using its exact runtime generation')

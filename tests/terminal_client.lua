@@ -29,6 +29,14 @@ local function image(session)local v=session:view();return json.encode{screen=v.
 local ok,failure=xpcall(function()
   await(function()local info=uv.fs_lstat(socket);return info and info.mode&63==0 end)
   local client=new_client()
+  local health_ready,probing=false,false
+  await(function()
+    if health_ready then return true end
+    if not probing then
+      probing=true;client:request('GET','/health',nil,function(why,value)probing=false;health_ready=not why and value.ok==true end)
+    end
+    return false
+  end)
   local cycle={};cycle.self=cycle
   local bad_body=call(function(cb)client:request('POST','/terminals',cycle,cb)end)
   assert(bad_body and bad_body.kind=='request' and client.request_count==0,'encoding failure does not leak a request')

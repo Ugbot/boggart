@@ -38,12 +38,13 @@ function Host:lookup(entry,id,secret)
 end
 local function stamp(host,entry,tail)
   local versions=entry.term:row_versions(tail);local state=entry.term:state();local process=host.registry:status(entry)
-  return json.encode{versions,state,process},versions,state,process
+  local input=entry.term:input_state()
+  return json.encode{versions,state,process,input},versions,state,process,input
 end
 function Host:capture(reader,initial)
   local entry=reader.entry
   if not entry.term then return fail(409,'terminal grid is closed')end
-  local signature,versions,state,process=stamp(self,entry,reader.tail)
+  local signature,versions,state,process,input=stamp(self,entry,reader.tail)
   if signature==reader.signature then return false end
   if versions.cols*(versions.rows+#versions.scrollback)>32768 then return fail(413,'attachment cell limit exceeded')end
   local previous=reader.versions
@@ -62,7 +63,7 @@ function Host:capture(reader,initial)
   if stamp(self,entry,reader.tail)~=signature then return fail(409,'terminal changed during capture; retry')end
   local frame={v=1,id=entry.id,generation=entry.generation,attachment_id=reader.id,
     after=reader.cursor,cursor=reader.cursor+1,kind=full and 'snapshot' or 'delta',
-    cols=versions.cols,rows=versions.rows,state=state,process=process,scrollback=history}
+    cols=versions.cols,rows=versions.rows,state=state,process=process,input_state=input,scrollback=history}
   if full then frame.screen=array(screen)else frame.changes=array(changes)end
   if initial then frame.attachment_token=reader.token;frame.reader_seconds=self.ttl end
   local encoded=json.encode(frame)
