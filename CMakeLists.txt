@@ -1207,7 +1207,7 @@ foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor 
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
 
-foreach(suite control_unix manualfleet terminal_environment agenthooks providerevents provider_notify actionfocus terminal_registry terminal_server terminal_attachments terminal_watch serve_streams terminal_push terminal_transport terminal_replica terminal_client terminal_input_events)
+foreach(suite bmux_tree control_unix manualfleet terminal_environment agenthooks providerevents provider_notify actionfocus terminal_registry terminal_server terminal_attachments terminal_watch serve_streams terminal_push terminal_transport terminal_replica terminal_client terminal_input_events)
   add_test(NAME ${suite}
     COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite}
       $<TARGET_FILE:boggart> --eval tests/${suite}.lua
@@ -1225,7 +1225,7 @@ if(TARGET boggart-studio)
       $<TARGET_FILE:boggart-studio> .
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   set_tests_properties(terminal_process_studio PROPERTIES TIMEOUT 30)
-  set(_pane_suites studio_terminal_image studio_terminal_remote studio_terminal_attached studio_terminal_native studio_terminal_shutdown studio_terminal_render studio_terminal_clusters studio_grid_text studio_agent_clusters studio_color_emoji studio_grapheme_edit studio_bmux studio_fleet_agents studio_agent_control studio_fleet_workers studio_manual_agents studio_agent_hooks studio_provider_events studio_fleet_keyboard)
+  set(_pane_suites studio_terminal_image studio_terminal_remote studio_terminal_attached studio_terminal_native studio_terminal_shutdown studio_terminal_render studio_terminal_clusters studio_grid_text studio_agent_clusters studio_color_emoji studio_grapheme_edit studio_bmux studio_bmux_tree studio_fleet_agents studio_agent_control studio_fleet_workers studio_manual_agents studio_agent_hooks studio_provider_events studio_fleet_keyboard)
   if(UNIX AND EXISTS /usr/bin/vim)
     list(APPEND _pane_suites studio_terminal_vim)
   endif()

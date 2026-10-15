@@ -3,7 +3,7 @@ local common = require "core.common"
 local config = require "core.config"
 local style = require "core.style"
 local keymap = require "core.keymap"
-local Object = require "core.object"
+local Tree = require "bmux.tree"
 local View = require "core.view"
 local DocView = require "core.docview"
 
@@ -55,19 +55,27 @@ function EmptyView:draw()
 end
 
 
-
-local Node = Object:extend()
-
-function Node:new(type)
-  self.type = type or "leaf"
-  self.position = { x = 0, y = 0 }
-  self.size = { x = 0, y = 0 }
-  self.views = {}
-  self.divider = 0.5
-  if self.type == "leaf" then
-    self:add_view(EmptyView())
-  end
-end
+-- These are the shared model nodes themselves; only presentation and host
+-- callbacks below depend on Studio. No mirrored content tree is maintained.
+local Node = Tree.class {
+  empty = function() return EmptyView() end,
+  is_empty = function(view) return view:is(EmptyView) end,
+  focused = function() return core.active_view end,
+  focus = function(view) core.set_active_view(view) end,
+  close = function(view, done) view:try_close(done) end,
+  after_close = function() core.last_active_view = nil end,
+  divider = function() return style.divider_size end,
+  locked_size = function(view)
+    -- Dock animations expose their destination size so hidden and visible
+    -- columns never overlap for a frame while the rail changes.
+    if view.get_target_size then
+      local x, y = view:get_target_size("x"), view:get_target_size("y")
+      if x ~= nil or y ~= nil then return x or view.size.x, y or view.size.y end
+    end
+    return view.size.x, view.size.y
+  end,
+  arrange_leaf = function(node) node:layout_leaf() end,
+}
 
 
 function Node:propagate(fn, ...)
@@ -99,213 +107,6 @@ function Node:on_mouse_released(...)
   else
     self:propagate("on_mouse_released", ...)
   end
-end
-
-
-function Node:consume(node)
-  for k, _ in pairs(self) do self[k] = nil end
-  for k, v in pairs(node) do self[k] = v   end
-end
-
-
-local type_map = { up="vsplit", down="vsplit", left="hsplit", right="hsplit" }
-
-function Node:split(dir, view, locked)
-  assert(self.type == "leaf", "Tried to split non-leaf node")
-  local type = assert(type_map[dir], "Invalid direction")
-  local last_active = core.active_view
-  local child = Node()
-  child:consume(self)
-  self:consume(Node(type))
-  self.a = child
-  self.b = Node()
-  if view then self.b:add_view(view) end
-  if locked then
-    self.b.locked = locked
-    core.set_active_view(last_active)
-  end
-  if dir == "up" or dir == "left" then
-    self.a, self.b = self.b, self.a
-  end
-  return child
-end
-
-
-function Node:close_active_view(root)
-  local do_close = function()
-    if #self.views > 1 then
-      local idx = self:get_view_idx(self.active_view)
-      table.remove(self.views, idx)
-      self:set_active_view(self.views[idx] or self.views[#self.views])
-    else
-      local parent = self:get_parent_node(root)
-      local is_a = (parent.a == self)
-      local other = parent[is_a and "b" or "a"]
-      if other:get_locked_size() then
-        self.views = {}
-        self:add_view(EmptyView())
-      else
-        parent:consume(other)
-        local p = parent
-        while p.type ~= "leaf" do
-          p = p[is_a and "a" or "b"]
-        end
-        p:set_active_view(p.active_view)
-      end
-    end
-    core.last_active_view = nil
-  end
-  self.active_view:try_close(do_close)
-end
-
-
-function Node:add_view(view)
-  assert(self.type == "leaf", "Tried to add view to non-leaf node")
-  assert(not self.locked, "Tried to add view to locked node")
-  if self.views[1] and self.views[1]:is(EmptyView) then
-    table.remove(self.views)
-  end
-  table.insert(self.views, view)
-  self:set_active_view(view)
-end
-
-
-function Node:set_active_view(view)
-  assert(self.type == "leaf", "Tried to set active view on non-leaf node")
-  self.active_view = view
-  core.set_active_view(view)
-end
-
-
-function Node:get_view_idx(view)
-  for i, v in ipairs(self.views) do
-    if v == view then return i end
-  end
-end
-
-
-function Node:get_node_for_view(view)
-  for _, v in ipairs(self.views) do
-    if v == view then return self end
-  end
-  if self.type ~= "leaf" then
-    return self.a:get_node_for_view(view) or self.b:get_node_for_view(view)
-  end
-end
-
-
--- All unlocked leaves under self, in tree order -- the cycle order for
--- root:next-pane / root:previous-pane (studio/data/plugins/panes.lua).
-function Node:get_leaves(t)
-  t = t or {}
-  if self.type == "leaf" then
-    if not self.locked then table.insert(t, self) end
-  else
-    self.a:get_leaves(t)
-    self.b:get_leaves(t)
-  end
-  return t
-end
-
-
--- The unlocked leaf adjacent to self in a screen direction, or nil past the
--- edge. The same probe root:switch-to-* does inline in commands/root.lua,
--- pulled out so pane focus (panes.lua) does not re-derive it.
-function Node:get_node_in_direction(root, dir)
-  local x, y
-  if dir == "left" or dir == "right" then
-    y = self.position.y + self.size.y / 2
-    x = self.position.x + (dir == "left" and -1 or self.size.x + style.divider_size)
-  else
-    x = self.position.x + self.size.x / 2
-    y = self.position.y + (dir == "up" and -1 or self.size.y + style.divider_size)
-  end
-  local node = root:get_child_overlapping_point(x, y)
-  if node ~= self and not node:get_locked_size() then return node end
-end
-
-
--- The highest ancestor of self before crossing into a docked panel -- the top
--- of the pane-split tree that zoom and balance treat as the whole content
--- area. Climbs past nested user splits and stops the moment a sibling turns
--- out to be a locked dock (menubar, rail).
-function Node:get_content_root(root)
-  local top = self
-  local parent = top:get_parent_node(root)
-  while parent do
-    local sibling = (parent.a == top) and parent.b or parent.a
-    if sibling.type == "leaf" and sibling.locked then break end
-    top = parent
-    parent = top:get_parent_node(root)
-  end
-  return top
-end
-
-
--- Reset every divider in this subtree to 0.5 -- root:balance-panes.
-function Node:balance()
-  if self.type ~= "leaf" then
-    self.divider = 0.5
-    self.a:balance()
-    self.b:balance()
-  end
-end
-
-
--- Toggle full-screen: self (normally a get_content_root() node) collapses to
--- just the active leaf's tabs; a second call restores the subtree the first
--- call stashed. A no-op when self is already a single leaf -- nothing to zoom.
-function Node:toggle_zoom()
-  if self.zoomed then
-    local saved = self.zoomed
-    local active = self.active_view
-    self:consume(saved)
-    core.set_active_view(active)
-    return
-  end
-  local leaf = self:get_node_for_view(core.active_view)
-  if not leaf or leaf == self then return end
-  local saved = Node()
-  saved:consume(self)
-  local fresh = Node()
-  fresh.views = leaf.views
-  fresh.active_view = leaf.active_view
-  fresh.zoomed = saved
-  self:consume(fresh)
-end
-
-
--- The main area: the first leaf that is not a docked panel.
---
--- Docked panels -- the chat list, the file tree -- are locked nodes, so "not
--- locked" is exactly the distinction wanted here: the node the application's
--- content lives in, whatever happens to be attached around it. Without this,
--- "put the conversation in the middle" has no way to name the middle.
-function Node:get_primary_node()
-  if self.type == "leaf" then
-    return (not self.locked) and self or nil
-  end
-  return self.a:get_primary_node() or self.b:get_primary_node()
-end
-
-
-function Node:get_parent_node(root)
-  if root.a == self or root.b == self then
-    return root
-  elseif root.type ~= "leaf" then
-    return self:get_parent_node(root.a) or self:get_parent_node(root.b)
-  end
-end
-
-
-function Node:get_children(t)
-  t = t or {}
-  for _, view in ipairs(self.views) do
-    table.insert(t, view)
-  end
-  if self.a then self.a:get_children(t) end
-  if self.b then self.b:get_children(t) end
-  return t
 end
 
 
@@ -388,19 +189,6 @@ function Node:get_tab_close_rect(idx)
 end
 
 
-function Node:get_child_overlapping_point(x, y)
-  local child
-  if self.type == "leaf" then
-    return self
-  elseif self.type == "hsplit" then
-    child = (x < self.b.position.x) and self.a or self.b
-  elseif self.type == "vsplit" then
-    child = (y < self.b.position.y) and self.a or self.b
-  end
-  return child:get_child_overlapping_point(x, y)
-end
-
-
 function Node:get_tab_rect(idx)
   local tw = math.max(MIN_TAB_WIDTH,
     math.min(style.tab_width, math.ceil(self.size.x / math.max(1, #self.views))))
@@ -412,93 +200,21 @@ function Node:get_tab_rect(idx)
 end
 
 
-function Node:get_divider_rect()
-  local x, y = self.position.x, self.position.y
-  if self.type == "hsplit" then
-    return x + self.a.size.x, y, style.divider_size, self.size.y
-  elseif self.type == "vsplit" then
-    return x, y + self.a.size.y, self.size.x, style.divider_size
-  end
-end
-
-
-function Node:get_locked_size()
-  if self.type == "leaf" then
-    if self.locked then
-      local av = self.active_view
-      -- Prefer the size the dock is heading for. Layout used to read the
-      -- current (possibly mid-animation) width, so a rail switch that hid
-      -- one dock and showed another left both columns painted for a frame.
-      if av.get_target_size then
-        local tx = av:get_target_size("x")
-        local ty = av:get_target_size("y")
-        if tx ~= nil or ty ~= nil then
-          return tx or av.size.x, ty or av.size.y
-        end
-      end
-      return av.size.x, av.size.y
-    end
-  else
-    local x1, y1 = self.a:get_locked_size()
-    local x2, y2 = self.b:get_locked_size()
-    if x1 and x2 then
-      local dsx = (x1 < 1 or x2 < 1) and 0 or style.divider_size
-      local dsy = (y1 < 1 or y2 < 1) and 0 or style.divider_size
-      return x1 + x2 + dsx, y1 + y2 + dsy
-    end
-  end
-end
-
-
 local function copy_position_and_size(dst, src)
   dst.position.x, dst.position.y = src.position.x, src.position.y
   dst.size.x, dst.size.y = src.size.x, src.size.y
 end
 
 
--- calculating the sizes is the same for hsplits and vsplits, except the x/y
--- axis are swapped; this function lets us use the same code for both
-local function calc_split_sizes(self, x, y, x1, x2)
-  local n
-  local ds = (x1 and x1 < 1 or x2 and x2 < 1) and 0 or style.divider_size
-  if x1 then
-    n = x1 + ds
-  elseif x2 then
-    n = self.size[x] - x2
+-- The shared model assigns pane bounds; Studio reserves its tab strip here.
+function Node:layout_leaf()
+  local av = self.active_view
+  if self:should_show_tabs() then
+    local _, _, _, th = self:get_tab_rect(1)
+    av.position.x, av.position.y = self.position.x, self.position.y + th
+    av.size.x, av.size.y = self.size.x, math.max(0, self.size.y - th)
   else
-    n = math.floor(self.size[x] * self.divider)
-  end
-  self.a.position[x] = self.position[x]
-  self.a.position[y] = self.position[y]
-  self.a.size[x] = n - ds
-  self.a.size[y] = self.size[y]
-  self.b.position[x] = self.position[x] + n
-  self.b.position[y] = self.position[y]
-  self.b.size[x] = self.size[x] - n
-  self.b.size[y] = self.size[y]
-end
-
-
-function Node:update_layout()
-  if self.type == "leaf" then
-    local av = self.active_view
-    if self:should_show_tabs() then
-      local _, _, _, th = self:get_tab_rect(1)
-      av.position.x, av.position.y = self.position.x, self.position.y + th
-      av.size.x, av.size.y = self.size.x, self.size.y - th
-    else
-      copy_position_and_size(av, self)
-    end
-  else
-    local x1, y1 = self.a:get_locked_size()
-    local x2, y2 = self.b:get_locked_size()
-    if self.type == "hsplit" then
-      calc_split_sizes(self, "x", "y", x1, x2)
-    elseif self.type == "vsplit" then
-      calc_split_sizes(self, "y", "x", y1, y2)
-    end
-    self.a:update_layout()
-    self.b:update_layout()
+    copy_position_and_size(av, self)
   end
 end
 
@@ -585,7 +301,6 @@ function Node:draw()
     self:propagate("draw")
   end
 end
-
 
 
 local RootView = View:extend()
@@ -734,12 +449,7 @@ function RootView:on_mouse_moved(x, y, dx, dy)
       panel:set_target_size(axis, (from or panel.size[axis]) + delta)
       return
     end
-    if node.type == "hsplit" then
-      node.divider = node.divider + dx / node.size.x
-    else
-      node.divider = node.divider + dy / node.size.y
-    end
-    node.divider = common.clamp(node.divider, 0.01, 0.99)
+    node:resize_by(dx, dy)
     return
   end
 
