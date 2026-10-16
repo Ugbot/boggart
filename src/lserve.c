@@ -61,6 +61,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
+#include <sys/file.h>
 #include <sys/un.h>
 #include <unistd.h>
 #endif
@@ -104,6 +105,7 @@ struct Server {
   uv_loop_t *loop;
   Server *next;
   char socket_path[256];
+  char lock_path[256];int lock_fd;uint64_t lock_dev,lock_ino;
   uint64_t socket_dev, socket_ino;
   size_t body_limit;
 };
@@ -125,6 +127,40 @@ static void unlink_socket(Server *s) {
 #endif
   s->socket_ino=0;
 }
+static void unlock_socket(Server *s) {
+#ifndef _WIN32
+  if(s->lock_fd>=0) {
+    struct stat info;
+    if(!lstat(s->lock_path,&info) && S_ISREG(info.st_mode) && info.st_uid==geteuid()
+      && (uint64_t)info.st_dev==s->lock_dev && (uint64_t)info.st_ino==s->lock_ino)unlink(s->lock_path);
+    close(s->lock_fd);s->lock_fd=-1;
+  }
+#else
+  (void)s;
+#endif
+}
+#ifndef _WIN32
+static int lock_socket(Server *s) {
+  static const char magic[]="boggart-uds-lock-v1\n";
+  snprintf(s->lock_path,sizeof s->lock_path,"%s.lock",s->socket_path);
+  int fd=open(s->lock_path,O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600),created=fd>=0,error=0;
+  if(fd<0 && errno==EEXIST)fd=open(s->lock_path,O_RDWR|O_NOFOLLOW|O_CLOEXEC);
+  if(fd<0)return uv_translate_sys_error(errno);
+  struct stat info={0},current;char bytes[sizeof magic];
+  if(fstat(fd,&info)<0){error=uv_translate_sys_error(errno);goto done;}
+  if(!S_ISREG(info.st_mode) || info.st_uid!=geteuid() || (info.st_mode&077)){error=UV_EACCES;goto done;}
+  if(created) {
+    if(write(fd,magic,sizeof magic-1)!=(ssize_t)(sizeof magic-1)){error=UV_EIO;goto done;}
+  } else if(info.st_size!=(off_t)(sizeof magic-1) || pread(fd,bytes,sizeof magic-1,0)!=(ssize_t)(sizeof magic-1)
+    || memcmp(bytes,magic,sizeof magic-1)){error=UV_EEXIST;goto done;}
+  if(flock(fd,LOCK_EX|LOCK_NB)<0){error=uv_translate_sys_error(errno);goto done;}
+  if(lstat(s->lock_path,&current)<0 || current.st_dev!=info.st_dev || current.st_ino!=info.st_ino){error=UV_EEXIST;goto done;}
+  s->lock_fd=fd;s->lock_dev=(uint64_t)info.st_dev;s->lock_ino=(uint64_t)info.st_ino;return 0;
+done:
+  if(created && !lstat(s->lock_path,&current) && current.st_dev==info.st_dev && current.st_ino==info.st_ino)unlink(s->lock_path);
+  close(fd);return error;
+}
+#endif
 
 #define SERVER_MT "boggart.serve.server"
 
@@ -631,11 +667,23 @@ static int bind_socket(Server *s) {
   struct stat info;
   if(lstat(parent,&info)<0)return uv_translate_sys_error(errno);
   if(!S_ISDIR(info.st_mode) || info.st_uid!=geteuid() || (info.st_mode&077))return UV_EACCES;
-  if(!lstat(s->socket_path,&info))return UV_EEXIST;
-  if(errno!=ENOENT)return uv_translate_sys_error(errno);
+  int locked=lock_socket(s);if(locked)return locked;
+  address.sun_family=AF_UNIX;memcpy(address.sun_path,s->socket_path,length+1);
+  if(!lstat(s->socket_path,&info)) {
+    /* Recover only an owned private socket whose listener is definitively
+     * gone. Never remove files, links, live/busy listeners or replacements. */
+    if(!S_ISSOCK(info.st_mode) || info.st_uid!=geteuid() || (info.st_mode&077))return UV_EEXIST;
+    int probe=socket(AF_UNIX,SOCK_STREAM,0);if(probe<0)return uv_translate_sys_error(errno);
+    if(fcntl(probe,F_SETFD,FD_CLOEXEC)<0 || fcntl(probe,F_SETFL,O_NONBLOCK)<0){int error=errno;close(probe);return uv_translate_sys_error(error);}
+    int result=connect(probe,(struct sockaddr *)&address,sizeof address),error=errno;close(probe);
+    if(result==0 || error!=ECONNREFUSED)return UV_EEXIST;
+    struct stat current;
+    if(lstat(s->socket_path,&current)<0 || !S_ISSOCK(current.st_mode) || current.st_uid!=geteuid()
+      || current.st_dev!=info.st_dev || current.st_ino!=info.st_ino)return UV_EEXIST;
+    if(unlink(s->socket_path)<0)return uv_translate_sys_error(errno);
+  } else if(errno!=ENOENT)return uv_translate_sys_error(errno);
   int fd=socket(AF_UNIX,SOCK_STREAM,0);if(fd<0)return uv_translate_sys_error(errno);
   int error=0;
-  address.sun_family=AF_UNIX;memcpy(address.sun_path,s->socket_path,length+1);
   if(fcntl(fd,F_SETFD,FD_CLOEXEC)<0 || bind(fd,(struct sockaddr *)&address,sizeof address)<0)error=uv_translate_sys_error(errno);
   else if(lstat(s->socket_path,&info)<0)error=uv_translate_sys_error(errno);
   else if(!S_ISSOCK(info.st_mode) || info.st_uid!=geteuid())error=UV_EACCES;
@@ -725,7 +773,7 @@ static int l_listen(lua_State *L) {
   ServerOwner *owner=lua_newuserdatauv(L,sizeof *owner,0);owner->native=NULL;
   luaL_setmetatable(L,SERVER_MT);
   Server *s=calloc(1,sizeof *s);if(!s)return luaL_error(L,"server allocation failed");
-  owner->native=s;lua_rawgeti(L,LUA_REGISTRYINDEX,LUA_RIDX_MAINTHREAD);s->L=lua_tothread(L,-1);lua_pop(L,1);
+  owner->native=s;s->lock_fd=-1;lua_rawgeti(L,LUA_REGISTRYINDEX,LUA_RIDX_MAINTHREAD);s->L=lua_tothread(L,-1);lua_pop(L,1);
   s->handler_ref=LUA_NOREF;s->loop=loop;s->body_limit=(size_t)body_limit;
   s->unix_socket=pathbuf[0]!=0;memcpy(s->socket_path,pathbuf,strlen(pathbuf)+1);
   s->next=servers;servers=s;
@@ -816,6 +864,7 @@ static void stop_server(Server *s,lua_State *L) {
   s->stopped=1;
   for(Conn *c=s->conns;c;){Conn *next=c->next;conn_close(c);c=next;}
   unlink_socket(s);
+  unlock_socket(s);
   if(s->initialized && !uv_is_closing((uv_handle_t *)server_stream(s)))uv_close((uv_handle_t *)server_stream(s),on_server_closed);
   if(s->handler_ref!=LUA_NOREF){luaL_unref(L,LUA_REGISTRYINDEX,s->handler_ref);s->handler_ref=LUA_NOREF;}
   free(s->token);s->token=NULL;

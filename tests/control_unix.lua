@@ -42,6 +42,21 @@ assert(uv.fs_unlink(path));local file=assert(io.open(path,'w'));file:write('repl
 assert(server:stop() and not server:stop());uv.run('nowait')
 file=assert(io.open(path));assert(file:read('*a')=='replacement');file:close();assert(uv.fs_unlink(path))
 server=nil;collectgarbage('collect');uv.run('nowait')
+local lock_path=path..'.lock'
+file=assert(io.open(lock_path,'w'));file:write('user file');file:close();assert(uv.fs_chmod(lock_path,384))
+assert(not serve.listen{socket=path,handler=handler},'an unrelated lock-path file is not adopted')
+file=assert(io.open(lock_path));assert(file:read('*a')=='user file');file:close();assert(uv.fs_unlink(lock_path))
+assert(uv.fs_symlink(path,lock_path));assert(not serve.listen{socket=path,handler=handler},'a lock-path symlink is refused')
+assert(uv.fs_lstat(lock_path).type=='link');assert(uv.fs_unlink(lock_path))
+
+-- SIGKILL cannot unlink its socket. A private stale inode is recoverable,
+-- while the live/file/link collision checks above retain their guarantees.
+local stale=proc.start('BOGGART_TEST_SOCKET='..quote(path)..' '..quote(uv.exepath())..' --eval tests/fixtures/control_stale.lua',10)
+local until_stale=uv.hrtime()+3e9
+repeat uv.run('nowait');if uv.fs_lstat(path)then break end;uv.sleep(1)until uv.hrtime()>until_stale
+assert(uv.fs_lstat(path));stale:kill('sigkill');stale:wait()
+assert(uv.fs_lstat(path),'crash leaves the owned socket inode')
+server=assert(serve.listen{socket=path,handler=handler});server:stop();uv.run('nowait')
 
 local function await(check)
   local deadline=uv.hrtime()+2e9
