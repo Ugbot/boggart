@@ -176,6 +176,8 @@ local function pane_effect(host, c, surface, node, depth)
   end
 end
 
+M.reference=descriptor -- shared with trusted checkpoint reconstruction
+
 function M.prepare(host, c)
   local valid, why=validate(c);if not valid then return nil,why end
   if c.host_id~=host.host_id or c.revision~=host.revision then return failure(409,'stale layout; fetch a current snapshot') end
