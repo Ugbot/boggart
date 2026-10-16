@@ -17,7 +17,13 @@ local ok,err=xpcall(function()
   end
   local rec,view=launcher.launch{provider='boggart',name='Control fixture',cmd=launcher.boggart_command(),
     args={'--eval',core.project_dir..'/tests/fixtures/agent_control_tui.lua'}}
+  local poll=registry.poll;local ready_callbacks=0
+  registry.poll=function(self,id)
+    if id~=nil then ready_callbacks=ready_callbacks+1;return poll(self,id)end
+  end
   await(function()return rec.state=='idle' and rec.session_id and rec.capabilities.prompt end)
+  registry.poll=poll
+  assert(ready_callbacks>0 and view.terminal:channel():watch_state().active,'real TUI state arrives without periodic Fleet polling')
   assert(rec.model and rec.input_revision==0 and view.terminal:channel(),'real session reports over inherited channel')
   local sid,pid=rec.session_id,rec.pid
   assert(not registry:control(rec.id,rec.generation+1,'prompt',{text='stale'}))

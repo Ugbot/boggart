@@ -28,6 +28,7 @@ void boggart_http_shutdown(lua_State *L); /* src/lhttp.c: close raw uv handles b
 void boggart_serve_shutdown(lua_State *L);
 void boggart_terminal_shutdown(lua_State *L);
 void boggart_channel_shutdown(lua_State *L);
+void boggart_channel_quiesce(lua_State *L);
 int luaopen_boggart_channel(lua_State *L);
 void boggart_station_shutdown(lua_State *L); /* src/lstation.c: same doctrine for the ZMQ polls */
 int luaopen_boggart_sys(lua_State *L);
@@ -346,6 +347,7 @@ int main(int argc, char **argv) {
   /* Close our raw curl-on-libuv handles before lua_close() runs luv's loop_gc,
    * which would otherwise type-confuse on their non-luv handle->data and fault
    * at exit (the exit-139 crash). See boggart_http_shutdown in src/lhttp.c. */
+  boggart_channel_quiesce(L);
   boggart_serve_shutdown(L);
   boggart_http_shutdown(L);
   boggart_station_shutdown(L);

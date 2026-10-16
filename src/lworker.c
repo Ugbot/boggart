@@ -152,6 +152,8 @@ extern void bus_emit(const char *topic, const char *data, size_t len);
 extern void boggart_http_shutdown(lua_State *L);
 extern void boggart_serve_shutdown(lua_State *L);
 extern void boggart_terminal_shutdown(lua_State *L);
+extern void boggart_channel_quiesce(lua_State *L);
+extern void boggart_channel_shutdown(lua_State *L);
 extern void boggart_station_shutdown(lua_State *L);
 
 /* ---- slots and rings ------------------------------------------------------ */
@@ -731,7 +733,11 @@ static void worker_main(void *arg) {
    * loop can drain. An onmessage worker keeps http alive for its message loop
    * and is shut down after it. Idempotent, and a no-op if the worker did no
    * HTTP. This is also what lets a worker run a model turn AND exit cleanly. */
-  if (!h->want_loop) { boggart_serve_shutdown(L); boggart_http_shutdown(L); boggart_station_shutdown(L); boggart_terminal_shutdown(L); }
+  if (!h->want_loop) {
+    boggart_channel_quiesce(L);
+    boggart_serve_shutdown(L); boggart_http_shutdown(L); boggart_station_shutdown(L);
+    boggart_terminal_shutdown(L); boggart_channel_shutdown(L);
+  }
 
   /* Run the loop out. Plain workers: everything the source started (timers,
    * sys.exec pipes) has already finished or finishes here, then uv_run
@@ -751,10 +757,12 @@ static void worker_main(void *arg) {
    *    state, so nothing may touch `loop` after this line;
    * 4. only then publish the exit, so a joiner can never observe "exited"
    *    while the state or loop still exists. */
+  boggart_channel_quiesce(L);
   boggart_serve_shutdown(L);
   boggart_http_shutdown(L); /* onmessage path + neutralise curl handles before */
   boggart_station_shutdown(L);
   boggart_terminal_shutdown(L);
+  boggart_channel_shutdown(L);
                             /* lua_close's loop_gc (idempotent after the above) */
   bog_sem_wait(&h->gate);
   atomic_store_explicit(&h->accepting, 0, memory_order_release);

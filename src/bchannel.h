@@ -20,6 +20,10 @@ int bchannel_send(bchannel *channel,const void *bytes,size_t length);
 size_t bchannel_next_size(const bchannel *channel);
 size_t bchannel_take(bchannel *channel,void *bytes,size_t capacity);
 bchannel_status bchannel_state(const bchannel *channel);
+/* Owning-thread readiness hook: complete inbound frames and closure only.
+ * Callback must only schedule work; it must not destroy/reenter the channel.
+ * Installing/replacing a hook does not call it. NULL removes observation. */
+void bchannel_set_notify(bchannel *channel,void (*notify)(void *),void *context);
 void bchannel_close(bchannel *channel);
 void bchannel_destroy(bchannel *channel);
 void bchannel_shutdown(uv_loop_t *loop);

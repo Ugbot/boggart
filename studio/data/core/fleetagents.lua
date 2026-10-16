@@ -83,6 +83,19 @@ function M.bind(rec,view)
     interrupt=control and function()return control:command('interrupt')end,
     approve=control and function(_,payload)return control:command('approve',payload)end,
   })
+  if channel then
+    channel:watch(function(owner)
+      if registry.agents[rec.id]~=rec or rec.retired then owner:watch(nil);return end
+      -- Control.poll consumes at most 64 frames; the native queue holds 128.
+      -- Drain both bounded batches without waiting for a periodic roster scan.
+      for _=1,2 do
+        registry:poll(rec.id)
+        if owner:state().received_frames==0 or control.error then break end
+      end
+      if control.error or owner:state().closed then owner:watch(nil)end
+      core.redraw=true
+    end)
+  end
   registry:poll()
 end
 return M

@@ -98,8 +98,8 @@ function Registry:control(id, generation, action, payload)
   if action=='focus' and result then rec.attention=false;rec.attention_seen=rec.reported_at end
   return result,why
 end
-function Registry:poll()
-  for _,id in ipairs(self.order) do
+function Registry:poll(id)
+  local function refresh(id)
     local rec,owner=self.agents[id],self.owners[id]
     if owner and owner.poll and not ended[rec.state] then
       local ok,fields=pcall(owner.poll,rec)
@@ -107,6 +107,7 @@ function Registry:poll()
       elseif not ok then self:update(id,rec.generation,{state="unreachable",error=tostring(fields):sub(1,1024)}) end
     end
   end
+  if id~=nil then refresh(id)else for _,key in ipairs(self.order)do refresh(key)end end
 end
 function Registry:records()
   local out,seen={},{}
