@@ -6,6 +6,21 @@ local ready=assert(os.getenv('BMUX_SYSTEM_READY'))
 local expected=assert(tonumber(os.getenv('BMUX_SYSTEM_PANES')))
 local tracing=os.getenv('BOGGART_STUDIO_STARTUP_TRACE')=='1'
 local milestones={}
+local resumes={}
+local resume=coroutine.resume
+local resume_count=0
+if os.getenv('BOGGART_STUDIO_COROUTINE_TRACE')=='1'then
+  assert(tracing,'coroutine trace requires startup trace')
+  coroutine.resume=function(co,...)
+    local started=uv.hrtime();local result=table.pack(resume(co,...));local finished=uv.hrtime()
+    resume_count=resume_count+1
+    if #resumes<128 then
+      resumes[#resumes+1]={start_ns=started,end_ns=finished,elapsed_ns=finished-started,
+        stack=debug.traceback(co):sub(1,4096),status=coroutine.status(co)}
+    end
+    return table.unpack(result,1,result.n)
+  end
+end
 local function mark(name)
   if tracing and not milestones[name]then milestones[name]=uv.hrtime()end
 end
@@ -47,7 +62,9 @@ core.add_thread(function()
   local ok,why=xpcall(function()
     local done,problem=false
     mark('join_requested')
-    require('core.bmuxlayout').join(socket,nil,function(e,s)joined=s;problem=e;done=true;mark('join_callback')end)
+    require('core.bmuxlayout').join(socket,nil,function(e,s)
+      joined=s;problem=e;done=true;mark('join_callback');coroutine.resume=resume
+    end)
     local deadline=uv.hrtime()+30e9;local diagnostic={}
     while uv.hrtime()<deadline do
       if problem then error(problem.message)end
@@ -71,10 +88,25 @@ core.add_thread(function()
       diagnostic.total=total;diagnostic.live=live;diagnostic.frame=first_frame or system._test_present_probe()
       if first_frame and total==expected and live==expected then
         assert(view.cols==80 and view.rows==24 and view.history_rows==0,'unexpected fixture geometry')
+        local function identify(path)
+          local f=io.open(path,'rb')
+          if not f then return {kind='embedded; executable hash identifies asset'}end
+          local identity={kind='file',path=path,sha256=require('hash_c').sha256(f:read('a'))}
+          f:close();return identity
+        end
+        local core_source=identify(DATADIR..'/core/init.lua')
+        local font_assets={}
+        for _,name in ipairs{'font.ttf','monospace.ttf','icons.ttf'}do
+          font_assets[name]=identify(DATADIR..'/fonts/'..name)
+        end
         local out={schema=1,pid=uv.os_getpid(),panes=total,attached=live,first_present_ns=first_frame.ns,
+          core_source=core_source,
+          font_assets=font_assets,font_scope='bundled requested fonts; OS-selected fallback faces are not fingerprinted',
           home=os.getenv('HOME'),store=bog.paths.data,
           all_attached_ns=uv.hrtime(),first_frame=first_frame,cols=view.cols,rows=view.rows,
           startup_milestones=tracing and milestones or nil,
+          startup_resumes=#resumes>0 and resumes or nil,
+          startup_resume_count=resume_count,startup_resumes_truncated=resume_count>#resumes,
           frame_limit=require('core.config').fps,window_points={1000,800},
           native_sources=require('terminal').source(),renderer_sources=renderer.terminal_sources()}
         -- A signal observer adds no idle wakeup/poll. Parent requests normal

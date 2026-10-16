@@ -1,0 +1,13 @@
+/Users/bengamble/boggart/tests/studio_project_scan.lua:22: large rebuild must yield before publishing
+stack traceback:
+	[C]: in global 'assert'
+	/Users/bengamble/boggart/tests/studio_project_scan.lua:22: in function </Users/bengamble/boggart/tests/studio_project_scan.lua:5>
+	[C]: in global 'xpcall'
+	/Users/bengamble/boggart/tests/studio_project_scan.lua:5: in main chunk
+	[C]: in function 'dofile'
+	[C]: in global 'xpcall'
+	/Users/bengamble/boggart/studio/data/core/init.lua:867: in field 'try'
+	/Users/bengamble/boggart/studio/data/core/init.lua:652: in field 'init'
+	[string "local core..."]:17: in function <[string "local core..."]:4>
+	[C]: in global 'xpcall'
+	[string "local core..."]:4: in main chunk

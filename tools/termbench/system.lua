@@ -4,6 +4,9 @@ local uv=require 'uv';local json=require 'json';local hash=require 'hash_c'
 local Client=require 'terminal.client';local measure=require 'termbench.measure'
 local owned,clients={},{};local root=uv.cwd()
 local startup_trace=os.getenv('BMUX_SYSTEM_STARTUP_TRACE')=='1'
+local coroutine_trace=os.getenv('BMUX_SYSTEM_COROUTINE_TRACE')=='1'
+assert(not os.getenv('BMUX_SYSTEM_COROUTINE_TRACE')or coroutine_trace,'invalid BMUX_SYSTEM_COROUTINE_TRACE')
+assert(not coroutine_trace or startup_trace,'coroutine trace requires startup trace')
 assert(not os.getenv('BMUX_SYSTEM_STARTUP_TRACE')or startup_trace,'invalid BMUX_SYSTEM_STARTUP_TRACE')
 local function setting(name,default,lo,hi)
   local n=tonumber(os.getenv(name)or default)
@@ -136,6 +139,7 @@ local function studio(executable,dir,socket,n,app_home)
   local p=spawn(executable,{'.'},home,'studio',{BOGGART_STUDIO_SCRIPT=root..'/tools/termbench/studio_system.lua',
     BMUX_SYSTEM_SOCKET=socket,BMUX_SYSTEM_READY=ready,BMUX_SYSTEM_PANES=tostring(n),
     BOGGART_STUDIO_STARTUP_TRACE=startup_trace and '1'or nil,
+    BOGGART_STUDIO_COROUTINE_TRACE=coroutine_trace and '1'or nil,
     HOME=app_home or home,BOGGART_HOME=(app_home or home)..'/.boggart'})
   local pulse=uv.new_timer();pulse:start(1,1,function()end)
   local ok,out=xpcall(function()
@@ -148,6 +152,19 @@ local function studio(executable,dir,socket,n,app_home)
     and out.first_frame.rgba[3]==192 and out.first_frame.rgba[4]==255,'unvalidated Studio frame')
   for _,f in ipairs(out.native_sources.files)do assert(digest(f.path)==f.sha256,'stale native binary: '..f.path)end
   for path,expected_hash in pairs(out.renderer_sources)do assert(digest(path)==expected_hash,'stale renderer binary: '..path)end
+  if out.core_source.kind=='file'then
+    assert(digest(out.core_source.path)==out.core_source.sha256,'Studio core source identity changed')
+  end
+  for _,font in pairs(out.font_assets)do
+    if font.kind=='file'then assert(digest(font.path)==font.sha256,'Studio font identity changed')end
+  end
+  if coroutine_trace then
+    assert(out.startup_resumes and not out.startup_resumes_truncated,'incomplete coroutine startup trace')
+    for _,span in ipairs(out.startup_resumes)do
+      assert(span.start_ns>=p.start_ns and span.end_ns<=out.all_attached_ns
+        and span.elapsed_ns==span.end_ns-span.start_ns and span.elapsed_ns>=0,'invalid coroutine startup span')
+    end
+  end
   if startup_trace then
     out.startup_phases=measure.startup_phases(assert(read(p.log)),p.start_ns,out.first_present_ns)
     for _,name in ipairs{'script_loaded','first_step_enter','first_draw_enter','first_draw_return',
@@ -193,6 +210,7 @@ local function main()
     build_label=os.getenv('BMUX_BENCH_BUILD_LABEL')or 'unspecified; binary hashes authoritative',
     configuration={project_dir=root,home_profile=home_profile,startup_only=starts_only,
       startup_trace=startup_trace,startup_trace_cost='opt-in phase clocks and stderr writes perturb startup; keep uninstrumented latency alongside attribution',
+      coroutine_trace=coroutine_trace,
       home='controlled private homes; shared-existing reuses warmup initialized HOME across startup trials; shared-new uses one new HOME per pair; separate-new uses independent new homes',
       resource_home=home_profile=='separate-new'and 'independent new homes per pair'or 'one new shared home per resource scenario; sampled after app initialization',
       credentials='no user credentials/config inherited',
