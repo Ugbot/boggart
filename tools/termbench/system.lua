@@ -65,9 +65,9 @@ local function mkdir(path)assert(uv.fs_mkdir(path,448));return path end
 local function client(socket)
   local c=Client.new{socket=socket};clients[#clients+1]=c;return c
 end
-local function serve(executable,dir)
+local function serve(executable,dir,app_home)
   local home=mkdir(dir..'/server');local socket=dir..'/sock'
-  local p=spawn(executable,{'serve','--socket',socket},home,'server')
+  local p=spawn(executable,{'serve','--socket',socket},home,'server',app_home and {HOME=app_home,BOGGART_HOME=app_home..'/.boggart'})
   -- Socket observation uses a 1 ms repeating timer. Its error is included in
   -- process-to-health readiness, never in timed request callbacks below.
   local pulse=uv.new_timer();pulse:start(1,1,function()end)
@@ -129,16 +129,18 @@ local function setup(c,fixture,n)
   assert(call(c,'GET','/terminals').total==n,'wrong resident PTY count')
   return records,layout
 end
-local function studio(executable,dir,socket,n)
+local function studio(executable,dir,socket,n,app_home)
   local home=mkdir(dir..'/studio');local ready=home..'/ready.json'
   local p=spawn(executable,{'.'},home,'studio',{BOGGART_STUDIO_SCRIPT=root..'/tools/termbench/studio_system.lua',
-    BMUX_SYSTEM_SOCKET=socket,BMUX_SYSTEM_READY=ready,BMUX_SYSTEM_PANES=tostring(n)})
+    BMUX_SYSTEM_SOCKET=socket,BMUX_SYSTEM_READY=ready,BMUX_SYSTEM_PANES=tostring(n),
+    HOME=app_home or home,BOGGART_HOME=(app_home or home)..'/.boggart'})
   local pulse=uv.new_timer();pulse:start(1,1,function()end)
   local ok,out=xpcall(function()
     return await(function()check(p);local bytes=read(ready);if bytes then return assert(json.decode(bytes))end end,'Studio first frame and all attachments',45000)
   end,debug.traceback)
   pulse:stop();pulse:close();if not ok then error(out,0)end
   assert(out.pid==p.pid and out.panes==n and out.attached==n and out.first_present_ns>=p.start_ns,'invalid Studio readiness')
+  assert(uv.fs_realpath(out.store)==uv.fs_realpath((app_home or home)..'/.boggart'),'Studio used an unexpected application store')
   assert(out.first_frame.valid and out.first_frame.rgba[1]==0 and out.first_frame.rgba[2]==64
     and out.first_frame.rgba[3]==192 and out.first_frame.rgba[4]==255,'unvalidated Studio frame')
   for _,f in ipairs(out.native_sources.files)do assert(digest(f.path)==f.sha256,'stale native binary: '..f.path)end
@@ -161,21 +163,31 @@ local function main()
   local starts=setting('BMUX_SYSTEM_STARTS',20,1,200);local idle_samples=setting('BMUX_SYSTEM_IDLE_SAMPLES',3,1,20)
   local idle_ms=setting('BMUX_SYSTEM_IDLE_MS',5000,100,60000);local settle_ms=setting('BMUX_SYSTEM_SETTLE_MS',1000,0,60000)
   local rtt_samples=setting('BMUX_SYSTEM_RTT_SAMPLES',1000,1,10000);local rtt_warm=setting('BMUX_SYSTEM_RTT_WARMUPS',100,1,1000)
+  local home_profile=os.getenv('BMUX_SYSTEM_HOME_PROFILE')or 'shared-existing'
+  assert(home_profile=='separate-new'or home_profile=='shared-new'or home_profile=='shared-existing','invalid home profile')
+  local starts_only=os.getenv('BMUX_SYSTEM_STARTS_ONLY')=='1'
   local panes={};for part in (os.getenv('BMUX_SYSTEM_PANES')or '1,10,100'):gmatch('[^,]+')do
     local n=tonumber(part);assert(n and n%1==0 and n>=1 and n<=100,'invalid pane count');panes[#panes+1]=n
   end
   assert(#panes>0 and #panes<=3,'one to three pane scenarios required')
   assert(collectgarbage('isrunning'),'normal GC required')
   local dir=assert(uv.fs_mkdtemp('/tmp/bmux-system-XXXXXX'))
+  -- The excluded warmup initializes this private home. Measured trials always
+  -- use fresh processes and a fresh named Bmux session/socket, retaining the
+  -- installed application store/config. No real user home is touched.
+  local retained=home_profile=='shared-existing'and mkdir(dir..'/initialized-home')or nil
   local report={schema=1,scope='separate-process startup, full-policy control RTT, idle per-PID CPU/RSS',
     environment={uname=uv.os_uname(),cpu=uv.cpu_info()[1].model,memory_bytes=uv.get_total_memory(),libuv=uv.version_string(),
       lua=_VERSION,boggart=bog.version,utc=os.date('!%Y-%m-%dT%H:%M:%SZ'),video_driver=os.getenv('SDL_VIDEODRIVER')},
     build_label=os.getenv('BMUX_BENCH_BUILD_LABEL')or 'unspecified; binary hashes authoritative',
-    configuration={project_dir=root,home='new private HOME per server/client; no credentials/config inherited',
+    configuration={project_dir=root,home_profile=home_profile,startup_only=starts_only,
+      home='controlled private homes; shared-existing reuses warmup initialized HOME across startup trials; shared-new uses one new HOME per pair; separate-new uses independent new homes',
+      resource_home=home_profile=='separate-new'and 'independent new homes per pair'or 'one new shared home per resource scenario; sampled after app initialization',
+      credentials='no user credentials/config inherited',
       history_capacity=2000,geometry={80,24},visible_panes=1,topology='balanced split tree, first pane zoomed, ALL N views attached',
       idle_ms=idle_ms,idle_samples=idle_samples,settle_ms=settle_ms,resource_scope='server, Studio and explicitly owned fixture PIDs; coordinator/sampler/other helpers excluded',
       rss='resident bytes; role sums do not deduplicate shared pages',cpu='user+system delta / per-PID monotonic interval; percent of one CPU, summed by role',
-      startup='fresh processes/homes/databases, warm filesystem caches; no global cache flush',
+      startup='fresh processes, warm filesystem caches; home/store initialization defined by home_profile; no global cache flush',
       server_ready='before uv.spawn to first fully decoded healthy /health reply; 1ms socket observation and safe readiness GET retries included',
       studio_ready='before uv.spawn to first RGB-validated SDL present API return; ready-file observation excluded',
       full_start='before server uv.spawn through readiness probe, native PTY/layout setup and Studio spawn to first validated terminal present',
@@ -188,8 +200,10 @@ local function main()
   local server_times,studio_times,full_times={},{},{}
   for i=0,starts do
     io.stderr:write('system termbench: startup ',i,'/',starts,'\n');io.stderr:flush()
-    local trial=mkdir(dir..'/start-'..i);local server,c,socket=serve(executable,trial)
-    setup(c,fixture,1);local ui,ready=studio(studio_bin,trial,socket,1)
+    local trial=mkdir(dir..'/start-'..i)
+    local app_home=retained or home_profile=='shared-new'and mkdir(trial..'/home')or nil
+    local server,c,socket=serve(executable,trial,app_home)
+    setup(c,fixture,1);local ui,ready=studio(studio_bin,trial,socket,1,app_home)
     if i>0 then
       local a,b=server.ready_ns-server.start_ns,ready.first_present_ns-ui.start_ns
       local full=ready.first_present_ns-server.start_ns
@@ -203,10 +217,12 @@ local function main()
   end
   report.startup.server_ns=measure.summary(server_times);report.startup.studio_ns=measure.summary(studio_times)
   report.startup.full_start_ns=measure.summary(full_times)
-  for _,n in ipairs(panes)do
+  for _,n in ipairs(starts_only and {}or panes)do
     io.stderr:write('system termbench: ',n,' resident/attached panes\n');io.stderr:flush()
-    local trial=mkdir(dir..'/panes-'..n);local server,c,socket=serve(executable,trial)
-    local records,layout=setup(c,fixture,n);local ui,ready=studio(studio_bin,trial,socket,n)
+    local trial=mkdir(dir..'/panes-'..n)
+    local app_home=home_profile~='separate-new'and mkdir(trial..'/home')or nil
+    local server,c,socket=serve(executable,trial,app_home)
+    local records,layout=setup(c,fixture,n);local ui,ready=studio(studio_bin,trial,socket,n,app_home)
     sleep(settle_ms)
     local pids,roles={server.pid,ui.pid},{[server.pid]='server',[ui.pid]='studio'}
     for _,r in ipairs(records)do pids[#pids+1]=r.pid;assert(not roles[r.pid],'duplicate owned PID');roles[r.pid]='pty'end
@@ -228,7 +244,8 @@ local function main()
     stop_normal(ui,'sigusr1');c:close();stop_normal(server)
   end
   local f=assert(io.open(output,'wb'));assert(f:write(json.encode(report),'\n'));assert(f:close())
-  print('System termbench: '..starts..' process starts; pane scenarios '..table.concat(panes,',')..'; report '..output)
+  print('System termbench: '..home_profile..'; '..starts..' process starts; '
+    ..(starts_only and 'startup only'or 'pane scenarios '..table.concat(panes,','))..'; report '..output)
 end
 local ok,why=xpcall(main,debug.traceback)
 for _,c in ipairs(clients)do c:close()end
