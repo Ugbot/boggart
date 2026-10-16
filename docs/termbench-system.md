@@ -12,6 +12,7 @@ env -u SDL_VIDEODRIVER \
   BMUX_SYSTEM_STUDIO="$PWD/boggart-studio" \
   BMUX_BENCH_FIXTURE="$PWD/build/termbench_pty" \
   BMUX_SYSTEM_SAMPLER="$PWD/build/termbench_sample" \
+  BMUX_SYSTEM_HOME_PROFILE=shared-existing \
   BMUX_BENCH_BUILD_LABEL=RelWithDebInfo-none \
   BMUX_SYSTEM_REPORT="$PWD/build/bmux-system.json" \
   ./boggart --eval tools/termbench/system.lua
@@ -24,6 +25,8 @@ The native sampler supports macOS and Linux; this capture verifies macOS.
 | Environment option | Default | Bounds |
 | --- | --- | --- |
 | `BMUX_SYSTEM_STARTS` | 20, after one warmup | 1–200 |
+| `BMUX_SYSTEM_HOME_PROFILE` | `shared-existing` | `shared-existing`, `shared-new`, `separate-new` |
+| `BMUX_SYSTEM_STARTS_ONLY` | unset | `1` omits resource/RTT scenarios |
 | `BMUX_SYSTEM_PANES` | `1,10,100` | 1–3 scenarios, each 1–100 |
 | `BMUX_SYSTEM_IDLE_SAMPLES` | 3 | 1–20 |
 | `BMUX_SYSTEM_IDLE_MS` | 5000 | 100–60000 |
@@ -36,13 +39,21 @@ are annotations; recorded executable hashes identify what actually ran.
 
 ## Boundaries
 
-Startup creates fresh private server and Studio homes/databases for each trial.
-This is **first-use, separate-installation startup**, with warmed filesystem
-caches. It includes first-run store initialization in both processes; it is not
-a measurement of restarting an initialized, shared user home. The latter needs
-its own profile before comparative restart claims or final startup targets.
-No OS caches are flushed. Environment inheritance is limited to the graphics
-session and a controlled PATH/HOME/SHELL; credentials/config are not inherited.
+Every startup trial creates fresh server and Studio processes, with warmed
+filesystem caches. The default `shared-existing` profile reuses one private home
+initialized by the excluded warmup. Both processes share its application store,
+as normal installations do. Each trial creates a new named Bmux session/socket;
+this measures process startup with an installed store, not restoring an old
+workspace. No real user home or credentials are used.
+
+`shared-new` creates one new shared home/database per process pair and measures
+same-user first use. `separate-new` gives each process its own new home/database
+and measures first use across separate installations. Resource scenarios always
+create a new per-scenario home (shared unless `separate-new`) and sample after
+application initialization/settling. The report records this independently of
+the startup profile. Studio reports its actual home/store path and the parent
+checks the resolved store location. No OS caches are flushed. Environment
+inheritance is limited to the graphics session and a controlled PATH/HOME/SHELL.
 
 The server interval starts immediately before `uv.spawn` and ends at its first
 decoded healthy reply. Socket observation uses a 1 ms timer. Socket creation can
@@ -82,7 +93,50 @@ All samples, per-PID snapshots, geometry, source identities and executable hashe
 remain in the report. Both server and Studio must exit normally before results
 are written. Failures clean up owned processes and emit no success report.
 
-## First capture, 2026-10-16
+## Shared-home captures, 2026-10-16
+
+Apple M5 Max, Darwin 25.6.0, Metal, RelWithDebInfo/no sanitizer. Twenty measured
+fresh-process starts after one warmup per profile. The initialized home is reused
+only for startup; resource cohorts use a fresh shared home per cohort as defined
+above. [Initialized-home/system report](benchmarks/2026-10-16-bmux-system-shared.json),
+[first-use shared-home startup report](benchmarks/2026-10-16-bmux-startup-shared-new.json).
+
+| Profile / boundary | p50 | p95 | Maximum |
+| --- | ---: | ---: | ---: |
+| Initialized shared home: server to healthy | 61.129 ms | 78.124 ms | 105.141 ms |
+| Initialized shared home: Studio to terminal present | 685.566 ms | 761.597 ms | 768.000 ms |
+| Initialized shared home: full start | 788.129 ms | 875.084 ms | 898.083 ms |
+| First-use shared home: server to healthy | 126.223 ms | 231.362 ms | 378.699 ms |
+| First-use shared home: Studio to terminal present | 692.840 ms | 722.738 ms | 737.165 ms |
+| First-use shared home: full start | 835.148 ms | 1032.363 ms | 1120.976 ms |
+
+Three five-second windows per shared-home resource cohort, no injected input;
+median role values below. Normal scan/watch/background activity remains included.
+
+| Panes | Server RSS | Studio RSS | PTY RSS sum | Server CPU | Studio CPU | PTY CPU sum |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 27.297 MiB | 245.063 MiB | 1.375 MiB | 0.069% | 7.290% | 0% |
+| 10 | 41.391 MiB | 174.141 MiB | 13.750 MiB | 0.067% | 1.055% | 0% |
+| 100 | 140.141 MiB | 319.609 MiB | 137.547 MiB | 0.064% | 1.084% | 0% |
+
+The one-pane cohort has more Studio CPU/RSS than the ten-pane cohort. These
+finite windows include background work and do not establish steady-state or
+causal pane-count scaling. Preserve that result and profile it; do not discard
+the cohort or substitute a more favorable run.
+
+Full-policy socket RTT, 1000 measured samples after 100 warmups per cohort:
+
+| Panes | p50 | p95 | p99 | Maximum |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.660 ms | 1.276 ms | 9.217 ms | 21.478 ms |
+| 10 | 0.649 ms | 1.229 ms | 2.169 ms | 14.134 ms |
+| 100 | 0.647 ms | 1.245 ms | 12.683 ms | 29.150 ms |
+
+Studio startup dominates this measured pipeline. The provisional full-start and
+RTT targets remain unmet. Matched cmux/Ghostty measurements and profiling remain
+necessary before final budgets or superiority claims.
+
+## Historical separate-home capture, 2026-10-16
 
 Apple M5 Max, Darwin 25.6.0, Metal, RelWithDebInfo/no sanitizer, voice built on,
 station built off. [Raw system report](benchmarks/2026-10-16-bmux-system.json).
@@ -120,6 +174,6 @@ BMUX-101 capture remains in the ledger as historical data. Single-run tail
 variation does not establish a causal regression or improvement.
 
 These measurements establish no cmux/Ghostty advantage. First-use startup and
-full-policy RTT exceed the provisional 100 ms / 100 us targets. Shared initialized
-home startup, matched application baselines and final budgets remain required
-before performance claims. BMUX-11 owns comparative baselines.
+full-policy RTT exceed the provisional 100 ms / 100 us targets. The separate-home
+capture used the tool at commit `f833cf9`; its source/binary hashes remain in the
+report. BMUX-11 owns matched comparative baselines and final budgets.

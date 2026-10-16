@@ -30,3 +30,21 @@ reads the selected target and is expensive; [ReadSurfacePixel](https://wiki.libs
 converts the returned surface to sRGB RGBA. Pixel validation follows presentation
 and its timestamp, so the readback is excluded from the current latency sample
 but its perturbation remains disclosed and measured.
+
+## Delivered measurements
+
+BMUX-101 delivered the native presentation/RGB probe and validated key latency.
+BMUX-102 delivered the C per-PID sampler and separate-process startup, resource
+and RTT coordinator. Its real 100-pane workflow exposed two product issues:
+BMUX-103 fixed pending-connect teardown before Lua GC; BMUX-104 aligned the
+listen backlog with the existing connection budget. Both have failing-before
+regressions and normal/sanitizer verification.
+
+BMUX-105 distinguishes fresh separate installations, first-use shared homes and
+fresh processes with an initialized shared home. Actual client store paths are
+verified; all real captures preserve source/binary identities and raw samples.
+See [system definitions/results](../../termbench-system.md) and
+[shared-home verification](../../benchmarks/2026-10-16-shared-home-termbench-verification.md).
+No provisional performance target or cmux/Ghostty advantage is claimed. BMUX-11
+remains the matched comparison/final-budget gate. Profile Studio startup and the
+elevated first shared-home resource cohort before proposing optimizations.

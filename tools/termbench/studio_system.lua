@@ -52,6 +52,7 @@ core.add_thread(function()
       if first_frame and total==expected and live==expected then
         assert(view.cols==80 and view.rows==24 and view.history_rows==0,'unexpected fixture geometry')
         local out={schema=1,pid=uv.os_getpid(),panes=total,attached=live,first_present_ns=first_frame.ns,
+          home=os.getenv('HOME'),store=bog.paths.data,
           all_attached_ns=uv.hrtime(),first_frame=first_frame,cols=view.cols,rows=view.rows,
           frame_limit=require('core.config').fps,window_points={1000,800},
           native_sources=require('terminal').source(),renderer_sources=renderer.terminal_sources()}
