@@ -151,6 +151,7 @@ login`) and boggart will use that token.
 ```sh
 ./boggart                 # interactive REPL — a coordinator that can spawn a fleet
 ./boggart --tui           # full-screen chat: scrolling transcript + live agents pane
+./boggart bmux --socket /path/to/private/control.sock  # attach shared terminal workspace
 ./boggart "one-shot task" # run a single prompt and exit
 echo "task" | ./boggart --headless   # scriptable: prompt on stdin, reply on stdout
 ./boggart swarm           # swarm coordinator that fans out to sub-agents
@@ -165,6 +166,9 @@ echo "task" | ./boggart --headless   # scriptable: prompt on stdin, reply on std
 ./boggart-studio          # the desktop app; ./boggart-studio <dir> opens a project
 # BOGGART_STUDIO_LEGACY=1 restores the old single-primary-node + sidebar layout
 ```
+
+Bmux's [terminal client](docs/bmux-ctui.md) and Studio **Join layout** share a
+server's panes and PTYs. Press Ctrl-B then `?` for terminal workspace controls.
 
 The studio's composer shares the cTUI's engines: **Tab** completes `/` commands and skills and `@` file mentions (typing `@` opens a filterable file menu), a leading `/command` runs the same handler the REPL uses (`/help`, `/tdd`, `/clear`, `/mode`, …), **`!command`** runs a shell command, and **Shift-Tab** cycles the shared permission modes (auto / smart / manual / chat). Both surfaces persist composer history to the same file.
 

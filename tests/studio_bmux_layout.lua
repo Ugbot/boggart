@@ -4,7 +4,12 @@ application.add_thread(function()
   local core=require 'core';local uv=require 'uv';local proc=require 'proc';local Client=require 'terminal.client'
   local shell=require 'shell';local ws=require 'shell.workspaces.bmux';local config=require 'core.config'
   local command=require 'core.command';local TerminalView=require 'core.terminalview'
-  local daemon,admin,joined,local_view;local original_config=config.bmux_server
+  local daemon,admin,joined,local_view,ctui;local original_config=config.bmux_server
+  local function ctui_text()
+    local out={};local _,rows=ctui:geometry()
+    for y=1,rows do for _,c in ipairs(ctui:row(y).cells)do if c.width>0 then out[#out+1]=c.text end end;out[#out+1]='\n'end
+    return table.concat(out)
+  end
   local function q(s)return "'"..s:gsub("'","'\\''").."'"end
   local function tick()core.redraw=true;coroutine.yield(0)end
   local function await(check)
@@ -83,10 +88,24 @@ application.add_thread(function()
     local retained=false;for _,doc in ipairs(core.docs)do if doc==local_doc then retained=true end end
     assert(retained and local_doc:is_dirty(),'hidden local documents retain unsaved-change tracking while joined')
     assert(v1.remote:process_state().pid==one.pid and v2.remote:process_state().pid==two.pid)
+    -- An actual terminal client and actual SDL view share this server tree.
+    ctui=assert(require('terminal').open{cmd=require('core.agentlauncher').boggart_command(),
+      args={'bmux','--socket',socket},cols=100,rows=24,history=0,
+      env={'HOME='..dir..'/home','BOGGART_HOME='..dir..'/home/.boggart'}})
+    await(function()return ctui_text():find('One 🦊',1,true)and ctui_text():find('Two [read-only]',1,true)end)
+    ctui:write('\2p\2z') -- burst commands must resolve against acknowledged focus
+    await(function()return core.active_view==v1 and joined:content().zoomed~=nil and not ctui_text():find('Two [read-only]',1,true)end)
+    ctui:write('\2z');await(function()return joined:content().zoomed==nil and ctui_text():find('Two [read-only]',1,true)end)
     local attachment=v1.remote.session.attachment_id;local renderer_context=v1.render_context
     edit('pane_swap',{workspace_id=w.id,surface_id=s.id,pane_id=left,target_pane_id=right})
     await(function()return joined.applied_revision==layout.revision end)
     assert(joined.pool[v1.bmux_view_id]==v1 and v1.remote.session.attachment_id==attachment and v1.render_context==renderer_context)
+    await(function()
+      local text=ctui_text();local a,b=text:find('One 🦊',1,true),text:find('Two [read-only]',1,true)
+      return a and b and b<a
+    end)
+    ctui:write('\2q');await(function()return ctui:process_state().exited and ctui:process_state().eof end)
+    assert(ctui:process_state().exit_status==0,ctui_text());ctui:close();ctui=nil
     -- Closing a named background tab sends one mutation, preserving its foreground.
     edit('view_add',{workspace_id=w.id,surface_id=s.id,pane_id=left,view={kind='terminal',terminal_id=one.id,generation=1,title='Background'}})
     local background=layout.workspaces[1].surfaces[1].tree.a.views[2].id
@@ -222,6 +241,7 @@ application.add_thread(function()
   if ws.session then ws.session:disconnect()end
   if local_view and local_view.terminal then local_view:try_close(function()end)end
   if admin then admin:close()end
+  if ctui then ctui:close()end
   if daemon and not daemon.done then daemon:kill('sigkill');daemon:wait()end
   if not ok then io.stderr:write(tostring(err),'\n');rawset(_G,'STUDIO_BOOT_FAILED',true)end
   application.quit(true)

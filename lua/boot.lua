@@ -1431,7 +1431,7 @@ bog.first_run = (bog.store.state and bog.store.state.first_run) or false
 -- emits only the model's answer on stdout.
 if bog.store.state and bog.store.state.first_run
    and bog.mode ~= "eval" and bog.mode ~= "embedded"
-   and bog.mode ~= "tracker" and bog.mode ~= "story" and bog.mode ~= "models" then
+   and bog.mode ~= "tracker" and bog.mode ~= "story" and bog.mode ~= "models" and bog.mode ~= "bmux" then
   io.stderr:write(bog.lifecycle.welcome(), "\n")
 end
 
@@ -1476,7 +1476,7 @@ end
 -- skips it here too: connect/handshake block the thread, and the window
 -- stays hidden until boot returns. Studio starts the same load after the
 -- first present, from a core thread that yields between servers.
-if bog.mode ~= "eval" and bog.mode ~= "embedded" then
+if bog.mode ~= "eval" and bog.mode ~= "embedded" and bog.mode ~= "bmux" then
   bog.try(bog.mcphost.load)
   -- Best-effort: if a local LLM Station is installed, expose its deterministic
   -- code-intelligence tools over MCP. Dormant (a no-op) when it is not.
@@ -1575,6 +1575,9 @@ elseif bog.mode == "swarm" then
   -- end (a coordinator + the optional --tui dashboard), not its runtime.
   bog.activate_agents()
   return require("swarmmode").run() -- "swarm" is the C bus global; the mode lives in swarmmode.lua
+
+elseif bog.mode == "bmux" then
+  return require('bmux.tui').run{socket=boggart.socket,token=boggart.token or os.getenv('BOGGART_SERVE_TOKEN')}
 
 elseif bog.mode == "serve" then
   -- `boggart serve` -- the same runtime as every other mode, with the inbound

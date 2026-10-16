@@ -22,5 +22,5 @@ native client, preserving terminal execution and attachment identities.
 - [x] Expose Join layout, workspace/surface selection and disconnect controls;
   route Bmux terminal creation/splits through server when joined. Verify real
   SDL panes, tab/focus/move/resize/zoom, mode-switch/rejoin and same-PID input.
-- [ ] Add the actual cTUI consumer and keep BMUX-31 open until both client
-  adapters and cross-client updates are verified.
+- [x] Add the actual cTUI consumer and verify cross-client updates using real
+  SDL and PTY clients. BMUX-31 remains open for remaining agent-pane adapters.

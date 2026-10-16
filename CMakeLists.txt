@@ -1207,7 +1207,7 @@ foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor 
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
 
-foreach(suite bmux_tree bmux_layout bmux_layout_server bmux_snapshot bmux_layout_client control_unix manualfleet terminal_environment agenthooks providerevents provider_notify actionfocus terminal_registry terminal_server terminal_attachments terminal_watch serve_streams terminal_push terminal_transport terminal_replica terminal_client terminal_input_events)
+foreach(suite bmux_tree bmux_layout bmux_layout_server bmux_snapshot bmux_layout_client bmux_ctui control_unix manualfleet terminal_environment agenthooks providerevents provider_notify actionfocus terminal_registry terminal_server terminal_attachments terminal_watch serve_streams terminal_push terminal_transport terminal_replica terminal_client terminal_input_events)
   add_test(NAME ${suite}
     COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite}
       $<TARGET_FILE:boggart> --eval tests/${suite}.lua
@@ -1215,6 +1215,7 @@ foreach(suite bmux_tree bmux_layout bmux_layout_server bmux_snapshot bmux_layout
   set_tests_properties(${suite} PROPERTIES TIMEOUT 20)
 endforeach()
 set_tests_properties(terminal_server PROPERTIES TIMEOUT 45)
+set_tests_properties(bmux_ctui PROPERTIES TIMEOUT 60)
 
 if(TARGET boggart-studio)
   set(_process_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/terminal_process_studio)
@@ -1269,7 +1270,7 @@ endif()
 # The smoke test degrades gracefully with no tty, so </dev/null it self-exits 0.
 add_executable(termctl_smoke src/termctl.c src/termctl_test.c)
 target_include_directories(termctl_smoke PRIVATE src ${VENDOR}/libuv/include)
-target_link_libraries(termctl_smoke PRIVATE uv_a boggart_unicode)
+target_link_libraries(termctl_smoke PRIVATE uv_a boggart_vt)
 add_test(NAME termctl COMMAND sh -c "$<TARGET_FILE:termctl_smoke> </dev/null")
 
 # BOG-6: the credential code under concurrency (8 threads reading headers while

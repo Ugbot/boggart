@@ -108,6 +108,7 @@ static void configure(lua_State *L, int argc, char **argv) {
      * The port/host/token are read in Lua from flags or the environment; C only
      * needs to know which mode this is. */
     else if (strcmp(argv[i], "serve") == 0) { mode = "serve"; i++; }
+    else if (strcmp(argv[i], "bmux") == 0) { mode = "bmux"; i++; }
     /* `boggart models [list|import|export|refresh] [arg]` -- the model catalog.
      * Everything after the subcommand is handed to Lua verbatim in
      * boggart.args, because what those words MEAN is lua/catalog.lua's
@@ -264,6 +265,7 @@ static int early_exit_flags(int argc, char **argv) {
         "  boggart --headless         read the prompt from stdin\n"
         "  boggart swarm \"<task>\"     swarm mode (coordinator; --tui adds a dashboard)\n"
         "  boggart serve              run as a service: control plane + webhooks\n"
+        "  boggart bmux --socket PATH  attach the Bmux terminal workspace\n"
         "  boggart ctl [args]         native BMUX shell control (`ctl --help`)\n"
         "  boggart models [cmd]       the model catalog: list, import, export, refresh\n"
         "  boggart tracker [args]     the built-in tracker (for scripts and CI; `tracker help`)\n"
