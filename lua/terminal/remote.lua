@@ -39,33 +39,52 @@ function Remote:_disconnected(why)
   self.wants_control=false;self.conflict=false;self:_stop_renew();self:_clear_queue();self:_changed()
 end
 function Remote:_attach(tail)
+  if self.attach_ticket then
+    if self.session then self.session:close();self.session=nil end
+    local ticket=self.attach_ticket;self.attach_ticket=nil;ticket:finish()
+  end
   self.epoch=self.epoch+1;local epoch=self.epoch
   self.wants_control=false;self.conflict=false;self.error=nil;self:_stop_renew();self:_clear_queue()
   local requested=tail or self.tail_rows
-  local session=self.client:attach(self.id,self.generation,{tail=requested,
-    on_update=function(view)if not self.closed and self.epoch==epoch then self:_publish(view)end end,
-    on_disconnect=function(why)if self.epoch==epoch then self:_disconnected(why)end end},function(why,s)
-    if self.closed or self.epoch~=epoch then return end
-    if why then
-      -- A Studio-sized screen may fit while its requested history tail does
-      -- not. This admission refusal creates no reader: retry observation once
-      -- without history, retaining the exact runtime and read-only policy.
-      if requested>0 and why.status==413 and type(why.response)=='table'
-        and why.response.error=='attachment cell limit exceeded'then self:_attach(0);return end
-      self:_disconnected(why);return
-    end
-    self.session=s;self:_publish(s:view())
-  end)
-  if self.closed or self.epoch~=epoch then session:close()else self.session=session end
+  local function start(ticket)
+    self.attach_ticket=ticket
+    local session=self.client:attach(self.id,self.generation,{tail=requested,
+      on_update=function(view)if not self.closed and self.epoch==epoch then self:_publish(view)end end,
+      on_disconnect=function(why)if self.epoch==epoch then self:_disconnected(why)end end},function(why,s)
+      local ok,error_message=pcall(function()
+        if self.closed or self.epoch~=epoch then return end
+        if why then
+          -- This refusal creates no reader. Retry once without history when
+          -- a full viewport fits but its requested history tail does not.
+          if requested>0 and why.status==413 and type(why.response)=='table'
+            and why.response.error=='attachment cell limit exceeded'then self:_attach(0);return end
+          self:_disconnected(why);return
+        end
+        self.session=s;self:_publish(s:view())
+      end)
+      if self.attach_ticket==ticket then self.attach_ticket=nil end
+      if ticket then ticket:finish()end
+      if not ok then error(error_message,0)end
+    end)
+    if self.closed or self.epoch~=epoch then session:close()else self.session=session end
+  end
+  if self.admission then
+    local ticket=self.admission:submit(start,function(why,t)
+      if self.attach_ticket==t then self.attach_ticket=nil end
+      if not self.closed and self.epoch==epoch then self:_disconnected(why)end
+    end)
+    if ticket.state=='queued'then self.attach_ticket=ticket end
+  else start()end
   self:_changed()
 end
 function Remote.new(opts,changed,image)
   local self=setmetatable({id=opts.id,generation=opts.generation,tail_rows=opts.tail or 32,
-    image=image,changed=changed,epoch=0,revision=0,cols=opts.cols or 80,rows=opts.rows or 24},Remote)
+    image=image,changed=changed,admission=opts.admission,epoch=0,revision=0,cols=opts.cols or 80,rows=opts.rows or 24},Remote)
   self.client=Client.new(opts);self:_clear_queue();self:_attach();return self
 end
 function Remote:status()
   if self.closed then return 'closed'end
+  if self.attach_ticket and self.attach_ticket.state=='queued'then return 'queued'end
   if self.session and self.session.pending and not self.busy then return 'uncertain'end
   if not self.session or self.session.status~='live'then return self.session and self.session.status or 'disconnected'end
   return self:can_control() and 'controlling' or 'read-only'
@@ -175,7 +194,7 @@ function Remote:view_only()
 end
 function Remote:reconnect()
   local s=self.session
-  if self.closed or self.busy then return false end
+  if self.closed or self.busy or self.attach_ticket then return false end
   if not s or s.closed then self:_attach();return true end
   if s.status~='disconnected'then return false end
   self.busy=true;self.wants_control=false;self:_stop_renew();self:_clear_queue()
@@ -191,6 +210,7 @@ function Remote:close()
   if self.closed then return end
   self.closed=true;self.epoch=self.epoch+1;self:_stop_renew();self:_clear_queue();if self.image then self.image:close()end
   if self.session then self.session:detach(function()self.client:close()end)else self.client:close()end
+  if self.attach_ticket then local ticket=self.attach_ticket;self.attach_ticket=nil;ticket:finish()end
 end
 function Remote:geometry()
   local v=self.snapshot;if v then return v.cols,v.rows,#v.scrollback.rows end

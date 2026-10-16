@@ -1,0 +1,128 @@
+{
+  "captureTime": "2026-10-16 22:33:42.1779 +0100",
+  "procPath": "/Users/USER/*/boggart",
+  "parentProc": "boggart",
+  "parentPid": 46743,
+  "pid": 46854,
+  "exception": {
+    "codes": "0x0000000000000001, 0x000000018a75d6c8",
+    "rawCodes": [
+      1,
+      6617945800
+    ],
+    "type": "EXC_BREAKPOINT",
+    "signal": "SIGKILL"
+  },
+  "termination": {
+    "namespace": "FOUNDATION",
+    "flags": 2,
+    "code": 1
+  },
+  "asi": {
+    "libsystem_platform.dylib": [
+      "BUG IN CLIENT OF LIBPLATFORM: os_unfair_lock is corrupt",
+      "Abort Cause 258"
+    ],
+    "libsystem_c.dylib": [
+      "crashed on child side of fork pre-exec"
+    ]
+  },
+  "faultingThread": 0,
+  "threads": [
+    {
+      "name": null,
+      "frames": [
+        {
+          "symbol": "_os_unfair_lock_corruption_abort",
+          "imageIndex": 2,
+          "imageOffset": 30408
+        },
+        {
+          "symbol": "_os_unfair_lock_lock_slow",
+          "imageIndex": 2,
+          "imageOffset": 5212
+        },
+        {
+          "symbol": "__sanitizer::StackStore::BlockInfo::Create(__sanitizer::StackStore*)",
+          "imageIndex": 1,
+          "imageOffset": 439160
+        },
+        {
+          "symbol": "__sanitizer::StackStore::Alloc(unsigned long, unsigned long*, unsigned long*)",
+          "imageIndex": 1,
+          "imageOffset": 436628
+        },
+        {
+          "symbol": "__sanitizer::StackStore::Store(__sanitizer::StackTrace const&, unsigned long*)",
+          "imageIndex": 1,
+          "imageOffset": 436260
+        },
+        {
+          "symbol": "__sanitizer::StackDepotNode::store(unsigned int, __sanitizer::StackTrace const&, unsigned long long)",
+          "imageIndex": 1,
+          "imageOffset": 444604
+        },
+        {
+          "symbol": "__sanitizer::StackDepotBase<__sanitizer::StackDepotNode, 1, 20>::Put(__sanitizer::StackTrace, bool*)",
+          "imageIndex": 1,
+          "imageOffset": 445944
+        },
+        {
+          "symbol": "__asan::Allocator::Allocate(unsigned long, unsigned long, __sanitizer::BufferedStackTrace*, __asan::AllocType, bool)",
+          "imageIndex": 1,
+          "imageOffset": 10944
+        },
+        {
+          "symbol": "__asan::asan_calloc(unsigned long, unsigned long, __sanitizer::BufferedStackTrace*)",
+          "imageIndex": 1,
+          "imageOffset": 12096
+        },
+        {
+          "symbol": "wrap_calloc",
+          "imageIndex": 1,
+          "imageOffset": 267720
+        },
+        {
+          "symbol": "_malloc_type_calloc_outlined",
+          "imageIndex": 3,
+          "imageOffset": 124732
+        },
+        {
+          "symbol": "os_set_32_ptr_init",
+          "imageIndex": 4,
+          "imageOffset": 3496
+        },
+        {
+          "symbol": null,
+          "imageIndex": 5,
+          "imageOffset": 25780
+        },
+        {
+          "symbol": "_notify_fork_child",
+          "imageIndex": 5,
+          "imageOffset": 28272
+        },
+        {
+          "symbol": "libSystem_atfork_child",
+          "imageIndex": 6,
+          "imageOffset": 5632
+        },
+        {
+          "symbol": "fork",
+          "imageIndex": 7,
+          "imageOffset": 143864
+        },
+        {
+          "symbol": "forkpty",
+          "imageIndex": 7,
+          "imageOffset": 142956
+        },
+        {
+          "symbol": "bpty_open",
+          "imageIndex": 0,
+          "imageOffset": 3967692
+        }
+      ]
+    }
+  ]
+}

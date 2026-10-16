@@ -5,6 +5,7 @@ local Client=require 'terminal.client';local measure=require 'termbench.measure'
 local owned,clients={},{};local root=uv.cwd()
 local startup_trace=os.getenv('BMUX_SYSTEM_STARTUP_TRACE')=='1'
 local coroutine_trace=os.getenv('BMUX_SYSTEM_COROUTINE_TRACE')=='1'
+local diagnostics=os.getenv('BMUX_SYSTEM_DIAGNOSTICS')=='1'
 assert(not os.getenv('BMUX_SYSTEM_COROUTINE_TRACE')or coroutine_trace,'invalid BMUX_SYSTEM_COROUTINE_TRACE')
 assert(not coroutine_trace or startup_trace,'coroutine trace requires startup trace')
 assert(not os.getenv('BMUX_SYSTEM_STARTUP_TRACE')or startup_trace,'invalid BMUX_SYSTEM_STARTUP_TRACE')
@@ -12,6 +13,8 @@ local function setting(name,default,lo,hi)
   local n=tonumber(os.getenv(name)or default)
   assert(n and n%1==0 and n>=lo and n<=hi,'invalid '..name);return n
 end
+local attach_delay=setting('BMUX_SYSTEM_ATTACH_DELAY_MS',0,0,1000)
+assert(not os.getenv('BMUX_SYSTEM_ATTACH_DELAY_MS')or diagnostics,'attachment delay requires diagnostics')
 local function read(path)
   local f=io.open(path,'rb');if not f then return end
   local bytes=f:read('a');f:close();return bytes
@@ -72,7 +75,16 @@ local function client(socket)
 end
 local function serve(executable,dir,app_home)
   local home=mkdir(dir..'/server');local socket=dir..'/sock'
-  local p=spawn(executable,{'serve','--socket',socket},home,'server',app_home and {HOME=app_home,BOGGART_HOME=app_home..'/.boggart'})
+  local extra=app_home and {HOME=app_home,BOGGART_HOME=app_home..'/.boggart'}or {}
+  if diagnostics then
+    local overlay=(app_home or home)..'/.boggart'
+    for _,path in ipairs{overlay,overlay..'/lua'}do if not uv.fs_stat(path)then mkdir(path)end end
+    local f=assert(io.open(overlay..'/lua/control.lua','wb'))
+    assert(f:write('return assert(loadfile(',string.format('%q',root..'/tools/termbench/server_diagnostics.lua'),'))()\n'));assert(f:close())
+    extra.BMUX_SYSTEM_SERVER_TRACE=home..'/server.control.json'
+    extra.BMUX_SYSTEM_ATTACH_DELAY_MS=tostring(attach_delay)
+  end
+  local p=spawn(executable,{'serve','--socket',socket},home,'server',extra)
   -- Socket observation uses a 1 ms repeating timer. Its error is included in
   -- process-to-health readiness, never in timed request callbacks below.
   local pulse=uv.new_timer();pulse:start(1,1,function()end)
@@ -138,6 +150,7 @@ local function studio(executable,dir,socket,n,app_home)
   local home=mkdir(dir..'/studio');local ready=home..'/ready.json'
   local p=spawn(executable,{'.'},home,'studio',{BOGGART_STUDIO_SCRIPT=root..'/tools/termbench/studio_system.lua',
     BMUX_SYSTEM_SOCKET=socket,BMUX_SYSTEM_READY=ready,BMUX_SYSTEM_PANES=tostring(n),
+    BMUX_SYSTEM_DIAGNOSTICS=diagnostics and '1'or nil,
     BOGGART_STUDIO_STARTUP_TRACE=startup_trace and '1'or nil,
     BOGGART_STUDIO_COROUTINE_TRACE=coroutine_trace and '1'or nil,
     HOME=app_home or home,BOGGART_HOME=(app_home or home)..'/.boggart'})
@@ -210,7 +223,7 @@ local function main()
     build_label=os.getenv('BMUX_BENCH_BUILD_LABEL')or 'unspecified; binary hashes authoritative',
     configuration={project_dir=root,home_profile=home_profile,startup_only=starts_only,
       startup_trace=startup_trace,startup_trace_cost='opt-in phase clocks and stderr writes perturb startup; keep uninstrumented latency alongside attribution',
-      coroutine_trace=coroutine_trace,
+      coroutine_trace=coroutine_trace,control_diagnostics=diagnostics,diagnostic_capture_delay_ms=attach_delay,
       home='controlled private homes; shared-existing reuses warmup initialized HOME across startup trials; shared-new uses one new HOME per pair; separate-new uses independent new homes',
       resource_home=home_profile=='separate-new'and 'independent new homes per pair'or 'one new shared home per resource scenario; sampled after app initialization',
       credentials='no user credentials/config inherited',
@@ -226,7 +239,9 @@ local function main()
     files={},startup={warmups=1,samples=starts,raw={}},resources={},logs=dir}
   for _,path in ipairs{executable,studio_bin,fixture,sampler,'tools/termbench/system.lua','tools/termbench/studio_system.lua',
     'tools/termbench/process_sample.c','tools/termbench/measure.lua','tools/termbench/pty_fixture.c',
-    'src/lserve.c','src/bogembed.c','studio/src/main.c','lua/terminal/transport.lua','CMakeLists.txt'}do report.files[path]=digest(path)end
+    'src/lserve.c','src/bogembed.c','studio/src/main.c','lua/terminal/transport.lua',
+    'lua/terminal/remote.lua','lua/terminal/attach_queue.lua','studio/data/core/bmuxlayout.lua',
+    'tools/termbench/server_diagnostics.lua','CMakeLists.txt'}do report.files[path]=digest(path)end
   local server_times,studio_times,full_times={},{},{}
   for i=0,starts do
     io.stderr:write('system termbench: startup ',i,'/',starts,'\n');io.stderr:flush()
