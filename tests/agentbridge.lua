@@ -34,5 +34,26 @@ st.pending={name='write',summary='same text, new live request'};bridge:poll()
 assert(bridge.request_id~=first and not command('approve',{request_id=first,decision='approve'}).accepted)
 assert(not command('prompt',{text='blocked dialog'}).accepted)
 assert(command('approve',{request_id=bridge.request_id,decision='approve'}).accepted)
-print('TUI bridge: actual composer draft guards, prompt/steer, generation/replay checks, interrupt and exact approval identity pass')
+st.pending=nil;st.running=false;st.abort=false;bridge:poll()
+local function replace_session(session)
+  local previous,revision=st.coord.session,bridge.revision
+  local inbox=previous.inbox;local count=inbox and #inbox
+  st.coord={session=session}
+  -- A command observed on the old conversation arrives before another state
+  -- publication. The owner must notice replacement before applying it.
+  local rejected=command('prompt',{text='must stay on old conversation',input_revision=revision})
+  assert(not rejected.accepted and bridge.revision==revision+1,'conversation replacement invalidates observed prompt revision')
+  assert(bridge:take_prompt()==nil and not session.inbox and previous.inbox==inbox and (not inbox or #inbox==count))
+  assert(command('prompt',{text='fresh conversation'}).accepted and bridge:take_prompt()=='fresh conversation')
+  bridge:poll();assert(bridge.revision==revision+1 and bridge.generation==4,'unchanged conversation keeps its revision and runtime')
+end
+replace_session{id=124,model='fixture'}
+replace_session{id=124,model='fixture'} -- replacing a coordinator object can retain its saved session ID
+local revision=bridge.revision;st.coord.session.id=125;st.running=true
+assert(not command('prompt',{text='stale session ID',input_revision=revision}).accepted and bridge.revision==revision+1)
+assert(bridge:take_prompt()==nil and not st.coord.session.inbox)
+assert(command('prompt',{text='fresh steering'}).accepted and st.coord.session.inbox[1]=='fresh steering')
+revision=bridge.revision;st.coord.session.model='other model';bridge:poll()
+assert(bridge.revision==revision,'informational model changes do not expire input')
+print('TUI bridge: draft/conversation revision guards, prompt/steer, generation/replay checks, interrupt and exact approval identity pass')
 return 0

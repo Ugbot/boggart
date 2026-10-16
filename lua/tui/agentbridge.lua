@@ -7,15 +7,18 @@ local function text(s,max)
 end
 function M.new(st,channel)
   if not channel then return nil end
-  return setmetatable({st=st,channel=channel,revision=0,draft=st.box.line or '',serial=0,state_serial=0},Bridge)
+  return setmetatable({st=st,channel=channel,revision=0,draft=st.box.line or '',
+    session=st.coord.session,session_id=st.coord.session.id,serial=0,state_serial=0},Bridge)
 end
 function M.attach(st)
   local channel=require('agent_channel').adopt_env()
   return M.new(st,channel)
 end
 function Bridge:observe()
-  local st=self.st;local draft=st.box.line or ''
-  if draft~=self.draft then self.draft=draft;self.revision=self.revision+1 end
+  local st=self.st;local draft=st.box.line or '';local session=st.coord.session
+  if draft~=self.draft or session~=self.session or session.id~=self.session_id then
+    self.draft,self.session,self.session_id=draft,session,session.id;self.revision=self.revision+1
+  end
   local pending=st.pending and st.pending.decision==nil and st.pending or nil
   if pending~=self.pending then
     self.pending=pending;self.serial=self.serial+1

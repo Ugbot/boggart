@@ -68,7 +68,8 @@ Controls add `agent_id`, `generation`, `action` and these action fields:
 
 The owner must advertise the action. Prompt revisions and live request identity
 are checked at the host and again by the receiving TUI after human input drains.
-An empty human draft remains an owner-side guard; a queued prompt can still be
+An empty human draft remains an owner-side guard; input revisions also expire
+when the coordinator session object or ID changes. A queued prompt can still be
 rejected there. The immediate receipt includes the owner's `command_id` when an
 asynchronous command was queued. Later Fleet `control_result` reports acceptance
 or rejection. This does not mean the model turn or tool completed. Foreign

@@ -59,11 +59,16 @@ Acceptance means the command entered the existing control path, not that a
 model turn or tool has completed.
 
 The TUI polls commands after buffered keyboard input drains. A prompt must
-match the current draft revision, find an empty draft and no owned dialog,
+match the current input revision, find an empty draft and no owned dialog,
 help/voice input or queued idle prompt. It starts `run_turn` on the existing
 coordinator, or appends literal steering text to that session's bounded inbox
 (32 messages/256KiB). Slash and shell syntax in a structured prompt remains
 literal model input. Interrupt uses the existing turn-cancellation path.
+The input revision advances when the draft changes, the coordinator's session
+object is replaced, or that session's ID changes. The owner observes those
+changes before reading commands, so a prompt prepared for an older conversation
+cannot become input to the replacement, even when both drafts are empty. A
+model metadata change alone preserves the input revision and runtime generation.
 Approve/reject checks the current request's runtime-local identity before
 setting its existing decision field. It does not widen the permission policy.
 
