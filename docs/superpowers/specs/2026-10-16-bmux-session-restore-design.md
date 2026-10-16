@@ -1,5 +1,13 @@
 # Bmux checkpoints and session restore
 
+Delivery: BMUX-95/96 implement the codec, reconstruction and SQLite runtime
+journal; BMUX-98/99 implement native transfer and Studio/cTUI session controls;
+BMUX-100 adds [explicit archive recovery](../../bmux-recovery.md). Actual
+clean/crash restart, inactive imports across recovery/resave/restart, ownership
+conflicts and both frontend flows are verified. Hard native allocation limits
+block whole restoration and retain the saved document, rather than publishing a
+partial layout; recovery can archive it before saving the current owned state.
+
 BMUX-33 continues the approved server-owned hierarchy and native agent design.
 Persist layout, working directories, best-effort history and agent resume IDs
 in the existing SQLite store. A restarted server gets a fresh host identity and

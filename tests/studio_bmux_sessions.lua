@@ -3,7 +3,7 @@ if package.config:sub(1,1)=='\\'then application.quit(true);return end
 application.add_thread(function()
   local core=require 'core';local uv=require 'uv';local proc=require 'proc';local Native=require 'terminal.client'
   local ws=require 'shell.workspaces.bmux';local Codec=require 'bmux.checkpoint';local Files=require 'bmux.sessionfiles'
-  local daemon,admin,joined,second,other;local name='studio-'..serve.token(8);local imported=name..'-imported'
+  local daemon,admin,joined,second,other;local name='studio-'..serve.token(8);local imported=name..'-imported';local archives={}
   local dir=assert(uv.fs_mkdtemp('/tmp/bmux-studio-sessions-XXXXXX'));local socket=dir..'/sock';local path=dir..'/é👩‍💻🇬🇧.json'
   local marker=dir..'/marker';local marker_shell=dir..'/marker-shell';assert(uv.fs_mkdir(dir..'/home',448))
   local executable=require('core.agentlauncher').boggart_command()
@@ -33,7 +33,10 @@ application.add_thread(function()
     local x,y=math.floor(hit.x+hit.w/2),math.floor(hit.y+hit.h/2)
     system._test_event{type='mousepressed',button=1,x=x,y=y};system._test_event{type='mousereleased',button=1,x=x,y=y};tick()
   end
-  local function menu()button('Sessions');dialog('Bmux sessions')end
+  local function menu()
+    button('Sessions');dialog('Bmux sessions')
+    await(function()return joined.session_actions and not joined.session_actions.busy end)
+  end
   local ok,why=xpcall(function()
     local env='HOME='..q(dir..'/home')..' BOGGART_HOME='..q(dir..'/home/.boggart')
     daemon=proc.start('exec env '..env..' '..q(executable)..' serve --socket '..q(socket)..' --bmux-session '..q(name),90)
@@ -99,10 +102,48 @@ application.add_thread(function()
     output=table.concat(output)
     assert(output:find('Saved output; process is inactive',1,true)and output:find('é 👩‍💻 🇬🇧',1,true))
     assert(restored_view.remote:status()=='read-only'and not restored_view.remote:process_state().pid and not uv.fs_lstat(marker))
+    -- Corrupt the imported session's actual shared SQLite store. Recovery must
+    -- preserve those binary bytes and never promote its inactive shell recipe.
+    local connection=assert(db.open(dir..'/home/.boggart/boggart.db'));local external=repo.sqlite(connection)
+    local damaged='\255\0{damaged imported checkpoint';local imported_key='bmux.session.v1:'..imported
+    external:kv_set(imported_key,damaged)
+    joined:command('workspace_create',{title='Before recovery'})
+    await(function()return req(other,'GET','/layout/session').blocked end)
+    menu();submit('Recover saving; preserve original checkpoint');dialog('Confirm recovery name')
+    local preview=assert(joined.session_actions.recovery_preview);archives[#archives+1]=preview.archive.path
+    assert(not uv.fs_lstat(preview.archive.path));key('Escape');tick()
+    assert(external:kv_get(imported_key)==damaged and not uv.fs_lstat(preview.archive.path))
+    menu();submit('Recover saving; preserve original checkpoint');dialog('Confirm recovery name')
+    preview=assert(joined.session_actions.recovery_preview);archives[#archives+1]=preview.archive.path
+    assert(core.command_view.suggestions[1].text==imported,'the full recovery name is shown separately from the short prompt label')
+    if os.getenv('BMUX_RENDER_DIR')then
+      await(function()return core.command_view.suggestions_height>=core.command_view:get_suggestion_line_height()*.95 end)
+      assert(system.save_screenshot(os.getenv('BMUX_RENDER_DIR')..'/session-recovery.bmp'))
+    end
+    submit(imported);await(function()return not joined.session_actions.busy and joined.session_actions.message:find('Saving resumed;',1,true)end)
+    local original=assert(io.open(preview.archive.path,'rb'));assert(original:read('a')==damaged);original:close()
+    assert(not joined.session_actions.info.blocked and not uv.fs_lstat(marker))
+    joined:command('workspace_create',{title='After recovery'})
+    await(function()local data=Codec.decode(external:kv_get(imported_key));return data and #data.layout.workspaces==3 end)
+    for _,t in ipairs(Codec.decode(external:kv_get(imported_key)).terminals)do assert(t.launch=='saved')end
+    local previous_host=joined.client.host_id;joined:disconnect();other:close();other=nil
+    assert(uv.kill(second.pid,'sigterm'));assert(second:wait().code==0)
+    second=proc.start('exec env '..env..' SHELL='..q(marker_shell)..' '..q(executable)..' serve --socket '..q(target)..' --bmux-session '..q(imported),60)
+    await(function()local info=uv.fs_lstat(target);return info and info.type=='socket'and info.mode&63==0 end)
+    other=Native.new{socket=target};ready,probing=false,false
+    await(function()if not ready and not probing then probing=true;other:request('GET','/health',nil,function(e,v)probing=false;ready=not e and v.ok end)end;return ready end)
+    good(function(cb)require('core.bmuxlayout').join(target,nil,function(e,s)joined=s;cb(e,s)end)end)
+    assert(joined.client.host_id~=previous_host and #joined.client:view().workspaces==3 and not uv.fs_lstat(marker))
+    joined:command('workspace_select',{workspace_id=joined.client:view().workspaces[1].id})
+    await(function()for _,v in pairs(joined.pool)do if v.remote and v.remote.snapshot then restored_view=v;return true end end end)
+    assert(not restored_view.remote:process_state().pid and restored_view.remote:status()=='read-only')
+    original=assert(io.open(preview.archive.path,'rb'));assert(original:read('a')==damaged);original:close()
+    assert(uv.kill(record.pid,0),'source process remains alive through imported-session recovery and restart')
     print('Actual SDL Sessions: toolbar/chooser/export/refusal/import/inspect/cancel, retained owners and inactive imported daemon relaunch pass')
   end,debug.traceback)
   if joined then joined:disconnect()end;if admin then admin:close()end;if other then other:close()end
   for _,p in ipairs{second or false,daemon or false}do if p and not p.done then uv.kill(p.pid,'sigterm');p:wait()end end
+  for _,p in ipairs(archives)do uv.fs_unlink(p);uv.fs_unlink(p..'.json')end
   if not ok then io.stderr:write(tostring(why),'\n');rawset(_G,'STUDIO_BOOT_FAILED',true)end
   core.quit(true)
 end)

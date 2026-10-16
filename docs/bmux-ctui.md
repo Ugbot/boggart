@@ -132,5 +132,6 @@ and color glyph rendering remain Studio features.
 
 Agent references without a published terminal show an unavailable notice.
 [Server restart restore](bmux-journal.md) now reconstructs saved sessions with
-fresh native owners. Client import/recovery controls and richer foreign-provider
-adapters remain follow-ups. Existing Studio local agents retain their owners.
+fresh native owners. Sessions supplies file import/export, inspection and
+[explicit archive recovery](bmux-recovery.md) through **Ctrl-B e v**. Richer
+foreign-provider adapters remain follow-ups. Studio local agents retain their owners.

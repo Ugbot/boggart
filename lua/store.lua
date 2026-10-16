@@ -587,9 +587,9 @@ function M.kv_set(k, v)
   if not bog.repo then return nil, "store not open" end
   return bog.repo:kv_set(k, v)
 end
-function M.kv_compare_set(k, expected, value)
+function M.kv_compare_set(k, expected, value, owner_key, owner_value)
   if not bog.repo then return nil, "store not open" end
-  return bog.repo:kv_compare_set(k, expected, value)
+  return bog.repo:kv_compare_set(k, expected, value, owner_key, owner_value)
 end
 
 -- ---- the model catalog -----------------------------------------------------

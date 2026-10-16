@@ -49,11 +49,11 @@ function M.import(name,raw,store)
   if not lease.store.is_open()then return nil,{status=503,message='Checkpoint store is not open'}end
   lease:_claim()
   if lease.blocked then return nil,{status=lease.storage_error and 503 or 409,message=lease.error}end
-  local written=lease:_call('kv_compare_set',lease.key,nil,text)
+  local written=lease:_call('kv_compare_set',lease.key,nil,text,lease.owner_key,lease.owner)
   local error=lease.error
   lease:_release()
   if error or lease.blocked then return nil,{status=503,message=error or lease.error}end
-  if not written then return nil,{status=409,message='Saved session already exists; choose a new name'}end
+  if not written then return nil,{status=409,message='Saved session already exists or ownership changed; choose a new name'}end
   return {name=name,inactive=true,restart_required=true}
 end
 function Journal:changed()
@@ -73,10 +73,10 @@ function Journal:observe(entry)
       if event=='released'then self.observed[e.id]=nil else Capture.metadata(e)end
       self:changed()
     end)
-    if not ok then self:_fail(why.message);return end
+    if not ok then self:_fail(why.message);return nil,why.message end
     self.observed[entry.id]=entry
   end
-  self:changed()
+  self:changed();return true
 end
 function Journal:flush()
   if self.closed or self.blocked or not self.claimed then return nil,self.error end
@@ -87,7 +87,7 @@ function Journal:flush()
   if not doc then return self:_fail(why.message)end
   local text; text,why=Codec.encode(doc);if not text then return self:_fail(why.message)end
   if text~=self.last then
-    local written=self:_call('kv_compare_set',self.key,self.last,text)
+    local written=self:_call('kv_compare_set',self.key,self.last,text,self.owner_key,self.owner)
     if self.blocked then return nil,self.error end
     if not written then return self:_fail('Saved checkpoint changed; local state was not overwritten')end
     self.last=text;self.writes=self.writes+1
@@ -96,7 +96,25 @@ function Journal:flush()
 end
 function Journal:status()
   return {name=self.name,blocked=self.blocked or false,error=self.error,dirty=self.dirty or false,
-    writes=self.writes,restored=self.restored or false}
+    writes=self.writes,restored=self.restored or false,last_recovery=self.last_recovery and{
+      id=self.last_recovery.id,path=self.last_recovery.path,bytes=self.last_recovery.bytes,present=self.last_recovery.present}}
+end
+function Journal:recovery_preview()return require('bmux.recovery').prepare(self)end
+function Journal:recover(body)return require('bmux.recovery').commit(self,body)end
+function Journal:_subscribe()
+  if not self.layout then
+    self.layout=self.control.layout;self.old_changed=self.layout.changed
+    self.changed_layout=function(snapshot)self:changed();if self.old_changed then self.old_changed(snapshot)end end
+    self.layout.changed=self.changed_layout
+  end
+  self.control.terminals:watch(self.life_key,function(entry,event)
+    if event=='opened'then self:observe(entry)else self:changed()end
+  end)
+  self.fleet_key=self.life_key
+  self.control.fleet.registry:watch(self.fleet_key,function()self:changed()end)
+  for _,id in ipairs(self.control.terminals.order)do
+    local ok,why=self:observe(self.control.terminals.entries[id]);if not ok then error(why,0)end
+  end
 end
 function M.new(control,name,store)
   assert(name_valid(name),'invalid saved session name')
@@ -112,21 +130,15 @@ function M.new(control,name,store)
     if not result then self:_fail(why.message);return self end
     self.restored=true
   end
-  self.layout=control.layout;self.old_changed=self.layout.changed
-  self.changed_layout=function(snapshot)self:changed();if self.old_changed then self.old_changed(snapshot)end end
-  self.layout.changed=self.changed_layout
-  control.terminals:watch(self.life_key,function(entry,event)
-    if event=='opened'then self:observe(entry)else self:changed()end
-  end)
-  self.fleet_key=self.life_key
-  control.fleet.registry:watch(self.fleet_key,function()self:changed()end)
-  for _,id in ipairs(control.terminals.order)do self:observe(control.terminals.entries[id])end
+  local subscribed,why=pcall(self._subscribe,self)
+  if not subscribed then self:_fail(why);return self end
   self:changed();return self
 end
 function Journal:close()
   if self.closed then return end
   if not self.blocked then self:flush()end
   self.closed=true
+  self.recovery_plan=nil
   if self.timer then self.timer:stop();self.timer:close();self.timer=nil end
   self.control.terminals:watch(self.life_key,nil)
   if self.fleet_key then self.control.fleet.registry:watch(self.fleet_key,nil)end

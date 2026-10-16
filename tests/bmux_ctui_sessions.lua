@@ -4,7 +4,7 @@ local Native=require 'terminal.client';local Layout=require 'bmux.client';local 
 local dir=assert(uv.fs_mkdtemp('/tmp/bmux-session-ui-XXXXXX'));assert(uv.fs_mkdir(dir..'/home',448))
 local socket=dir..'/sock';local name='ui-'..serve.token(8);local imported=name..'-imported'
 local path=dir..'/é👩‍💻🇬🇧.json';local marker=dir..'/marker';local shell=dir..'/marker-shell'
-local child,admin,layout,daemon,restored;local store=bog.store
+local child,admin,layout,daemon,restored;local store=bog.store;local archives={}
 local function q(s)return "'"..s:gsub("'","'\\''").."'"end
 local function screen()
   if not child then return ''end
@@ -69,7 +69,23 @@ local ok,why=xpcall(function()
   e.term:feed('CHECKPOINT_CHANGED\r\n');assert(not control.journal:flush()and control.journal.blocked)
   menu();await(function()return screen():find('Recovery needed:',1,true)end)
   assert(store.kv_get('bmux.session.v1:'..name)=='{corrupt checkpoint')
+  write('v');await(function()return screen():find('Save current layout; type name:',1,true)end)
+  local p=assert(control.journal.recovery_plan).preview;archives[#archives+1]=p.archive.path
+  assert(screen():find('Original 19 bytes kept at:',1,true)and not uv.fs_lstat(p.archive.path))
+  write('\27');await(function()return screen():find('> e ',1,true)end)
+  assert(control.journal.blocked and store.kv_get('bmux.session.v1:'..name)=='{corrupt checkpoint')
+  write('v');await(function()return screen():find('Save current layout; type name:',1,true)end)
+  p=assert(control.journal.recovery_plan).preview;archives[#archives+1]=p.archive.path
+  paste('wrong session');write('\r');await(function()return screen():find('name did not match',1,true)end)
+  assert(control.journal.blocked and not uv.fs_lstat(p.archive.path))
+  write('v');await(function()return screen():find('Save current layout; type name:',1,true)end)
+  p=assert(control.journal.recovery_plan).preview;archives[#archives+1]=p.archive.path
+  paste(name);write('\r');await(function()return screen():find('Saving resumed;',1,true)and not control.journal.blocked end)
+  local original=assert(io.open(p.archive.path,'rb'));assert(original:read('a')=='{corrupt checkpoint');original:close()
+  assert(req(admin,'GET','/terminals/'..record.id).pid==record.pid and uv.kill(record.pid,0))
   write('\27');await(function()return screen():find('Running terminal [controlling]',1,true)end)
+  paste('AFTER_RECOVERY é 👩‍💻');write('\r')
+  await(function()local doc=Codec.decode(store.kv_get('bmux.session.v1:'..name));return doc and table.concat(doc.terminals[1].lines):find('AFTER_RECOVERY é 👩‍💻',1,true)end)
   prefix('q');await(function()local p=child:process_state();return p.exited and p.eof end)
   assert(child:process_state().exit_status==0);child:close();child=nil
   assert(uv.kill(record.pid,0),'detaching Sessions UI leaves server execution alive')
@@ -98,6 +114,7 @@ if daemon then daemon:kill('sigkill');daemon:wait()end
 control.stop();uv.run('nowait')
 for _,n in ipairs{name,imported}do store.kv_del('bmux.session.v1:'..n);store.kv_del('bmux.owner.v1:'..n)end
 os.remove(path);os.remove(shell);os.remove(marker)
+for _,p in ipairs(archives)do uv.fs_unlink(p);uv.fs_unlink(p..'.json')end
 assert(ok,why)
 print('Actual cTUI Sessions: status/export/refusal/import/inspection, Unicode/narrow editor isolation, retained PTY and inactive daemon relaunch pass')
 return 0

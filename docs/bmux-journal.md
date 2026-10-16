@@ -73,14 +73,19 @@ Choosing another name does not erase the old session.
 sessions with every imported recipe demoted to inactive state. It never
 overwrites existing/corrupt bytes or live owners. Actual daemon startup/resave
 coverage verifies that imported data cannot acquire execution authority.
-BMUX-99 adds Studio/native session menus and file controls. BMUX-97 still
-supplies explicit recovery controls. BMUX-33 remains incomplete until those
-controls and final acceptance checks land.
+BMUX-99 adds Studio/native session menus and file controls. BMUX-100 completes
+[explicit recovery](bmux-recovery.md): preserve exact original bytes in private
+synced files, then resume saving current state under exact owner/data/layout
+guards. Existing PTYs retain their identities; inactive imports remain inactive.
+Actual Studio/native recovery and restart checks complete BMUX-33/97.
 
 Implementation: `bmux.journal` owns lifecycle/storage, `bmux.capture` builds the
 [validated data](bmux-checkpoints.md), and `bmux.restore` allocates/remaps one
 native owner per resource. `repo:kv_compare_set` / `bog.store.kv_compare_set`
-provide atomic SQLite compare/set; nil means absent/conditional deletion.
+provide atomic SQLite compare/set; nil means absent/conditional deletion. Optional
+owner key/value arguments guard the same statement; journal writes and named
+imports use them. Recovery metadata is read through the separate
+`GET /layout/session/recovery/status` route, preserving the ordinary status shape.
 `terminal:plain_tail(lines?, bytes?)` supplies immutable text without per-cell Lua
 tables. `terminal:working_directory()` queries its owned live process, returning
 nil when unavailable. macOS links the system `libproc`; Linux uses `/proc`.
