@@ -47,6 +47,10 @@ function M.new(opts)
   return self
 end
 
+function M.restore(snapshot,opts)
+  return require('bmux.rehydrate').new(snapshot,opts)
+end
+
 function Host:_id(kind)
   self.serial = self.serial + 1
   return kind .. '-' .. self.serial

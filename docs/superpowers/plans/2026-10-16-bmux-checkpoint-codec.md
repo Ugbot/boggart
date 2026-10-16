@@ -17,21 +17,21 @@ layout with explicit trusted reference mapping before SQLite/runtime integration
 - `lua/bmux/layoutcommands.lua`: share `reference(host, descriptor)` validation.
 - `tests/bmux_checkpoint.lua`, `tests/bmux_rehydrate.lua`, CMake registration.
 
-- [ ] Define copied checkpoint records and cross-reference validation; reject
+- [x] Define copied checkpoint records and cross-reference validation; reject
   recipes with argv/env/tokens, unsafe history text and missing/mismatched refs.
   Tests include a repeated native reference, mixed agent ID types, valid emoji,
   absolute POSIX/Windows cwd, stopped/manual data and Boggart resume recipes.
-- [ ] Verify JSON/object/array and all text/collection bounds; round trips must
+- [x] Verify JSON/object/array and all text/collection bounds; round trips must
   retain empty-array wire forms and never expose mutable caller tables.
   Oversized/deep/malformed documents return bounded errors without side effects.
-- [ ] Reconstruct staged workspace/surface/pane/view objects, preserving each
+- [x] Reconstruct staged workspace/surface/pane/view objects, preserving each
   order/selection/focus/zoom and ratio while generating a fresh host identity.
   Tests use a real command-built source tree and mutate the restored Host with
   ordinary commands; stale old-host commands fail and future IDs stay unique.
-- [ ] Reject malformed input/stricter limits before remapping. Failed remappers
+- [x] Reject malformed input/stricter limits before remapping. Failed remappers
   return errors without mutating the original Host or firing publication hooks.
   Share the existing descriptor validator rather than adding another schema.
-- [ ] Build normal and ASan/UBSan targets. Run the checkpoint/rehydrate tests plus
+- [x] Build normal and ASan/UBSan targets. Run the checkpoint/rehydrate tests plus
   `bmux_tree`, `bmux_layout`, `bmux_snapshot`, `bmux_layout_server`, actual joined
   Studio and native Fleet workflows. Record evidence, commit and push.
 
