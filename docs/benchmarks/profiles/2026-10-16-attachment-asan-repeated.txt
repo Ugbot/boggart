@@ -1,0 +1,25 @@
+Test project /Users/bengamble/boggart/build-asan
+    Start  38: termbench_system
+    Test  #38: termbench_system .................   Passed   35.58 sec
+    Start  38: termbench_system
+    Test  #38: termbench_system .................   Passed   34.02 sec
+    Start  38: termbench_system
+    Test  #38: termbench_system .................   Passed   26.14 sec
+    Start  38: termbench_system
+    Test  #38: termbench_system .................   Passed   31.75 sec
+    Start  38: termbench_system
+1/2 Test  #38: termbench_system .................   Passed   33.20 sec
+    Start 192: terminal_attach_queue
+    Test #192: terminal_attach_queue ............   Passed    0.51 sec
+    Start 192: terminal_attach_queue
+    Test #192: terminal_attach_queue ............   Passed    0.52 sec
+    Start 192: terminal_attach_queue
+    Test #192: terminal_attach_queue ............   Passed    0.33 sec
+    Start 192: terminal_attach_queue
+    Test #192: terminal_attach_queue ............   Passed    0.32 sec
+    Start 192: terminal_attach_queue
+2/2 Test #192: terminal_attach_queue ............   Passed    0.57 sec
+
+100% tests passed out of 2
+
+Total Test time (real) = 162.97 sec

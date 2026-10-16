@@ -4,6 +4,46 @@ local core=require 'core';local uv=require 'uv';local json=require 'json'
 local socket=assert(os.getenv('BMUX_SYSTEM_SOCKET'))
 local ready=assert(os.getenv('BMUX_SYSTEM_READY'))
 local expected=assert(tonumber(os.getenv('BMUX_SYSTEM_PANES')))
+-- Optional bounded boundary evidence, never request bodies/tokens or payloads.
+local control_trace=os.getenv('BMUX_SYSTEM_DIAGNOSTICS')=='1'and {}or nil
+local control_count=0
+local transport=require 'terminal.transport';local request=transport.request
+if control_trace then
+  transport.request=function(opts,callback)
+    control_count=control_count+1
+    if #control_trace>=512 then return request(opts,callback)end
+    local row={method=opts.method,path=opts.path,stream=opts.stream==true,start_ns=uv.hrtime(),bytes=0,reads=0,events=0}
+    control_trace[#control_trace+1]=row
+    local copy={};for k,v in pairs(opts)do copy[k]=v end
+    copy.on_headers=function(status,...)
+      row.status=status;row.headers_ns=uv.hrtime()
+      if opts.on_headers then opts.on_headers(status,...)end
+    end
+    if opts.on_event then copy.on_event=function(event,data)
+      row.events=row.events+1;row.first_event_ns=row.first_event_ns or uv.hrtime()
+      opts.on_event(event,data)
+    end end
+    local op=request(copy,function(why,...)
+      row.done_ns=uv.hrtime();row.error=why and why.kind or nil
+      callback(why,...)
+    end)
+    if op.parser then
+      local feed=op.parser.feed
+      op.parser.feed=function(parser,data)
+        row.bytes=row.bytes+#data;row.reads=row.reads+1;row.last_read_ns=uv.hrtime()
+        feed(parser,data);row.expected_bytes=parser.length;row.buffered_bytes=#parser.buffer
+      end
+    end
+    return op
+  end
+end
+local function save_control_trace()
+  if not control_trace then return end
+  transport.request=request
+  local f=assert(io.open(ready..'.control.json','wb'))
+  assert(f:write(json.encode{pid=uv.os_getpid(),ns=uv.hrtime(),panes=expected,
+    loop=system.loop_stats(),request_count=control_count,truncated=control_count>#control_trace,requests=control_trace},'\n'));assert(f:close())
+end
 local tracing=os.getenv('BOGGART_STUDIO_STARTUP_TRACE')=='1'
 local milestones={}
 local resumes={}
@@ -36,7 +76,7 @@ if tracing then
 end
 local joined,first_frame,view
 local original_end=renderer.end_frame
-local function fail(why)io.stderr:write(tostring(why),'\n');os.exit(1)end
+local function fail(why)save_control_trace();io.stderr:write(tostring(why),'\n');os.exit(1)end
 system.set_window_size(1000,800)
 renderer.end_frame=function()
   local ok,why=xpcall(function()
@@ -87,6 +127,7 @@ core.add_thread(function()
       end
       diagnostic.total=total;diagnostic.live=live;diagnostic.frame=first_frame or system._test_present_probe()
       if first_frame and total==expected and live==expected then
+        save_control_trace()
         assert(view.cols==80 and view.rows==24 and view.history_rows==0,'unexpected fixture geometry')
         local function identify(path)
           local f=io.open(path,'rb')

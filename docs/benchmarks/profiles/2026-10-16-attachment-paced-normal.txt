@@ -1,0 +1,11 @@
+Test project /Users/bengamble/boggart/build
+    Start  36: termbench_measure
+1/3 Test  #36: termbench_measure ................   Passed    0.32 sec
+    Start  39: termbench_attach_burst
+2/3 Test  #39: termbench_attach_burst ...........   Passed   26.37 sec
+    Start 192: terminal_attach_queue
+3/3 Test #192: terminal_attach_queue ............   Passed    0.22 sec
+
+100% tests passed out of 3
+
+Total Test time (real) =  26.93 sec

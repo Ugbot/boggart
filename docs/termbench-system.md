@@ -29,6 +29,8 @@ The native sampler supports macOS and Linux; this capture verifies macOS.
 | `BMUX_SYSTEM_STARTS_ONLY` | unset | `1` omits resource/RTT scenarios |
 | `BMUX_SYSTEM_STARTUP_TRACE` | unset | `1` enables C phase and first step/draw/join attribution |
 | `BMUX_SYSTEM_COROUTINE_TRACE` | unset | `1` records up to 128 startup resume spans; requires startup trace |
+| `BMUX_SYSTEM_DIAGNOSTICS` | unset | `1` writes bounded client/server request progress and timing traces |
+| `BMUX_SYSTEM_ATTACH_DELAY_MS` | `0` | integer 0–1000; synthetic capture delay, requires diagnostics |
 | `BMUX_SYSTEM_PANES` | `1,10,100` | 1–3 scenarios, each 1–100 |
 | `BMUX_SYSTEM_IDLE_SAMPLES` | 3 | 1–20 |
 | `BMUX_SYSTEM_IDLE_MS` | 5000 | 100–60000 |
@@ -43,10 +45,13 @@ For development attribution, `BMUX_SYSTEM_STARTUP_TRACE=1` collects native
 startup phase clocks and benchmark-only first step/draw/join milestones. It
 perturbs startup through clock reads and stderr writes; keep uninstrumented
 timing alongside it. See [startup attribution and verification](benchmarks/2026-10-16-startup-attribution.md),
-including the unresolved intermittent ASAN attachment failure BMUX-107.
+including the original intermittent ASAN attachment failure BMUX-107.
 Reports now identify the actual file-backed core and bundled font assets used
 by Studio, or identify embedded assets through the executable hash. OS fallback
-faces are not fingerprinted. A controlled [project-scan comparison](benchmarks/2026-10-16-project-scan-verification.md)
+faces are not fingerprinted. The [attachment admission regression](benchmarks/2026-10-16-attachment-admission-verification.md)
+documents the BMUX-107 fix, diagnostic counters and the permanent paced 100-pane test. Synthetic
+delays are correctness tools and must not be used as product timing numbers.
+A controlled [project-scan comparison](benchmarks/2026-10-16-project-scan-verification.md)
 uses identical native/assets with just the scanner Lua source changed: median
 Studio terminal readiness falls from 714.057 ms to 343.135 ms. Indexing continues
 in the background; this does not measure completed indexing or reduced CPU/RSS.

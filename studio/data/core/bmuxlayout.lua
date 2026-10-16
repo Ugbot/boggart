@@ -38,7 +38,7 @@ function Session:_stage(snapshot)
     if not value then
       if desc.kind=='terminal'or agent then
         value=require('core.terminalview'){title=desc.title or agent and agent.name or 'Terminal '..desc.terminal_id,
-          attachment={socket=self.socket,token=self.token,id=agent and agent.terminal_id or desc.terminal_id,
+          attachment={socket=self.socket,token=self.token,admission=self.attachments,id=agent and agent.terminal_id or desc.terminal_id,
             generation=agent and agent.terminal_generation or desc.generation,tail=32}}
       else value=Notice(desc.title or 'Agent '..tostring(desc.agent_id),'Agent view unavailable in this connection') end
       value.bmux_view_id=desc.id;value.bmux_layout=self;created[#created+1]=value
@@ -184,6 +184,7 @@ end
 function Session:disconnect()
   if self.closed then return end
   local content=self.active and self:content();self.closed=true;self.client:close()
+  if self.attachments then self.attachments:close()end
   if self.agents then self.agents:close()end
   if self.session_actions then self.session_actions:close()end
   self.queue={};self.resize_pending=nil;self.pending_focus_id=nil
@@ -238,7 +239,8 @@ end
 function M.join(socket,token,callback)
   if M.pending then M.pending:disconnect()end
   local Base=getmetatable(core.root_view.root_node);Base=Base.local_class or Base
-  local self=setmetatable({socket=socket,token=token,Base=Base,pool={},queue={},callback=callback},Session)
+  local self=setmetatable({socket=socket,token=token,Base=Base,pool={},queue={},callback=callback,
+    attachments=require('terminal.attach_queue').new()},Session)
   self.Class=require('core.bmuxlayoutnodes').new(Base)
   self.client=Client.new{socket=socket,token=token,on_change=function()self:_changed()end}
   self.agents=require('core.bmuxagents').new(self)
