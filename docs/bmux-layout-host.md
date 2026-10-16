@@ -1,15 +1,16 @@
 # Server-owned Bmux layout
 
 The running control server owns a bounded workspace > surface > pane hierarchy
-using `bmux.tree`. It starts empty. Creating a workspace adds one `Main` surface
+using `bmux.tree`. An ephemeral/new session starts empty; a saved server session
+can [restore its hierarchy](bmux-journal.md). Creating a workspace adds one `Main` surface
 with an empty pane. Empty panes are represented without a synthetic view on
 the wire. Removing a workspace may leave the host empty; a workspace must retain
 at least one surface.
 
 The server/API increment is BMUX-80. Studio's
 [Join layout](bmux-studio-layout.md) now attaches to this hierarchy. The cTUI
-[consumer](bmux-ctui.md) also attaches to the shared hierarchy; restart persistence
-remains BMUX-33.
+[consumer](bmux-ctui.md) also attaches to the shared hierarchy. Server restart
+persistence is implemented; client import/recovery controls remain BMUX-33 work.
 
 ## Control protocol
 
@@ -22,6 +23,7 @@ capability policy. An owned private UDS works with `terminal.client`'s generic
 | `GET /layout` | `control:GET:/layout` | Copied full snapshot |
 | `GET /layout/stream` | `control:GET:/layout/stream` | Initial snapshot and committed snapshots over native SSE |
 | `POST /layout/commands` | `control:POST:/layout/commands` | Apply command and return the new full snapshot |
+| `GET /layout/session` | `control:GET:/layout/session` | Named SQLite checkpoint/recovery status |
 
 No query parameters are supported. A command is a JSON object up to 8192 bytes:
 

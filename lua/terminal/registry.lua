@@ -25,12 +25,26 @@ function M.new(opts)
   local count,cells=opts.max_records or 256,opts.max_cells or 32*1024*1024
   assert(integer(count,1,4096) and integer(cells,1,128*1024*1024),'invalid terminal registry limits')
   local registry=setmetatable({prefix=serve.token(12),serial=0,entries={},order={},used=0,
-    max_records=count,max_cells=cells,closed=false},Registry)
+    max_records=count,max_cells=cells,closed=false,listeners={},listener_errors={}},Registry)
   registry.attachments=require('terminal.attachments').new(registry,opts.attachments)
   return registry
 end
+function Registry:watch(key,callback)
+  assert(type(key)=='string'and #key>0 and #key<=64,'invalid terminal lifecycle observer')
+  assert(callback==nil or type(callback)=='function','invalid terminal lifecycle callback')
+  local n=0;for _ in pairs(self.listeners)do n=n+1 end
+  assert(callback==nil or self.listeners[key]or n<8,'terminal lifecycle observer capacity reached')
+  self.listeners[key]=callback;self.listener_errors[key]=nil
+end
+function Registry:_changed(entry,event)
+  local listeners={};for key,callback in pairs(self.listeners)do listeners[#listeners+1]={key,callback}end
+  for _,v in ipairs(listeners)do if self.listeners[v[1]]==v[2]then
+    local ok,why=pcall(v[2],entry,event)
+    if not ok then self.listeners[v[1]]=nil;self.listener_errors[v[1]]=tostring(why):sub(1,256)end
+  end end
+end
 function Registry:status(entry)
-  if entry.term then
+  if entry.term and not entry.frozen then
     local p=entry.term:process_state()
     entry.pid=p.pid;entry.exit_status=p.exit_status;entry.term_signal=p.term_signal
     entry.bytes=p.bytes_read;entry.queued_bytes=p.queued_bytes;entry.error=p.error
@@ -94,6 +108,7 @@ function Registry:release(entry)
   entry.closed=true
   self.used=self.used-entry.cost;entry.cost=0
   if entry.observers then self:_notify(entry,'released');entry.observers={}end
+  self:_changed(entry,'released')
 end
 function Registry:reserve(cost,exclude)
   if cost>self.max_cells then return false end
@@ -117,6 +132,8 @@ function Registry:open(opts,bootstrap)
   local args,env=strings(opts.args,128,16384),strings(opts.env,64,65536)
   if not string_value(cmd,4096) or not string_value(cwd,4096) or not args or not env
     or not integer(cols,1,4096) or not integer(rows,1,4096) or not integer(history,0,100000)then return failure(400,'invalid terminal options')end
+  if cwd:sub(1,1)~='/'and not cwd:match('^%a:[/\\]')and cwd:sub(1,2)~='\\\\'then cwd=uv.cwd()..'/'..cwd end
+  if #cwd>4096 then return failure(400,'terminal working directory exceeds limit')end
   local names={}
   for _,value in ipairs(env)do
     local name=value:match('^([A-Za-z_][A-Za-z_0-9]*)=')
@@ -126,13 +143,34 @@ function Registry:open(opts,bootstrap)
   if not self:reserve(cost)then return failure(503,'terminal registry capacity reached')end
   self.serial=self.serial+1
   local entry={id='term-'..self.prefix..'-'..self.serial,generation=1,cmd=cmd,cwd=cwd,
-    cols=cols,rows=rows,history=history,cost=cost,state='starting'}
+    cols=cols,rows=rows,history=history,cost=cost,state='starting',
+    restore_shell=opts.cmd==nil and #args==0 and #env==0 and not(bootstrap and bootstrap.control)}
   self.entries[entry.id]=entry;self.order[#self.order+1]=entry.id;self.used=self.used+cost
   local called,term,why=pcall(terminal.open,{cmd=cmd,cwd=cwd,args=args,env=env,cols=cols,rows=rows,history=history,
     control=bootstrap and bootstrap.control or false})
   if called and term then entry.term=term
   else entry.state='failed';entry.error=tostring(called and why or term);self.used=self.used-entry.cost;entry.cost=0 end
-  return self:status(entry)
+  local status=self:status(entry);self:_changed(entry,'opened');return status
+end
+-- Trusted restore-only constructor: a parser/image with no PTY or input owner.
+function Registry:preview(saved,why,existing)
+  if self.closed then return failure(503,'terminal registry stopped')end
+  local cost=saved.cols*(saved.rows+saved.history)
+  if not self:reserve(existing and math.max(0,cost-existing.cost)or cost,existing)then return failure(503,'terminal preview capacity reached')end
+  local ok,term=pcall(terminal.new,saved.cols,saved.rows,saved.history)
+  if not ok then return failure(503,'terminal preview allocation failed')end
+  local entry=existing
+  if entry then assert(self.entries[entry.id]==entry and not entry.term and not entry.closed,'preview cannot replace a process')
+  else
+    self.serial=self.serial+1;entry={id='term-'..self.prefix..'-'..self.serial,generation=1,cost=0}
+    self.entries[entry.id]=entry;self.order[#self.order+1]=entry.id
+  end
+  self.used=self.used+cost-entry.cost;entry.cost=cost
+  entry.term=term;entry.frozen=true;entry.cmd=saved.program or '';entry.cwd=saved.cwd
+  entry.cols,entry.rows,entry.history=saved.cols,saved.rows,saved.history
+  entry.state='stopped';entry.process_exited=true;entry.eof=true;entry.pid=nil;entry.exit_status=-1;entry.term_signal=0
+  entry.bytes=0;entry.queued_bytes=0;entry.error=why or 'Saved terminal; process is inactive';entry.restore_shell=false
+  self:_changed(entry,'opened');return self:status(entry)
 end
 function Registry:get(id)
   local entry,why=self:find(id);if not entry then return nil,why end;return self:status(entry)
@@ -148,6 +186,7 @@ function Registry:list(offset,limit)
 end
 function Registry:write(id,generation,text,credentials)
   local entry,why=self:find(id,generation);if not entry then return nil,why end
+  if entry.frozen then return failure(409,'saved terminal has no running process')end
   if not integer(generation,1,9007199254740991) or type(text)~='string' or #text>65536 then return failure(400,'invalid terminal input')end
   return self.attachments:command(entry,credentials,'input',{text=text},function()
     if not entry.term or self:status(entry).process_exited then return failure(409,'terminal is not running')end
@@ -158,6 +197,7 @@ function Registry:write(id,generation,text,credentials)
 end
 function Registry:resize(id,generation,cols,rows,credentials)
   local entry,why=self:find(id,generation);if not entry then return nil,why end
+  if entry.frozen then return failure(409,'saved terminal has no running process')end
   if not integer(generation,1,9007199254740991) or not integer(cols,1,4096) or not integer(rows,1,4096)then return failure(400,'invalid terminal geometry')end
   return self.attachments:command(entry,credentials,'resize',{cols=cols,rows=rows},function()
     if not entry.term then return failure(409,'terminal is closed')end
@@ -166,12 +206,13 @@ function Registry:resize(id,generation,cols,rows,credentials)
     if not self:reserve(extra,entry)then return failure(503,'terminal registry capacity reached')end
     local ok,error=pcall(entry.term.resize,entry.term,cols,rows)
     if not ok then return failure(409,tostring(error))end
-    self.used=self.used+cost-entry.cost;entry.cost=cost;entry.cols=cols;entry.rows=rows
+    self.used=self.used+cost-entry.cost;entry.cost=cost;entry.cols=cols;entry.rows=rows;self:_changed(entry,'resized')
     return self:status(entry)
   end)
 end
 function Registry:input_events(id,generation,events,credentials)
   local entry,why=self:find(id,generation);if not entry then return nil,why end
+  if entry.frozen then return failure(409,'saved terminal has no running process')end
   if not integer(generation,1,9007199254740991)then return failure(400,'invalid terminal generation')end
   local valid,message=require('terminal.input').validate(events)
   if not valid then return failure(400,message)end

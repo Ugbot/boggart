@@ -103,6 +103,7 @@ function Host:updates(entry,opts)
 end
 function Host:control(entry,opts)
   local reader,why=self:lookup(entry,opts.attachment_id,opts.attachment_token);if not reader then return nil,why end
+  if entry.frozen then return fail(409,'saved terminal has no running process')end
   if opts.takeover~=nil and type(opts.takeover)~='boolean'then return fail(400,'invalid controller request')end
   local owner=entry.controller;local now=self.clock()
   if owner and owner.expires>now and owner.reader~=reader.id and not opts.takeover then return fail(409,'terminal already has a controller')end

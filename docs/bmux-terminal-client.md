@@ -4,8 +4,7 @@
 native libuv binding. It uses the [attachment protocol](bmux-terminal-attachments.md)
 and has no curl subprocess or new runtime dependency. The daemon owns each PTY,
 parser, grid and history. This is the reusable client for the
-[Studio attached pane](bmux-studio-attachment.md) (BMUX-34); the cTUI attachment
-view remains BMUX-35 work.
+[Studio attached pane](bmux-studio-attachment.md) and [terminal Bmux](bmux-ctui.md).
 Studio's [native image source](bmux-terminal-image.md) consumes this replica
 directly through the existing C row renderer.
 

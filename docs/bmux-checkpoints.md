@@ -1,8 +1,8 @@
 # Bmux checkpoint data and layout reconstruction
 
 The checkpoint codec and shared-layout reconstruction are implemented in
-BMUX-95. SQLite journaling and automatic server startup restoration remain
-BMUX-96; client import/recovery controls and relaunch acceptance remain BMUX-97.
+BMUX-95. [SQLite journaling and server startup restoration](bmux-journal.md) are
+implemented in BMUX-96; client import/recovery controls and final acceptance remain BMUX-97.
 BMUX-33 is not complete yet.
 
 `bmux.checkpoint.validate(table)` copies and checks a v1 document containing

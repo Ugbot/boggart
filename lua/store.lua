@@ -587,6 +587,10 @@ function M.kv_set(k, v)
   if not bog.repo then return nil, "store not open" end
   return bog.repo:kv_set(k, v)
 end
+function M.kv_compare_set(k, expected, value)
+  if not bog.repo then return nil, "store not open" end
+  return bog.repo:kv_compare_set(k, expected, value)
+end
 
 -- ---- the model catalog -----------------------------------------------------
 -- Thin pass-throughs to the C operations (src/lrepo.c), the same shape as the

@@ -1,8 +1,8 @@
 -- Authentication and capability policy remain in control.dispatch.
 local json = require 'json'
 local M = {}
-function M.new(terminals,server)
-  return require('bmux.layout').new{changed=function(snapshot)
+function M.options(terminals,server)
+  return {changed=function(snapshot)
     local channel='layout:'..snapshot.host_id
     if server:clients(channel)>0 then server:broadcast('message',json.encode(snapshot),channel) end
   end,resolve=function(view)
@@ -18,11 +18,17 @@ function M.new(terminals,server)
     return nil,{status=404,message='unknown Fleet agent'}
   end}
 end
+function M.new(terminals,server)return require('bmux.layout').new(M.options(terminals,server))end
 local function response(value, why)
   return value and 200 or why.status, json.encode(value or {error=why.message}),
     {content_type='application/json'}
 end
 function M.install(control)
+  control.route('GET','/layout/session',function(req)
+    if req.query and req.query~=''then return response(nil,{status=400,message='session query parameters unsupported'})end
+    if not control.journal then return response({persistent=false})end
+    local status=control.journal:status();status.persistent=true;return response(status)
+  end,'inspect named SQLite checkpoint/recovery status without execution credentials')
   local function route(method, path, fn, description)
     control.route(method,path,function(req)
       if not control.layout then return response(nil,{status=503,message='layout host unavailable'}) end
