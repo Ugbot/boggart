@@ -7,7 +7,7 @@ PID and Boggart session alive. Stop and server shutdown explicitly release the
 execution owner. Closing an attached view remains reference-only.
 
 The server/API and [joined Studio Fleet controls and agent views](bmux-studio-agents.md)
-are implemented. Terminal-mode Fleet controls remain BMUX-87 work. Existing
+and [terminal-mode Fleet controls](bmux-ctui.md) are implemented. Existing
 Studio local agent launching remains available.
 
 ## Routes and authorization

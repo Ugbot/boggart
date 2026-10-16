@@ -4,14 +4,15 @@ application.add_thread(function()
   local core=require 'core';local uv=require 'uv';local proc=require 'proc';local Native=require 'terminal.client'
   local shell=require 'shell';local ws=require 'shell.workspaces.bmux';local config=require 'core.config'
   local launcher=require 'core.agentlauncher';local registry=require('core.fleetagents').registry
-  local View=require 'core.terminalview';local daemon,admin,joined,local_view
+  local View=require 'core.terminalview';local daemon,admin,joined,local_view,native_client,native_debug
   local old_config=config.bmux_server
   local function q(s)return "'"..s:gsub("'","'\\''").."'"end
   local function tick()core.redraw=true;coroutine.yield(0)end
   local function await(check,label)
     local until_at=system.get_time()+8
     repeat tick();if check()then return end until system.get_time()>until_at
-    error((label or 'joined agent deadline')..'; daemon='..(daemon and daemon:result().out or 'none'))
+    error((label or 'joined agent deadline')..'; daemon='..(daemon and daemon:result().out or 'none')
+      ..(native_client and native_debug and '\n'..native_debug()..require('json').encode(native_client:process_state())or ''))
   end
   local function good(fn)
     local done,why,value=false;fn(function(e,v)done=true;why=e;value=v end)
@@ -171,11 +172,40 @@ application.add_thread(function()
     await(function()joined=ws.session;return joined and joined.agents.source and joined.agents.source:find(agent_id)and core.active_view:is(View)and core.active_view.bmux_agent_id==agent_id and core.active_view.remote.snapshot end)
     assert(core.active_view.remote:process_state().pid==pid and remote(agent_id).session_id==sid)
     assert(registry:get(mounted_id)~=agent,'rejoin invalidates stale local action objects')
+    -- Both actual front ends now control the same agent on the same daemon.
+    -- The terminal client takes the free input lease; Studio stays attached.
+    local shared_pane=core.active_view;local shared_attachment=shared_pane.remote.session.attachment_id
+    local shared_renderer=shared_pane.render_context
+    native_client=assert(require('terminal').open{cmd=launcher.boggart_command(),args={'bmux','--socket',socket},
+      cols=100,rows=24,history=0,env={'HOME='..dir..'/home','BOGGART_HOME='..dir..'/terminal-client'}})
+    local function native_screen()
+      local out={};local _,rows=native_client:geometry()
+      for y=1,rows do for _,c in ipairs(native_client:row(y).cells)do if c.width>0 then out[#out+1]=c.text end end;out[#out+1]='\n'end
+      return table.concat(out)
+    end
+    native_debug=native_screen
+    await(function()return native_screen():find('[read-only]',1,true)end)
+    native_client:write('\2c');await(function()return native_screen():find('[controlling]',1,true)end)
+    native_client:write('\2f');await(function()return native_screen():find('p Send prompt',1,true)end)
+    native_client:write('p');await(function()return native_screen():find('Prompt Boggart TUI',1,true)end)
+    native_client:write('\27[200~from terminal Fleet\27[201~\r')
+    await(function()return output(shared_pane):find('FIXTURE_ANSWER:from terminal Fleet',1,true)and remote(agent_id).state=='idle'end)
+    prompt(remote(agent_id),'from Studio with terminal attached')
+    await(function()return output(shared_pane):find('FIXTURE_ANSWER:from Studio with terminal attached',1,true)and remote(agent_id).state=='idle'end)
+    native_client:write('\27')
+    await(function()return native_screen():find('FIXTURE_ANSWER:from Studio with terminal attached',1,true)end)
+    assert(shared_pane.remote.session.attachment_id==shared_attachment and shared_pane.render_context==shared_renderer)
+    assert(shared_pane.remote:process_state().pid==pid and remote(agent_id).session_id==sid)
+    native_client:write('\2q')
+    await(function()local p=native_client:process_state();return p.exited and p.eof end)
+    assert(native_client:process_state().exit_status==0);native_client:close();native_client=nil
+    show_fleet(remote(agent_id));action('Focus pane');await(function()return core.active_view==shared_pane end)
     toolbar('Disconnect layout')
     assert(uv.kill(daemon.pid,'sigterm'));assert(daemon:wait().code==0)
     print('studio server agents: visible native launch/Fleet prompt/draft/approval/interrupt/workers, focus/reopen, exact retry, foreign Stop, local roster and same-PID rejoin pass')
   end,debug.traceback)
   config.bmux_server=old_config
+  if native_client then native_client:close()end
   if ws.session then ws.session:disconnect()end
   if local_view and local_view.terminal then local_view:try_close(function()end)end
   if admin then admin:close()end

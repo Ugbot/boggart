@@ -31,17 +31,6 @@ function Agents:start(host_id)
   self.source=Source.new(require('core.fleetagents').registry,self.client,function(id,generation)return self:focus(id,generation)end,function()core.redraw=true end)
   self.client:start()
 end
-local function match(tree,agent,client)
-  if tree.type=='leaf'then
-    for _,v in ipairs(tree.views)do
-      local other=v.kind=='agent'and client:find(v.agent_id)
-      if v.kind=='agent'and v.agent_id==agent.id or other and other.terminal_id==agent.terminal_id and other.terminal_generation==agent.terminal_generation
-        or v.kind=='terminal'and v.terminal_id==agent.terminal_id and v.generation==agent.terminal_generation then
-        return tree.id,v.id
-      end
-    end
-  else local pane,view=match(tree.a,agent,client);if pane then return pane,view end;return match(tree.b,agent,client)end
-end
 function Agents:focus(id,generation)
   local s=self.session;local r=self.client:find(id)
   if self.closed or not s.active or s.closed or not r or r.generation~=generation or not r.terminal_id or s.client.status~='live'then
@@ -52,8 +41,7 @@ function Agents:focus(id,generation)
   if not w then
     return s:command('workspace_create',{title='Bmux'},function(why)if not why then self:focus(id,generation)end end)
   end
-  for _,workspace in ipairs(snapshot.workspaces)do for _,surface in ipairs(workspace.surfaces)do
-    local pane,view=match(surface.tree,r,self.client)
+  local workspace,surface,pane,view=require('bmux.agentviews').find(snapshot,r,self.client)
     if pane then
       local operations={}
       if snapshot.selected_workspace_id~=workspace.id then operations[#operations+1]={'workspace_select',{workspace_id=workspace.id}}end
@@ -67,7 +55,6 @@ function Agents:focus(id,generation)
       end
       return next_operation(1)
     end
-  end end
   return s:command('view_add',{workspace_id=w.id,surface_id=current.id,pane_id=current.focused_pane_id,
     view={kind='agent',agent_id=id,title=r.name}})
 end

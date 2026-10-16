@@ -74,5 +74,5 @@ See [native client](bmux-layout-client.md), [host protocol](bmux-layout-host.md)
 and [verification](benchmarks/2026-10-16-studio-layout-verification.md).
 The [native cTUI](bmux-ctui.md) consumes the same hierarchy and attachment policy;
 cross-client focus/zoom/swap is covered by the actual SDL/PTY integration test.
-Terminal-mode agent controls remain BMUX-31 work; durable restart restore remains
-BMUX-33.
+Both front ends resolve agent references through their published native
+terminals; durable restart restore remains BMUX-33.

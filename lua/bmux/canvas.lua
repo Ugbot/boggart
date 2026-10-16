@@ -62,6 +62,7 @@ local function cell(tc,x,y,c,width,cursor,reverse)
   else tc.cluster(x,y,c.text~='' and c.text or ' ',c.width,color(style.fg),color(style.bg),attrs[attr])end
 end
 function M.draw(tc,scene,remotes,state)
+  if state.overlay then state.overlay:draw(tc,scene.width,scene.height);tc.flush();return end
   tc.clear()
   local w,h=scene.width,scene.height
   if w<1 or h<1 then tc.flush();return end
@@ -94,10 +95,11 @@ function M.draw(tc,scene,remotes,state)
     end
   end
   if h>1 then label(tc,0,h-2,state.message or '',w,'ffa94d')end
-  if h>2 then label(tc,0,h-1,state.prefix and 'Ctrl-B: t terminal  % / " split  n/p pane  [/] tab  c control  ! takeover  v view  z zoom  q detach  ? help'
-    or 'Ctrl-B commands | c control | n/p pane | t terminal | ? help | q detach',w,'6b6b72')end
+  if h>2 then label(tc,0,h-1,state.prefix and 'Ctrl-B: f Fleet  a agent  t terminal  % / " split  n/p pane  c control  ! takeover  z zoom  q detach  ? help'
+    or 'Ctrl-B commands | f Fleet | a agent | c control | t terminal | ? help | q detach',w,'6b6b72')end
   if state.help then
     local lines={'Bmux commands (Ctrl-B first)',
+      'f Fleet: focus/prompt/interrupt/approval/Stop   a new server agent',
       't new terminal   % split right   " split down   x close tab reference',
       'n/p next/previous pane   h/j/k/l directional focus   [/] previous/next tab',
       'z zoom   = balance   w/s next workspace/surface   W/S create workspace/surface',

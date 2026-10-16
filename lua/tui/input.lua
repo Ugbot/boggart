@@ -67,7 +67,7 @@ function M.new(opts)
   return setmetatable({
     line = "", cursor = 0, history = hist, prompt = opts.prompt or PROMPT,
     _hpos = nil, _draft = nil, kill = "", stash = nil,
-    _menu = nil, _search = nil, _hist_file = opts.history_file,
+    _menu = nil, _search = nil, _hist_file = opts.history_file, completion = opts.completion ~= false,
     -- vim layer (docs/tui-vim.md): off by default. edit_mode/lines/cy/cx are
     -- the buffer the tui.vim engine drives; kept in sync with line/cursor (the
     -- source of truth for everything else) only while vim is on, see :key.
@@ -264,6 +264,7 @@ function Input:_apply_item(item)
 end
 
 function Input:_complete(opts)
+  if not self.completion then self._menu=nil;return end
   opts = opts or {}
   local apply = opts.apply_unique ~= false
   local hops = opts.hops or 0

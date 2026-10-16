@@ -38,14 +38,22 @@ function Remote:_disconnected(why)
   self.error=why or issue('Terminal observation disconnected')
   self.wants_control=false;self.conflict=false;self:_stop_renew();self:_clear_queue();self:_changed()
 end
-function Remote:_attach()
+function Remote:_attach(tail)
   self.epoch=self.epoch+1;local epoch=self.epoch
   self.wants_control=false;self.conflict=false;self.error=nil;self:_stop_renew();self:_clear_queue()
-  local session=self.client:attach(self.id,self.generation,{tail=self.tail_rows,
+  local requested=tail or self.tail_rows
+  local session=self.client:attach(self.id,self.generation,{tail=requested,
     on_update=function(view)if not self.closed and self.epoch==epoch then self:_publish(view)end end,
     on_disconnect=function(why)if self.epoch==epoch then self:_disconnected(why)end end},function(why,s)
     if self.closed or self.epoch~=epoch then return end
-    if why then self:_disconnected(why);return end
+    if why then
+      -- A Studio-sized screen may fit while its requested history tail does
+      -- not. This admission refusal creates no reader: retry observation once
+      -- without history, retaining the exact runtime and read-only policy.
+      if requested>0 and why.status==413 and type(why.response)=='table'
+        and why.response.error=='attachment cell limit exceeded'then self:_attach(0);return end
+      self:_disconnected(why);return
+    end
     self.session=s;self:_publish(s:view())
   end)
   if self.closed or self.epoch~=epoch then session:close()else self.session=session end

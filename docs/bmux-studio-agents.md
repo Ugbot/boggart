@@ -45,6 +45,7 @@ The layout pool resolves agent IDs to terminal identity/generation and rebuilds
 only when that binding changes. No agent view creates an execution owner.
 Closing the source unmounts rows; closing the client releases transport only.
 
-Terminal-mode Fleet controls remain a separate planned adapter. This work does
-not provide durable daemon-restart recovery or universal semantic controls for
-arbitrary foreign programs. See [verification](benchmarks/2026-10-16-studio-server-agents-verification.md).
+[Terminal-mode Fleet](bmux-ctui.md) uses the same native command policy and
+existing-runtime pane lookup. Durable daemon-restart recovery and universal
+semantic controls for arbitrary foreign programs remain follow-ups. See
+[verification](benchmarks/2026-10-16-studio-server-agents-verification.md).

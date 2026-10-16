@@ -27,10 +27,10 @@ referenced native terminals. No adapter starts another runtime for an agent view
   launching. Agent layout references use their published terminal reference,
   Fleet Focus reveals it, and existing Fleet prompt/interrupt/approval/Stop
   widgets route through the shared client. Closing/disconnecting releases views.
-- [ ] cTUI: a compact Fleet overlay and launcher provide the same server agent
+- [x] cTUI: a compact Fleet overlay and launcher provide the same server agent
   actions; compose text with grapheme-safe editing and keep drafts isolated from
   terminal typing. Existing pane input/leases stay with their native owner.
-- [ ] Exercise both actual clients against one real daemon: launch, model output,
+- [x] Exercise both actual clients against one real daemon: launch, model output,
   draft contention, approvals, worker cancel, foreign processes, narrow display,
   generation/request expiry, lost acknowledgements, all-client detach/rejoin and
   exact PID/session preservation. Record evidence, commit and push each slice.
