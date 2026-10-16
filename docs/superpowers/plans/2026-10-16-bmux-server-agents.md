@@ -14,19 +14,19 @@ streams and Fleet lifecycle listeners share one registry-owned native watcher.
   `terminal.push` to it and cover real shared-reader/lifecycle/error/close cases.
   Add a trusted internal open bootstrap for agent IPC; public `POST /terminals`
   keeps its existing option schema. Verify and commit this independent seam.
-- [ ] Implement a server agent owner: validate literal provider/cmd/argv/cwd,
+- [x] Implement a server agent owner: validate literal provider/cmd/argv/cwd,
   register once, launch once, bind the existing channel and mirror workers.
   Exits and Stop come from the native terminal owner. Closing a view or reader
   never stops the agent; server shutdown explicitly releases owned runtimes.
-- [ ] Expose copied bounded Fleet snapshots and a dedicated native stream.
+- [x] Expose copied bounded Fleet snapshots and a dedicated native stream.
   Launch and runtime-control routes have separate existing control capabilities.
   Do not expose draft contents, execution objects, channel or pane secrets.
-- [ ] Add host-scoped, bounded client sequence receipts for launch/control.
+- [x] Add host-scoped, bounded client sequence receipts for launch/control.
   First sequence is 1; subsequent sequences advance exactly once. Exact latest
   retries return the cached outcome, changed payloads and older/gapped sequences
   are rejected. Exhausting the client receipt bound rejects new clients; never
   evict high-water marks and accidentally repeat a spawn or accepted command.
-- [ ] Verify real Boggart TUI/session/approval/worker control through independent
+- [x] Verify real Boggart TUI/session/approval/worker control through independent
   clients, unknown foreign activity, stale generations/revisions/requests,
   subscriber permissions, stream revocation, reader coexistence and detach.
 - [ ] Add attached-client Fleet and agent-view consumers with preserved runtime
