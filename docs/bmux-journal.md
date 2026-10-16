@@ -68,10 +68,12 @@ exposes no ownership token or execution credential. Corrupt/changed checkpoints,
 owner conflicts and storage failures remain intact and observable through this
 status. Choosing another name does not erase the old session.
 
-BMUX-97 still supplies client import/export and recovery controls. Imports must
-demote every automatic recipe to inactive state before entering this trusted
-startup path; saving/restarting imported data must not promote its authority.
-BMUX-33 remains incomplete until those controls and acceptance checks land.
+[Native transfer](bmux-session-transfer.md) (BMUX-98) creates new named saved
+sessions with every imported recipe demoted to inactive state. It never
+overwrites existing/corrupt bytes or live owners. Actual daemon startup/resave
+coverage verifies that imported data cannot acquire execution authority.
+BMUX-97 still supplies client menus and explicit recovery controls. BMUX-33
+remains incomplete until those controls and final acceptance checks land.
 
 Implementation: `bmux.journal` owns lifecycle/storage, `bmux.capture` builds the
 [validated data](bmux-checkpoints.md), and `bmux.restore` allocates/remaps one

@@ -24,6 +24,39 @@ local function response(value, why)
     {content_type='application/json'}
 end
 function M.install(control)
+  control.route('GET','/layout/checkpoint',function(req)
+    if req.query and req.query~=''then return response(nil,{status=400,message='checkpoint query parameters unsupported'})end
+    if not control.layout then return response(nil,{status=503,message='layout host unavailable'})end
+    local cache={}
+    if control.journal then for id,lines in pairs(control.journal.cache)do cache[id]=lines end end
+    local doc,why=require('bmux.capture').collect(control,cache)
+    if not doc then return response(nil,{status=503,message=why.message})end
+    local text;text,why=require('bmux.checkpoint').encode(doc)
+    if not text then return response(nil,{status=503,message=why.message})end
+    return 200,text,{content_type='application/json'}
+  end,'export bounded layout, cwd and plain history without execution credentials')
+  control.route('POST','/layout/checkpoints/([%w_-]+)/([%w_-]+)',function(req,host_id,name)
+    if req.query and req.query~=''then return response(nil,{status=400,message='checkpoint query parameters unsupported'})end
+    if not control.layout then return response(nil,{status=503,message='layout host unavailable'})end
+    if host_id~=control.layout.host_id then return response(nil,{status=409,message='Layout server changed; join it again explicitly'})end
+    if #name>128 then return response(nil,{status=400,message='Import name exceeds 128 bytes'})end
+    return response(require('bmux.journal').import(name,req.body or ''))
+  end,'create a new inactive named checkpoint; existing sessions are never overwritten')
+  control.route('GET','/layout/checkpoints/([%w_-]+)/([%w_-]+)',function(req,host_id,name)
+    if req.query and req.query~=''then return response(nil,{status=400,message='checkpoint query parameters unsupported'})end
+    if not control.layout then return response(nil,{status=503,message='layout host unavailable'})end
+    if host_id~=control.layout.host_id then return response(nil,{status=409,message='Layout server changed; join it again explicitly'})end
+    if #name>128 then return response(nil,{status=400,message='Import name exceeds 128 bytes'})end
+    local raw,why=bog.store.kv_get('bmux.session.v1:'..name)
+    if why then return response(nil,{status=503,message=tostring(why):sub(1,512)})end
+    if not raw then return response(nil,{status=404,message='Saved session does not exist'})end
+    local codec=require 'bmux.checkpoint'
+    local doc;doc,why=codec.decode(raw)
+    if not doc then return response(nil,{status=409,message=why.message})end
+    local text;text,why=codec.encode(doc)
+    if not text then return response(nil,{status=409,message=why.message})end
+    return 200,text,{content_type='application/json'}
+  end,'read a named checkpoint to inspect an uncertain import without replaying it')
   control.route('GET','/layout/session',function(req)
     if req.query and req.query~=''then return response(nil,{status=400,message='session query parameters unsupported'})end
     if not control.journal then return response({persistent=false})end

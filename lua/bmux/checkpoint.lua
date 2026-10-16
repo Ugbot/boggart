@@ -86,6 +86,14 @@ function M.decode(raw)
   local value,why=Decode(raw);if not value then return nil,problem(why.message)end
   return M.validate(value)
 end
+-- A decoded document is data, never permission to run its restart recipes.
+-- Keep this boundary shared by every import consumer, including local files.
+function M.import(raw)
+  local value,why=M.decode(raw);if not value then return nil,why end
+  for _,t in ipairs(value.terminals)do t.launch='saved'end
+  for _,a in ipairs(value.agents)do a.launch='saved'end
+  return value
+end
 local function as_array(t)return #t==0 and json.array or t end
 function M.encode(input)
   local value,why=M.validate(input);if not value then return nil,why end

@@ -7,6 +7,12 @@ document.terminals[1].lines[1]='modified';document.agents[1].resume_id=99
 assert(valid.terminals[1].lines[1]=='earlier é'and valid.agents[1].resume_id==42)
 local encoded=assert(C.encode(valid));local decoded=assert(C.decode(encoded))
 assert(assert(C.encode(decoded))==encoded,'canonical checkpoint round trip')
+local imported=assert(C.import(encoded))
+for _,t in ipairs(imported.terminals)do assert(t.launch=='saved')end
+for _,a in ipairs(imported.agents)do assert(a.launch=='saved')end
+assert(imported.agents[1].resume_id==42 and imported.terminals[1].lines[2]=='👩‍💻 🇬🇧')
+assert(C.decode(encoded).terminals[1].launch=='shell'and C.decode(encoded).agents[1].launch=='boggart',
+  'import demotes copied recipes without changing source bytes or resume/history references')
 assert(decoded.layout.workspaces[1].surfaces[1].zoomed_pane_id~=json.null)
 local calls=0
 local function reject(change)

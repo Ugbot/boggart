@@ -2,13 +2,21 @@
 local uv=require 'uv';local json=require 'json';local Codec=require 'bmux.checkpoint'
 local Capture=require 'bmux.capture';local Restore=require 'bmux.restore'
 local M={};local Journal={};Journal.__index=Journal
+local function name_valid(name)
+  return type(name)=='string'and #name>0 and #name<=4096 and utf8.len(name)
+    and not name:find('[%z\1-\31\127]')
+end
+local function owner(name,store)
+  return setmetatable({name=name,store=store or bog.store,key='bmux.session.v1:'..name,
+    owner_key='bmux.owner.v1:'..name},Journal)
+end
 function Journal:_fail(why)
   self.blocked=true;self.error=tostring(why):sub(1,512);return nil,self.error
 end
 function Journal:_call(method,...)
   local ok,value,why=pcall(self.store[method],...)
-  if not ok then return self:_fail(value)end
-  if value==nil and why then return self:_fail(why)end
+  if not ok then self.storage_error=true;return self:_fail(value)end
+  if value==nil and why then self.storage_error=true;return self:_fail(why)end
   return value
 end
 function Journal:_claim()
@@ -27,6 +35,26 @@ function Journal:_claim()
   if self.blocked then return end
   if not claimed then return self:_fail('Saved session owner changed; retry startup explicitly')end
   self.claimed=true
+end
+function Journal:_release()
+  if self.claimed then self:_call('kv_compare_set',self.owner_key,self.owner,nil);self.claimed=false end
+end
+-- Create an inactive saved session under the same exclusive owner guard used
+-- by daemon startup. No runtime remapper or execution owner is constructed.
+function M.import(name,raw,store)
+  if not name_valid(name)then return nil,{status=400,message='Invalid saved session name'}end
+  local doc,why=Codec.import(raw);if not doc then return nil,{status=400,message=why.message}end
+  local text;text,why=Codec.encode(doc);if not text then return nil,{status=400,message=why.message}end
+  local lease=owner(name,store)
+  if not lease.store.is_open()then return nil,{status=503,message='Checkpoint store is not open'}end
+  lease:_claim()
+  if lease.blocked then return nil,{status=lease.storage_error and 503 or 409,message=lease.error}end
+  local written=lease:_call('kv_compare_set',lease.key,nil,text)
+  local error=lease.error
+  lease:_release()
+  if error or lease.blocked then return nil,{status=503,message=error or lease.error}end
+  if not written then return nil,{status=409,message='Saved session already exists; choose a new name'}end
+  return {name=name,inactive=true,restart_required=true}
 end
 function Journal:changed()
   if self.closed or self.blocked then return end
@@ -71,9 +99,9 @@ function Journal:status()
     writes=self.writes,restored=self.restored or false}
 end
 function M.new(control,name,store)
-  assert(type(name)=='string'and #name>0 and #name<=4096 and utf8.len(name)and not name:find('[%z\1-\31\127]'),'invalid saved session name')
-  local self=setmetatable({control=control,name=name,store=store or bog.store,key='bmux.session.v1:'..name,
-    owner_key='bmux.owner.v1:'..name,life_key='journal:'..serve.token(8),cache={},observed={},writes=0},Journal)
+  assert(name_valid(name),'invalid saved session name')
+  local self=owner(name,store)
+  self.control=control;self.life_key='journal:'..serve.token(8);self.cache={};self.observed={};self.writes=0
   if not self.store.is_open()then self:_fail('Checkpoint store is not open');return self end
   self:_claim();if self.blocked then return self end
   self.last=self:_call('kv_get',self.key);if self.blocked then return self end
@@ -106,6 +134,6 @@ function Journal:close()
     if self.control.terminals.entries[id]==entry then self.control.terminals:observe(entry,self.life_key,nil)end
   end
   if self.layout and self.layout.changed==self.changed_layout then self.layout.changed=self.old_changed end
-  if self.claimed then self:_call('kv_compare_set',self.owner_key,self.owner,nil);self.claimed=false end
+  self:_release()
 end
 return M
