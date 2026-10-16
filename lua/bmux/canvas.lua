@@ -95,11 +95,12 @@ function M.draw(tc,scene,remotes,state)
     end
   end
   if h>1 then label(tc,0,h-2,state.message or '',w,'ffa94d')end
-  if h>2 then label(tc,0,h-1,state.prefix and 'Ctrl-B: f Fleet  a agent  t terminal  % / " split  n/p pane  c control  ! takeover  z zoom  q detach  ? help'
-    or 'Ctrl-B commands | f Fleet | a agent | c control | t terminal | ? help | q detach',w,'6b6b72')end
+  if h>2 then label(tc,0,h-1,state.prefix and 'Ctrl-B: f Fleet  a agent  e sessions  t terminal  % / " split  n/p pane  c control  ! takeover  z zoom  q detach  ? help'
+    or 'Ctrl-B commands | f Fleet | a agent | e sessions | c control | t terminal | ? help | q detach',w,'6b6b72')end
   if state.help then
     local lines={'Bmux commands (Ctrl-B first)',
       'f Fleet: focus/prompt/interrupt/approval/Stop   a new server agent',
+      'e Sessions: status, export/import checkpoint files, inspect saved sessions',
       't new terminal   % split right   " split down   x close tab reference',
       'n/p next/previous pane   h/j/k/l directional focus   [/] previous/next tab',
       'z zoom   = balance   w/s next workspace/surface   W/S create workspace/surface',

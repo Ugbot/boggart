@@ -14,6 +14,7 @@ function M.new(opts)
     if c.status=='live'and self.fleet then self.fleet:start(c.host_id)end
   end}
   self.fleet=require('bmux.tuifleet').new(self)
+  self.sessions=require('bmux.tuisessions').new(self)
   return self
 end
 function App:start()self.client:start(function(why)
@@ -103,6 +104,7 @@ function App:action(key)
   local scene=self.scene;local pane=scene and scene.focused;local remote,v=self:active()
   if key=='q'then self.done=true;return end
   if key=='?'then self.help=not self.help;return end
+  if key=='e'then self.sessions:open();return end
   if key=='f'or key=='a'then self.fleet:open(key=='a'and 'launch'or 'fleet');return end
   if key=='r'then
     if self.client.watch then self.client:refresh()else self.client:start()end
@@ -147,6 +149,7 @@ function M.key(event)
 end
 function App:_input(e)
   self.dirty=true
+  if self.sessions.mode then self.sessions:input(e);return end
   if self.fleet.mode then self.fleet:input(e);return end
   local remote,v=self:active()
   if self.help and e.type~='key'then return end
@@ -206,12 +209,13 @@ function App:draw(canvas)
   local w,h=canvas.size();self:arrange(w,h)
   local remote=self:active();local message=remote and remote.error and remote.error.message
   Canvas.draw(canvas,self.scene,self.remotes,{status=self.status,message=message or self.message,prefix=self.prefix,
-    help=self.help,scroll=self.scroll,overlay=self.fleet.mode and self.fleet or nil})
+    help=self.help,scroll=self.scroll,overlay=self.sessions.mode and self.sessions or self.fleet.mode and self.fleet or nil})
   self.dirty=false
 end
 function App:close()
   if self.closed then return end;self.closed=true
   self.fleet:close()
+  self.sessions:close()
   for _,remote in pairs(self.remotes)do remote:close()end;self.remotes={};self.client:close()
 end
 function M.run(opts)

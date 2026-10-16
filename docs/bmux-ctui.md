@@ -18,6 +18,7 @@ Press **Ctrl-B**, release it, then a command:
 | --- | --- |
 | `f` | Open server Fleet |
 | `a` | Launch a server agent |
+| `e` | Sessions: status, checkpoint files, saved-session inspection |
 | `t` | New server terminal; initializes an empty host |
 | `%` / `"` | Split with a new terminal right / down |
 | `n` / `p` | Next / previous pane |
@@ -42,6 +43,13 @@ otherwise they scroll local history. The active controller resizes the PTY to
 its pane; observers clip without changing server geometry. Narrow windows show
 the focused pane and retain the canonical split tree for navigation and later
 expansion.
+
+**Ctrl-B e** opens the [session controls](bmux-session-transfer.md). Export to a
+new private file, import a regular checkpoint file as a new inactive saved
+session, inspect a saved name or refresh persistence/recovery status. Use e/i/c/r
+or Up/Down and Enter; Escape cancels a field, then closes the modal. Closing
+the dialog or client leaves server processes running. Imported output remains
+inactive when its named session is started explicitly and joined again.
 
 ## Agents and Fleet
 

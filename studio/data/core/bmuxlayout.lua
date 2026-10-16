@@ -185,6 +185,7 @@ function Session:disconnect()
   if self.closed then return end
   local content=self.active and self:content();self.closed=true;self.client:close()
   if self.agents then self.agents:close()end
+  if self.session_actions then self.session_actions:close()end
   self.queue={};self.resize_pending=nil;self.pending_focus_id=nil
   if core.root_view.dragged_divider and core.root_view.dragged_divider.bmux_owner==self then core.root_view.dragged_divider=nil end
   if content and self.local_tree then

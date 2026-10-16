@@ -62,18 +62,20 @@ each checkpoint write compares the previous document. A live or reused PID is
 conservatively treated as owned.
 
 `GET /layout/session` uses capability `control:GET:/layout/session` and rejects
-query parameters. It returns `persistent`, plus `name`, `restored`, `blocked`,
+query parameters. It returns `host_id` and `persistent`, plus `name`, `restored`, `blocked`,
 `dirty`, `writes` and an optional bounded `error` for persistent servers. It
 exposes no ownership token or execution credential. Corrupt/changed checkpoints,
 owner conflicts and storage failures remain intact and observable through this
-status. Choosing another name does not erase the old session.
+status. The shared session client pins `host_id` before accepting the status.
+Choosing another name does not erase the old session.
 
 [Native transfer](bmux-session-transfer.md) (BMUX-98) creates new named saved
 sessions with every imported recipe demoted to inactive state. It never
 overwrites existing/corrupt bytes or live owners. Actual daemon startup/resave
 coverage verifies that imported data cannot acquire execution authority.
-BMUX-97 still supplies client menus and explicit recovery controls. BMUX-33
-remains incomplete until those controls and final acceptance checks land.
+BMUX-99 adds Studio/native session menus and file controls. BMUX-97 still
+supplies explicit recovery controls. BMUX-33 remains incomplete until those
+controls and final acceptance checks land.
 
 Implementation: `bmux.journal` owns lifecycle/storage, `bmux.capture` builds the
 [validated data](bmux-checkpoints.md), and `bmux.restore` allocates/remaps one
