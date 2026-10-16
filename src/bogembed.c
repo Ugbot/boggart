@@ -16,6 +16,7 @@
 #include "lauxlib.h"
 
 #include "embedded.h"
+#include "vendor/luv/luv.h"
 
 int luaopen_boggart_http(lua_State *L);
 int luaopen_boggart_sys(lua_State *L);
@@ -39,6 +40,28 @@ int luaopen_boggart_typesafe(lua_State *L); /* src/ltypesafe.c: TypeSafe System 
 int luaopen_boggart_serve(lua_State *L); /* src/lserve.c: the inbound control surface (HTTP+SSE) */
 int luaopen_luv(lua_State *L);
 void boggart_open_mem(lua_State *L);
+
+/* Cancel outgoing terminal/Fleet/layout sockets while Lua userdata are alive.
+ * Do not require an unused module or create a loop for parser-only processes. */
+void boggart_transport_shutdown(lua_State *L) {
+  int top=lua_gettop(L);
+  lua_getfield(L,LUA_REGISTRYINDEX,LUA_LOADED_TABLE);
+  if (!lua_istable(L,-1)) { lua_settop(L,top);return; }
+  lua_pushliteral(L,"terminal.transport");lua_rawget(L,-2);
+  if (lua_istable(L,-1)) {
+    lua_pushliteral(L,"shutdown");lua_rawget(L,-2);
+    if (lua_isfunction(L,-1)) {
+      if (lua_pcall(L,0,0,0)!=LUA_OK) {
+        const char *why=lua_tostring(L,-1);
+        fprintf(stderr,"control transport shutdown: %s\n",why ? why : "unknown error");
+      } else {
+        uv_loop_t *loop=luv_loop(L);
+        if (loop) uv_run(loop,UV_RUN_NOWAIT);
+      }
+    }
+  }
+  lua_settop(L,top);
+}
 
 /* boggart.embedded(name) -> source | nil */
 static int l_embedded(lua_State *L) {

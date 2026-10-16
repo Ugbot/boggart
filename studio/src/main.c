@@ -16,6 +16,7 @@ lua_State *boggart_newstate(void);
 void boggart_http_shutdown(lua_State *L); /* src/lhttp.c: close raw uv handles before lua_close */
 void boggart_serve_shutdown(lua_State *L);
 void boggart_terminal_shutdown(lua_State *L);
+void boggart_transport_shutdown(lua_State *L);
 void boggart_channel_shutdown(lua_State *L);
 void boggart_channel_quiesce(lua_State *L);
 void boggart_studio_loop_shutdown(void);
@@ -243,6 +244,7 @@ int main(int argc, char **argv) {
    * same exit crash the CLI had. See boggart_http_shutdown in src/lhttp.c. */
   boggart_channel_quiesce(L);
   boggart_studio_loop_shutdown();
+  boggart_transport_shutdown(L);
   boggart_serve_shutdown(L);
   boggart_http_shutdown(L);
   boggart_station_shutdown(L);
