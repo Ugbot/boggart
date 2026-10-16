@@ -30,12 +30,19 @@ function Session:_stage(snapshot)
   local w,s=selected(snapshot);local created={};local pool={}
   local function make(desc)
     local value=self.pool[desc.id]
+    local agent,signature
+    if desc.kind=='agent'then
+      agent,signature=self.agents:resolve(desc.agent_id)
+      if value and value.bmux_agent_signature~=signature then value=nil end
+    end
     if not value then
-      if desc.kind=='terminal' then
-        value=require('core.terminalview'){title=desc.title or 'Terminal '..desc.terminal_id,
-          attachment={socket=self.socket,token=self.token,id=desc.terminal_id,generation=desc.generation,tail=32}}
+      if desc.kind=='terminal'or agent then
+        value=require('core.terminalview'){title=desc.title or agent and agent.name or 'Terminal '..desc.terminal_id,
+          attachment={socket=self.socket,token=self.token,id=agent and agent.terminal_id or desc.terminal_id,
+            generation=agent and agent.terminal_generation or desc.generation,tail=32}}
       else value=Notice(desc.title or 'Agent '..tostring(desc.agent_id),'Agent view unavailable in this connection') end
       value.bmux_view_id=desc.id;value.bmux_layout=self;created[#created+1]=value
+      if desc.kind=='agent'then value.bmux_agent_id=desc.agent_id;value.bmux_agent_signature=signature end
     end
     pool[desc.id]=value;return value
   end
@@ -58,7 +65,11 @@ function Session:apply(prepared)
   local content=self:content();if not content then for _,v in pairs(stage.pool)do if not self.pool[v.bmux_view_id]then close(v)end end;return end
   local pos,size=content.position,content.size
   content:consume(stage.root);setmetatable(content,self.Class);content.position,content.size=pos,size
-  for id,v in pairs(stage.pool)do self.pool[id]=v end
+  local replaced={}
+  for id,v in pairs(stage.pool)do
+    if self.pool[id]and self.pool[id]~=v then replaced[#replaced+1]=self.pool[id]end
+    self.pool[id]=v
+  end
   local refs=self.client.refs or {};local removed={}
   for id,v in pairs(self.pool)do if not refs[id]then removed[#removed+1]=v;self.pool[id]=nil end end
   self.workspace_id=stage.workspace and stage.workspace.id;self.surface_id=stage.surface and stage.surface.id
@@ -72,6 +83,7 @@ function Session:apply(prepared)
     st.active=stage.active;st.views=content:get_children()
   end
   for _,v in ipairs(removed)do close(v)end
+  for _,v in ipairs(replaced)do close(v)end
   self.error=nil;core.redraw=true
 end
 function Session:_changed()
@@ -172,6 +184,7 @@ end
 function Session:disconnect()
   if self.closed then return end
   local content=self.active and self:content();self.closed=true;self.client:close()
+  if self.agents then self.agents:close()end
   self.queue={};self.resize_pending=nil;self.pending_focus_id=nil
   if core.root_view.dragged_divider and core.root_view.dragged_divider.bmux_owner==self then core.root_view.dragged_divider=nil end
   if content and self.local_tree then
@@ -189,6 +202,7 @@ function Session:disconnect()
   core.redraw=true
 end
 function Session:refresh()
+  if self.agents then self.agents:refresh()end
   self.failed_revision=nil;self.applied_revision=nil
   local function done(why)if why then core.error('Layout: %s',why.message)else self:apply()end end
   if self.client.watch then self.client:refresh(done)else self.client:start(done)end
@@ -226,9 +240,11 @@ function M.join(socket,token,callback)
   local self=setmetatable({socket=socket,token=token,Base=Base,pool={},queue={},callback=callback},Session)
   self.Class=require('core.bmuxlayoutnodes').new(Base)
   self.client=Client.new{socket=socket,token=token,on_change=function()self:_changed()end}
+  self.agents=require('core.bmuxagents').new(self)
   M.pending=self
   self.client:start(function(why)
     if why then self:disconnect();if callback then callback(why)else core.error('Join layout: %s',why.message)end;return end
+    self.agents:start(self.client.host_id)
     M.update()
   end)
   return self

@@ -126,7 +126,10 @@ end
 
 local function in_bmux() return require("shell").current == "bmux" end
 command.add(in_bmux, {
-  ["bmux:new-agent"] = function() require("core.agentlauncher").choose() end,
+  ["bmux:new-agent"] = function()
+    if M.session then M.session.agents:choose()else require('core.agentlauncher').choose()end
+  end,
+  ["bmux:new-local-agent"] = function()require('core.agentlauncher').choose()end,
   ["bmux:new-terminal"] = function() M.open() end,
   ["bmux:split-right"] = function() M.open("right") end,
   ["bmux:split-down"] = function() M.open("down") end,

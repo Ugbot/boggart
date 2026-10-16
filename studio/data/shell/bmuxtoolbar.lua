@@ -19,10 +19,10 @@ function Toolbar:items()
   local out={};local session=self.workspace.session
   for _,item in ipairs(items)do
     local copy={label=item.label,command=item.command}
-    if session and copy.command=='bmux:new-agent'then copy.label='+ Local agent'end
     out[#out+1]=copy
   end
   if session then
+    out[#out+1]={label='+ Local agent',command='bmux:new-local-agent'}
     out[#out+1]={label='Workspaces',command='bmux:server-workspaces'}
     out[#out+1]={label='Surfaces',command='bmux:server-surfaces'}
     out[#out+1]={label='Refresh / reconnect',command='bmux:refresh-layout'}

@@ -43,12 +43,16 @@ If placement of a newly created shell cannot be confirmed, Studio reports its
 server terminal ID. Reconnect and inspect the layout/Attach list; creation is
 not replayed automatically.
 
+The **+ New agent** chooser launches server-owned Boggart, Codex, Claude or custom
+TUIs. Their published terminal references attach in the joined layout. Common
+Fleet actions focus the pane and route supported controls to the server. See
+[server agents in Studio](bmux-studio-agents.md).
+
 The **+ Local agent** chooser retains the existing native agent launcher and
 Fleet registration. Selecting a profile returns to the preserved local Bmux
 layout and launches there; cancelling the chooser leaves the joined layout in
-place. Server agent references display an unavailable-view notice until their
-conversation/execution adapter is implemented. No remote agent capabilities
-are inferred from layout references.
+place. Agent references without a published terminal show an unavailable-view
+notice. Capabilities come from the Fleet publication, not layout references.
 
 ## Ownership and presentation
 
@@ -70,5 +74,5 @@ See [native client](bmux-layout-client.md), [host protocol](bmux-layout-host.md)
 and [verification](benchmarks/2026-10-16-studio-layout-verification.md).
 The [native cTUI](bmux-ctui.md) consumes the same hierarchy and attachment policy;
 cross-client focus/zoom/swap is covered by the actual SDL/PTY integration test.
-Remote agent-pane adapters remain BMUX-31 work; durable restart restore remains
+Terminal-mode agent controls remain BMUX-31 work; durable restart restore remains
 BMUX-33.

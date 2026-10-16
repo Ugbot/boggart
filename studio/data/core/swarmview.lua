@@ -446,7 +446,13 @@ end
 
 function SwarmView:toolbar_items()
   local items = {}
-  items[#items + 1] = { key='toolbar:new-agent',label = "New agent", action = function() require("core.agentlauncher").choose() end }
+  local workspace=package.loaded['shell.workspaces.bmux'];local joined=workspace and workspace.session
+  if joined then
+    items[#items+1]={key='toolbar:new-server-agent',label='New server agent',action=function()joined.agents:choose()end}
+    items[#items+1]={key='toolbar:new-local-agent',label='New local agent',action=function()require('core.agentlauncher').choose()end}
+  else
+    items[#items + 1] = { key='toolbar:new-agent',label = "New agent", action = function() require("core.agentlauncher").choose() end }
+  end
   if self:live() then
     items[#items + 1] = { key='toolbar:stop',label = "Stop", tone = style.warn,
                           action = function() self:stop() end }
@@ -640,7 +646,7 @@ function SwarmView:draw_detail(font, charw, x, y, lh, voff, cols, rows)
     cell(font, charw, x, y + voff, 0, rec.name .. "  " .. rec.provider .. "  " .. phase, style.accent, cols)
     y = y + lh
     y=self:draw_actions(font,actions.external(self,rec),x,y,x+cols*charw)
-    for _,text in ipairs { rec.worker and ("owning TUI: "..tostring((registry.agents[rec.parent] or {}).short_id or rec.parent)) or ("pane: " .. (rec.pane_id or rec.short_id or rec.id)), "cwd: " .. (rec.cwd or "?"),
+    for _,text in ipairs { rec.worker and ("owning TUI: "..tostring((registry:get(rec.parent) or {}).short_id or rec.parent)) or ("pane: " .. (rec.pane_id or rec.short_id or rec.id)), "cwd: " .. (rec.cwd or "?"),
       "session: " .. tostring(rec.session_id or "?") .. "  model: " .. tostring(rec.model or "?"),
       rec.worker and ("parent session: "..tostring(rec.parent_session_id or '?')) or ("process: " .. tostring(rec.pid or "?") .. (rec.exit_status and rec.exit_status>=0 and ("  exit: " .. rec.exit_status) or "")),
       rec.activity==rec.state and phase or rec.activity or "agent activity unknown",
