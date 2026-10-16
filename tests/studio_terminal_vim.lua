@@ -7,7 +7,9 @@ local function frame() core.frame_start=system.get_time(); core.step() end
 local function wait_for(test)
   local start=system.get_time()
   repeat frame(); if test() then return end; system.wait_event(0.05) until system.get_time()-start>8
-  error('native Vim deadline')
+  local rows={}
+  for y=1,view.rows do local chars={};for _,cell in ipairs(view.terminal:row(y).cells)do chars[#chars+1]=cell.text end;rows[#rows+1]=table.concat(chars)end
+  error('native Vim deadline: '..require('json').encode{process=view.terminal:process_state(),state=view.state,cols=view.cols,rows=view.rows}..'\n'..table.concat(rows,'\n'))
 end
 local function text()
   local lines={}

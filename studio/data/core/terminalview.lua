@@ -103,6 +103,9 @@ function TerminalView:on_focus_gained()
   self:on_window_focus(focused)
 end
 function TerminalView:resize_to_fit()
+  -- New/hidden views have no layout yet. Keep the initial PTY geometry until
+  -- they do: a transient 1x1 resize can put applications into a startup pager.
+  if self.size.x<=0 or self:body_height()<=0 then return end
   local cols=common.clamp(math.floor(self.size.x/self.cw),1,4096)
   local rows=common.clamp(math.floor(self:body_height()/self.lh),1,4096)
   if self.remote then self.remote:resize(cols,rows);return end
