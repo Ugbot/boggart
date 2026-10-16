@@ -7,11 +7,12 @@
  *   - a double-buffered cell grid; tc_flush diffs and emits only deltas.
  *   - one-poll-per-call non-blocking input with ANSI escape decoding.
  *
- * C11 + POSIX. No dependencies.
+ * C11 + POSIX, libuv and the shared Unicode tables.
  */
 #define _GNU_SOURCE
 #include "termctl.h"
 #include "bunicode.h"
+#include "btunicode.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -29,18 +30,43 @@
 /* ------------------------------------------------------------------ cell -- */
 /* Fields are compared explicitly (never memcmp) so struct padding cannot
  * produce phantom diffs. fg/bg are int16_t to carry the -1 "default" sentinel.
- * A cell with ch == 0 is a "wide continuation": the right half of a 2-wide
- * glyph owned by the cell to its left; the flush skips drawing it. */
+ * A cell with ch == 0 is a wide continuation owned by the cell to its left.
+ * Single scalars are inline; longer clusters share an immutable payload
+ * between front/back buffers until repaint, clear, resize or shutdown. */
+typedef struct {
+    size_t refs, length;
+    char text[];
+} tc_cluster;
 typedef struct {
     uint32_t ch;    /* Unicode scalar; ' ' when blank; 0 = wide continuation */
+    tc_cluster *cluster; /* shared immutable UTF-8 for multiple scalars */
     int16_t  fg;    /* 0..255 palette index, or -1 = default                 */
     int16_t  bg;
     uint8_t  attr;  /* TC_* bitflags                                         */
+    uint8_t  width; /* explicit source width; 0 for continuation */
 } tc_cell;
 
 static int cell_eq(const tc_cell *a, const tc_cell *b) {
-    return a->ch == b->ch && a->fg == b->fg && a->bg == b->bg &&
-           a->attr == b->attr;
+    if (a->ch != b->ch || a->fg != b->fg || a->bg != b->bg ||
+        a->attr != b->attr || a->width != b->width) return 0;
+    if (a->cluster == b->cluster) return 1;
+    return a->cluster && b->cluster &&
+           a->cluster->length == b->cluster->length &&
+           !memcmp(a->cluster->text, b->cluster->text, a->cluster->length);
+}
+
+static void release_cell(tc_cell *c) {
+    if (c->cluster && !--c->cluster->refs) free(c->cluster);
+    c->cluster = NULL;
+}
+static void copy_cell(tc_cell *dst, const tc_cell *src) {
+    if (src->cluster) src->cluster->refs++;
+    release_cell(dst);
+    *dst = *src;
+}
+static void free_grid(tc_cell *grid, size_t length) {
+    if (grid) for (size_t i = 0; i < length; i++) release_cell(&grid[i]);
+    free(grid);
 }
 
 /* ----------------------------------------------------------------- state -- */
@@ -74,6 +100,8 @@ static struct {
      * what the callback has buffered. This is what lets the cTUI sleep in ONE
      * uv.run for keyboard AND http AND timers, instead of polling. */
     uv_poll_t        stdin_poll;
+    uv_timer_t       escape_timer; /* armed only for an incomplete ESC sequence */
+    int              escape_waiting, escape_expired;
     int              attached;
     int              saved_infl;  /* infd's O_NONBLOCK state before we attached  */
 } T;
@@ -211,10 +239,12 @@ static void query_size(int *w, int *h) {
 }
 
 static void blank_cell(tc_cell *c) {
+    release_cell(c);
     c->ch = ' ';
     c->fg = -1;
     c->bg = -1;
     c->attr = 0;
+    c->width = 1;
 }
 
 /* (Re)allocate the grid to w*h. front is filled with an impossible sentinel so
@@ -223,15 +253,16 @@ static int alloc_grid(int w, int h) {
     if (w < 1) w = 1;
     if (h < 1) h = 1;
     size_t n = (size_t)w * (size_t)h;
-    tc_cell *nf = (tc_cell *)malloc(n * sizeof(tc_cell));
-    tc_cell *nb = (tc_cell *)malloc(n * sizeof(tc_cell));
+    if (n > SIZE_MAX / sizeof(tc_cell)) return -1;
+    tc_cell *nf = (tc_cell *)calloc(n, sizeof(tc_cell));
+    tc_cell *nb = (tc_cell *)calloc(n, sizeof(tc_cell));
     if (!nf || !nb) {
         free(nf);
         free(nb);
         return -1;
     }
-    free(T.front);
-    free(T.back);
+    free_grid(T.front, (size_t)T.w * (size_t)T.h);
+    free_grid(T.back, (size_t)T.w * (size_t)T.h);
     T.front = nf;
     T.back = nb;
     T.w = w;
@@ -324,21 +355,39 @@ void tc_size(int *w, int *h) {
     if (h) *h = T.h;
 }
 
+void tc_request_resize(void) { T.resized = 1; }
+
 /* The on-screen (front) buffer as UTF-8, one row per line, into `out`
  * (NUL-terminated, at most cap bytes). Exactly what the terminal is showing, for
  * tests and verification. Returns the byte length written. */
+size_t tc_snapshot_size(void) {
+    size_t n = 0;
+    if (!T.front) return 0;
+    for (int y = 0; y < T.h; y++) {
+        for (int x = 0; x < T.w; x++) {
+            tc_cell *c = &T.front[y * T.w + x];
+            if (!c->ch) continue;
+            char scalar[4];
+            n += c->cluster ? c->cluster->length : (size_t)utf8_encode(c->ch, scalar);
+        }
+        n++;
+    }
+    return n;
+}
+
 size_t tc_snapshot(char *out, size_t cap) {
     size_t o = 0;
-    if (cap == 0) return 0;
+    if (cap == 0 || !out) return 0;
     if (!T.front) { out[0] = '\0'; return 0; }
     for (int y = 0; y < T.h; y++) {
         for (int x = 0; x < T.w; x++) {
             tc_cell *c = &T.front[y * T.w + x];
             if (c->ch == 0) continue; /* right half of a wide glyph */
             char u[4];
-            int n = utf8_encode(c->ch, u);
-            if (o + (size_t) n + 1 >= cap) goto done;
-            for (int k = 0; k < n; k++) out[o++] = u[k];
+            size_t n = c->cluster ? c->cluster->length : (size_t)utf8_encode(c->ch, u);
+            if (n >= cap - o) goto done;
+            memcpy(out + o, c->cluster ? c->cluster->text : u, n);
+            o += n;
         }
         if (o + 1 >= cap) goto done;
         out[o++] = '\n';
@@ -354,55 +403,98 @@ void tc_clear(void) {
     for (size_t i = 0; i < n; i++) blank_cell(&T.back[i]);
 }
 
-void tc_set(int x, int y, uint32_t cp, int fg, int bg, int attr) {
-    if (!T.back || x < 0 || y < 0 || x >= T.w || y >= T.h) return;
+/* Clear the complete owner of either half, including a wide glyph to the
+ * right of a new wide write. No continuation may outlive its owner. */
+static void erase_at(int x, int y) {
+    int idx = y * T.w + x;
+    if (!T.back[idx].ch && x > 0) blank_cell(&T.back[idx - 1]);
+    if (T.back[idx].width == 2 && x + 1 < T.w) blank_cell(&T.back[idx + 1]);
+    blank_cell(&T.back[idx]);
+}
+
+int tc_put_cluster(int x, int y, const char *text, size_t length, int width,
+                   int fg, int bg, int attr) {
+    if (!T.back || x < 0 || y < 0 || x >= T.w || y >= T.h) return 0;
+    if (!text || !length || length > LG_LIMIT * 4 || (width != 1 && width != 2)) return 0;
+    const char *p = text, *end = text + length;
+    bunicode_grapheme_state state = {0};
+    btunicode_state native = {0};
+    int uax_cluster = 1, native_cluster = 1;
+    uint32_t first = 0;
+    size_t scalars = 0;
+    while (p < end) {
+        uint32_t cp;
+        const char *next = bunicode_utf8_next(p, end, &cp);
+        char encoded[4];
+        size_t n = bunicode_utf8_put(cp, encoded);
+        if ((size_t)(next - p) != n || memcmp(p, encoded, n) ||
+            cp < 32 || (cp >= 0x7f && cp <= 0x9f) || ++scalars > LG_LIMIT)
+            return 0;
+        int boundary = bunicode_grapheme_break(&state, cp);
+        int native_boundary = btunicode_break(&native, cp);
+        if (p != text) {
+            if (boundary) uax_cluster = 0;
+            if (cp <= 255 || native_boundary) native_cluster = 0;
+            if (!uax_cluster && !native_cluster) return 0;
+        }
+        if (p == text) first = cp;
+        p = next;
+    }
+    tc_cluster *cluster = NULL;
+    if (scalars > 1) {
+        cluster = malloc(sizeof(*cluster) + length);
+        if (!cluster) return 0;
+        cluster->refs = 1;
+        cluster->length = length;
+        memcpy(cluster->text, text, length);
+    }
     if (fg < -1 || fg > 255) fg = -1;
     if (bg < -1 || bg > 255) bg = -1;
-
     int idx = y * T.w + x;
-    int w = tc_wcwidth(cp);
-    if (w < 1) w = 1; /* store zero-width as a 1-cell base */
-
-    /* If we are overwriting the right half of an existing wide glyph, blank
-     * its orphaned left half so no stale double-width remains. */
-    if (T.back[idx].ch == 0 && x > 0) blank_cell(&T.back[idx - 1]);
-    /* If the current cell was itself a wide-left, blank its now-orphaned
-     * continuation to the right. */
-    if (x + 1 < T.w && T.back[idx + 1].ch == 0 && tc_wcwidth(T.back[idx].ch) == 2)
-        blank_cell(&T.back[idx + 1]);
-
-    T.back[idx].ch = cp;
+    erase_at(x, y);
+    int clipped = width == 2 && x + 1 == T.w;
+    if (width == 2 && !clipped) erase_at(x + 1, y);
+    if (clipped) { free(cluster); cluster = NULL; first = ' '; width = 1; }
+    T.back[idx].ch = first;
+    T.back[idx].cluster = cluster;
+    T.back[idx].width = (uint8_t)width;
     T.back[idx].fg = (int16_t)fg;
     T.back[idx].bg = (int16_t)bg;
     T.back[idx].attr = (uint8_t)attr;
 
-    if (w == 2) {
-        if (x + 1 < T.w) {
+    if (width == 2) {
             T.back[idx + 1].ch = 0; /* continuation marker */
             T.back[idx + 1].fg = (int16_t)fg;
             T.back[idx + 1].bg = (int16_t)bg;
             T.back[idx + 1].attr = (uint8_t)attr;
-        } else {
-            /* no room for the right half: render a space instead */
-            T.back[idx].ch = ' ';
-        }
+            T.back[idx + 1].width = 0;
     }
+    return !clipped;
+}
+
+void tc_set(int x, int y, uint32_t cp, int fg, int bg, int attr) {
+    /* Scalar convenience API: controls become a printable replacement. */
+    if (cp < 32 || (cp >= 0x7f && cp <= 0x9f)) cp = 0xfffd;
+    char text[4];
+    size_t n = bunicode_utf8_put(cp, text);
+    int width = tc_wcwidth(cp);
+    (void)tc_put_cluster(x, y, text, n, width ? width : 1, fg, bg, attr);
 }
 
 int tc_puts(int x, int y, const char *s, int fg, int bg, int attr) {
     if (!s) return x;
-    while (*s && x < T.w) {
-        unsigned char c = (unsigned char)*s;
-        int len = utf8_len(c);
-        int avail = 0;
-        for (int i = 0; i < len && s[i]; i++) avail++;
-        if (avail < len) break; /* truncated trailing bytes */
-        uint32_t cp = utf8_decode((const unsigned char *)s, len);
-        s += len;
-        int w = tc_wcwidth(cp);
-        if (w == 0) continue; /* combining mark: skip (minimal handling) */
-        tc_set(x, y, cp, fg, bg, attr);
-        x += w;
+    const char *end = s + strlen(s);
+    while (s < end && x < T.w) {
+        btunicode_text_cluster cluster;
+        s += btunicode_text_next(s, (size_t)(end - s), true, &cluster);
+        if (!cluster.width) continue;
+        /* The SDK regards UTF-8 C1 values as printable. Do not emit these
+         * control values to the host terminal. */
+        uint32_t first;
+        (void)bunicode_utf8_next(cluster.text, cluster.text + cluster.length, &first);
+        if (first >= 0x7f && first <= 0x9f) continue;
+        (void)tc_put_cluster(x, y, cluster.text, cluster.length, (int)cluster.width, fg, bg, attr);
+        x += (int)cluster.width;
     }
     return x;
 }
@@ -481,7 +573,7 @@ void tc_flush(void) {
 
             if (b->ch == 0) {
                 /* wide continuation: drawn by its left neighbour */
-                *f = *b;
+                copy_cell(f, b);
                 continue;
             }
 
@@ -500,13 +592,10 @@ void tc_flush(void) {
             }
 
             char utf[4];
-            int n = utf8_encode(b->ch, utf);
-            ob_mem(utf, (size_t)n);
-
-            int w = tc_wcwidth(b->ch);
-            if (w < 1) w = 1;
-            cx += w;
-            *f = *b;
+            size_t n = b->cluster ? b->cluster->length : (size_t)utf8_encode(b->ch, utf);
+            ob_mem(b->cluster ? b->cluster->text : utf, n);
+            cx += b->width;
+            copy_cell(f, b);
         }
     }
 
@@ -602,7 +691,7 @@ static int letter_key(unsigned char f) {
 
 /* Find ESC [ 201 ~ in b[0..n). Returns start index or -1. */
 static int find_paste_end(const unsigned char *b, int n) {
-    for (int i = 0; i + 5 <= n; i++) {
+    for (int i = 0; i + 6 <= n; i++) {
         if (b[i] == 0x1b && b[i + 1] == '[' && b[i + 2] == '2' &&
             b[i + 3] == '0' && b[i + 4] == '1' && b[i + 5] == '~')
             return i;
@@ -624,8 +713,13 @@ static int parse_one(tc_event *ev) {
     if (T.pasting) {
         int end = find_paste_end(b, n);
         if (end < 0) {
+            if (!T.eof) {
+                /* Preserve a possible split closing delimiter for next read. */
+                int keep = n < 5 ? n : 5;
+                paste_append(b, (size_t)(n - keep));
+                return n - keep;
+            }
             paste_append(b, (size_t)n);
-            if (!T.eof) return n;          /* consumed; still no event */
             emit_paste(ev);
             return n;
         }
@@ -637,6 +731,7 @@ static int parse_one(tc_event *ev) {
     unsigned char c = b[0];
 
     if (c == 0x1b) { /* ESC */
+        if (T.escape_expired) { set_key(ev, TCK_ESC); return 1; }
         if (n == 1) {
             if (!T.eof) return 0;
             set_key(ev, TCK_ESC);
@@ -721,7 +816,7 @@ static int parse_one(tc_event *ev) {
                 }
             }
             ev->type = TCEV_MOUSE;
-            ev->mbutton = (bt & 0x40) ? 64 + (bt & 0x01) : (bt & 0x03);
+            ev->mbutton = (bt & 0x40) ? 64 + (bt & 0x01) : b[fin] == 'm' ? 3 : (bt & 0x03);
             ev->mx = mx > 0 ? mx - 1 : 0;
             ev->my = my > 0 ? my - 1 : 0;
             return fin + 1;
@@ -895,6 +990,12 @@ static void on_stdin_readable(uv_poll_t *h, int status, int events) {
     inbuf_fill();
 }
 
+static void on_escape_timeout(uv_timer_t *timer) {
+    (void)timer;
+    T.escape_waiting = 0;
+    T.escape_expired = 1;
+}
+
 /* Put stdin on `loop`. After this, tc_poll no longer polls the fd itself -- the
  * callback owns the read and the caller sleeps in that loop's uv.run. Idempotent.
  * Returns 0 on success. Safe to call with a non-tty stdin (EOF path still works;
@@ -909,7 +1010,17 @@ int tc_attach_loop(void *loop) {
      * already handles the EAGAIN this introduces. */
     T.saved_infl = fcntl(T.infd, F_GETFL, 0);
     if (uv_poll_init(loop, &T.stdin_poll, T.infd) != 0) return -1;
-    if (uv_poll_start(&T.stdin_poll, UV_READABLE, on_stdin_readable) != 0) return -1;
+    if (uv_timer_init(loop, &T.escape_timer) != 0) {
+        uv_close((uv_handle_t *)&T.stdin_poll, NULL);
+        if (T.saved_infl >= 0) fcntl(T.infd, F_SETFL, T.saved_infl);
+        return -1;
+    }
+    if (uv_poll_start(&T.stdin_poll, UV_READABLE, on_stdin_readable) != 0) {
+        uv_close((uv_handle_t *)&T.stdin_poll, NULL);
+        uv_close((uv_handle_t *)&T.escape_timer, NULL);
+        if (T.saved_infl >= 0) fcntl(T.infd, F_SETFL, T.saved_infl);
+        return -1;
+    }
     T.attached = 1;
     return 0;
 }
@@ -917,6 +1028,8 @@ int tc_attach_loop(void *loop) {
 void tc_detach_loop(void) {
     if (!T.attached) return;
     uv_poll_stop(&T.stdin_poll);
+    uv_timer_stop(&T.escape_timer);
+    uv_close((uv_handle_t *)&T.escape_timer, NULL);
     uv_close((uv_handle_t *)&T.stdin_poll, NULL);
     if (T.saved_infl >= 0) fcntl(T.infd, F_SETFL, T.saved_infl); /* restore blocking */
     T.attached = 0;
@@ -928,7 +1041,15 @@ static int take_event(tc_event *ev) {
     while (T.inlen > 0) {
         memset(ev, 0, sizeof(*ev));
         int used = parse_one(ev);
-        if (used <= 0) return 0;
+        if (used <= 0) {
+            if (T.attached && !T.pasting && T.inlen > 0 && T.inbuf[0] == 0x1b && !T.escape_waiting) {
+                T.escape_waiting = 1;
+                uv_timer_start(&T.escape_timer, on_escape_timeout, 30, 0);
+            }
+            return 0;
+        }
+        if (T.attached && T.escape_waiting) uv_timer_stop(&T.escape_timer);
+        T.escape_waiting = T.escape_expired = 0;
         inbuf_consume(used);
         if (ev->type != TCEV_NONE) return 1;
     }
@@ -1025,6 +1146,7 @@ int tc_init(void) {
     T.resized = 0;
     T.pasting = 0;
     T.pastelen = 0;
+    T.escape_waiting = T.escape_expired = 0;
 
     /* Raw mode (only meaningful on a real tty). */
     if (T.tty_in && tcgetattr(T.infd, &T.orig) == 0) {
@@ -1073,8 +1195,8 @@ void tc_shutdown(void) {
     if (!T.inited) return;
     tc_detach_loop();
     restore_tty();
-    free(T.front);
-    free(T.back);
+    free_grid(T.front, (size_t)T.w * (size_t)T.h);
+    free_grid(T.back, (size_t)T.w * (size_t)T.h);
     free(T.ob);
     free(T.paste);
     T.front = T.back = NULL;

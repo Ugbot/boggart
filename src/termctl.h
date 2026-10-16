@@ -140,10 +140,15 @@ void tc_mouse(int on);
 /* Current grid size in cells. Either pointer may be NULL. Updated whenever a
  * TCEV_RESIZE is returned by tc_poll. */
 void tc_size(int *w, int *h);
+/* An external signal watcher may own SIGWINCH while the caller sleeps in
+ * libuv. Request the same geometry refresh + resize event as our handler. */
+void tc_request_resize(void);
 
 /* Snapshot the on-screen (front) buffer as UTF-8 rows (NUL-terminated), for
  * tests/verification. Returns bytes written. */
 size_t tc_snapshot(char *out, size_t cap);
+/* Required UTF-8 snapshot bytes, excluding the terminating NUL. */
+size_t tc_snapshot_size(void);
 
 /* ---- back-buffer painting ----------------------------------------------
  * All drawing mutates the *back* buffer only; nothing reaches the screen
@@ -156,9 +161,19 @@ void tc_clear(void);
  * occupies two cells; a zero-width codepoint is treated as width 1. */
 void tc_set(int x, int y, uint32_t codepoint, int fg, int bg, int attr);
 
-/* Write a UTF-8 string starting at (x,y), advancing x by each glyph's display
- * width (0 for combining marks, 2 for wide glyphs, else 1). Stops at the right
- * edge. Returns the x column just past the last glyph written. */
+/* Paint one complete validated UTF-8 grapheme using its source cell width
+ * (1 or 2). Retains at most 65 scalars / 260 bytes, matching native terminal
+ * clusters. Both Unicode 16 and native terminal cluster profiles are accepted.
+ * Controls, malformed UTF-8, multiple graphemes and over-limit input
+ * are rejected without mutation. Returns 1 when written, 0 on rejection/OOM
+ * or clipping. A wide glyph at the right edge becomes a styled blank. */
+int tc_put_cluster(int x, int y, const char *text, size_t length, int width,
+                   int fg, int bg, int attr);
+
+/* Write UTF-8 graphemes starting at (x,y), advancing by each cluster's display
+ * width. Preserves combining/emoji sequences up to the native cluster cap;
+ * ignores standalone zero-width/control clusters, replaces malformed bytes.
+ * Stops at the right edge. Returns the column just past the last glyph. */
 int  tc_puts(int x, int y, const char *utf8, int fg, int bg, int attr);
 
 /* Diff the back buffer against the on-screen (front) buffer and emit ONLY the

@@ -68,5 +68,7 @@ can be retried with Refresh.
 
 See [native client](bmux-layout-client.md), [host protocol](bmux-layout-host.md)
 and [verification](benchmarks/2026-10-16-studio-layout-verification.md).
-Actual cTUI hierarchy presentation remains BMUX-31/BMUX-35 work; durable restart
-restore remains BMUX-33.
+The [native cTUI](bmux-ctui.md) consumes the same hierarchy and attachment policy;
+cross-client focus/zoom/swap is covered by the actual SDL/PTY integration test.
+Remote agent-pane adapters remain BMUX-31 work; durable restart restore remains
+BMUX-33.
