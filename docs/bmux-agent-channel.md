@@ -22,6 +22,28 @@ available after EOF; an incomplete frame reports EPROTO. Polling stops before
 the descriptor closes, as required by [libuv's poll contract](https://docs.libuv.org/en/v1.x/poll.html).
 Both entrypoints retire channel handles before luv destroys its loop.
 
+`channel:watch(callback)` supplies deferred native readiness. It queues one
+initial callback with the channel, then coalesces complete inbound frames and
+EOF/error changes until delivery on the owning main Lua thread. Native I/O never
+enters Lua. `watch(nil)` and explicit close cancel pending delivery; callback
+failure removes observation and records a bounded error in `watch_state()`.
+The transport remains usable after an observer error. A failing old callback
+cannot disable a replacement installed during that callback.
+
+An idle watch emits no periodic callbacks and its async handle is unreferenced.
+Completed frames remain readable after EOF, including from the final callback.
+Weak owner mappings keep callback/channel cycles collectable. CLI, Studio and
+workers quiesce channel callbacks before teardown routines drain their loops,
+then close native channel handles before luv destroys the loop.
+
+Studio's Boggart adapter now refreshes its exact Fleet owner on channel
+readiness through `registry:poll(agent_id)`. It drains the two bounded batches
+needed for the native queue. Process and foreign-provider scans retain their
+existing behavior. `tests/studio_agent_control.lua` disables periodic registry
+polling during a real TUI handshake and verifies that readiness publishes the
+original session's state and capabilities. See the
+[readiness verification](benchmarks/2026-10-16-agent-readiness-verification.md).
+
 Messages use JSON version `v=1`. The host first sends `bind` with an opaque
 Fleet `id` and `generation`; a channel binds once. The TUI's `state` includes a
 monotonic sequence, actual session ID/model, phase, draft byte count/revision,

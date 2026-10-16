@@ -16,6 +16,7 @@ struct bchannel {
   bchannel_status state;
   unsigned char header[4]; size_t header_used;
   frame *partial, *received, *received_tail, *queued, *queued_tail;
+  void (*notify)(void *); void *notify_context;
 };
 static _Thread_local bchannel *registry;
 static _Thread_local uv_loop_t *shutdown_loop;
@@ -36,6 +37,7 @@ static void fail(bchannel *c,int error) {
   free(c->partial);c->partial=NULL;
   frames_free(c->queued);c->queued=c->queued_tail=NULL;
   c->state.queued_bytes=c->state.queued_frames=0;
+  if(c->notify)c->notify(c->notify_context);
 }
 void bchannel_close(bchannel *c){if(c)fail(c,0);}
 void bchannel_destroy(bchannel *c){if(c && !c->released){bchannel_close(c);c->released=true;maybe_free(c);}}
@@ -76,6 +78,7 @@ static int read_frames(bchannel *c) {
         if(c->received_tail)c->received_tail->next=f;else c->received=f;
         c->received_tail=f;c->partial=NULL;c->header_used=0;
         c->state.received_frames++;c->state.received_bytes+=f->length;c->state.revision++;
+        if(c->notify)c->notify(c->notify_context);
       }
     } else {
       c->header_used+=(size_t)n;
@@ -144,6 +147,9 @@ size_t bchannel_take(bchannel *c,void *bytes,size_t capacity) {
   c->state.received_frames--;c->state.received_bytes-=length;free(f);return length;
 }
 bchannel_status bchannel_state(const bchannel *c){return c ? c->state : (bchannel_status){.closed=true,.error=UV_EPIPE};}
+void bchannel_set_notify(bchannel *c,void (*notify)(void *),void *context) {
+  if(c){c->notify=notify;c->notify_context=context;}
+}
 void bchannel_shutdown(uv_loop_t *loop) {
   shutdown_loop=loop;
   for(bchannel *c=registry;c;c=c->next)if(c->loop==loop)bchannel_close(c);
@@ -161,6 +167,7 @@ int bchannel_send(bchannel *c,const void *b,size_t n){(void)c;(void)b;(void)n;re
 size_t bchannel_next_size(const bchannel *c){(void)c;return 0;}
 size_t bchannel_take(bchannel *c,void *b,size_t n){(void)c;(void)b;(void)n;return 0;}
 bchannel_status bchannel_state(const bchannel *c){(void)c;return (bchannel_status){.closed=true,.error=UV_ENOSYS};}
+void bchannel_set_notify(bchannel *c,void (*notify)(void *),void *context){(void)c;(void)notify;(void)context;}
 void bchannel_close(bchannel *c){(void)c;}
 void bchannel_destroy(bchannel *c){(void)c;}
 void bchannel_shutdown(uv_loop_t *loop){(void)loop;}
