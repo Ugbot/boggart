@@ -72,6 +72,16 @@ bool ren_test_style_atlas_sharing(bool enabled);
 bool ren_test_cluster_shaping(bool enabled);
 /* Writes the retained backbuffer to a BMP. 0 on success; SDL_GetError() on fail. */
 int ren_save_screenshot(const char *path);
+/* Opt-in script probe: retained scene pixel validated AFTER a successful
+ * present. ns precedes the readback; this is not a display scanout clock. */
+typedef struct {
+  bool enabled, valid;
+  int x, y;
+  uint64_t serial, ns, readback_ns;
+  RenColor color;
+} RenPresentProbe;
+bool ren_test_present_probe(bool enabled, int x, int y);
+RenPresentProbe ren_test_present_sample(void);
 
 RenImage* ren_new_image(int width, int height);
 void ren_free_image(RenImage *image);

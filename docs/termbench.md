@@ -2,8 +2,65 @@
 
 BMUX targets a terminal multiplexer with cmux capabilities and lower overhead.
 `termbench` measures repeatable parse/grid throughput in the native C terminal
-core and the previous Lua reference. BMUX-9 supplies this harness; the other measurements and
-comparative baselines remain BMUX-10 and BMUX-11 work.
+core and the previous Lua reference. BMUX-9 supplies this harness. BMUX-101 adds
+validated server-to-Studio presentation timing below; startup, resource and
+control measurements remain BMUX-10 work, comparisons remain BMUX-11 work.
+
+## Server-to-Studio presentation latency (BMUX-101)
+
+`tools/termbench/studio_latency.lua` runs a real server-owned C raw-PTY fixture,
+joins the production layout, takes its controller lease, injects SDL key/text
+events, and waits for the corresponding RGB cell in a successfully presented
+frame. A native, opt-in script probe timestamps immediately after
+`SDL_RenderPresent`, then validates one pixel from the retained scene texture.
+No sampling/timing/readback occurs in ordinary sessions. It records every input,
+timestamp, latency, frame serial and readback cost. Old frames, wrong pixels and
+failed readbacks cannot satisfy a sample. Setup waits for real geometry and
+scrolling to settle; an unchanged cached frame is not counted as a new present.
+
+```sh
+cmake --build build -j8
+env -u SDL_VIDEODRIVER \
+  HOME="$PWD/build/testhome/termbench-latency-real" \
+  BOGGART_HOME="$PWD/build/testhome/termbench-latency-real/.boggart" \
+  SHELL=/bin/sh BMUX_BENCH_FIXTURE="$PWD/build/termbench_pty" \
+  BMUX_LATENCY_SAMPLES=200 BMUX_LATENCY_WARMUPS=20 \
+  BMUX_BENCH_BUILD_LABEL=RelWithDebInfo-none \
+  BMUX_LATENCY_REPORT="$PWD/build/studio-key-present.json" \
+  BOGGART_STUDIO_SCRIPT="$PWD/tools/termbench/studio_latency.lua" \
+  ./boggart-studio .
+```
+
+Run uncontended from the repo root, with the actual window renderer. The C
+fixture is POSIX-only. `BMUX_LATENCY_FPS` optionally overrides production frame
+pacing (default 60); samples allow 1–10000 and warmups 1–1000. Normal GC remains
+enabled. The report includes both executable hashes, fixture/script/font
+hashes, compiled terminal/renderer identities, machine and geometry. The
+controller resizes the initial 80x24 PTY to the actual visible pane, which is
+reported. The server uses the full control policy and named SQLite journal.
+
+This measures **synthetic key to application presentation API return**, not
+physical display scanout or randomized human arrival. Injection occurs from a
+core coroutine after a frame. GPU readback follows the timestamp and is excluded
+from the current sample; its cost can perturb subsequent frames. In particular,
+SDL may submit work before the GPU completes it. Do not interpret this as a
+photon latency, add it to unrelated draw timings, or compare it with another
+terminal measured at a different boundary. See the official
+[present](https://wiki.libsdl.org/SDL3/SDL_RenderPresent) and
+[readback](https://wiki.libsdl.org/SDL3/SDL_RenderReadPixels) contracts.
+
+Initial real Metal capture, 2026-10-16, Apple M5 Max, Darwin 25.6.0,
+RelWithDebInfo/no sanitizer, 60 fps, 172x34 viewport, 200 samples after 20 warmups:
+
+| Metric | p50 | p95 | p99 | Maximum |
+| --- | ---: | ---: | ---: | ---: |
+| Synthetic key to present return | 2.659 ms | 5.246 ms | 16.448 ms | 17.960 ms |
+| Subsequent one-pixel validation readback | 5.653 ms | 6.171 ms | 6.256 ms | 7.621 ms |
+
+[Raw samples and identities](benchmarks/2026-10-16-studio-key-present.json).
+Nearest-rank quantiles; p95 requires at least 20 samples and p99 at least 100.
+This is one Boggart capture and establishes no cmux/Ghostty advantage. CTest's
+three-sample dummy-renderer run checks correctness only and emits no p95/p99.
 
 ```sh
 ninja -C build termbench

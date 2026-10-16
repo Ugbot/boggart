@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <math.h>
 #include <string.h>
+#include <uv.h>
 #include "renderer.h"
 #include "fontglyph.h"
 #include "utf8width.h"
@@ -31,6 +32,36 @@ static RenGlyphStats glyph_stats;
 static void glyph_batch_flush(void);
 
 static bool target_undrawn;
+static RenPresentProbe present_probe;
+
+bool ren_test_present_probe(bool enabled, int x, int y) {
+  if (enabled && (x < 0 || y < 0 || x >= target_w || y >= target_h)) {
+    return SDL_SetError("presentation probe outside retained target");
+  }
+  present_probe = (RenPresentProbe){.enabled=enabled, .x=x, .y=y};
+  return true;
+}
+
+RenPresentProbe ren_test_present_sample(void) { return present_probe; }
+
+static void sample_presented_pixel(void) {
+  present_probe.ns = uv_hrtime();
+  present_probe.serial++;
+  present_probe.valid = false;
+  SDL_Rect rect = {present_probe.x, present_probe.y, 1, 1};
+  if (rect.x < target_w && rect.y < target_h &&
+      SDL_SetRenderTarget(renderer, target)) {
+    SDL_Surface *surface = SDL_RenderReadPixels(renderer, &rect);
+    if (surface) {
+      RenColor *c = &present_probe.color;
+      present_probe.valid = surface->w == 1 && surface->h == 1 &&
+        SDL_ReadSurfacePixel(surface, 0, 0, &c->r, &c->g, &c->b, &c->a);
+      SDL_DestroySurface(surface);
+    }
+    SDL_SetRenderTarget(renderer, NULL);
+  }
+  present_probe.readback_ns = uv_hrtime() - present_probe.ns;
+}
 
 static void ensure_target(void) {
   int pw = 0, ph = 0;
@@ -162,10 +193,14 @@ void ren_update_rects(RenRect *rects, int count) {
   /* A just-resized target is filled with chrome grey and has no scene yet.
      Presenting it is the black/smear flash on the first event after a drag. */
   if (count > 0 && renderer && target && !target_undrawn) {
-    SDL_SetRenderTarget(renderer, NULL);
-    SDL_SetRenderClipRect(renderer, NULL);
-    SDL_RenderTexture(renderer, target, NULL, NULL);
-    SDL_RenderPresent(renderer);
+    bool composed = SDL_SetRenderTarget(renderer, NULL);
+    composed = SDL_SetRenderClipRect(renderer, NULL) && composed;
+    composed = SDL_RenderTexture(renderer, target, NULL, NULL) && composed;
+    bool presented = SDL_RenderPresent(renderer);
+    if (present_probe.enabled) {
+      present_probe.valid = false;
+      if (composed && presented) { sample_presented_pixel(); }
+    }
   }
   static bool initial_frame = true;
   if (initial_frame) {
