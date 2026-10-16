@@ -8,7 +8,8 @@ at least one surface.
 
 The server/API increment is BMUX-80. Studio's
 [Join layout](bmux-studio-layout.md) now attaches to this hierarchy. The cTUI
-consumer remains BMUX-31/BMUX-35; restart persistence remains BMUX-33.
+[consumer](bmux-ctui.md) also attaches to the shared hierarchy; restart persistence
+remains BMUX-33.
 
 ## Control protocol
 

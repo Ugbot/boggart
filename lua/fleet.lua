@@ -14,7 +14,7 @@ function M.new(opts)
   local limit=opts.max_records or 512
   assert(type(limit)=='number' and limit%1==0 and limit>=1 and limit<=4096,'invalid Fleet capacity')
   return setmetatable({ prefix=opts.prefix or serve.token(8), serial=0,
-    max_records=limit, order={}, agents={}, owners={}, sources={}, evictions=0,listeners={},listener_errors={} }, Registry)
+    max_records=limit, order={}, agents={}, owners={}, sources={},source_owners={}, evictions=0,listeners={},listener_errors={} }, Registry)
 end
 function Registry:watch(key,callback)
   assert(type(key)=='string'and #key>0 and #key<=128,'invalid Fleet observer key')
@@ -31,10 +31,20 @@ function Registry:_changed()
     if not ok then self.listeners[v[1]]=nil;self.listener_errors[v[1]]=tostring(why):sub(1,256)end
   end end
 end
-function Registry:set_source(name, source)
-  assert(type(name)=="string" and type(source)=="function", "invalid fleet source")
-  self.sources[name] = source
+function Registry:set_source(name, source, owner)
+  assert(type(name)=="string" and #name>0 and #name<=128 and (source==nil or type(source)=="function"), "invalid fleet source")
+  assert(owner==nil or type(owner)=='table','invalid Fleet source adapter')
+  if owner then for _,action in ipairs{'focus','stop','prompt','interrupt','approve'}do
+    assert(owner[action]==nil or type(owner[action])=='function','invalid source capability')
+  end end
+  self.sources[name],self.source_owners[name]=source,source and owner or nil
   self:_changed()
+end
+function Registry:get(id)
+  if self.agents[id]then return self.agents[id],self.owners[id]end
+  for name,source in pairs(self.sources)do
+    for _,rec in ipairs(source())do if rec.id==id then return rec,self.source_owners[name]end end
+  end
 end
 function Registry:register(opts)
   opts = opts or {}
@@ -106,7 +116,7 @@ function Registry:retire(id, generation, state, error)
   self:_changed();return rec
 end
 function Registry:control(id, generation, action, payload)
-  local rec=self.agents[id]; local owner=self.owners[id]
+  local rec,owner=self:get(id)
   if not rec or rec.generation~=generation then return nil,"stale agent runtime" end
   if not owner or not rec.capabilities[action] or type(owner[action])~="function" then
     return nil,"agent does not support "..tostring(action)

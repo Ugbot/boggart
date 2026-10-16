@@ -56,8 +56,12 @@ function Host:encoded()
   if self.dirty then
     local agents={}
     for _,rec in ipairs(self.registry:records())do
+      -- Imported client presentation must never be reflected back as another
+      -- server-owned agent (especially when a client joins its own host).
+      if not rec.fleet_remote then
       if #agents>=1024 then self.error={status=413,message='Fleet snapshot record limit exceeded'};self.dirty=false;return nil,self.error end
       agents[#agents+1]=self:_record(rec)
+      end
     end
     local fingerprint=json.encode(agents[1]and agents or json.array)
     if #fingerprint>4*1024*1024-512 then

@@ -6,9 +6,9 @@ channel and worker mirror. Disconnecting every observer leaves the same native
 PID and Boggart session alive. Stop and server shutdown explicitly release the
 execution owner. Closing an attached view remains reference-only.
 
-This increment supplies the server/API. Joined Studio/cTUI Fleet controls and
-agent-reference presentation are the following BMUX-87 work. Existing Studio
-local agent launching remains available.
+The server/API and [joined Studio Fleet controls and agent views](bmux-studio-agents.md)
+are implemented. Terminal-mode Fleet controls remain BMUX-87 work. Existing
+Studio local agent launching remains available.
 
 ## Routes and authorization
 

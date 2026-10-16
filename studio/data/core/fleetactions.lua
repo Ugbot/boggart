@@ -11,7 +11,7 @@ function M.external(view,rec)
     local action=entry[1];local decision=entry[2]=='Reject' and 'reject' or 'approve'
     if rec.capabilities[action] and (action~='approve' or request_id)then
       local function perform(payload)
-        local current=registry.agents[id]
+        local current=registry:get(id)
         if current~=rec or current.generation~=generation or action=='approve' and (not current.request or current.request.id~=request_id)then
           view:note('agent action expired; choose the current action',true);return
         end

@@ -19,11 +19,11 @@ referenced native terminals. No adapter starts another runtime for an agent view
   uncertain request bytes for explicit Retry; reconnect/refresh only observe.
   A missing/invalid receipt on apparent success remains uncertain. Validate
   caller shapes before transport; never silently skip a command sequence.
-- [ ] Add source-owned record lookup/control to the existing Fleet registry,
+- [x] Add source-owned record lookup/control to the existing Fleet registry,
   keeping local/internal sources and process owners intact. Mount namespaced
   remote rows with stable objects until their runtime changes, invalidate stale
   actions on generation/request replacement and disable execution on disconnect.
-- [ ] Studio: joined New agent launches on the server; retain explicit local
+- [x] Studio: joined New agent launches on the server; retain explicit local
   launching. Agent layout references use their published terminal reference,
   Fleet Focus reveals it, and existing Fleet prompt/interrupt/approval/Stop
   widgets route through the shared client. Closing/disconnecting releases views.
