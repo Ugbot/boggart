@@ -16,6 +16,7 @@
 #include "lua.h"
 #include "bogcrash.h"
 #include "bctl.h"
+#include "bpty.h"
 #include "lauxlib.h"
 #include "lualib.h"
 
@@ -303,6 +304,7 @@ static int early_exit_flags(int argc, char **argv) {
 }
 
 int main(int argc, char **argv) {
+  bpty_reexec(argc,argv);
   if(argc>1 && !strcmp(argv[1],"ctl"))return boggart_ctl_main(argc-2,argv+2);
   if (early_exit_flags(argc, argv)) return 0;
   /* First: a crash anywhere after this point gets a report with the C and Lua

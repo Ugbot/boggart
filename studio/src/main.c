@@ -9,6 +9,7 @@
 #include "assets.h"
 #include "version.h" /* BOGGART_VERSION, shared with the CLI so they can't drift */
 #include "bogcrash.h"   /* src/bogcrash.c: the crash handler */
+#include "bpty.h"
 
 /* boggart, embedded. See src/bogembed.c for why the agent shares this exact
  * lua_State rather than living in a subprocess. */
@@ -126,6 +127,7 @@ static void init_window_icon(void) {
 
 
 int main(int argc, char **argv) {
+  bpty_reexec(argc,argv);
   const char *startup_env = getenv("BOGGART_STUDIO_STARTUP_TRACE");
   trace_startup = startup_env && strcmp(startup_env, "1") == 0;
   startup_mark("main_enter");

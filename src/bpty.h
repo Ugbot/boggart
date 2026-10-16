@@ -6,6 +6,10 @@
 /* Loop-thread-only PTY transport. The caller owns the borrowed terminal.
  * No callback enters Lua. Windows is supplied by the BMUX-22 backend. */
 typedef struct bpty bpty;
+/* Call first in each executable entry point. On macOS an internal re-exec
+ * acquires the controlling tty and execs the command without running app code.
+ * Returns for ordinary invocation; handled launches exit/exec in this call. */
+void bpty_reexec(int argc, char **argv);
 typedef struct {
   const char *command, *cwd;
   char *const *argv; /* argv[0] included; NULL terminated */
