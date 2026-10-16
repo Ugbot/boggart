@@ -29,6 +29,13 @@ function UI:items()
     end)end},
     {key='c',text='Inspect saved session',run=function()self:edit('Saved session name',function(name)a:inspect(name);self.editor=nil end,a.import_name or a.saved_name)end},
     {key='r',text='Refresh session status',run=function()a:refresh()end},
+    {key='v',text='Recover saving; preserve original',run=function()
+      a:prepare_recovery(function(why,p)
+        if why or not self.mode then return end
+        self:edit('Save current layout; type name: '..p.name,function(name)a:recover(name);self.editor=nil end)
+        self.editor.recovery=p
+      end)
+    end},
   }
 end
 function UI:input(e)
@@ -68,10 +75,17 @@ function UI:draw(tc,w,h)
   label(tc,h-1,self.actions.message or 'Up/Down select | Enter choose | Escape close',w,true)
   if self.editor then
     label(tc,1,self.editor.title,w,true)
-    local lines,cy,cx=self.editor.box:visual(w);local capacity=math.max(1,h-4);local first=math.max(1,cy-capacity+1)
+    local top=2
+    if self.editor.recovery and h>8 then
+      local p=self.editor.recovery
+      label(tc,2,p.workspaces..' workspaces; '..p.terminals..' terminals will be saved',w)
+      label(tc,3,'Original '..p.archive.bytes..' bytes kept at:',w);label(tc,4,p.archive.path,w)
+      top=5
+    end
+    local lines,cy,cx=self.editor.box:visual(w);local capacity=math.max(1,h-top-2);local first=math.max(1,cy-capacity+1)
     for i=first,math.min(#lines,first+capacity-1)do
       local parts={};for _,run in ipairs(lines[i])do parts[#parts+1]=run.text end
-      local body=table.concat(parts);local y=i-first+2;label(tc,y,body,w)
+      local body=table.concat(parts);local y=i-first+top;label(tc,y,body,w)
       if i==cy and cx<w then
         local tail=body:sub(#sys.cell_take(body,cx)+1);local cluster=tail:sub(1,require('grapheme').next(tail,1)-1)
         tc.puts(cx,y,cluster~=''and cluster or ' ',nil,nil,{reverse=true})

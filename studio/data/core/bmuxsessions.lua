@@ -42,6 +42,20 @@ function M.show()
       prompt(s,'Saved session name',function(name)a:inspect(name)end,nil,a.import_name or a.saved_name)
     end},
     {text='Refresh session status',run=function()a:refresh()end},
-  },function(item)if current(s)then item.run()end end)
+    {text='Recover saving; preserve original checkpoint',run=function()
+      local origin=core.active_view
+      a:prepare_recovery(function(why,p)
+        if why or not current(s)or core.active_view~=origin then return end
+        core.log('Save current layout (%d workspaces, %d terminals). Original %d bytes: %s',p.workspaces,p.terminals,p.archive.bytes,p.archive.path)
+        prompt(s,'Confirm recovery name',function(name)a:recover(name)end,function()
+          return {{text=p.name,info='Saved session to recover'}}
+        end)
+      end)
+    end},
+  },function(item)
+    if not current(s)then return end
+    if a.busy then core.log('Session request is working; choose again when it finishes');M.show();return end
+    item.run()
+  end)
 end
 return M

@@ -24,6 +24,32 @@ local function response(value, why)
     {content_type='application/json'}
 end
 function M.install(control)
+  local function session_status(include_archive)
+    local status=control.journal and control.journal:status()or{}
+    if not include_archive then status.last_recovery=nil end
+    status.persistent=control.journal~=nil;status.host_id=control.layout.host_id;return status
+  end
+  control.route('GET','/layout/session/recovery/status',function(req)
+    if req.query and req.query~=''then return response(nil,{status=400,message='recovery query parameters unsupported'})end
+    if not control.layout then return response(nil,{status=503,message='layout host unavailable'})end
+    return response(session_status(true))
+  end,'observe recovery completion and archive metadata without changing a preview or replaying a write')
+  control.route('GET','/layout/session/recovery',function(req)
+    if req.query and req.query~=''then return response(nil,{status=400,message='recovery query parameters unsupported'})end
+    if not control.journal then return response(nil,{status=409,message='This server has no named saved session'})end
+    return response(control.journal:recovery_preview())
+  end,'preview explicit recovery of an owned blocked checkpoint without writing or starting processes')
+  control.route('POST','/layout/session/recover',function(req)
+    if req.query and req.query~=''then return response(nil,{status=400,message='recovery query parameters unsupported'})end
+    if not control.journal then return response(nil,{status=409,message='This server has no named saved session'})end
+    local raw=req.body or ''
+    if #raw>4096 or not raw:match('^%s*{')then return response(nil,{status=400,message='bounded recovery command object required'})end
+    local decoded,body=pcall(json.decode,raw)
+    if not decoded then return response(nil,{status=400,message='invalid recovery command JSON'})end
+    local result,why=control.journal:recover(body)
+    if result then result.status=session_status(true)end
+    return response(result,why)
+  end,'archive original bytes and resume saving the current layout under an exact owner and recovery preview')
   control.route('GET','/layout/checkpoint',function(req)
     if req.query and req.query~=''then return response(nil,{status=400,message='checkpoint query parameters unsupported'})end
     if not control.layout then return response(nil,{status=503,message='layout host unavailable'})end
@@ -60,8 +86,7 @@ function M.install(control)
   control.route('GET','/layout/session',function(req)
     if req.query and req.query~=''then return response(nil,{status=400,message='session query parameters unsupported'})end
     if not control.layout then return response(nil,{status=503,message='layout host unavailable'})end
-    if not control.journal then return response({persistent=false,host_id=control.layout.host_id})end
-    local status=control.journal:status();status.persistent=true;status.host_id=control.layout.host_id;return response(status)
+    return response(session_status())
   end,'inspect named SQLite checkpoint/recovery status without execution credentials')
   local function route(method, path, fn, description)
     control.route(method,path,function(req)
@@ -76,6 +101,7 @@ function M.install(control)
     return 'stream','layout:'..host.host_id,json.encode(host:snapshot())
   end,'observe initial and committed layout snapshots on a dedicated native channel')
   route('POST','/layout/commands',function(host,req)
+    if control.journal and control.journal.recovering then return response(nil,{status=409,message='Layout edits are paused during checkpoint recovery'})end
     local text=req.body or ''
     if #text>8192 or not text:match('^%s*{') then return response(nil,{status=400,message='layout command object required'}) end
     local parsed,body=pcall(json.decode,text)

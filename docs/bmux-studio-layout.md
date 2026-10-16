@@ -78,5 +78,7 @@ Both front ends resolve agent references through their published native
 terminals. [SQLite restart restore](bmux-journal.md) and the
 [Sessions toolbar/menu](bmux-session-transfer.md) now provide persistence status,
 new-file export, inactive named imports and saved-data inspection. Disconnect
-closes pending session actions and preserves server PTYs. Explicit corrupt-data
-recovery and final acceptance remain BMUX-33/97.
+closes pending session actions and preserves server PTYs. Sessions also offers
+[explicit recovery](bmux-recovery.md), with preserved originals and unchanged
+live process identities. Actual SDL/native import, recovery and restart checks
+complete BMUX-33/97.

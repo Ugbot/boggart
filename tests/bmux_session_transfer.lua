@@ -4,7 +4,7 @@ local control=require 'control';local Codec=require 'bmux.checkpoint';local Jour
 local Native=require 'terminal.client';local Transfer=require 'bmux.sessionclient'
 local fixture=assert(loadfile('tests/fixtures/bmux_checkpoint.lua'))()
 local dir=assert(uv.fs_mkdtemp('/tmp/bmux-transfer-XXXXXX'));local socket=dir..'/sock'
-local name='transfer-'..serve.token(8);local store=bog.store;local clients={};local daemon
+local name='transfer-'..serve.token(8);local store=bog.store;local clients={};local daemon;local archives={}
 local function key(n)return 'bmux.session.v1:'..(n or name)end
 local function owner(n)return 'bmux.owner.v1:'..(n or name)end
 local function q(s)return "'"..s:gsub("'","'\\''").."'"end
@@ -152,6 +152,17 @@ local ok,why=xpcall(function()
     assert(tree.a.views[1].terminal_id==tree.a.views[2].terminal_id,'aliases retain one inactive resource')
     assert(tree.divider==.7 and layout.workspaces[1].surfaces[1].zoomed_pane_id==tree.a.id)
     assert(not uv.fs_lstat(marker),'imported shell, program label and history never execute')
+    if iteration==1 then
+      -- Include a valid local Boggart resume reference in the recovery proof:
+      -- neither recovery capture nor the next daemon may promote it to launch.
+      local damaged='\255\0{damaged imported agents';store.kv_set(key(),damaged)
+      local p=good(function(cb)t:recovery_preview(cb)end);archives[#archives+1]=p.archive.path
+      assert(good(function(cb)t:recover(p,cb)end).recovered)
+      local after=assert(Codec.decode(good(function(cb)t:export(cb)end)))
+      for _,a in ipairs(after.agents)do assert(a.launch=='saved')end
+      assert(after.agents[1].resume_id==resume)
+      local original=assert(io.open(p.archive.path,'rb'));assert(original:read('a')==damaged);original:close()
+    end
     stop();assert(not uv.fs_lstat(marker))
     local resaved=assert(Codec.decode(store.kv_get(key())))
     assert(resaved.terminals[1].launch=='saved'and resaved.agents[1].launch=='saved')
@@ -161,6 +172,7 @@ close_clients();control.stop()
 if daemon then daemon:kill('sigkill');daemon:wait()end
 for _,n in ipairs{name,name..'-client',name..'-source'}do store.kv_del(key(n));store.kv_del(owner(n))end
 uv.run('nowait');os.remove(shell);os.remove(marker)
+for _,p in ipairs(archives)do uv.fs_unlink(p);uv.fs_unlink(p..'.json')end
 local removed,cleanup_error=uv.fs_rmdir(dir)
 assert(ok,why);assert(removed,cleanup_error)
 print('Bmux transfer: bounded native routes/client, owner guards, no overwrite, inactive imports across actual daemon restart/resave pass')

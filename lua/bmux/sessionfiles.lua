@@ -31,11 +31,9 @@ function M.read(path)
   if not doc then return nil,why end
   return Codec.encode(doc)
 end
-function M.write(path,raw)
+local function write_new(path,text)
   if not valid(path)then return problem('invalid path')end
-  local doc,why=Codec.decode(raw);if not doc then return nil,why end
-  local text;text,why=Codec.encode(doc);if not text then return nil,why end
-  local fd;fd,why=uv.fs_open(path,'wx',384)
+  local fd,why=uv.fs_open(path,'wx',384)
   if not fd then return problem(why)end
   local created=uv.fs_fstat(fd);local offset=0
   while offset<#text do
@@ -49,6 +47,48 @@ function M.write(path,raw)
     local current=uv.fs_lstat(path)
     if created and current and current.dev==created.dev and current.ino==created.ino then uv.fs_unlink(path)end
     return problem(why)
+  end
+  return true
+end
+function M.write(path,raw)
+  local doc,why=Codec.decode(raw);if not doc then return nil,why end
+  local text;text,why=Codec.encode(doc);if not text then return nil,why end
+  return write_new(path,text)
+end
+local function private(info)
+  return info and info.type=='directory'and info.uid==uv.getuid()and info.mode&63==0
+end
+function M.recovery_location(root,id)
+  if not valid(root)or type(id)~='string'or not id:match('^[%w_-]+$')or #id>128 then return problem('invalid recovery location')end
+  local canonical,why=uv.fs_realpath(root)
+  if not canonical then return problem(why)end
+  if not private(uv.fs_lstat(canonical))then return problem('recovery root must be an owned private directory')end
+  local path=canonical..'/bmux-recovery/'..id..'.checkpoint'
+  if not valid(path..'.json')then return problem('recovery path exceeds its limit')end
+  return path
+end
+function M.archive(path,raw,metadata)
+  if not valid(path)or type(raw)~='string'or #raw>64*1024*1024 then return problem('invalid recovery bytes or path')end
+  local directory=path:match('^(.*)/[^/]+$');local root=directory and directory:match('^(.*)/bmux%-recovery$')
+  if not root or not private(uv.fs_lstat(root))then return problem('recovery root is not private')end
+  local info=uv.fs_lstat(directory)
+  if not info then
+    local made,why=uv.fs_mkdir(directory,448)
+    if not made and not tostring(why):find('EEXIST',1,true)then return problem(why)end
+    info=uv.fs_lstat(directory)
+  end
+  if not private(info)then return problem('recovery directory must be owned, private and not a symlink')end
+  local ok,why=write_new(path,raw);if not ok then return nil,why end
+  -- Keep raw data and its source metadata separate: binary/corrupt bytes are
+  -- preserved exactly and never interpreted as a checkpoint or terminal input.
+  local encoded,text=pcall(require('json').encode,metadata)
+  if not encoded then return problem('recovery metadata encoding failed')end
+  ok,why=write_new(path..'.json',text);if not ok then return nil,why end
+  for _,dir in ipairs{directory,root}do
+    local fd;fd,why=uv.fs_open(dir,uv.constants.O_RDONLY|(uv.constants.O_DIRECTORY or 0)|(uv.constants.O_NOFOLLOW or 0),0)
+    if not fd then return problem(why)end
+    local synced;synced,why=uv.fs_fsync(fd);local closed,close_error=uv.fs_close(fd)
+    if not synced or not closed then return problem(why or close_error or 'recovery directory sync failed')end
   end
   return true
 end

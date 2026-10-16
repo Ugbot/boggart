@@ -14,9 +14,10 @@ or choose **Bmux → Sessions / import / export**. In terminal Bmux press
 - Import checkpoint file as a new inactive saved session.
 - Inspect a saved session, including after an uncertain import response.
 - Refresh named-session status and recovery errors.
+- Recover saving after previewing and preserving the original checkpoint.
 
 Studio uses its ordinary keyboard/mouse chooser and path suggestions. Terminal
-Bmux accepts Up/Down or j/k and Enter, or e/i/c/r; Escape cancels the current
+Bmux accepts Up/Down or j/k and Enter, or e/i/c/r/v; Escape cancels the current
 field, then closes the modal. Fields preserve complete Unicode graphemes and
 wrap at narrow widths. Modal text/paste stays out of the underlying terminal.
 See the [actual SDL Sessions chooser](images/bmux-session-controls.png).
@@ -96,7 +97,8 @@ An existing name, occupied/invalid owner or changed host returns 409. Invalid
 checkpoint/name/query returns 400; store failures return 503. Invalid source
 bytes never reach runtime restore or alter saved data.
 
-Explicit corrupt-session recovery remains BMUX-97 work. The menus currently
-report a blocked checkpoint and preserve its bytes; they do not clear it.
+[Explicit recovery](bmux-recovery.md) preserves original bytes before resuming
+saving from the current layout. Choose it in Studio Sessions or press **v** in
+the terminal Sessions modal, inspect the preview and confirm the saved name.
 Start an imported named session explicitly as shown above, then join its socket
 from either frontend to view its inactive saved output.
