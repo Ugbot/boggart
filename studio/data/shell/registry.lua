@@ -100,6 +100,7 @@ M.tree = {
     { "Join server layout", "bmux:join-layout" },
     { "Server workspaces", "bmux:server-workspaces" },
     { "Server surfaces", "bmux:server-surfaces" },
+    { "Sessions / import / export", "bmux:sessions" },
     { "Refresh layout", "bmux:refresh-layout" },
     { "Disconnect layout", "bmux:disconnect-layout" },
     M.SEP,

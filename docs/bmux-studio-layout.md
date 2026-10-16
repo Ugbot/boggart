@@ -75,4 +75,8 @@ and [verification](benchmarks/2026-10-16-studio-layout-verification.md).
 The [native cTUI](bmux-ctui.md) consumes the same hierarchy and attachment policy;
 cross-client focus/zoom/swap is covered by the actual SDL/PTY integration test.
 Both front ends resolve agent references through their published native
-terminals; durable restart restore remains BMUX-33.
+terminals. [SQLite restart restore](bmux-journal.md) and the
+[Sessions toolbar/menu](bmux-session-transfer.md) now provide persistence status,
+new-file export, inactive named imports and saved-data inspection. Disconnect
+closes pending session actions and preserves server PTYs. Explicit corrupt-data
+recovery and final acceptance remain BMUX-33/97.

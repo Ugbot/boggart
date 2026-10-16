@@ -30,6 +30,26 @@ function Client:export(callback)
     return Codec.encode(doc)
   end,callback)
 end
+function Client:status(callback)
+  return self:_request('GET','/layout/session',nil,function(value)
+    if type(value)~='table'or value.host_id~=self.host_id or type(value.persistent)~='boolean'then
+      return nil,problem('Invalid or changed session status host')
+    end
+    local keys={host_id=true,persistent=true}
+    if value.persistent then
+      if type(value.name)~='string'or #value.name<1 or #value.name>4096 or not utf8.len(value.name)
+        or value.name:find('[%z\1-\31\127]')or type(value.blocked)~='boolean'or type(value.dirty)~='boolean'
+        or type(value.restored)~='boolean'or type(value.writes)~='number'or value.writes%1~=0
+        or value.writes<0 or value.writes>9007199254740991
+        or value.error~=nil and(type(value.error)~='string'or #value.error>512)then
+        return nil,problem('Invalid session persistence status')
+      end
+      for _,k in ipairs{'name','blocked','dirty','restored','writes','error'}do keys[k]=true end
+    end
+    local out={};for k,v in pairs(value)do if not keys[k]then return nil,problem('Unknown session status field')end;out[k]=v end
+    return out
+  end,callback)
+end
 function Client:import(name,raw,callback)
   assert(type(callback)=='function','callback required')
   if not identifier(name)then callback(problem('Import name requires 1–128 ASCII letters, digits, underscores or hyphens'));return end

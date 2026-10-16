@@ -12,6 +12,7 @@ command.add(nil, {
   ['bmux:join-layout']=function()require('core.bmuxlayoutui').join()end,
   ['bmux:server-workspaces']=function()require('core.bmuxlayoutui').workspaces()end,
   ['bmux:server-surfaces']=function()require('core.bmuxlayoutui').surfaces()end,
+  ['bmux:sessions']=function()require('core.bmuxsessions').show()end,
   ['bmux:refresh-layout']=function()require('core.bmuxlayoutui').refresh()end,
   ['bmux:disconnect-layout']=function()require('core.bmuxlayoutui').disconnect()end,
   ["terminal:open"] = function()

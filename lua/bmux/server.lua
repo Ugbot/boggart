@@ -59,8 +59,9 @@ function M.install(control)
   end,'read a named checkpoint to inspect an uncertain import without replaying it')
   control.route('GET','/layout/session',function(req)
     if req.query and req.query~=''then return response(nil,{status=400,message='session query parameters unsupported'})end
-    if not control.journal then return response({persistent=false})end
-    local status=control.journal:status();status.persistent=true;return response(status)
+    if not control.layout then return response(nil,{status=503,message='layout host unavailable'})end
+    if not control.journal then return response({persistent=false,host_id=control.layout.host_id})end
+    local status=control.journal:status();status.persistent=true;status.host_id=control.layout.host_id;return response(status)
   end,'inspect named SQLite checkpoint/recovery status without execution credentials')
   local function route(method, path, fn, description)
     control.route(method,path,function(req)

@@ -25,6 +25,7 @@ function Toolbar:items()
     out[#out+1]={label='+ Local agent',command='bmux:new-local-agent'}
     out[#out+1]={label='Workspaces',command='bmux:server-workspaces'}
     out[#out+1]={label='Surfaces',command='bmux:server-surfaces'}
+    out[#out+1]={label='Sessions',command='bmux:sessions'}
     out[#out+1]={label='Refresh / reconnect',command='bmux:refresh-layout'}
     out[#out+1]={label='Disconnect layout',command='bmux:disconnect-layout'}
   end
@@ -69,6 +70,7 @@ function Toolbar:draw()
   if session then
     local w,s=session.applied_workspace,session.applied_surface
     local text='Server layout · '..(w and w.title or 'No workspace')..' / '..(s and s.title or '')..' · '..session.client.status
+    if session.session_actions then text=text..' · '..(session.session_actions.busy and 'Session transfer working…'or session.session_actions:summary())end
     require('core.common').draw_text(style.font,style.dim,text,'left',self.position.x+style.padding.x,bottom+style.padding.y,
       self.size.x-style.padding.x*2,style.font:get_height())
   end

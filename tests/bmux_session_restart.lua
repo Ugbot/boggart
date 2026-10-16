@@ -18,7 +18,7 @@ local function close_clients()for _,c in ipairs(clients)do c:close()end;clients=
 local function start(explicit)
   daemon=proc.start('exec env HOME='..q(dir..'/home')..' BOGGART_HOME='..q(dir..'/home/.boggart')..' SHELL=/bin/sh '
     ..q(uv.exepath())..' serve --socket '..q(socket)..(explicit and ' --bmux-session '..q(socket)or ''),90)
-  await(function()local s=uv.fs_lstat(socket);return s and s.type=='socket'end)
+  await(function()local s=uv.fs_lstat(socket);return s and s.type=='socket'and s.mode&63==0 end)
   admin=Native.new{socket=socket};clients[#clients+1]=admin
   local ready,probing=false,false
   await(function()
@@ -71,7 +71,7 @@ local ok,why=xpcall(function()
   local rival_socket=dir..'/rival.sock'
   rival=proc.start('exec env HOME='..q(dir..'/home')..' BOGGART_HOME='..q(dir..'/home/.boggart')..' SHELL=/bin/sh '
     ..q(uv.exepath())..' serve --socket '..q(rival_socket)..' --bmux-session '..q(socket),60)
-  await(function()return uv.fs_lstat(rival_socket)end)
+  await(function()local s=uv.fs_lstat(rival_socket);return s and s.type=='socket'and s.mode&63==0 end)
   local rival_admin=Native.new{socket=rival_socket};clients[#clients+1]=rival_admin
   local claimed
   await(function()
