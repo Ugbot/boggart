@@ -2,6 +2,7 @@ local application=require 'core'
 application.add_thread(function()
 local ok,err=xpcall(function()
   local core=require 'core';local shell=require 'shell';local ws=require 'shell.workspaces.bmux'
+  require('core.config').bmux_server=false -- this fixture tests local native wrappers
   local registry=require('fleet').default;local uv=require 'uv';local command=require 'core.command'
   local function quote(s)return "'"..s:gsub("'","'\\''").."'"end
   local function frame()

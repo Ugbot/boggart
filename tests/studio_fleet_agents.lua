@@ -1,6 +1,7 @@
 -- Launch actual Boggart TUI plus foreign process fixtures into one real Fleet.
 local ok,err=xpcall(function()
   local core=require 'core';local shell=require 'shell';local launcher=require 'core.agentlauncher'
+  require('core.config').bmux_server=false -- this fixture tests the local agent Fleet
   local registry=require('core.fleetagents').registry;local dash=require 'dash'
   local function frame(n)
     for _=1,n or 2 do core.redraw=true;core.frame_start=system.get_time();core.step();registry:poll()end

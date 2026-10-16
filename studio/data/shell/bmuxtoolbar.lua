@@ -28,6 +28,8 @@ function Toolbar:items()
     out[#out+1]={label='Sessions',command='bmux:sessions'}
     out[#out+1]={label='Refresh / reconnect',command='bmux:refresh-layout'}
     out[#out+1]={label='Disconnect layout',command='bmux:disconnect-layout'}
+  elseif self.workspace.local_status then
+    out[#out+1]={label='Retry project server',command='bmux:retry-local'}
   end
   return out
 end
@@ -50,7 +52,7 @@ function Toolbar:get_target_size(axis)
     used = used + w + gap
   end
   return rows * widgets.height(font) + (rows - 1) * gap + style.padding.y * 2
-    + (self.workspace.session and font:get_height()+style.padding.y or 0)
+    + ((self.workspace.session or self.workspace.local_status) and font:get_height()+style.padding.y or 0)
 end
 
 function Toolbar:update()
@@ -73,6 +75,9 @@ function Toolbar:draw()
     if session.session_actions then text=text..' · '..(session.session_actions.busy and 'Session transfer working…'or session.session_actions:summary())end
     require('core.common').draw_text(style.font,style.dim,text,'left',self.position.x+style.padding.x,bottom+style.padding.y,
       self.size.x-style.padding.x*2,style.font:get_height())
+  elseif self.workspace.local_status then
+    require('core.common').draw_text(style.font,style.dim,'Local project server · '..self.workspace.local_status,'left',
+      self.position.x+style.padding.x,bottom+style.padding.y,self.size.x-style.padding.x*2,style.font:get_height())
   end
 end
 

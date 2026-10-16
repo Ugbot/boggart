@@ -1,5 +1,6 @@
 -- Ordinary shell commands, real native wrappers and the real application loop.
 local application=require 'core'
+require('core.config').bmux_server=false -- exercise local wrappers, not the managed server
 application.add_thread(function()
 local ok,err=xpcall(function()
   local uv=require 'uv';local core=require 'core';local shell=require 'shell'

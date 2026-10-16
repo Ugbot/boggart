@@ -48,7 +48,7 @@ function Session:_stage(snapshot)
   end
   local ok,root,active,nodes=pcall(function()
     if s then return Snapshot.project(snapshot.host_id,s,self.Class,make) end
-    local node=self.Class._blank('leaf');local value=Notice('No server workspaces','Use Workspaces to create one')
+    local node=self.Class._blank('leaf');local value=Notice('No server workspaces','Use + New terminal or + New agent to create one')
     node.views={value};node.active_view=value;return node,value,{}
   end)
   if not ok then for _,v in ipairs(created)do close(v)end;error(root,0)end
@@ -157,7 +157,8 @@ function Session:open_terminal(dir,opts)
   if self.sending or self.launching or self.client.status~='live' then return end
   local snapshot=self.client:view();local w,s=selected(snapshot)
   if not w then
-    self:command('workspace_create',{title='Bmux'},function(why)if not why then self:open_terminal(dir,opts)end end);return
+    self:command('workspace_create',{title=opts.workspace_title or self.project_title or 'Bmux'},
+      function(why)if not why then self:open_terminal(dir,opts)end end);return
   end
   local pane=self:focused_pane() or s.focused_pane_id
   local op=dir and 'pane_split' or 'view_add'

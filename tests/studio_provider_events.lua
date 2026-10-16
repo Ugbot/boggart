@@ -1,5 +1,6 @@
 -- Real Studio loop, generated provider plugin, native ctl and both launch paths.
 local core=require 'core'
+require('core.config').bmux_server=false -- provider hook fixture uses local PTY ownership
 core.add_thread(function()
 local ok,err=xpcall(function()
   local uv=require 'uv';local shell=require 'shell';local registry=require('fleet').default

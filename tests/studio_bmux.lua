@@ -1,6 +1,7 @@
 -- Real Studio controls, native shells, mode isolation and preserved split state.
 local ok,err=xpcall(function()
   local core=require 'core';local shell=require 'shell';local command=require 'core.command'
+  require('core.config').bmux_server=false -- exercise the explicit local-only Bmux path
   local terminal=require 'terminal';local style=require 'core.style';local View=require 'core.terminalview'
   local ws=require 'shell.workspaces.bmux'
   local function frame(n)

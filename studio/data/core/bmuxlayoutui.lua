@@ -30,7 +30,12 @@ function M.surfaces()
     else s:command('surface_select',{workspace_id=workspace.id,surface_id=pick.id})end
   end)
 end
-function M.refresh()local s=session();if s then s:refresh()end end
+function M.refresh()
+  local s=session()
+  if s and s.managed_local and s.client.status~='live'then require('shell.workspaces.bmux').retry_local()
+  elseif s then s:refresh()
+  elseif require('shell.workspaces.bmux').local_status then require('shell.workspaces.bmux').retry_local()end
+end
 function M.disconnect()
   local layouts=package.loaded['core.bmuxlayout'];if layouts and layouts.pending then layouts.pending:disconnect()end
   local s=session();if s then s:disconnect()end

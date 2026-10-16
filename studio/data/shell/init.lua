@@ -334,7 +334,7 @@ command.add(nil, {
   ["shell:workspace-agent"] = function() shell.switch("agent") end,
   ["shell:workspace-edit"]  = function() shell.switch("edit") end,
   ["shell:workspace-fleet"] = function() shell.switch("fleet") end,
-  ["shell:workspace-bmux"]  = function() shell.switch("bmux") end,
+  ["shell:workspace-bmux"]  = function() if shell.current~="bmux"then shell.switch("bmux")end end,
   ["shell:toggle-theme"]    = function() require("shell.theme").toggle() end,
 
   -- Automations: one saved-prompt concept (Run menu), superseding the old
