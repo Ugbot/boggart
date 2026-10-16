@@ -3,6 +3,8 @@ package.path='tools/?.lua;'..package.path
 local uv=require 'uv';local json=require 'json';local hash=require 'hash_c'
 local Client=require 'terminal.client';local measure=require 'termbench.measure'
 local owned,clients={},{};local root=uv.cwd()
+local startup_trace=os.getenv('BMUX_SYSTEM_STARTUP_TRACE')=='1'
+assert(not os.getenv('BMUX_SYSTEM_STARTUP_TRACE')or startup_trace,'invalid BMUX_SYSTEM_STARTUP_TRACE')
 local function setting(name,default,lo,hi)
   local n=tonumber(os.getenv(name)or default)
   assert(n and n%1==0 and n>=lo and n<=hi,'invalid '..name);return n
@@ -133,6 +135,7 @@ local function studio(executable,dir,socket,n,app_home)
   local home=mkdir(dir..'/studio');local ready=home..'/ready.json'
   local p=spawn(executable,{'.'},home,'studio',{BOGGART_STUDIO_SCRIPT=root..'/tools/termbench/studio_system.lua',
     BMUX_SYSTEM_SOCKET=socket,BMUX_SYSTEM_READY=ready,BMUX_SYSTEM_PANES=tostring(n),
+    BOGGART_STUDIO_STARTUP_TRACE=startup_trace and '1'or nil,
     HOME=app_home or home,BOGGART_HOME=(app_home or home)..'/.boggart'})
   local pulse=uv.new_timer();pulse:start(1,1,function()end)
   local ok,out=xpcall(function()
@@ -145,6 +148,14 @@ local function studio(executable,dir,socket,n,app_home)
     and out.first_frame.rgba[3]==192 and out.first_frame.rgba[4]==255,'unvalidated Studio frame')
   for _,f in ipairs(out.native_sources.files)do assert(digest(f.path)==f.sha256,'stale native binary: '..f.path)end
   for path,expected_hash in pairs(out.renderer_sources)do assert(digest(path)==expected_hash,'stale renderer binary: '..path)end
+  if startup_trace then
+    out.startup_phases=measure.startup_phases(assert(read(p.log)),p.start_ns,out.first_present_ns)
+    for _,name in ipairs{'script_loaded','first_step_enter','first_draw_enter','first_draw_return',
+      'first_present_enter','first_present_return','join_requested','join_callback','terminal_probe_armed'}do
+      local stamp=assert(out.startup_milestones[name],'missing startup milestone '..name)
+      assert(stamp>=p.start_ns and stamp<=out.all_attached_ns,'invalid startup milestone')
+    end
+  end
   return p,out
 end
 local function snapshot(sampler,dir,pids)
@@ -181,6 +192,7 @@ local function main()
       lua=_VERSION,boggart=bog.version,utc=os.date('!%Y-%m-%dT%H:%M:%SZ'),video_driver=os.getenv('SDL_VIDEODRIVER')},
     build_label=os.getenv('BMUX_BENCH_BUILD_LABEL')or 'unspecified; binary hashes authoritative',
     configuration={project_dir=root,home_profile=home_profile,startup_only=starts_only,
+      startup_trace=startup_trace,startup_trace_cost='opt-in phase clocks and stderr writes perturb startup; keep uninstrumented latency alongside attribution',
       home='controlled private homes; shared-existing reuses warmup initialized HOME across startup trials; shared-new uses one new HOME per pair; separate-new uses independent new homes',
       resource_home=home_profile=='separate-new'and 'independent new homes per pair'or 'one new shared home per resource scenario; sampled after app initialization',
       credentials='no user credentials/config inherited',
@@ -196,7 +208,7 @@ local function main()
     files={},startup={warmups=1,samples=starts,raw={}},resources={},logs=dir}
   for _,path in ipairs{executable,studio_bin,fixture,sampler,'tools/termbench/system.lua','tools/termbench/studio_system.lua',
     'tools/termbench/process_sample.c','tools/termbench/measure.lua','tools/termbench/pty_fixture.c',
-    'src/lserve.c','src/bogembed.c','lua/terminal/transport.lua','CMakeLists.txt'}do report.files[path]=digest(path)end
+    'src/lserve.c','src/bogembed.c','studio/src/main.c','lua/terminal/transport.lua','CMakeLists.txt'}do report.files[path]=digest(path)end
   local server_times,studio_times,full_times={},{},{}
   for i=0,starts do
     io.stderr:write('system termbench: startup ',i,'/',starts,'\n');io.stderr:flush()

@@ -168,9 +168,11 @@ The complete local report is `build/termbench-lua-baseline.json`.
 | alt-screen | 1,048,750 | 2,626.54 | 0.399 | alt-screen/scroll regions missing |
 
 The Lua results are a development reference. Same-machine cmux/Ghostty parse
-numbers and final performance targets are not yet measured. Cold start, idle
-RSS at 1/10/100 panes, socket RTT and keypress-to-pixel p99 require BMUX-10
-instrumentation. No performance win over cmux or Ghostty is established yet.
+numbers and final performance targets are not yet measured. BMUX-10 now records
+process startup, idle CPU/RSS at 1/10/100 panes, socket RTT and validated
+key-to-presentation p99; see [system results](termbench-system.md) and the
+presentation capture above. No performance win over cmux or Ghostty is
+established yet.
 
 The roadmap's provisional goals remain: at least Ghostty parse throughput,
 cold start below 100 ms, idle RSS below one quarter of cmux, control RTT below
