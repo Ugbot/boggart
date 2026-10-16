@@ -152,6 +152,7 @@ extern void bus_emit(const char *topic, const char *data, size_t len);
 extern void boggart_http_shutdown(lua_State *L);
 extern void boggart_serve_shutdown(lua_State *L);
 extern void boggart_terminal_shutdown(lua_State *L);
+extern void boggart_transport_shutdown(lua_State *L);
 extern void boggart_channel_quiesce(lua_State *L);
 extern void boggart_channel_shutdown(lua_State *L);
 extern void boggart_station_shutdown(lua_State *L);
@@ -758,6 +759,7 @@ static void worker_main(void *arg) {
    * 4. only then publish the exit, so a joiner can never observe "exited"
    *    while the state or loop still exists. */
   boggart_channel_quiesce(L);
+  boggart_transport_shutdown(L);
   boggart_serve_shutdown(L);
   boggart_http_shutdown(L); /* onmessage path + neutralise curl handles before */
   boggart_station_shutdown(L);

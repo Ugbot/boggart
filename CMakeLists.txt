@@ -1238,6 +1238,16 @@ foreach(suite bmux_tree bmux_layout bmux_checkpoint bmux_rehydrate bmux_journal_
   set_tests_properties(${suite} PROPERTIES TIMEOUT 20)
 endforeach()
 set_tests_properties(terminal_server PROPERTIES TIMEOUT 45)
+add_test(NAME terminal_transport_shutdown
+  COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/terminal_transport_shutdown
+    $<TARGET_FILE:boggart> --eval tests/terminal_transport_shutdown.lua
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+set_tests_properties(terminal_transport_shutdown PROPERTIES TIMEOUT 15)
+add_test(NAME terminal_transport_workers
+  COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/terminal_transport_workers
+    $<TARGET_FILE:boggart> --eval tests/terminal_transport_workers.lua
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+set_tests_properties(terminal_transport_workers PROPERTIES TIMEOUT 15)
 set_tests_properties(bmux_ctui bmux_ctui_sessions bmux_ctui_fleet bmux_session_restart bmux_session_transfer PROPERTIES TIMEOUT 60)
 set_tests_properties(bmux_server_agents PROPERTIES TIMEOUT 60)
 
@@ -1267,7 +1277,7 @@ if(TARGET boggart-studio)
   if(UNIX AND EXISTS /usr/bin/vim)
     list(APPEND _pane_suites studio_terminal_vim)
   endif()
-  list(APPEND _pane_suites studio_chooser studio_present_probe)
+  list(APPEND _pane_suites studio_chooser studio_present_probe studio_transport_shutdown)
   foreach(_pane_suite IN LISTS _pane_suites)
     set(_pane_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${_pane_suite})
     set(_pane_shell_env)

@@ -41,6 +41,13 @@ local op=T.request({socket=socket,path='/idle',method='GET',timeout_ms=15},funct
 await(function()return op.done end);assert(calls==1 and op.pipe:is_closing() and op.timer:is_closing())
 local cancel=T.request({socket=socket,path='/idle',method='GET'},function(why)assert(why.kind=='cancelled');calls=calls+1 end)
 cancel:cancel();cancel:cancel();uv.run('nowait');assert(calls==2)
+local replacement
+local pending=T.request({socket=socket,path='/idle',method='GET'},function(why)
+  assert(why.kind=='closed');calls=calls+1
+  replacement=T.request({socket=socket,path='/idle',method='GET'},function(e)assert(e.kind=='closed');calls=calls+1 end)
+end)
+T.shutdown();T.shutdown()
+assert(pending.done and replacement.done and not replacement.pipe and calls==4,'shutdown gates callback-created replacement work')
 for _,peer in ipairs(peers)do if not peer:is_closing()then peer:close()end end
 listener:close();uv.run('nowait');uv.fs_unlink(socket);assert(uv.fs_rmdir(dir))
 print('terminal_transport: fragmented JSON/SSE, strict bounded framing, truncation, deadlines and cancellation pass')

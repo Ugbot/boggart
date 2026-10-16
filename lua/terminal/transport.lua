@@ -1,6 +1,7 @@
 -- Native control-server HTTP subset over libuv UDS, with bounded framing.
 local uv=require 'uv'
 local M={MAX_BODY=4*1024*1024,MAX_HEADERS=16384}
+local active,shutting_down={},false
 local Parser={};Parser.__index=Parser
 local function fail(message)return error(message,0)end
 function M.parser(stream,emit,complete,ready)
@@ -71,12 +72,21 @@ local Operation={};Operation.__index=Operation
 function Operation:finish(why,body,status)
   if self.done then return end
   self.done=true;self.error=why
+  active[self]=nil
   if self.parser then self.parser.done=true;self.parser.buffer='';self.parser.data={}end
   close(self.timer);close(self.pipe)
   local callback=self.callback;self.callback=nil
   if callback then local ok,err=pcall(callback,why,body,status);if not ok then self.callback_error=tostring(err):sub(1,256)end end
 end
 function Operation:cancel()self:finish({kind='cancelled',message='request cancelled'})end
+-- Native executable teardown calls this BEFORE lua_close: luv loop_gc may
+-- deliver cancelled connects after their timer/pipe userdata were finalized.
+-- Close the admission gate first, including callback-created replacement work.
+function M.shutdown()
+  if shutting_down then return end;shutting_down=true
+  local pending={};for op in pairs(active)do pending[#pending+1]=op end
+  for _,op in ipairs(pending)do op:finish({kind='closed',message='control transport shutting down'})end
+end
 local function guarded(op,fn,...)
   if op.done then return end
   local ok,why=pcall(fn,...)
@@ -91,7 +101,12 @@ function M.request(opts,callback)
   assert(opts.token==nil or type(opts.token)=='string' and #opts.token>0 and #opts.token<=4096 and not opts.token:find('[%z\1-\32\127]'),'invalid bearer token')
   local timeout=opts.timeout_ms or 5000
   assert(type(timeout)=='number' and timeout%1==0 and timeout>=1 and timeout<=60000,'invalid request deadline')
+  if shutting_down then
+    local op=setmetatable({callback=callback},Operation)
+    op:finish({kind='closed',message='control transport shutting down'});return op
+  end
   local op=setmetatable({pipe=uv.new_pipe(false),timer=uv.new_timer(),callback=callback},Operation)
+  active[op]=true
   op.parser=M.parser(opts.stream,function(event,data)
     if op.done then return end
     if opts.on_event then opts.on_event(event,data)end
