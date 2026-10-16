@@ -1248,6 +1248,11 @@ add_test(NAME terminal_transport_workers
     $<TARGET_FILE:boggart> --eval tests/terminal_transport_workers.lua
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 set_tests_properties(terminal_transport_workers PROPERTIES TIMEOUT 15)
+add_test(NAME control_unix_burst
+  COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/control_unix_burst
+    $<TARGET_FILE:boggart> --eval tests/control_unix_burst.lua
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+set_tests_properties(control_unix_burst PROPERTIES TIMEOUT 15)
 set_tests_properties(bmux_ctui bmux_ctui_sessions bmux_ctui_fleet bmux_session_restart bmux_session_transfer PROPERTIES TIMEOUT 60)
 set_tests_properties(bmux_server_agents PROPERTIES TIMEOUT 60)
 

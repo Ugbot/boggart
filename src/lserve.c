@@ -796,7 +796,10 @@ static int l_listen(lua_State *L) {
     if(rc)rc=uv_ip6_addr(bind_host,port,(struct sockaddr_in6 *)&addr);
     if(!rc)rc=uv_tcp_bind(&s->io.tcp,(const struct sockaddr *)&addr,0);
   }
-  if(!rc)rc=uv_listen(server_stream(s),64,on_connection);
+  /* A joined layout can open 100 attachment sockets in one frame. Keep the
+   * kernel accept queue aligned with our existing bounded live-connection
+   * budget; a backlog of 64 refused otherwise-valid pane joins in a burst. */
+  if(!rc)rc=uv_listen(server_stream(s),MAX_CONNS,on_connection);
   if(rc){stop_server(s,L);lua_pushnil(L);lua_pushfstring(L,"listen failed: %s",uv_strerror(rc));return 2;}
   /* The listener must not by itself keep the process alive: a REPL that has
    * finished should still exit. Whatever wants the server up (serve mode)
