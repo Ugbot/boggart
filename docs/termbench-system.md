@@ -27,6 +27,7 @@ The native sampler supports macOS and Linux; this capture verifies macOS.
 | `BMUX_SYSTEM_STARTS` | 20, after one warmup | 1–200 |
 | `BMUX_SYSTEM_HOME_PROFILE` | `shared-existing` | `shared-existing`, `shared-new`, `separate-new` |
 | `BMUX_SYSTEM_STARTS_ONLY` | unset | `1` omits resource/RTT scenarios |
+| `BMUX_SYSTEM_STARTUP_TRACE` | unset | `1` enables C phase and first step/draw/join attribution |
 | `BMUX_SYSTEM_PANES` | `1,10,100` | 1–3 scenarios, each 1–100 |
 | `BMUX_SYSTEM_IDLE_SAMPLES` | 3 | 1–20 |
 | `BMUX_SYSTEM_IDLE_MS` | 5000 | 100–60000 |
@@ -36,6 +37,12 @@ The native sampler supports macOS and Linux; this capture verifies macOS.
 
 The executable/fixture/sampler/report paths above are required. Build labels
 are annotations; recorded executable hashes identify what actually ran.
+
+For development attribution, `BMUX_SYSTEM_STARTUP_TRACE=1` collects native
+startup phase clocks and benchmark-only first step/draw/join milestones. It
+perturbs startup through clock reads and stderr writes; keep uninstrumented
+timing alongside it. See [startup attribution and verification](benchmarks/2026-10-16-startup-attribution.md),
+including the unresolved intermittent ASAN attachment failure BMUX-107.
 
 ## Boundaries
 

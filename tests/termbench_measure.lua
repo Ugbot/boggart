@@ -24,4 +24,17 @@ after.processes[1].start_ticks=11;assert(not pcall(m.resources,before,after,{[1]
 after.processes[1].start_ticks=10;after.processes[1].user_ns=19
 assert(not pcall(m.resources,before,after,{[1]='server'}),'backwards CPU rejected')
 after.processes[1].user_ns=30;assert(not pcall(m.resources,before,after,{}),'unclassified PID rejected')
+local json=require 'json';local log={'ordinary app message'}
+for i,name in ipairs{'main_enter','sdl_initialized','window_created','renderer_initialized',
+  'libraries_opened','harness_booted','assets_registered','core_required','core_initialized','run_enter'}do
+  log[#log+1]='BMUX_STARTUP '..json.encode{phase=name,ns=100+i*10}
+end
+local trace=table.concat(log,'\n')
+local phases=m.startup_phases(trace,100,250);local total=0
+for _,p in ipairs(phases)do total=total+p.elapsed_ns end
+assert(#phases==11 and phases[1].elapsed_ns==10 and phases[11].elapsed_ns==50 and total==150)
+assert(not pcall(m.startup_phases,'',100,250),'missing trace rejected')
+assert(not pcall(m.startup_phases,trace..'\n'..log[2],100,250),'duplicate phase rejected')
+assert(not pcall(m.startup_phases,trace,115,250),'pre-spawn timestamp rejected')
+assert(not pcall(m.startup_phases,trace,100,150),'post-present timestamp rejected')
 print('termbench measurement accounting: raw ordering, quantiles and stale/wrong/invalid frame rejection passed')

@@ -17,6 +17,24 @@ function M.matches(frame,serial,sent,red)
   return frame.valid and frame.serial>serial and frame.ns>=sent
     and frame.rgba[1]==red and frame.rgba[2]==64 and frame.rgba[3]==192 and frame.rgba[4]==255
 end
+function M.startup_phases(log,spawned,presented)
+  local names={'main_enter','sdl_initialized','window_created','renderer_initialized',
+    'libraries_opened','harness_booted','assets_registered','core_required','core_initialized','run_enter'}
+  local json=require 'json';local rows={};local previous=spawned
+  assert(presented>=spawned,'presentation precedes spawn')
+  for line in log:gmatch('[^\r\n]+')do
+    local encoded=line:match('^BMUX_STARTUP (.*)$')
+    if encoded then
+      local row=assert(json.decode(encoded),'invalid startup trace JSON')
+      assert(row.phase==names[#rows+1]and #rows<#names,'unexpected startup phase')
+      assert(math.type(row.ns)=='integer'and row.ns>=previous and row.ns<=presented,'invalid startup timestamp')
+      rows[#rows+1]={phase=row.phase,ns=row.ns,elapsed_ns=row.ns-previous};previous=row.ns
+    end
+  end
+  assert(#rows==#names,'incomplete startup trace')
+  rows[#rows+1]={phase='first_terminal_present',ns=presented,elapsed_ns=presented-previous}
+  return rows
+end
 function M.resources(before,after,roles)
   local prior,seen,rows,groups={},{},{},{}
   assert(#before.processes==#after.processes,'process count changed during idle sample')
