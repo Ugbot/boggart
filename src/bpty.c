@@ -16,10 +16,32 @@
 #else
 #include <pty.h>
 #endif
+#ifdef __APPLE__
+#include <spawn.h>
+#endif
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
 extern char **environ;
+void bpty_reexec(int argc,char **argv) {
+#ifdef __APPLE__
+  if (argc<2 || strcmp(argv[1],"--boggart-pty-exec")) return;
+  if (argc<6) _exit(127);
+  char *end; errno=0; long number=strtol(argv[2],&end,10);
+  if (errno || *end || number<3 || number>INT_MAX) _exit(127);
+  int fd=(int)number;
+  if (fcntl(fd,F_SETFD,FD_CLOEXEC)<0 || ioctl(0,TIOCSCTTY,NULL)<0 ||
+      (*argv[4] && chdir(argv[4])<0)) goto failed;
+  execve(argv[3],argv+5,environ);
+failed: {
+    int error=errno; const char *bytes=(const char *)&error; size_t left=sizeof error;
+    while (left) { ssize_t n=write(fd,bytes,left); if (n>0) { bytes+=n; left-=(size_t)n; } else if (n<0 && errno==EINTR) continue; else break; }
+    _exit(127);
+  }
+#else
+  (void)argc; (void)argv;
+#endif
+}
 #define IO_BUDGET (256u * 1024u)
 #define QUEUE_LIMIT (32u * 1024u * 1024u)
 struct bpty {
@@ -226,8 +248,8 @@ void bpty_shutdown(uv_loop_t *loop) {
   }
   shutdown_loop=NULL;
 }
-/* Prepare all allocation/environment/path work before fork. The child uses
- * only close/chdir/signal syscalls, execve, write and _exit after forkpty. */
+/* Prepare allocation/environment/path work in the parent. Non-Apple children
+ * use only close/chdir/signal syscalls, execve, write and _exit after forkpty. */
 static int command_path(bpty_options options,char out[PATH_MAX]) {
   char working[PATH_MAX];
   if (!getcwd(working,sizeof working)) return uv_translate_sys_error(errno);
@@ -257,6 +279,7 @@ static int command_path(bpty_options options,char out[PATH_MAX]) {
     path=end+1;
   }
 }
+#ifndef __APPLE__
 static int inherited_fds(int **out,size_t *count,int keep,int control) {
   DIR *dir=opendir("/dev/fd");
   if (!dir) dir=opendir("/proc/self/fd");
@@ -281,8 +304,50 @@ static int inherited_fds(int **out,size_t *count,int keep,int control) {
   }
   closedir(dir); *out=fds; return 0;
 }
+#else
+/* Kernel spawn avoids inherited ASAN/system atfork callbacks. A fresh C-only
+ * re-exec is needed because spawn file actions cannot issue TIOCSCTTY. */
+static int spawn_macos(bpty *t,bpty_options options,const char *command,char **environment,int error_fd) {
+  char executable[PATH_MAX],descriptor[32]; size_t length=sizeof executable;
+  int error=uv_exepath(executable,&length); if (error) return error;
+  size_t argc=0; while (options.argv[argc]) { if (++argc>4096) return UV_E2BIG; }
+  char **args=malloc((argc+6)*sizeof *args); if (!args) return UV_ENOMEM;
+  snprintf(descriptor,sizeof descriptor,"%d",error_fd);
+  args[0]=executable; args[1]="--boggart-pty-exec"; args[2]=descriptor;
+  args[3]=(char *)command; args[4]=(char *)(options.cwd ? options.cwd : "");
+  for (size_t i=0;i<=argc;i++) args[i+5]=options.argv[i];
+  const lpage_screen *screen=bterm_screen(t->core); struct winsize size={0};
+  size.ws_col=(unsigned short)lpage_columns(screen); size.ws_row=(unsigned short)lpage_rows(screen);
+  int slave=-1; posix_spawn_file_actions_t actions; posix_spawnattr_t attr;
+  bool actions_init=false,attr_init=false;
+  if (openpty(&t->master,&slave,NULL,NULL,&size)<0) { error=errno; goto done; }
+  if (fcntl(t->master,F_SETFD,FD_CLOEXEC)<0 || fcntl(slave,F_SETFD,FD_CLOEXEC)<0) { error=errno; goto done; }
+  if ((error=posix_spawn_file_actions_init(&actions))) goto done; actions_init=true;
+  if ((error=posix_spawnattr_init(&attr))) goto done; attr_init=true;
+  sigset_t defaults,mask; sigemptyset(&defaults); sigemptyset(&mask);
+  const int signals[]={SIGINT,SIGQUIT,SIGTERM,SIGHUP,SIGPIPE,SIGCHLD,SIGTSTP,SIGTTIN,SIGTTOU,SIGWINCH};
+  for (size_t i=0;i<sizeof signals/sizeof *signals;i++) sigaddset(&defaults,signals[i]);
+  if ((error=posix_spawnattr_setsigdefault(&attr,&defaults)) ||
+      (error=posix_spawnattr_setsigmask(&attr,&mask)) ||
+      (error=posix_spawnattr_setflags(&attr,POSIX_SPAWN_SETSID|POSIX_SPAWN_CLOEXEC_DEFAULT|POSIX_SPAWN_SETSIGDEF|POSIX_SPAWN_SETSIGMASK))) goto done;
+  for (int fd=0;fd<3;fd++) if ((error=posix_spawn_file_actions_adddup2(&actions,slave,fd))) goto done;
+  if ((error=posix_spawn_file_actions_addinherit_np(&actions,error_fd))) goto done;
+  if (options.control_fd>2 && (error=posix_spawn_file_actions_addinherit_np(&actions,options.control_fd))) goto done;
+  pid_t child;
+  if ((error=posix_spawn(&child,executable,&actions,&attr,args,environment))) goto done;
+  t->child=child; t->state.pid=child;
+done:
+  if (attr_init) posix_spawnattr_destroy(&attr);
+  if (actions_init) posix_spawn_file_actions_destroy(&actions);
+  if (slave>=0) close(slave); free(args);
+  return error>0 ? uv_translate_sys_error(error) : error;
+}
+#endif
 bpty *bpty_open(uv_loop_t *loop,bterm *core,bpty_options options,int *error_out) {
-  int error=UV_EINVAL; bpty *t=NULL; int pipefd[2]={-1,-1},*fds=NULL; size_t count=0; char **environment=NULL;
+  int error=UV_EINVAL; bpty *t=NULL; int pipefd[2]={-1,-1},*fds=NULL; char **environment=NULL;
+#ifndef __APPLE__
+  size_t count=0;
+#endif
   if (loop && loop==shutdown_loop) { error=UV_ECANCELED; goto done; }
   if (!loop || !core || !options.command || !*options.command || !options.argv || !options.argv[0]) goto done;
   char command[PATH_MAX]; if ((error=command_path(options,command))) goto done;
@@ -311,7 +376,17 @@ bpty *bpty_open(uv_loop_t *loop,bterm *core,bpty_options options,int *error_out)
   if ((error=uv_timer_init(loop,&t->kill_timer))) goto done;
   t->timer_init=true; t->handles++; t->kill_timer.data=t;
   if (pipe(pipefd)<0) { error=uv_translate_sys_error(errno); goto done; }
+  /* Keep the exec-status channel clear of PTY stdio even if the caller had
+   * closed one of its standard descriptors. */
+  for (int i=0;i<2;i++) if (pipefd[i]<3) {
+    int fd=fcntl(pipefd[i],F_DUPFD_CLOEXEC,3);
+    if (fd<0) { error=uv_translate_sys_error(errno); goto done; }
+    close(pipefd[i]); pipefd[i]=fd;
+  }
   if (fcntl(pipefd[0],F_SETFD,FD_CLOEXEC)<0 || fcntl(pipefd[1],F_SETFD,FD_CLOEXEC)<0) { error=uv_translate_sys_error(errno); goto done; }
+#ifdef __APPLE__
+  if ((error=spawn_macos(t,options,command,environment,pipefd[1]))) goto done;
+#else
   if ((error=inherited_fds(&fds,&count,pipefd[1],options.control_fd))) goto done;
   const lpage_screen *screen=bterm_screen(core); struct winsize size={0};
   size.ws_col=(unsigned short)lpage_columns(screen); size.ws_row=(unsigned short)lpage_rows(screen);
@@ -333,6 +408,7 @@ child_error: {
     }
   }
   t->child=child; t->state.pid=child;
+#endif
   close(pipefd[1]); pipefd[1]=-1;
   int child_errno=0; size_t received=0;
   while (received<sizeof child_errno) {
@@ -355,6 +431,7 @@ done:
   return t;
 }
 #else
+void bpty_reexec(int argc,char **argv) { (void)argc; (void)argv; }
 struct bpty { int unused; };
 void bpty_set_notify(bpty *t,void (*notify)(void *),void *context) { (void)t;(void)notify;(void)context; }
 bpty *bpty_open(uv_loop_t *loop,bterm *core,bpty_options options,int *error) { (void)loop;(void)core;(void)options;if(error)*error=UV_ENOSYS;return NULL; }

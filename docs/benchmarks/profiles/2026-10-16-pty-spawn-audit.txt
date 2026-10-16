@@ -1,0 +1,2 @@
+normal: 100 live owned PTYs + server/Studio sampled before/after, 100 successful snapshots/first events, peak handshake concurrency=4, valid terminal frame, 100 current identities verified
+asan: 100 live owned PTYs + server/Studio sampled before/after, 100 successful snapshots/first events, peak handshake concurrency=4, valid terminal frame, 96 current identities verified

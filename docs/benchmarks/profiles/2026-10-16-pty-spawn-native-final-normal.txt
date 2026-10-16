@@ -1,0 +1,7 @@
+Test project /Users/bengamble/boggart/build
+    Start 5: pty_transport
+1/1 Test #5: pty_transport ....................   Passed    3.55 sec
+
+100% tests passed out of 1
+
+Total Test time (real) =   3.57 sec

@@ -1,0 +1,7 @@
+Test project /Users/bengamble/boggart/build-asan
+    Start 5: pty_transport
+1/1 Test #5: pty_transport ....................   Passed    4.61 sec
+
+100% tests passed out of 1
+
+Total Test time (real) =   4.62 sec

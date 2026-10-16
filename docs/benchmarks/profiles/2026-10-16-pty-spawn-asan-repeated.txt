@@ -1,0 +1,17 @@
+Test project /Users/bengamble/boggart/build-asan
+    Start  5: pty_transport
+    Test  #5: pty_transport ....................   Passed    3.72 sec
+    Start  5: pty_transport
+    Test  #5: pty_transport ....................   Passed    2.75 sec
+    Start  5: pty_transport
+1/2 Test  #5: pty_transport ....................   Passed    1.78 sec
+    Start 39: termbench_attach_burst
+    Test #39: termbench_attach_burst ...........   Passed   35.14 sec
+    Start 39: termbench_attach_burst
+    Test #39: termbench_attach_burst ...........   Passed   34.93 sec
+    Start 39: termbench_attach_burst
+2/2 Test #39: termbench_attach_burst ...........   Passed   34.74 sec
+
+100% tests passed out of 2
+
+Total Test time (real) = 113.07 sec

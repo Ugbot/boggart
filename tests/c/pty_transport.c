@@ -8,6 +8,12 @@
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <pthread.h>
+/* Deterministically reject inherited fork-child execution. Kernel spawn must
+ * never run this callback, even when the host installed unsafe atfork work. */
+static void forbidden_fork_child(void) { _exit(101); }
+#endif
 #define CHECK(c) do { if (!(c)) { fprintf(stderr,"line %d: %s (errno %d)\n",__LINE__,#c,errno); exit(1); } } while (0)
 #define INPUT_BYTES (2u*1024u*1024u)
 /* Compile the actual transport under test-only allocation/ioctl interception;
@@ -37,10 +43,19 @@ static void output(const void *data,size_t length) {
 }
 static int child(const char *mode) {
   CHECK(isatty(0) && isatty(1) && isatty(2)); CHECK(getpgrp()==getpid() && tcgetpgrp(0)==getpid());
+  CHECK(getsid(0)==getpid());
   CHECK(fcntl(200,F_GETFD)<0 && errno==EBADF);
   struct termios term; CHECK(!tcgetattr(0,&term)); cfmakeraw(&term); CHECK(!tcsetattr(0,TCSANOW,&term));
   if (!strcmp(mode,"hang")) signal(SIGHUP,SIG_IGN);
   output("READY\r\n",7);
+  if (!strcmp(mode,"context")) {
+    char cwd[4096]; CHECK(getcwd(cwd,sizeof cwd));
+    CHECK(getenv("BMUX_PTY_CWD") && !strcmp(cwd,getenv("BMUX_PTY_CWD")));
+    CHECK(getenv("BMUX_PTY_VALUE") && !strcmp(getenv("BMUX_PTY_VALUE"),"value with spaces"));
+    struct sigaction action; CHECK(!sigaction(SIGINT,NULL,&action) && action.sa_handler==SIG_DFL);
+    sigset_t mask; CHECK(!sigprocmask(SIG_SETMASK,NULL,&mask) && !sigismember(&mask,SIGTERM));
+    output("CONTEXT_OK",10); return 7;
+  }
   if (!strcmp(mode,"flood")) {
     char bytes[8192]; memset(bytes,'x',sizeof bytes); bytes[sizeof bytes-1]='\n';
     for (unsigned i=0;i<128;i++) output(bytes,sizeof bytes);
@@ -134,6 +149,20 @@ static void transport(const char *self) {
   CHECK(kill((pid_t)pid,0)<0 && errno==ESRCH); end(&f);
   close(200);
 }
+static void launch_context(const char *self) {
+  char cwd[4096],cwd_env[4200],executable[4096]; CHECK(realpath("/tmp",cwd)); CHECK(realpath(self,executable));
+  CHECK(snprintf(cwd_env,sizeof cwd_env,"BMUX_PTY_CWD=%s",cwd)>0);
+  char *env[]={cwd_env,"BMUX_PTY_VALUE=value with spaces",NULL};
+  char *args[]={"bmux-custom-argv0","--child","context",NULL}; int error;
+  struct sigaction old,ignore={0}; ignore.sa_handler=SIG_IGN; sigemptyset(&ignore.sa_mask);
+  CHECK(!sigaction(SIGINT,&ignore,&old));
+  sigset_t blocked,saved; sigemptyset(&blocked); sigaddset(&blocked,SIGTERM);
+  CHECK(!sigprocmask(SIG_BLOCK,&blocked,&saved));
+  fixture f; begin(&f);
+  f.pty=bpty_open(&f.loop,f.core,(bpty_options){.command=executable,.cwd=cwd,.argv=args,.env=env},&error);
+  CHECK(!sigprocmask(SIG_SETMASK,&saved,NULL) && !sigaction(SIGINT,&old,NULL));
+  CHECK(f.pty && !error); completed(&f); CHECK(contains(f.core,"CONTEXT_OK")); end(&f);
+}
 static bool uv_exited;
 static void release_after_loop(void) {
   uv_loop_t *loop=malloc(sizeof *loop); CHECK(loop && !uv_loop_init(loop));
@@ -180,7 +209,7 @@ static void errors(void) {
     fixture f; begin(&f); char *args[]={(char *)commands[i],"-c","exit 0",NULL}; int error;
     if (i==3) { args[0]="/dev/null"; commands[i]="/dev/null"; }
     f.pty=bpty_open(&f.loop,f.core,(bpty_options){commands[i],directories[i],args},&error);
-    CHECK(!f.pty && error<0); end(&f);
+    CHECK(!f.pty && error==(i==3 ? UV_EACCES : UV_ENOENT)); end(&f);
   }
   for (size_t point=1;point<=3;point++) {
     fixture f; begin(&f); char *args[]={"/bin/sh","-c","exit 0",NULL}; int error;
@@ -190,7 +219,14 @@ static void errors(void) {
   }
 }
 int main(int argc,char **argv) {
-  if (argc==3 && !strcmp(argv[1],"--child")) return child(argv[2]);
-  errors(); transport(argv[0]); coexist(); feed_failure(); release_after_loop();
+  bpty_reexec(argc,argv);
+  if (argc==3 && !strcmp(argv[1],"--child")) {
+    if (!strcmp(argv[2],"context")) CHECK(!strcmp(argv[0],"bmux-custom-argv0"));
+    return child(argv[2]);
+  }
+#ifdef __APPLE__
+  CHECK(!pthread_atfork(NULL,NULL,forbidden_fork_child));
+#endif
+  errors(); transport(argv[0]); launch_context(argv[0]); coexist(); feed_failure(); release_after_loop();
   puts("native PTY controlling tty, queued input, resize, exit/EOF, fd cleanup, deferred close and uv_spawn coexistence pass"); return 0;
 }

@@ -99,6 +99,10 @@ rerun until green. Its [readiness](2026-10-16-attachment-ready-after-asan.json),
 [client](2026-10-16-attachment-client-after-asan.json) and
 [server](2026-10-16-attachment-server-after-asan.json) records are retained.
 
+The subsequent [BMUX-109 launch fix and verification](2026-10-16-pty-spawn-verification.md)
+resolves that separate fork-child failure. It records three consecutive passing
+paced ASAN workflows, including all owned fixture PIDs in resource sampling.
+
 The final normal [coordinator report](2026-10-16-attachment-paced-normal.json),
 [client trace](2026-10-16-attachment-client-after-normal.json) and
 [server trace](2026-10-16-attachment-server-after-normal.json) preserve the

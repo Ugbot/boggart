@@ -51,6 +51,8 @@ by Studio, or identify embedded assets through the executable hash. OS fallback
 faces are not fingerprinted. The [attachment admission regression](benchmarks/2026-10-16-attachment-admission-verification.md)
 documents the BMUX-107 fix, diagnostic counters and the permanent paced 100-pane test. Synthetic
 delays are correctness tools and must not be used as product timing numbers.
+The [macOS PTY launch verification](benchmarks/2026-10-16-pty-spawn-verification.md)
+tracks BMUX-109, the separate sanitizer fork-child failure found during that regression.
 A controlled [project-scan comparison](benchmarks/2026-10-16-project-scan-verification.md)
 uses identical native/assets with just the scanner Lua source changed: median
 Studio terminal readiness falls from 714.057 ms to 343.135 ms. Indexing continues
