@@ -1185,6 +1185,23 @@ add_custom_target(termbench
   COMMENT "Measuring terminal parse throughput and stream fragmentation"
   USES_TERMINAL)
 
+if(UNIX)
+  add_executable(termbench_pty tools/termbench/pty_fixture.c)
+  set_target_properties(termbench_pty PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES)
+  boggart_apply_sanitizer(termbench_pty)
+  add_test(NAME termbench_pty
+    COMMAND ${CMAKE_COMMAND} -E env
+      BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/termbench_pty
+      BMUX_BENCH_FIXTURE=$<TARGET_FILE:termbench_pty>
+      $<TARGET_FILE:boggart> --eval tests/termbench_pty.lua
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  set_tests_properties(termbench_pty PROPERTIES TIMEOUT 15)
+  add_test(NAME termbench_measure
+    COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/termbench_measure
+      $<TARGET_FILE:boggart> --eval tests/termbench_measure.lua
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
+
 # Explicit test-only oracle. Zig/Ghostty are never product dependencies.
 set(BOGGART_GHOSTTY_ORACLE_WORK_ROOT "${CMAKE_CURRENT_BINARY_DIR}/ghostty-oracle"
     CACHE PATH "Scratch directory for the optional pinned Ghostty VT oracle")
@@ -1225,6 +1242,19 @@ set_tests_properties(bmux_ctui bmux_ctui_sessions bmux_ctui_fleet bmux_session_r
 set_tests_properties(bmux_server_agents PROPERTIES TIMEOUT 60)
 
 if(TARGET boggart-studio)
+  if(UNIX)
+    set(_latency_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/studio_termbench_latency)
+    add_test(NAME studio_termbench_latency
+      COMMAND ${CMAKE_COMMAND} -E env HOME=${_latency_home}
+        BOGGART_HOME=${_latency_home}/.boggart SHELL=/bin/sh SDL_VIDEODRIVER=dummy
+        BMUX_BENCH_FIXTURE=$<TARGET_FILE:termbench_pty>
+        BMUX_LATENCY_SAMPLES=3 BMUX_LATENCY_WARMUPS=2
+        BMUX_LATENCY_REPORT=${CMAKE_CURRENT_BINARY_DIR}/termbench-latency-smoke.json
+        BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/termbench/studio_latency.lua
+        $<TARGET_FILE:boggart-studio> .
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(studio_termbench_latency PROPERTIES TIMEOUT 60)
+  endif()
   set(_process_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/terminal_process_studio)
   add_test(NAME terminal_process_studio
     COMMAND ${CMAKE_COMMAND} -E env HOME=${_process_home} USERPROFILE=${_process_home}
@@ -1237,7 +1267,7 @@ if(TARGET boggart-studio)
   if(UNIX AND EXISTS /usr/bin/vim)
     list(APPEND _pane_suites studio_terminal_vim)
   endif()
-  list(APPEND _pane_suites studio_chooser)
+  list(APPEND _pane_suites studio_chooser studio_present_probe)
   foreach(_pane_suite IN LISTS _pane_suites)
     set(_pane_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${_pane_suite})
     set(_pane_shell_env)

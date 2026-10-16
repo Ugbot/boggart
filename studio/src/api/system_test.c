@@ -5,6 +5,7 @@
 #include <SDL3/SDL.h>
 #include <string.h>
 #include "terminalkeys.h"
+#include "renderer.h"
 extern SDL_Window *window;
 static char texts[64][4097]; static unsigned text_slot;
 static int integer_field(lua_State *L,const char *field,int fallback) {
@@ -64,4 +65,35 @@ static int push_event(lua_State *L) {
   if (!SDL_PushEvent(&event)) return luaL_error(L,"SDL event injection failed: %s",SDL_GetError());
   return 0;
 }
-void system_test_open(lua_State *L) { lua_pushcfunction(L,push_event); lua_setfield(L,-2,"_test_event"); }
+static int present_probe(lua_State *L) {
+  if (!lua_isnone(L,1)) {
+    bool enabled = !lua_isboolean(L,1) || lua_toboolean(L,1);
+    lua_Integer x = enabled ? luaL_checkinteger(L,1) : 0;
+    lua_Integer y = enabled ? luaL_checkinteger(L,2) : 0;
+    int w,h; ren_get_size(&w,&h);
+    if (enabled && (x < 0 || y < 0 || x >= w || y >= h))
+      return luaL_error(L,"presentation probe outside retained target");
+    if (!ren_test_present_probe(enabled,(int)x,(int)y))
+      return luaL_error(L,"presentation probe: %s",SDL_GetError());
+  }
+  RenPresentProbe p = ren_test_present_sample();
+  lua_createtable(L,0,7);
+#define FIELD(name,value) lua_pushinteger(L,(lua_Integer)(value)); lua_setfield(L,-2,name)
+  FIELD("serial",p.serial); FIELD("ns",p.ns); FIELD("readback_ns",p.readback_ns);
+  FIELD("x",p.x); FIELD("y",p.y);
+  lua_pushboolean(L,p.enabled); lua_setfield(L,-2,"enabled");
+  lua_pushboolean(L,p.valid); lua_setfield(L,-2,"valid");
+  lua_createtable(L,4,0);
+  lua_pushinteger(L,p.color.r); lua_rawseti(L,-2,1);
+  lua_pushinteger(L,p.color.g); lua_rawseti(L,-2,2);
+  lua_pushinteger(L,p.color.b); lua_rawseti(L,-2,3);
+  lua_pushinteger(L,p.color.a); lua_rawseti(L,-2,4);
+  lua_setfield(L,-2,"rgba");
+  lua_pushstring(L,ren_glyph_stats().backend); lua_setfield(L,-2,"backend");
+#undef FIELD
+  return 1;
+}
+void system_test_open(lua_State *L) {
+  lua_pushcfunction(L,push_event); lua_setfield(L,-2,"_test_event");
+  lua_pushcfunction(L,present_probe); lua_setfield(L,-2,"_test_present_probe");
+}
