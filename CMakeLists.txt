@@ -1202,6 +1202,30 @@ if(UNIX)
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
+if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(termbench_sample tools/termbench/process_sample.c)
+  set_target_properties(termbench_sample PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES)
+  target_link_libraries(termbench_sample PRIVATE uv_a)
+  if(APPLE)
+    target_link_libraries(termbench_sample PRIVATE proc)
+  endif()
+  boggart_apply_sanitizer(termbench_sample)
+  add_test(NAME termbench_sample COMMAND termbench_sample --self-test)
+  set_tests_properties(termbench_sample PROPERTIES TIMEOUT 10)
+  if(TARGET boggart-studio)
+    add_test(NAME termbench_system
+      COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/termbench_system
+        BMUX_SYSTEM_STUDIO=$<TARGET_FILE:boggart-studio> BMUX_BENCH_FIXTURE=$<TARGET_FILE:termbench_pty>
+        BMUX_SYSTEM_SAMPLER=$<TARGET_FILE:termbench_sample> BMUX_SYSTEM_STARTS=1
+        BMUX_SYSTEM_IDLE_SAMPLES=1 BMUX_SYSTEM_IDLE_MS=100 BMUX_SYSTEM_SETTLE_MS=50
+        BMUX_SYSTEM_RTT_SAMPLES=3 BMUX_SYSTEM_RTT_WARMUPS=2 SDL_VIDEODRIVER=dummy
+        BMUX_SYSTEM_REPORT=${CMAKE_CURRENT_BINARY_DIR}/termbench-system-smoke.json
+        $<TARGET_FILE:boggart> --eval tools/termbench/system.lua
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(termbench_system PROPERTIES TIMEOUT 150)
+  endif()
+endif()
+
 # Explicit test-only oracle. Zig/Ghostty are never product dependencies.
 set(BOGGART_GHOSTTY_ORACLE_WORK_ROOT "${CMAKE_CURRENT_BINARY_DIR}/ghostty-oracle"
     CACHE PATH "Scratch directory for the optional pinned Ghostty VT oracle")

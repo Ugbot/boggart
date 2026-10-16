@@ -17,4 +17,23 @@ function M.matches(frame,serial,sent,red)
   return frame.valid and frame.serial>serial and frame.ns>=sent
     and frame.rgba[1]==red and frame.rgba[2]==64 and frame.rgba[3]==192 and frame.rgba[4]==255
 end
+function M.resources(before,after,roles)
+  local prior,seen,rows,groups={},{},{},{}
+  assert(#before.processes==#after.processes,'process count changed during idle sample')
+  for _,p in ipairs(before.processes)do assert(not prior[p.pid],'duplicate PID');prior[p.pid]=p end
+  for _,p in ipairs(after.processes)do
+    local b=assert(prior[p.pid],'idle PID changed')
+    assert(not seen[p.pid]and p.start_ticks==b.start_ticks,'PID reused or duplicated');seen[p.pid]=true
+    local dt=p.sampled_ns-b.sampled_ns;local cpu=p.user_ns+p.system_ns-b.user_ns-b.system_ns
+    assert(dt>0 and p.user_ns>=b.user_ns and p.system_ns>=b.system_ns,'nonmonotonic process sample')
+    local role=assert(roles[p.pid],'unclassified benchmark PID')
+    local row={pid=p.pid,role=role,interval_ns=dt,cpu_ns=cpu,cpu_percent=100*cpu/dt,
+      rss_start_bytes=b.rss_bytes,rss_end_bytes=p.rss_bytes}
+    rows[#rows+1]=row
+    local g=groups[role]or {count=0,cpu_ns=0,cpu_percent=0,rss_start_bytes=0,rss_end_bytes=0};groups[role]=g
+    g.count=g.count+1;g.cpu_ns=g.cpu_ns+cpu;g.cpu_percent=g.cpu_percent+row.cpu_percent
+    g.rss_start_bytes=g.rss_start_bytes+b.rss_bytes;g.rss_end_bytes=g.rss_end_bytes+p.rss_bytes
+  end
+  return {processes=rows,roles=groups}
+end
 return M
