@@ -52,10 +52,48 @@ function Registry:find(id,generation)
   if generation~=nil and generation~=entry.generation then return failure(409,'stale terminal runtime')end
   return entry
 end
+-- Trusted in-process observers share a single native readiness callback.
+function Registry:_notify(entry,event)
+  local listeners={}
+  for key,callback in pairs(entry.observers or {})do listeners[#listeners+1]={key,callback}end
+  for _,listener in ipairs(listeners)do
+    local key,callback=listener[1],listener[2]
+    if entry.observers[key]==callback then
+      local ok,why=pcall(callback,entry,event)
+      if not ok then
+        entry.observer_errors[key]=tostring(why):sub(1,256);entry.observers[key]=nil
+      end
+    end
+  end
+  if entry.term and not next(entry.observers)then entry.term:watch(nil)end
+end
+function Registry:observing(entry,key)return entry.observers and entry.observers[key]~=nil or false end
+function Registry:observe(entry,key,callback)
+  assert(self.entries[entry.id]==entry,'unknown terminal observer owner')
+  assert(type(key)=='string' and #key>0 and #key<=64,'invalid terminal observer key')
+  entry.observers=entry.observers or {};entry.observer_errors=entry.observer_errors or {}
+  if callback==nil then
+    entry.observers[key]=nil
+    if entry.term and not next(entry.observers)then entry.term:watch(nil)end
+    return true
+  end
+  assert(type(callback)=='function','invalid terminal observer callback')
+  if self.closed or entry.closed or not entry.term then return failure(409,'terminal grid is closed')end
+  local count=0;for _ in pairs(entry.observers)do count=count+1 end
+  if not entry.observers[key] and count>=8 then return failure(503,'terminal observer capacity reached')end
+  entry.observers[key]=callback;entry.observer_errors[key]=nil
+  -- A new subscriber needs an initial coherent image even if the PTY is idle.
+  entry.term:watch(function()self:_notify(entry,'changed')end)
+  return true
+end
 function Registry:release(entry)
+  if entry.closed then return end
   self.attachments:retire(entry)
-  if entry.term then entry.term:close();entry.term=nil end
+  if entry.term then self:status(entry);entry.term:close();entry.term=nil end
+  if not ended[entry.state]then entry.state='stopped'end
+  entry.closed=true
   self.used=self.used-entry.cost;entry.cost=0
+  if entry.observers then self:_notify(entry,'released');entry.observers={}end
 end
 function Registry:reserve(cost,exclude)
   if cost>self.max_cells then return false end
@@ -68,8 +106,10 @@ function Registry:reserve(cost,exclude)
   end
   return self.used+cost<=self.max_cells and (exclude~=nil or #self.order<self.max_records)
 end
-function Registry:open(opts)
+function Registry:open(opts,bootstrap)
   if self.closed then return failure(503,'terminal registry stopped')end
+  assert(bootstrap==nil or type(bootstrap)=='table' and only(bootstrap,{control=true})
+    and type(bootstrap.control)=='boolean','invalid trusted terminal bootstrap')
   if opts==nil then opts={}end
   if type(opts)~='table' or not only(opts,{cmd=true,args=true,cwd=true,env=true,cols=true,rows=true,history=true})then return failure(400,'invalid terminal options')end
   local cmd,cwd=value(opts,'cmd',os.getenv('SHELL') or '/bin/sh'),value(opts,'cwd',uv.cwd())
@@ -88,7 +128,8 @@ function Registry:open(opts)
   local entry={id='term-'..self.prefix..'-'..self.serial,generation=1,cmd=cmd,cwd=cwd,
     cols=cols,rows=rows,history=history,cost=cost,state='starting'}
   self.entries[entry.id]=entry;self.order[#self.order+1]=entry.id;self.used=self.used+cost
-  local called,term,why=pcall(terminal.open,{cmd=cmd,cwd=cwd,args=args,env=env,cols=cols,rows=rows,history=history})
+  local called,term,why=pcall(terminal.open,{cmd=cmd,cwd=cwd,args=args,env=env,cols=cols,rows=rows,history=history,
+    control=bootstrap and bootstrap.control or false})
   if called and term then entry.term=term
   else entry.state='failed';entry.error=tostring(called and why or term);self.used=self.used-entry.cost;entry.cost=0 end
   return self:status(entry)
@@ -155,13 +196,14 @@ end
 function Registry:close(id,generation)
   local entry,why=self:find(id,generation);if not entry then return nil,why end
   if not integer(generation,1,9007199254740991)then return failure(400,'invalid terminal generation')end
+  if entry.closed then return self:status(entry)end
   self:status(entry);self:release(entry)
   if not ended[entry.state] then entry.state='stopped'end
   entry.closed=true;return self:status(entry)
 end
 function Registry:shutdown()
   if self.closed then return end
-  for _,id in ipairs(self.order)do self:release(self.entries[id])end
   self.closed=true
+  for _,id in ipairs(self.order)do self:release(self.entries[id])end
 end
 return M

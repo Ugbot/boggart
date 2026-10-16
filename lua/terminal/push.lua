@@ -9,7 +9,7 @@ function Push:connected(reader)
 end
 function Push:unwatch_if_idle(entry)
   for _,reader in pairs(self.host.readers)do if reader.entry==entry and reader.channel then return end end
-  if entry.push_watch and entry.term then entry.term:watch(nil)end
+  self.registry:observe(entry,'attachments',nil)
   entry.push_watch=false
 end
 function Push:remove(reader)
@@ -42,9 +42,9 @@ function Push:open(entry,opts)
   local frame,error=self.host:updates(entry,opts);if not frame then return nil,error end
   reader.channel='terminal:'..reader.id
   if not entry.term then return nil,{status=409,message='terminal grid is closed'}end
-  if not entry.push_watch or not entry.term:watch_state().active then
+  if not entry.push_watch or not self.registry:observing(entry,'attachments') then
     entry.push_watch=true;entry.push_error=nil
-    entry.term:watch(function()
+    local observed,observe_error=self.registry:observe(entry,'attachments',function()
       local ok,err=pcall(self.changed,self,entry)
       if not ok then
         entry.push_error='terminal push failed; reattach'
@@ -52,6 +52,7 @@ function Push:open(entry,opts)
         error(err)
       end
     end)
+    if not observed then reader.channel=nil;entry.push_watch=false;return nil,observe_error end
   end
   return 'stream',reader.channel,frame
 end
