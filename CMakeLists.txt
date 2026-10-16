@@ -1213,7 +1213,7 @@ foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor 
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
 
-foreach(suite bmux_tree bmux_layout bmux_checkpoint bmux_rehydrate bmux_journal_native bmux_journal bmux_session_restart bmux_layout_server bmux_snapshot bmux_layout_client bmux_ctui bmux_ctui_fleet bmux_server_agents bmux_fleet_client bmux_fleet_source agent_channel_watch control_unix manualfleet terminal_environment agenthooks providerevents provider_notify actionfocus terminal_registry terminal_server terminal_attachments terminal_watch terminal_observers serve_streams terminal_push terminal_transport terminal_replica terminal_client terminal_input_events)
+foreach(suite bmux_tree bmux_layout bmux_checkpoint bmux_rehydrate bmux_journal_native bmux_journal bmux_session_transfer bmux_session_restart bmux_layout_server bmux_snapshot bmux_layout_client bmux_ctui bmux_ctui_fleet bmux_server_agents bmux_fleet_client bmux_fleet_source agent_channel_watch control_unix manualfleet terminal_environment agenthooks providerevents provider_notify actionfocus terminal_registry terminal_server terminal_attachments terminal_watch terminal_observers serve_streams terminal_push terminal_transport terminal_replica terminal_client terminal_input_events)
   add_test(NAME ${suite}
     COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite}
       $<TARGET_FILE:boggart> --eval tests/${suite}.lua
@@ -1221,7 +1221,7 @@ foreach(suite bmux_tree bmux_layout bmux_checkpoint bmux_rehydrate bmux_journal_
   set_tests_properties(${suite} PROPERTIES TIMEOUT 20)
 endforeach()
 set_tests_properties(terminal_server PROPERTIES TIMEOUT 45)
-set_tests_properties(bmux_ctui bmux_ctui_fleet bmux_session_restart PROPERTIES TIMEOUT 60)
+set_tests_properties(bmux_ctui bmux_ctui_fleet bmux_session_restart bmux_session_transfer PROPERTIES TIMEOUT 60)
 set_tests_properties(bmux_server_agents PROPERTIES TIMEOUT 60)
 
 if(TARGET boggart-studio)

@@ -2,7 +2,8 @@
 
 The checkpoint codec and shared-layout reconstruction are implemented in
 BMUX-95. [SQLite journaling and server startup restoration](bmux-journal.md) are
-implemented in BMUX-96; client import/recovery controls and final acceptance remain BMUX-97.
+implemented in BMUX-96. [Native checkpoint transfer](bmux-session-transfer.md)
+landed in BMUX-98; client menus/recovery controls and final acceptance remain BMUX-97.
 BMUX-33 is not complete yet.
 
 `bmux.checkpoint.validate(table)` copies and checks a v1 document containing
@@ -10,6 +11,8 @@ BMUX-33 is not complete yet.
 native JSON codec before validation; `encode(table)` validates and produces
 canonical JSON with explicit empty arrays. Each returns data/bytes, or
 `nil, {kind='checkpoint', message=...}` with a bounded diagnostic.
+`import(bytes)` uses the same validation and demotes every terminal and agent
+restart recipe to `saved` in a fresh copy, preserving history and resume refs.
 
 Native terminal records preserve their old ID/generation as mapping keys, an
 absolute cwd, geometry/history capacity, optional informational program name,
@@ -39,8 +42,9 @@ completed Host before publication. Normal later commands invoke `changed` and
 allocate unique IDs. Old-host commands remain invalid. These operations start
 no processes and perform no filesystem/store writes.
 
-The future journal's trusted local startup path chooses whether to execute the
-enum recipes. Imports must force all recipes to `saved`, including after future
-saves/restarts. Informational program strings are never executed. See the
+The journal's trusted local startup path chooses whether to execute the enum
+recipes. The native import route forces all recipes to `saved` before storage;
+later captures preserve that inactive state across future saves/restarts.
+Informational program strings are never executed. See the
 [restore design](superpowers/specs/2026-10-16-bmux-session-restore-design.md) and
 [verification](benchmarks/2026-10-16-checkpoint-codec-verification.md).
