@@ -36,7 +36,11 @@ function Client:request(method,path,body,callback,stream)
     if req.done then return end;req.done=true;self.requests[req]=nil;self.request_count=self.request_count-1
     local value
     if not why then
-      if status<200 or status>=300 then why=problem('http','control request refused',status)
+      if status<200 or status>=300 then
+        why=problem('http','control request refused',status)
+        -- Fleet command receipts distinguish consumed refusals from admission
+        -- failures. Keep bounded JSON details without changing existing errors.
+        if type(raw)=='string'and #raw<=65536 then why.response=replica.decode(raw)end
       else value,why=replica.decode(raw)end
     end
     callback(why,value,status)
