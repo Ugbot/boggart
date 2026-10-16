@@ -3,8 +3,10 @@
 BMUX targets a terminal multiplexer with cmux capabilities and lower overhead.
 `termbench` measures repeatable parse/grid throughput in the native C terminal
 core and the previous Lua reference. BMUX-9 supplies this harness. BMUX-101 adds
-validated server-to-Studio presentation timing below; startup, resource and
-control measurements remain BMUX-10 work, comparisons remain BMUX-11 work.
+validated server-to-Studio presentation timing below; BMUX-102 adds
+[separate-process startup, 1/10/100-pane resources and socket RTT](termbench-system.md).
+Comparisons remain BMUX-11 work. Startup profiles and measured boundaries must
+match before drawing comparative conclusions.
 
 ## Server-to-Studio presentation latency (BMUX-101)
 

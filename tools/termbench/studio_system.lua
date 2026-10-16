@@ -1,0 +1,73 @@
+-- Child of system.lua: observe the first actual terminal frame, then leave the
+-- normal app idle. No benchmark polling thread/timer remains after readiness.
+local core=require 'core';local uv=require 'uv';local json=require 'json'
+local socket=assert(os.getenv('BMUX_SYSTEM_SOCKET'))
+local ready=assert(os.getenv('BMUX_SYSTEM_READY'))
+local expected=assert(tonumber(os.getenv('BMUX_SYSTEM_PANES')))
+local joined,first_frame,view
+local original_end=renderer.end_frame
+local function fail(why)io.stderr:write(tostring(why),'\n');os.exit(1)end
+system.set_window_size(1000,800)
+renderer.end_frame=function()
+  local ok,why=xpcall(function()
+    if not first_frame and joined and view and view.remote.snapshot and view.size.x>0 then
+      local x,y=view:get_content_offset()
+      system._test_present_probe(math.floor(x+view.cw/2),math.floor(y+view:header_height()+view.lh/2))
+    end
+    original_end()
+    if not first_frame then
+      local p=system._test_present_probe()
+      if p.valid and p.rgba[1]==0 and p.rgba[2]==64 and p.rgba[3]==192 and p.rgba[4]==255 then
+        first_frame=p;system._test_present_probe(false);renderer.end_frame=original_end
+      end
+    end
+  end,debug.traceback)
+  if not ok then fail(why)end
+end
+core.add_thread(function()
+  local ok,why=xpcall(function()
+    local done,problem=false
+    require('core.bmuxlayout').join(socket,nil,function(e,s)joined=s;problem=e;done=true end)
+    local deadline=uv.hrtime()+30e9;local diagnostic={}
+    while uv.hrtime()<deadline do
+      if problem then error(problem.message)end
+      local live,total=0,0
+      if done and joined then
+        diagnostic.errors={}
+        for _,v in pairs(joined.pool)do
+          total=total+1
+          if v.remote and v.remote.snapshot and v.remote:status()=='read-only'then live=live+1 end
+          if v.remote and v.remote:status()~='read-only' and #diagnostic.errors<4 then
+            diagnostic.errors[#diagnostic.errors+1]={status=v.remote:status(),error=v.remote.error,id=v.remote.id}
+          end
+        end
+        view=core.active_view
+        if view and view.remote then
+          -- The fixed benchmark window fits the 24-row fixture. Explicit top
+          -- position avoids startup scroll interpolation moving the marker.
+          view.scroll.y=0;view.scroll.to.y=0
+        end
+      end
+      diagnostic.total=total;diagnostic.live=live;diagnostic.frame=first_frame or system._test_present_probe()
+      if first_frame and total==expected and live==expected then
+        assert(view.cols==80 and view.rows==24 and view.history_rows==0,'unexpected fixture geometry')
+        local out={schema=1,pid=uv.os_getpid(),panes=total,attached=live,first_present_ns=first_frame.ns,
+          all_attached_ns=uv.hrtime(),first_frame=first_frame,cols=view.cols,rows=view.rows,
+          frame_limit=require('core.config').fps,window_points={1000,800},
+          native_sources=require('terminal').source(),renderer_sources=renderer.terminal_sources()}
+        -- A signal observer adds no idle wakeup/poll. Parent requests normal
+        -- client detach/quit after sampling instead of killing a live window.
+        local stop=uv.new_signal()
+        stop:start('sigusr1',function()
+          joined:disconnect();stop:stop();stop:close();core.quit(true)
+        end)
+        local f=assert(io.open(ready..'.tmp','wb'));assert(f:write(json.encode(out),'\n'));assert(f:close())
+        assert(uv.fs_rename(ready..'.tmp',ready))
+        return
+      end
+      coroutine.yield(0)
+    end
+    error('system benchmark Studio readiness deadline; '..json.encode(diagnostic))
+  end,debug.traceback)
+  if not ok then fail(why)end
+end)
