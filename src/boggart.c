@@ -140,7 +140,7 @@ static void configure(lua_State *L, int argc, char **argv) {
     } else if (strcmp(a, "--model") == 0 && i + 1 < argc) {
       model = argv[++i];
     } else if ((strcmp(a, "--port") == 0 || strcmp(a, "--host") == 0
-                || strcmp(a, "--token") == 0 || strcmp(a,"--socket")==0) && i + 1 < argc) {
+                || strcmp(a, "--token") == 0 || strcmp(a,"--socket")==0 || strcmp(a,"--bmux-session")==0) && i + 1 < argc) {
       /* Serve options, set straight onto the boggart table as
        * boggart.port / .host / .token. C splits the words; lua/control.lua
        * decides what they mean and whether they are allowed. */
@@ -286,6 +286,7 @@ static int early_exit_flags(int argc, char **argv) {
         "      --host <addr>          serve: bind address (loopback unless a token is set)\n"
         "      --token <secret>       serve: require this bearer token\n"
         "      --socket <path>        serve: private Unix-domain socket\n"
+        "      --bmux-session <name>  serve: saved Bmux session (default: socket path)\n"
         "  -V, --version              print the version\n\n"
         "environment:\n"
         "  BOGGART_HOME               data directory (store, credentials, overlay Lua)\n"

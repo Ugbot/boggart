@@ -26,6 +26,8 @@
  */
 #include <string.h>
 #include <time.h>
+#include <limits.h>
+#include <stdbool.h>
 
 #include "sqlite3.h"
 #include "lua.h"
@@ -107,6 +109,33 @@ static int sq_kv_del(lua_State *L) {
   if (rc != SQLITE_DONE) return rfail(L, r->h, "kv_del step");
   lua_pushinteger(L, sqlite3_changes(r->h));
   return 1;
+}
+
+/* Atomic compare/set for host journals and ownership claims. nil expects an
+ * absent key; a nil replacement deletes only the exact observed value. */
+static int sq_kv_compare_set(lua_State *L) {
+  RepoSqlite *r=check_sqlite(L);size_t kn,en=0,vn=0;
+  const char *k=luaL_checklstring(L,2,&kn);
+  const char *expected=lua_isnil(L,3) ? NULL : luaL_checklstring(L,3,&en);
+  const char *value=lua_isnil(L,4) ? NULL : luaL_checklstring(L,4,&vn);
+  luaL_argcheck(L,kn<=INT_MAX,2,"key too large");
+  luaL_argcheck(L,en<=INT_MAX,3,"expected value too large");
+  luaL_argcheck(L,vn<=INT_MAX,4,"replacement too large");
+  const char *sql=expected ? (value ? "UPDATE kv SET value=?1,updated=?2 WHERE key=?3 AND value=?4"
+    : "DELETE FROM kv WHERE key=?3 AND value=?4")
+    : (value ? "INSERT OR IGNORE INTO kv(key,value,updated) VALUES(?3,?1,?2)"
+    : "SELECT 1 FROM kv WHERE key=?3");
+  sqlite3_stmt *st=NULL;
+  if(sqlite3_prepare_v2(r->h,sql,-1,&st,NULL)!=SQLITE_OK)return rfail(L,r->h,"kv_compare_set prepare");
+  if(value){sqlite3_bind_text(st,1,value,(int)vn,SQLITE_TRANSIENT);sqlite3_bind_int64(st,2,(sqlite3_int64)time(NULL));}
+  sqlite3_bind_text(st,3,k,(int)kn,SQLITE_TRANSIENT);
+  if(expected)sqlite3_bind_text(st,4,expected,(int)en,SQLITE_TRANSIENT);
+  int rc=sqlite3_step(st);bool matched;
+  if(!expected && !value)matched=rc==SQLITE_DONE;
+  else matched=rc==SQLITE_DONE && sqlite3_changes(r->h)==1;
+  sqlite3_finalize(st);
+  if(rc!=SQLITE_DONE && !(!expected && !value && rc==SQLITE_ROW))return rfail(L,r->h,"kv_compare_set step");
+  lua_pushboolean(L,matched);return 1;
 }
 
 static int sq_kv_list(lua_State *L) {
@@ -466,6 +495,7 @@ static int sq_role_put(lua_State *L) {
 static const luaL_Reg sqlite_methods[] = {
   {"kv_get", sq_kv_get},
   {"kv_set", sq_kv_set},
+  {"kv_compare_set", sq_kv_compare_set},
   {"kv_del", sq_kv_del},
   {"kv_list", sq_kv_list},
   {"model_get", sq_model_get},

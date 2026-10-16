@@ -123,5 +123,6 @@ those bytes. RGB colors map to termctl's portable 256-color palette. SDL shaping
 and color glyph rendering remain Studio features.
 
 Agent references without a published terminal show an unavailable notice.
-Durable server restart restore and richer foreign-provider adapters remain
-follow-up work. Existing Studio local agents retain their execution owners.
+[Server restart restore](bmux-journal.md) now reconstructs saved sessions with
+fresh native owners. Client import/recovery controls and richer foreign-provider
+adapters remain follow-ups. Existing Studio local agents retain their owners.

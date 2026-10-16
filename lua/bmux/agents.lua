@@ -39,7 +39,7 @@ function Host:_record(rec)
   end
   if type(rec.parent)=='string'or type(rec.parent)=='number'then out.parent=rec.parent end
   local owner=self:_session(rec)
-  if owner then
+  if owner and owner.entry then
     out.terminal_id=owner.entry.id;out.terminal_generation=owner.entry.generation
     for _,action in ipairs{'stop','prompt','interrupt','approve'}do out.capabilities[action]=rec.capabilities[action]==true end
   end
@@ -89,7 +89,7 @@ function Host:_broadcast()
   end
 end
 function Host:_release_observation(s)
-  if self.terminals.entries[s.entry.id]==s.entry then self.terminals:observe(s.entry,'fleet',nil)end
+  if s.entry and self.terminals.entries[s.entry.id]==s.entry then self.terminals:observe(s.entry,'fleet',nil)end
   if s.control then s.control.channel:watch(nil);s.control.channel:close()end
 end
 function Host:_prune()
@@ -99,6 +99,7 @@ function Host:_prune()
 end
 function Host:_refresh(s)
   if self.closed then return end
+  if not s.entry then return end
   if self.registry.agents[s.rec.id]~=s.rec then self:_prune();return end
   local fields={}
   if s.control then
@@ -132,7 +133,7 @@ end
 function Host:_launch(b)
   self:_prune()
   if b.resume_id then for _,s in pairs(self.sessions)do
-    if s.rec.provider=='boggart'and tostring(s.rec.session_id)==tostring(b.resume_id)and not ended[s.rec.state]and not s.entry.closed then
+    if s.entry and not s.entry.frozen and s.rec.provider=='boggart'and tostring(s.rec.session_id)==tostring(b.resume_id)and not ended[s.rec.state]and not s.entry.closed then
       return {agent_id=s.rec.id,generation=s.rec.generation,terminal_id=s.entry.id,terminal_generation=s.entry.generation,reused=true}
     end
   end end
@@ -149,7 +150,7 @@ function Host:_launch(b)
   local record,why=self.terminals:open({cmd=command,args=args,cwd=b.cwd,cols=b.cols,rows=b.rows,history=b.history},{control=b.provider=='boggart'})
   if not record then self.registry:retire(rec.id,1,'failed',why.message);return nil,why end
   local entry=assert(self.terminals:find(record.id,record.generation))
-  local s={rec=rec,entry=entry};self.sessions[rec.id]=s
+  local s={rec=rec,entry=entry,restore_boggart=b.provider=='boggart'and b.cmd==nil and b.args==nil};self.sessions[rec.id]=s
   if entry.term and b.provider=='boggart'then
     local channel=entry.term:channel()
     if channel then s.control=require('agentcontrol').new(channel,rec.id,rec.generation)
@@ -172,13 +173,25 @@ function Host:_command(b)
   local rec=self.registry.agents[b.agent_id]
   if not rec then return fail(404,'unknown Fleet agent')end
   if rec.generation~=b.generation then return fail(409,'stale agent runtime')end
-  local s=self:_session(rec);if not s then return fail(403,'agent execution is not owned by this server')end
+  local s=self:_session(rec);if not s or not s.entry then return fail(403,'agent execution is not owned by this server')end
   self:_refresh(s)
   if b.action=='prompt'and rec.input_revision~=b.input_revision then return fail(409,'agent input revision changed')end
   if b.action=='approve'and (type(rec.request)~='table'or rec.request.id~=b.request_id)then return fail(409,'approval request changed')end
   local accepted,id=self.registry:control(rec.id,b.generation,b.action,{text=b.text,input_revision=b.input_revision,request_id=b.request_id,decision=b.decision})
   if not accepted then return fail(409,type(id)=='string'and id or 'agent action unavailable')end
   self:_changed();return {accepted=true,agent_id=rec.id,generation=rec.generation,command_id=id}
+end
+function Host:rebind(host_id)
+  assert(not self.closed and self.receipts.count==0,'cannot rebind an active Fleet host')
+  self.registry:watch(self.channel,nil);self.server:close_streams(self.channel)
+  self.host_id=host_id;self.channel='fleet:'..host_id
+  self.registry:watch(self.channel,function()self:_changed()end);self:_changed()
+end
+function Host:saved(record,entry,why)
+  local rec=self.registry:register{provider=record.provider,name=record.name,cwd=entry and entry.cwd,session_id=record.resume_id}
+  self.sessions[rec.id]={rec=rec,entry=entry}
+  self.registry:update(rec.id,rec.generation,{state='stopped',activity='saved agent; process is inactive',error=why or 'Launch explicitly to start this saved agent'})
+  return rec
 end
 function Host:submit(route,b)
   local valid,why=Shape.validate(route,b);if not valid then return fail(400,why)end

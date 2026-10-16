@@ -1596,6 +1596,7 @@ elseif bog.mode == "serve" then
   local control = require "control"
   local srv, url = control.start{
     host = boggart.host, port = boggart.port, token = boggart.token, socket=boggart.socket,
+    session=boggart['bmux-session']or (boggart.socket and (boggart.socket:sub(1,1)=='/'and boggart.socket or require('uv').cwd()..'/'..boggart.socket)),
   }
   if not srv then
     io.stderr:write("boggart serve: " .. tostring(url) .. "\n")
@@ -1604,6 +1605,10 @@ elseif bog.mode == "serve" then
   io.write("boggart " .. boggart.version .. " serving on " .. url .. "\n")
   if control.token then io.write("token: " .. control.token .. "\n") end
   io.write("routes: " .. url .. "/routes   events: " .. url .. "/events\n")
+  if control.journal then
+    local status=control.journal:status()
+    io.write('bmux session: '..status.name..(status.blocked and ('; recovery required: '..status.error)or status.restored and '; restored'or '; new')..'\n')
+  end
 
   -- Triggers: schedules restored from the store, plus the one uv timer that
   -- drives them. This is what makes the daemon act on its own rather than only

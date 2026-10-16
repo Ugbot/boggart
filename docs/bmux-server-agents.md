@@ -95,9 +95,10 @@ configure the bound). Their high-water marks are never evicted into a state
 where an old launch could execute again. New clients receive 503 at capacity.
 Connections can reuse their existing client identity/sequence after reconnect.
 Receipts and native runtimes are not persisted across server restart; the new
-host ID invalidates old requests.
+host ID invalidates old requests. The [SQLite journal](bmux-journal.md) can reopen
+ordinary Boggart profiles on their saved session IDs with fresh runtime owners.
 
 See [server-agent plan](superpowers/plans/2026-10-16-bmux-server-agents.md) and
 [verification](benchmarks/2026-10-16-server-agents-verification.md). Rich foreign
-provider adapters, manual-shell wrapper migration and durable restart recovery
-remain separate work.
+provider adapters, manual-shell wrapper migration and client import/recovery
+controls remain separate work.

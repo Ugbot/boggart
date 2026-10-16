@@ -554,6 +554,9 @@ target_link_libraries(boggart PRIVATE
   lua_vendor mining_parser_vendor sqlite_vendor cjson_vendor ltui_curses luv_lua uv_a
   isocline_vendor CURL::libcurl ${VOICE_LIBS} ${STATION_LIBS})
 target_compile_definitions(boggart PRIVATE ${VOICE_DEFS} ${STATION_DEFS})
+if(APPLE)
+  target_link_libraries(boggart PRIVATE proc)
+endif()
 if(BOGGART_VOICE OR BOGGART_STATION)
   # C executable, C++ static deps (whisper/ggml, libzmq): link with the C++
   # driver so libc++/libstdc++ comes along.
@@ -798,6 +801,9 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
     ${VENDOR}/stb
     ${SDL3_INCLUDE_DIRS})
   target_compile_definitions(boggart-studio PRIVATE BOGGART_STUDIO=1 ${VOICE_DEFS} ${STATION_DEFS})
+  if(APPLE)
+    target_link_libraries(boggart-studio PRIVATE proc)
+  endif()
   target_link_libraries(boggart-studio PRIVATE
     boggart_warnings
     lua_vendor mining_parser_vendor sqlite_vendor cjson_vendor luv_lua uv_a isocline_vendor
@@ -1207,7 +1213,7 @@ foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor 
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
 
-foreach(suite bmux_tree bmux_layout bmux_checkpoint bmux_rehydrate bmux_layout_server bmux_snapshot bmux_layout_client bmux_ctui bmux_ctui_fleet bmux_server_agents bmux_fleet_client bmux_fleet_source agent_channel_watch control_unix manualfleet terminal_environment agenthooks providerevents provider_notify actionfocus terminal_registry terminal_server terminal_attachments terminal_watch terminal_observers serve_streams terminal_push terminal_transport terminal_replica terminal_client terminal_input_events)
+foreach(suite bmux_tree bmux_layout bmux_checkpoint bmux_rehydrate bmux_journal_native bmux_journal bmux_session_restart bmux_layout_server bmux_snapshot bmux_layout_client bmux_ctui bmux_ctui_fleet bmux_server_agents bmux_fleet_client bmux_fleet_source agent_channel_watch control_unix manualfleet terminal_environment agenthooks providerevents provider_notify actionfocus terminal_registry terminal_server terminal_attachments terminal_watch terminal_observers serve_streams terminal_push terminal_transport terminal_replica terminal_client terminal_input_events)
   add_test(NAME ${suite}
     COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite}
       $<TARGET_FILE:boggart> --eval tests/${suite}.lua
@@ -1215,7 +1221,7 @@ foreach(suite bmux_tree bmux_layout bmux_checkpoint bmux_rehydrate bmux_layout_s
   set_tests_properties(${suite} PROPERTIES TIMEOUT 20)
 endforeach()
 set_tests_properties(terminal_server PROPERTIES TIMEOUT 45)
-set_tests_properties(bmux_ctui bmux_ctui_fleet PROPERTIES TIMEOUT 60)
+set_tests_properties(bmux_ctui bmux_ctui_fleet bmux_session_restart PROPERTIES TIMEOUT 60)
 set_tests_properties(bmux_server_agents PROPERTIES TIMEOUT 60)
 
 if(TARGET boggart-studio)

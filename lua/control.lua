@@ -420,6 +420,8 @@ require('bmux.agentserver').install(M)
 function M.start(opts)
   opts = opts or {}
   if M.server then return M.server end
+  assert(not opts.session or type(opts.session)=='string'and #opts.session>0 and #opts.session<=4096
+    and utf8.len(opts.session)and not opts.session:find('[%z\1-\31\127]'),'invalid saved session name')
   local host = opts.host or os.getenv("BOGGART_SERVE_HOST") or "127.0.0.1"
   local port = tonumber(opts.port or os.getenv("BOGGART_SERVE_PORT")) or 0
   local token = opts.token or os.getenv("BOGGART_SERVE_TOKEN")
@@ -437,9 +439,11 @@ function M.start(opts)
   deferred.register(client_binding,client_state)
   client_context=invocation.context({state=client_state})
   local terminals=require('terminal.registry').new(opts.terminal_limits)
+  M.starting=true
   local srv, why = serve.listen{
     host = host, port = port, socket=opts.socket, token = token, profile=opts.profile,
     handler = function(req)
+      if M.starting or M.stopping then return 503,json.encode{error='server session is starting or stopping'},{content_type='application/json'}end
       local okd, a, b, c = pcall(dispatch, req)
       if not okd then
         return 500, json.encode({ error = tostring(a) }),
@@ -448,13 +452,14 @@ function M.start(opts)
       return a, b, c
     end,
   }
-  if not srv then return nil, why end
-
+  if not srv then M.starting=false;return nil, why end
   M.terminals=terminals
   M.layout=require('bmux.server').new(terminals,srv)
   M.server, client_token = srv, token
   require('terminal.push').new(terminals,srv)
   M.fleet=require('bmux.agents').new(terminals,srv,M.layout.host_id,{executable=opts.agent_executable,max_clients=opts.agent_clients})
+  if opts.session then M.journal=require('bmux.journal').new(M,opts.session)end
+  M.starting=false
   install_bridge()
   local url = opts.socket and 'http://localhost' or string.format("http://%s:%d", host, srv:port())
   bog.events.emit("serve:started", { url = url, authenticated=token~=nil })
@@ -463,13 +468,16 @@ end
 
 function M.stop()
   if not M.server then return false end
+  M.stopping=true
   remove_bridge()
+  if M.journal then M.journal:close();M.journal=nil end
   deferred.revoke(client_binding)
   if M.fleet then M.fleet:close();M.fleet=nil end
   if M.terminals then M.terminals:shutdown();M.terminals=nil end
   M.layout=nil
   M.server:stop()
   M.server, client_token, client_context = nil, nil, nil
+  M.stopping=false
   bog.events.emit("serve:stopped", {})
   return true
 end

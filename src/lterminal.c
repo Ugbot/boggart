@@ -1,5 +1,8 @@
 /* Lua owns the terminal lifetime; C owns parsing, grid storage and reply bytes.
  * Snapshot/row copies are made only on explicit calls, never while feeding. */
+#if defined(__linux__) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "bterm.h"
 #include "lterminal.h"
 #include "bpty.h"
@@ -11,6 +14,11 @@
 #include <stdlib.h>
 #include <limits.h>
 #include <stdio.h>
+#if defined(__APPLE__)
+#include <libproc.h>
+#elif defined(__linux__)
+#include <unistd.h>
+#endif
 #include "terminal-source.h"
 #define TERMINAL_MT "boggart.terminal"
 #define REPLY_CAPACITY 65536
@@ -393,6 +401,21 @@ static int l_process_state(lua_State *L) {
   integer(L,"revision",(lua_Integer)s.revision); integer(L,"bytes_read",(lua_Integer)s.bytes_read);
   integer(L,"read_callbacks",(lua_Integer)s.read_callbacks); integer(L,"queued_bytes",(lua_Integer)s.queued_bytes); return 1;
 }
+static int l_working_directory(lua_State *L) {
+  terminal *t=check(L);if(!t->process){lua_pushnil(L);return 1;}
+  bpty_status p=bpty_state(t->process);if(p.exited){lua_pushnil(L);return 1;}
+#if defined(__APPLE__)
+  struct proc_vnodepathinfo info={0};
+  int size=proc_pidinfo((int)p.pid,PROC_PIDVNODEPATHINFO,0,&info,sizeof info);
+  const char *path=info.pvi_cdir.vip_path;
+  if(size==(int)sizeof info && path[0] && memchr(path,0,sizeof info.pvi_cdir.vip_path)){lua_pushstring(L,path);return 1;}
+#elif defined(__linux__)
+  char link[64],path[PATH_MAX];snprintf(link,sizeof link,"/proc/%lld/cwd",(long long)p.pid);
+  ssize_t n=readlink(link,path,sizeof path-1);
+  if(n>0 && (size_t)n<sizeof path-1){lua_pushlstring(L,path,(size_t)n);return 1;}
+#endif
+  lua_pushnil(L);return 1;
+}
 static int l_foreground_group(lua_State *L) {
   terminal *t=check(L); int64_t group; int error=bpty_foreground_group(t->process,&group);
   if (error) { lua_pushnil(L); lua_pushstring(L,uv_strerror(error)); return 2; }
@@ -464,6 +487,43 @@ static int l_row(lua_State *L) {
   lua_Integer index=luaL_checkinteger(L,2);luaL_argcheck(L,index>0,2,"row out of range");
   snapshot_image *image=snapshot_copy(L,true,(size_t)index-1,lua_toboolean(L,3));
   row(L,image,0);lua_remove(L,-2);return 1;
+}
+/* Compact immutable plain text, not a Lua table per cell. Allocate first,
+ * then borrow the parser only while copying; later GC cannot invalidate it. */
+typedef struct { size_t count,used,start[256],length[256]; char bytes[]; } plain_image;
+static int l_plain_tail(lua_State *L) {
+  lua_Integer count=luaL_optinteger(L,2,256),budget=luaL_optinteger(L,3,65536);
+  luaL_argcheck(L,count>=0 && count<=256,2,"line limit must be in 0..256");
+  luaL_argcheck(L,budget>=0 && budget<=65536,3,"byte budget must be in 0..65536");
+  plain_image *out=lua_newuserdatauv(L,sizeof *out+(size_t)budget,0);out->count=out->used=0;
+  bterm *t=check(L)->term;const lpage_screen *s=bterm_screen(t);
+  size_t history=lpage_history_count(s),total=history+lpage_rows(s);bool content=false;
+  for(size_t at=total,scanned=0;at>0 && scanned<256 && out->count<(size_t)count && out->used<(size_t)budget;at--,scanned++) {
+    const lpage_row *row=at-1<history ? lpage_history(s,at-1) : lpage_visible(s,at-1-history);
+    char line[32768];size_t used=0,last=0,limit=(size_t)budget-out->used;
+    if(limit>sizeof line)limit=sizeof line;
+    for(size_t x=0;x<row->columns;x++) {
+      const lpage_cell *cell=&row->cells[x];if(!cell->width)continue;
+      lgrapheme_value g=lpage_grapheme(s,cell);char cluster[LG_LIMIT*4];size_t n=0;
+      bool hidden=(bterm_style(t,cell->style)->attrs&LP_INVISIBLE)!=0;
+      if(hidden){for(size_t i=0;i<cell->width;i++)cluster[n++]=' ';}
+      else for(size_t i=0;i<g.length;i++) {
+        uint32_t cp=g.codepoints[i];if(cp<32 || (cp>=127 && cp<=159))cp=0xfffd;
+        n+=utf8(cp,cluster+n);
+      }
+      if(n>limit-used)break;
+      memcpy(line+used,cluster,n);used+=n;
+      if(!(n==1 && cluster[0]==' ') && !hidden)last=used;
+    }
+    if(!content && !last)continue;
+    content=true;out->start[out->count]=out->used;out->length[out->count]=last;
+    memcpy(out->bytes+out->used,line,last);out->used+=last;out->count++;
+  }
+  lua_createtable(L,(int)out->count,0);
+  for(size_t i=0;i<out->count;i++) {
+    size_t index=out->count-i-1;lua_pushlstring(L,out->bytes+out->start[index],out->length[index]);lua_rawseti(L,-2,(lua_Integer)i+1);
+  }
+  lua_remove(L,-2);return 1;
 }
 /* Non-consuming generations for independent attached readers. Copy every
  * borrowed row before constructing Lua tables (which may run finalizers). */
@@ -610,9 +670,9 @@ static int l_source(lua_State *L) {
 }
 int luaopen_boggart_terminal(lua_State *L) {
   const luaL_Reg methods[] = { {"feed", l_feed}, {"finish", l_finish}, {"reset", l_reset}, {"resize", l_resize}, {"state", l_state},
-    {"row", l_row}, {"row_versions",l_row_versions}, {"snapshot", l_snapshot}, {"damage", l_damage}, {"ack_damage", l_ack},
+    {"row", l_row}, {"plain_tail",l_plain_tail}, {"row_versions",l_row_versions}, {"snapshot", l_snapshot}, {"damage", l_damage}, {"ack_damage", l_ack},
     {"replies", l_replies}, {"events", l_events}, {"clipboard_policy", l_clipboard_policy},
-    {"write",l_write}, {"process_state",l_process_state}, {"foreground_group",l_foreground_group}, {"channel",l_channel},
+    {"write",l_write}, {"process_state",l_process_state}, {"working_directory",l_working_directory}, {"foreground_group",l_foreground_group}, {"channel",l_channel},
     {"geometry",l_geometry}, {"process_revision",l_process_revision},
     {"watch",l_watch},{"watch_state",l_watch_state},
     {"width",l_width}, {"take",l_take},
