@@ -11,6 +11,9 @@ local ok,err=xpcall(function()
   assert(t:width('é👩‍💻🇬🇧日')==7,'Studio native profile measures complete cell clusters')
   local head,used=t:take('é👩‍💻X',3);assert(head=='é👩‍💻' and used==3,'Studio native prefix matches CLI')
   local view=View{terminal=t,send=function(s) captured[#captured+1]=s; return true end}
+  view:update() -- before the first RootView layout, retain useful PTY geometry
+  local initial_cols,initial_rows=t:geometry()
+  assert(initial_cols==80 and initial_rows==24,'an unarranged view cannot shrink its PTY to 1x1')
   local node=core.root_view:get_active_node(); node:add_view(view)
   local function frame() core.frame_start=system.get_time(); core.step() end
   frame(); frame()
