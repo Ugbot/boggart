@@ -415,6 +415,7 @@ end
 -- requires the explicit trusted_local profile, checked again in C.
 require('terminal.routes').install(M)
 require('bmux.server').install(M)
+require('bmux.agentserver').install(M)
 
 function M.start(opts)
   opts = opts or {}
@@ -453,6 +454,7 @@ function M.start(opts)
   M.layout=require('bmux.server').new(terminals,srv)
   M.server, client_token = srv, token
   require('terminal.push').new(terminals,srv)
+  M.fleet=require('bmux.agents').new(terminals,srv,M.layout.host_id,{executable=opts.agent_executable,max_clients=opts.agent_clients})
   install_bridge()
   local url = opts.socket and 'http://localhost' or string.format("http://%s:%d", host, srv:port())
   bog.events.emit("serve:started", { url = url, authenticated=token~=nil })
@@ -463,6 +465,7 @@ function M.stop()
   if not M.server then return false end
   remove_bridge()
   deferred.revoke(client_binding)
+  if M.fleet then M.fleet:close();M.fleet=nil end
   if M.terminals then M.terminals:shutdown();M.terminals=nil end
   M.layout=nil
   M.server:stop()

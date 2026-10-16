@@ -14,11 +14,27 @@ function M.new(opts)
   local limit=opts.max_records or 512
   assert(type(limit)=='number' and limit%1==0 and limit>=1 and limit<=4096,'invalid Fleet capacity')
   return setmetatable({ prefix=opts.prefix or serve.token(8), serial=0,
-    max_records=limit, order={}, agents={}, owners={}, sources={}, evictions=0 }, Registry)
+    max_records=limit, order={}, agents={}, owners={}, sources={}, evictions=0,listeners={},listener_errors={} }, Registry)
+end
+function Registry:watch(key,callback)
+  assert(type(key)=='string'and #key>0 and #key<=128,'invalid Fleet observer key')
+  if callback==nil then self.listeners[key]=nil;return end
+  assert(type(callback)=='function','invalid Fleet observer')
+  local count=0;for _ in pairs(self.listeners)do count=count+1 end
+  assert(self.listeners[key]or count<8,'Fleet observer capacity reached')
+  self.listeners[key]=callback;self.listener_errors[key]=nil
+end
+function Registry:_changed()
+  local pending={};for key,callback in pairs(self.listeners)do pending[#pending+1]={key,callback}end
+  for _,v in ipairs(pending)do if self.listeners[v[1]]==v[2]then
+    local ok,why=pcall(v[2],self)
+    if not ok then self.listeners[v[1]]=nil;self.listener_errors[v[1]]=tostring(why):sub(1,256)end
+  end end
 end
 function Registry:set_source(name, source)
   assert(type(name)=="string" and type(source)=="function", "invalid fleet source")
   self.sources[name] = source
+  self:_changed()
 end
 function Registry:register(opts)
   opts = opts or {}
@@ -47,7 +63,7 @@ function Registry:register(opts)
     end
   end
   if position<=#self.order then table.insert(self.order,position,id)else self.order[#self.order+1]=id end
-  return rec
+  self:_changed();return rec
 end
 function Registry:bind(id, generation, owner)
   local rec = assert(self.agents[id], "unknown agent")
@@ -60,6 +76,7 @@ function Registry:bind(id, generation, owner)
   end
   self.owners[id]=owner
   rec.capabilities={ focus=owner.focus~=nil, stop=owner.stop~=nil }
+  self:_changed()
 end
 function Registry:update(id, generation, fields)
   local rec=self.agents[id]
@@ -79,14 +96,14 @@ function Registry:update(id, generation, fields)
     for _,action in ipairs{'stop','prompt','interrupt','approve'}do rec.capabilities[action]=false end
     rec.request=false
   end
-  return rec
+  self:_changed();return rec
 end
 function Registry:retire(id, generation, state, error)
   assert(ended[state or "stopped"] or state=='unreachable', "retirement requires a terminal state")
   local rec,err=self:update(id,generation,{state=state or "stopped",error=error})
   if not rec then return nil,err end
   self.owners[id]=nil;rec.capabilities={};rec.retired=true;rec.attention=false;rec.t_end=rec.t_end or os.time()
-  return rec
+  self:_changed();return rec
 end
 function Registry:control(id, generation, action, payload)
   local rec=self.agents[id]; local owner=self.owners[id]
