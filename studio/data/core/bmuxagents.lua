@@ -39,7 +39,8 @@ function Agents:focus(id,generation)
   require('shell').switch('bmux')
   local snapshot=s.client:view();local w,current=selected(snapshot)
   if not w then
-    return s:command('workspace_create',{title='Bmux'},function(why)if not why then self:focus(id,generation)end end)
+    return s:command('workspace_create',{title=s.project_title or 'Bmux'},
+      function(why)if not why then self:focus(id,generation)end end)
   end
   local workspace,surface,pane,view=require('bmux.agentviews').find(snapshot,r,self.client)
     if pane then
@@ -73,7 +74,8 @@ function Agents:launch(profile)
   end
   local w,surface=selected(s.client:view())
   if not w then
-    s:command('workspace_create',{title='Bmux'},function(why)if not why then self:launch(profile)end end);return
+    s:command('workspace_create',{title=s.project_title or 'Bmux'},
+      function(why)if not why then self:launch(profile)end end);return
   end
   local target={workspace_id=w.id,surface_id=surface.id,pane_id=s:focused_pane()or surface.focused_pane_id}
   local opts={provider=profile.provider,name=profile.name,cmd=profile.cmd,args=profile.args,

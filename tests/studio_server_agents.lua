@@ -6,6 +6,7 @@ application.add_thread(function()
   local launcher=require 'core.agentlauncher';local registry=require('core.fleetagents').registry
   local View=require 'core.terminalview';local daemon,admin,joined,local_view,native_client,native_debug
   local old_config=config.bmux_server
+  config.bmux_server=false -- this suite owns its explicit test daemon
   local function q(s)return "'"..s:gsub("'","'\\''").."'"end
   local function tick()core.redraw=true;coroutine.yield(0)end
   local function await(check,label)
@@ -68,8 +69,9 @@ application.add_thread(function()
     await(function()return local_rec.pid end)
     local local_source,local_pid=local_view.terminal,local_rec.pid
     config.bmux_server={socket=socket}
-    toolbar('Join layout');key('Return')
+    shell.switch('edit');shell.switch('bmux')
     await(function()joined=ws.session;return joined and joined.agents.client and joined.agents.client.live end)
+    assert(not require('core.bmuxlocal').status(core.project_dir),'configured external entry does not start a managed project daemon')
     -- Only the selected profile's model driver is substituted; all UI, native
     -- daemon/PTY/session/channel/control and permission paths remain actual.
     local launch=joined.agents.launch

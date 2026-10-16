@@ -19,6 +19,14 @@ local PALETTE={
   [7]={common.color '#e1e1e6'},[15]={common.color '#ffffff'},
 }
 local cube={0,95,135,175,215,255}
+local function modifier_key(event)
+  local key=event and event.key
+  if type(key)~='string'then return false end
+  return keymap.is_modkey(key:lower():gsub('_',' '))
+end
+local function copy_event(event)
+  local copy={};for key,value in pairs(event or {})do copy[key]=value end;return copy
+end
 local function color(value,bold)
   if not value or value==0 then return nil end
   if (value&terminal.COLOR_RGB)~=0 then return {(value>>16)&255,(value>>8)&255,value&255,255} end
@@ -89,15 +97,45 @@ function TerminalView:send(bytes)
 end
 function TerminalView:on_key_pressed(stroke,event)
   if self.dead or not self.input then return false end
-  if self.remote and not self.remote:can_control()then return not stroke:find('ctrl+alt+',1,true),true end
+  if self.remote then
+    if stroke:find('ctrl+alt+',1,true)then
+      self.pending_remote_modifiers=nil;return false,true
+    end
+    if not self.remote:can_control()then self.pending_remote_modifiers=nil;return true,true end
+    if modifier_key(event)then
+      self.pending_remote_modifiers=self.pending_remote_modifiers or {}
+      self.pending_remote_modifiers[#self.pending_remote_modifiers+1]={stroke=stroke,event=copy_event(event)}
+      return true,true
+    end
+    if self.pending_remote_modifiers then
+      for _,pending in ipairs(self.pending_remote_modifiers)do self.input:key_pressed(pending.stroke,pending.event)end
+      self.pending_remote_modifiers=nil
+    end
+  end
   return self.input:key_pressed(stroke,event)
 end
-function TerminalView:on_key_released(key,event) if not self.dead and self.input then self.input:key_released(event) end end
-function TerminalView:on_text_input(text) if not self.dead and self.input then self.input:text_input(text) end end
+function TerminalView:on_key_released(key,event)
+  if not self.dead and self.input and self.remote and modifier_key(event)and self.pending_remote_modifiers then
+    for _,pending in ipairs(self.pending_remote_modifiers)do self.input:key_pressed(pending.stroke,pending.event)end
+    self.pending_remote_modifiers=nil
+  end
+  if not self.dead and self.input then self.input:key_released(event) end
+end
+function TerminalView:on_text_input(text)
+  if not self.dead and self.input then
+    if self.remote and self.pending_remote_modifiers then
+      for _,pending in ipairs(self.pending_remote_modifiers)do self.input:key_pressed(pending.stroke,pending.event)end
+      self.pending_remote_modifiers=nil
+    end
+    self.input:text_input(text)
+  end
+end
 function TerminalView:on_text_editing(text) if not self.dead and self.input then self.input:text_editing(text) end end
 function TerminalView:flush_input() if not self.dead and self.input then self.input:flush() end end
 function TerminalView:on_window_focus(focused) if self.input and not self.dead then self.input:focus(focused) end end
-function TerminalView:on_focus_lost() self:on_window_focus(false) end
+function TerminalView:on_focus_lost()
+  self.pending_remote_modifiers=nil;self:on_window_focus(false)
+end
 function TerminalView:on_focus_gained()
   local focused=core.window_focused; if focused==nil then focused=system.window_has_focus() end
   self:on_window_focus(focused)

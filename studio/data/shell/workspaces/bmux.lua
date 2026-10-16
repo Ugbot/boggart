@@ -95,6 +95,70 @@ function M.show(view)
   return true
 end
 
+local function connect_project_server()
+  if M.local_connecting then return true end
+  local config=require 'core.config'
+  local configured=config.bmux_server
+  if configured==false then M.local_status=nil;return false end
+  if configured~=nil and type(configured)~='table' then
+    M.local_status='Invalid bmux_server configuration · local Bmux is ready'
+    core.error('Bmux: bmux_server must be a table or false')
+    return false
+  end
+
+  M.local_connecting=true
+  M.local_status='Connecting to project server…'
+  core.redraw=true
+
+  local function failed(why)
+    if not M.local_connecting then return end
+    M.local_connecting=false;M.local_pending=nil
+    M.local_status='Project server unavailable · local Bmux is ready'
+    core.error('Bmux: %s',why and why.message or tostring(why or 'connection failed'))
+    if require('shell').current=='bmux' and not M.session then M.open()end
+    core.redraw=true
+  end
+
+  local function join(info)
+    if not M.local_connecting then return end
+    local socket,token
+    if info then socket=info.socket
+    else
+      socket=configured.socket or bog.userdir..'/control.sock'
+      token=configured.token
+    end
+    local function joined(why,session)
+      if not M.local_connecting then return end
+      if why then failed(why);return end
+      M.local_pending=nil;M.local_connecting=false
+      M.local_status=info and (info.status.blocked and 'Saved session needs recovery' or 'Project server connected')
+        or 'Configured server connected'
+      session.managed_local=info~=nil
+      session.project_root=info and info.root or core.project_dir
+      session.project_title=info and info.title
+      core.redraw=true
+    end
+    local ok,value=pcall(require('core.bmuxlayout').join,socket,token,joined)
+    if not ok then failed({message=tostring(value)});return end
+    M.local_pending=value
+  end
+
+  if configured then join(nil)
+  else
+    require('core.bmuxlocal').ensure(function(why,info)
+      if not M.local_connecting then return end
+      if why then failed(why)else join(info)end
+    end)
+  end
+  return true
+end
+
+function M.retry_local()
+  if M.session then M.session:disconnect()end
+  M.local_connecting=false;M.local_pending=nil;M.local_status='Reconnecting to project server…'
+  connect_project_server()
+end
+
 function M.enter()
   require("shell").set_docks("bmux")
   if not M.toolbar then
@@ -103,6 +167,8 @@ function M.enter()
   end
   M.toolbar.visible = true
   if M.session then M.session:apply();return end
+  if M.suppress_initial then return end
+  if connect_project_server()then return end
   local root = core.root_view.root_node
   if not (core.active_view and core.active_view:is(TerminalView) and root:get_node_for_view(core.active_view)) then
     local node = M.focused and root:get_node_for_view(M.focused)
@@ -121,6 +187,11 @@ end
 
 function M.leave()
   if M.toolbar then M.toolbar.visible = false end
+  if M.local_connecting then
+    M.local_connecting=false
+    if M.local_pending then M.local_pending:disconnect();M.local_pending=nil end
+    if not require('core.config').bmux_server then require('core.bmuxlocal').cancel(core.project_dir)end
+  end
   require("shell").set_docks(nil)
 end
 
@@ -150,6 +221,7 @@ command.add(in_bmux, {
     local node = target_node(); node:set_active_view(node.active_view)
     command.perform("root:next-pane"); M.remember_focus()
   end,
+  ["bmux:retry-local"] = function()M.retry_local()end,
 })
 keymap.add {
   ["cmd+t"] = "bmux:new-terminal",

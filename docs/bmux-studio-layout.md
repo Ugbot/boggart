@@ -8,7 +8,20 @@ socket transport on POSIX hosts.
 
 ## Start and join
 
-Start a server with an owned private socket directory, for example:
+Entering **BMUX** starts or reconnects to the persistent Bmux session for the
+current project. Studio derives a private socket and saved-session name from
+the canonical project path, starts the matching `boggart serve` process only
+when that endpoint is absent, and joins after verifying the session identity.
+The server stays alive when Studio closes, so reopening the project restores
+the same layout, PTYs and running agents. Use **+ New terminal** or **+ New
+agent** to create the first workspace in a new project session.
+
+Set `require('core.config').bmux_server = false` to use the legacy local-only
+workspace. A `bmux_server` table keeps an explicit configured server as the
+automatic target; it is not replaced by the project-managed server.
+
+To join another server manually, start it with an owned private socket
+directory, for example:
 
 ```sh
 session_dir=$(mktemp -d /tmp/bmux.XXXXXX)
@@ -18,7 +31,8 @@ printf '%s\n' "$session_dir/control.sock"
 
 In Studio, select **BMUX → Join layout** and enter that socket path. The Bmux
 menu also exposes Join server layout. The toolbar shows the selected server
-workspace, surface and connection state.
+workspace, surface and connection state. A project-server connection failure
+offers **Retry project server** and leaves local Bmux available.
 
 - **Workspaces** creates/selects server workspaces; **Surfaces** creates/selects
   a surface within the workspace. These selections are shared server state.

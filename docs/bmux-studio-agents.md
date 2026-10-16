@@ -1,9 +1,14 @@
 # Server agents in joined Studio Bmux
 
-After [joining a layout](bmux-studio-layout.md), **+ New agent** launches on that
+On entering Bmux, Studio automatically starts or reconnects to the current
+project's persistent server; the same flow is described in
+[joining a layout](bmux-studio-layout.md). **+ New agent** launches on that
 server. Choose Boggart TUI, resume a Boggart session, Codex, Claude Code or a
-custom executable with quoted arguments. Commands use literal argv. **+ Local
-agent** retains local launching. In Fleet, the toolbar explicitly distinguishes
+custom executable with quoted arguments. Commands use literal argv. These
+server agents remain in the common Fleet and keep their live PTYs when Studio
+closes and reopens. If the server itself restarts, saved Boggart/shell recovery
+follows the journal rules; foreign executables such as Codex return inactive.
+**+ Local agent** retains local launching. In Fleet, the toolbar explicitly distinguishes
 **New server agent** and **New local agent** while joined.
 
 Server agents appear alongside local entries in the existing Fleet. The server

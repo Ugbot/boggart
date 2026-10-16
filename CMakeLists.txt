@@ -1349,6 +1349,24 @@ if(TARGET boggart-studio)
       set_tests_properties(${_pane_suite} PROPERTIES TIMEOUT 90)
     endif()
   endforeach()
+  if(UNIX)
+    string(SHA256 _bmux_autostart_hash "${CMAKE_BINARY_DIR}")
+    string(SUBSTRING "${_bmux_autostart_hash}" 0 12 _bmux_autostart_hash)
+    set(_bmux_autostart_home "/tmp/bmx-${_bmux_autostart_hash}")
+    add_test(NAME studio_bmux_autostart
+      COMMAND ${CMAKE_COMMAND} -E env HOME=${_bmux_autostart_home}
+        USERPROFILE=${_bmux_autostart_home} LOCALAPPDATA=${_bmux_autostart_home}/AppData/Local
+        BOGGART_HOME=${_bmux_autostart_home}/data SHELL=/bin/sh SDL_VIDEODRIVER=dummy
+        BOGGART_STUDIO_BIN=$<TARGET_FILE:boggart-studio>
+        BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/studio_bmux_autostart.lua
+        BMUX_AUTOSTART_HOME=${_bmux_autostart_home}
+        BMUX_AUTOSTART_PROJECT=${CMAKE_CURRENT_SOURCE_DIR}
+        BMUX_AUTOSTART_STATE=${_bmux_autostart_home}/state.json
+        BMUX_AUTOSTART_PIDFILE=${_bmux_autostart_home}/server.pid
+        sh tests/run_studio_bmux_autostart.sh
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(studio_bmux_autostart PROPERTIES TIMEOUT 180)
+  endif()
 endif()
 
 # termctl (B0 of the cTUI, docs/cli-plan.md): the dependency-free full-screen
