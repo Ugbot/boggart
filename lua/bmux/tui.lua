@@ -11,10 +11,14 @@ function M.new(opts)
     self.status=c.status;self.dirty=true
     if c.status=='disconnected' or c.uncertain then self.inputs={};self.input_bytes=0;self.prefix=false end
     if c.error then self.message=c.error.message end
+    if c.status=='live'and self.fleet then self.fleet:start(c.host_id)end
   end}
+  self.fleet=require('bmux.tuifleet').new(self)
   return self
 end
-function App:start()self.client:start(function(why)if why then self.message=why.message end;self.dirty=true end)end
+function App:start()self.client:start(function(why)
+  if why then self.message=why.message else self.fleet:start(self.client.host_id)end;self.dirty=true
+end)end
 function App:arrange(w,h)
   if not self.scene or self.layout_revision~=self.client.revision or w~=self.width or h~=self.height then
     self.scene=Canvas.layout(self.client:view(),w,h)
@@ -27,10 +31,18 @@ function App:arrange(w,h)
   end
   for _,p in ipairs(panes)do
     local v=p.view
-    if v and v.kind=='terminal' and p.w>0 and p.h>1 and count<32 then
+    local id,generation,runtime
+    if v and v.kind=='terminal'then id,generation=v.terminal_id,v.generation
+    elseif v and v.kind=='agent'then id,generation,runtime=self.fleet:resolve(v.agent_id)end
+    if id and p.w>0 and p.h>1 and count<32 then
       count=count+1;wanted[v.id]=true
+      local binding=id..':'..generation..':'..(runtime or 0)
+      if self.remotes[v.id]and self.remotes[v.id].bmux_binding~=binding then
+        self.remotes[v.id]:close();self.remotes[v.id]=nil;self.scroll[v.id]=nil
+      end
       if not self.remotes[v.id]then
-        self.remotes[v.id]=Remote.new({socket=self.opts.socket,token=self.opts.token,id=v.terminal_id,generation=v.generation,tail=256},function()self.dirty=true end)
+        self.remotes[v.id]=Remote.new({socket=self.opts.socket,token=self.opts.token,id=id,generation=generation,tail=256},function()self.dirty=true end)
+        self.remotes[v.id].bmux_binding=binding
       end
       local remote=self.remotes[v.id]
       if remote:can_control()then
@@ -48,7 +60,7 @@ function App:active()
 end
 function App:command(op,args,done)
   if self.closed then return end
-  self.client:command(op,args,function(why,snapshot)
+  return self.client:command(op,args,function(why,snapshot)
     if why then self.inputs={};self.input_bytes=0;self.prefix=false end
     self.message=why and why.message or nil;self.dirty=true
     if done then done(why,snapshot)end
@@ -91,8 +103,10 @@ function App:action(key)
   local scene=self.scene;local pane=scene and scene.focused;local remote,v=self:active()
   if key=='q'then self.done=true;return end
   if key=='?'then self.help=not self.help;return end
+  if key=='f'or key=='a'then self.fleet:open(key=='a'and 'launch'or 'fleet');return end
   if key=='r'then
     if self.client.watch then self.client:refresh()else self.client:start()end
+    if self.client.host_id then self.fleet:start(self.client.host_id)end;self.fleet:refresh()
     for _,r in pairs(self.remotes)do r:reconnect()end;return
   end
   if key=='t'or key=='%'or key=='"'then self:new_terminal(key=='%' and 'right'or key=='"' and 'down'or nil);return end
@@ -133,6 +147,7 @@ function M.key(event)
 end
 function App:_input(e)
   self.dirty=true
+  if self.fleet.mode then self.fleet:input(e);return end
   local remote,v=self:active()
   if self.help and e.type~='key'then return end
   if e.type=='resize'then return end
@@ -190,11 +205,13 @@ end
 function App:draw(canvas)
   local w,h=canvas.size();self:arrange(w,h)
   local remote=self:active();local message=remote and remote.error and remote.error.message
-  Canvas.draw(canvas,self.scene,self.remotes,{status=self.status,message=message or self.message,prefix=self.prefix,help=self.help,scroll=self.scroll})
+  Canvas.draw(canvas,self.scene,self.remotes,{status=self.status,message=message or self.message,prefix=self.prefix,
+    help=self.help,scroll=self.scroll,overlay=self.fleet.mode and self.fleet or nil})
   self.dirty=false
 end
 function App:close()
   if self.closed then return end;self.closed=true
+  self.fleet:close()
   for _,remote in pairs(self.remotes)do remote:close()end;self.remotes={};self.client:close()
 end
 function M.run(opts)

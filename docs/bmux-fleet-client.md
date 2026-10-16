@@ -43,5 +43,5 @@ See [server protocol](bmux-server-agents.md),
 [client plan](superpowers/plans/2026-10-16-bmux-fleet-clients.md) and
 [verification](benchmarks/2026-10-16-fleet-client-verification.md).
 [Studio](bmux-studio-agents.md) now mounts remote rows in the common Fleet and
-routes attached controls through this client. Terminal-mode controls remain
-BMUX-90 work.
+routes attached controls through this client. [Terminal Bmux](bmux-ctui.md) uses
+the same client/source for its Fleet overlay, launcher and controls.
