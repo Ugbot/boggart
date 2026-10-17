@@ -58,11 +58,8 @@ turn.
    payoff is visible.
 2. **Know (per instance).** Experience becomes memory; recall surfaces it so the
    model does not re-derive what it already learned; the unused decays so the
-   base stays sharp (the tiered-retention model, docs/team.md M4).
-3. **Share (per team).** One instance's compiled capability travels as a signed
-   skill-pack (the moot protocol, docs/team.md); the team's code base grows from
-   any member's learning, so the compounding is across people and machines, not
-   one process.
+   base stays sharp.
+3. **Share.** Remote and team support is coming.
 
 ## Two axes: deepen and widen
 
@@ -109,10 +106,8 @@ modeling one means giving that project an *executable* model, not a document:
 Modeling a domain is therefore itself a compile: a bootstrap pass (the
 `domain-modeling` skill, elevated to emit executable capability) that turns a
 description plus some sources into vocabulary + actions + skills + verifiers,
-registered scoped to the project. The output is a **domain-pack** — the same
-shape as a skill-pack, one level up — and it travels across a team by the moot
-protocol (docs/team.md), so a domain one person models is a field the whole team
-can then work and compound in.
+registered scoped to the project. The output is a **domain-pack**: vocabulary,
+actions, skills, and verifiers that the runtime can reuse for that domain.
 
 Once a domain is modeled, the three loops turn inside it: its skills compile
 their slices to code (deepen), its memory accrues and decays (know), its
@@ -179,7 +174,7 @@ measurable, then make it self-driving.
 
 - **docs/callables.md** — the calculus you compile into. The compile loop's
   substrate.
-- **docs/team.md** M4 (memory) — the know loop. M0-M3 (moot) — the share loop.
+- **docs/team.md** — remote and team support status.
 - **docs/extending.md** — the four routes capability arrives by, all resolving to
   the same Callable, all compilable.
 - **docs/projects.md** + `lua/project.lua` — the project as the domain's scope;

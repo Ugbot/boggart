@@ -23,8 +23,8 @@ is the north star: it rewrites itself.
 
 **The gate is at the boundary, not the author.** Any capability, however it
 was written, calls tools through the permission engine. Trust tiers decide
-whether authored code runs full or sandboxed (docs/team.md); the gate decides
-whether a call is allowed. More code never means fewer checks.
+whether authored code runs full or sandboxed (docs/skills-and-tools.md); the gate
+decides whether a call is allowed. More code never means fewer checks.
 
 **Convert, don't adopt.** boggart consumes foreign protocols at the boundary
 and speaks Lua inside. An MCP server's tools become boggart tools; a peer agent
@@ -118,15 +118,10 @@ message it. A spawned reviewer with a schema returns a validated verdict over
 the bus. A sub-agent is already a Callable-shaped thing: you invoke it, it
 returns, you compose the result.
 
-**Cross-process (designed).** A peer boggart or a foreign agent reached over a
-transport. The seams exist: the control plane (`boggart serve`) already takes
-prompts and streams the whole event bus (docs/control-surfaces.md); `boggart
-connect` (BTEAM) is the client that drives another boggart; the moot protocol
-(docs/team.md) is how agents exchange handoffs, reviews, and skills as principals
-with their own identity. The interop standard to speak at the editor boundary is
-ACP (docs/feature-gaps.md) — one JSON-RPC endpoint, and boggart is drivable by
-25+ editors; the cross-agent standard (A2A / agent cards) is the same shape
-outward.
+**Cross-process integration.** The control plane (`boggart serve`) accepts
+prompts and exposes events; see docs/control-surfaces.md for the public API.
+Remote and team support is coming. Client connection code and its usage
+documentation remain part of this repository.
 
 The unifying claim: a peer agent, once reachable, is `bog.C`-resolvable like a
 skill or a tool. You `chain` a local skill into a remote agent's review; you
@@ -159,6 +154,6 @@ is compiled.
 
 - Authoring templates and the sandbox contract: docs/skills-and-tools.md
 - The execution model (lifecycle, combinators, verifiers): docs/callables.md
-- Trust tiers and identity for shared capability: docs/team.md
+- Capability sandbox and permission boundaries: docs/skills-and-tools.md
 - The station transport and going past MCP: docs/station-zmq.md
 - The C/Lua boundary (why a route is C or Lua): docs/control-surfaces.md

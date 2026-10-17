@@ -1,10 +1,5 @@
 # boggart as an agentic runtime — the plan
 
-Remote server and worker plans now live in the private
-[Boggart Backbone](backbone.md) repository (2026-10-17). Read this document as
-local runtime design context; remote placement and rollout follow Backbone's
-discovery plan. Section status labels below require source verification.
-
 The goal is not "a better coding agent." It is a **domain-neutral agent kernel**
 that runs coding and business-process work from one core, is driven by external
 events, and coordinates many agents without them clashing. "If you wanted to
