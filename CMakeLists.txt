@@ -1356,6 +1356,27 @@ if(TARGET boggart-studio)
     endif()
   endforeach()
   if(UNIX)
+    # Optional real-application compatibility gate. Keep ordinary builds
+    # independent of these packages, but exercise their actual PTYs when the
+    # TUI programs are installed on a developer or CI host.
+    find_program(BMUX_TEST_HTOP htop)
+    find_program(BMUX_TEST_LESS less)
+    find_program(BMUX_TEST_TMUX tmux)
+    find_program(BMUX_TEST_VIM vim)
+    if(BMUX_TEST_HTOP AND BMUX_TEST_LESS AND BMUX_TEST_TMUX AND BMUX_TEST_VIM)
+      set(_apps_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/studio_terminal_apps)
+      file(MAKE_DIRECTORY ${_apps_home}/.boggart)
+      add_test(NAME studio_terminal_apps
+        COMMAND ${CMAKE_COMMAND} -E env HOME=${_apps_home} USERPROFILE=${_apps_home}
+          BOGGART_HOME=${_apps_home}/.boggart BOGGART_AGENT_HOOKS=0 SHELL=/bin/sh
+          SDL_VIDEODRIVER=dummy BMUX_TEST_HTOP=${BMUX_TEST_HTOP}
+          BMUX_TEST_LESS=${BMUX_TEST_LESS} BMUX_TEST_TMUX=${BMUX_TEST_TMUX}
+          BMUX_TEST_VIM=${BMUX_TEST_VIM}
+          BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/studio_terminal_apps.lua
+          $<TARGET_FILE:boggart-studio> .
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+      set_tests_properties(studio_terminal_apps PROPERTIES TIMEOUT 90)
+    endif()
     string(SHA256 _bmux_autostart_hash "${CMAKE_BINARY_DIR}")
     string(SUBSTRING "${_bmux_autostart_hash}" 0 12 _bmux_autostart_hash)
     set(_bmux_autostart_home "/tmp/bmx-${_bmux_autostart_hash}")
