@@ -1011,8 +1011,9 @@ command.add(nil, {
     end
     for i = #actions, 1, -1 do table.insert(items, at, actions[i]) end
 
-    if v and v.model_hit and not studio.legacy then
-      menu.show(v.model_hit, items)
+    if menu._installed and not studio.legacy then
+      if v and v.model_hit then menu.show(v.model_hit, items)
+      else menu.show_center(items) end
       return
     end
     prompt("Model:", apply, current)

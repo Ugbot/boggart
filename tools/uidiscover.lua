@@ -101,6 +101,14 @@ core.add_thread(function()
     .. " choice(s) -- it should list the catalog")
   check(checked <= 1, "the model dropdown marks " .. checked
     .. " rows as current; at most one can be")
+  check(menu.anchor ~= nil, "the model dropdown opened without a visible anchor")
+  local drawn = false
+  for _ = 1, 5 do
+    core.redraw = true
+    coroutine.yield(0.04)
+    if #(menu.hits or {}) > 0 then drawn = true; break end
+  end
+  check(drawn, "the model dropdown opened but drew no selectable rows")
   menu.hide()
 
   -- The palette has to be reachable without knowing the palette exists.

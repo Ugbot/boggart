@@ -56,6 +56,15 @@ function menu.show(anchor, items)
   core.redraw = true
 end
 
+-- Command-palette and menu-bar commands sometimes have no visible chip to
+-- anchor to (for example, Set model from the Agent menu while Bmux is active).
+-- Keep those pickers usable with a centered overlay instead of silently
+-- degrading them into text prompts.
+function menu.show_center(items)
+  local win_w, win_h = renderer.get_size()
+  menu.show({ center = true, x = win_w // 2, y = win_h // 2, w = 0, h = 0 }, items)
+end
+
 -- Move the highlight to the next selectable row, skipping headings, stopping at
 -- the ends rather than wrapping (a wrap in a long list loses your place).
 function menu.move(dir)
@@ -120,10 +129,11 @@ function menu.draw()
   menu.scroll = math.max(0, math.min(menu.scroll, math.max(0, #menu.items - rows)))
 
   local h = rows * bh + pad
-  local x = menu.anchor.x
+  local x = menu.anchor.center and math.max(0, (win_w - width) // 2) or menu.anchor.x
   if x + width > win_w then x = math.max(0, win_w - width) end
-  local y = (above >= h) and (menu.anchor.y - h - 4)
-    or (menu.anchor.y + (menu.anchor.h or bh) + 4)
+  local y = menu.anchor.center and math.max(0, (win_h - h) // 2)
+    or ((above >= h) and (menu.anchor.y - h - 4)
+      or (menu.anchor.y + (menu.anchor.h or bh) + 4))
   if y + h > win_h then y = math.max(0, win_h - h) end
 
   renderer.draw_rect(x - 1, y - 1, width + 2, h + 2, style.divider)
