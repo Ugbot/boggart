@@ -160,10 +160,19 @@ feature declarations identify what each measurement actually covers.
 `--budgets PATH` reads an explicit JSON object, for example
 `{"plain":{"min_mbps":0.1},"scroll":{"min_mbps":0.1}}`. Unknown scenario names,
 invalid budgets, inconsistent snapshots and throughput below a supplied floor
-fail the command. Floors must come from a recorded backend/machine baseline;
-there is no invented speed floor for the existing Lua parser. Compare identical
-corpora, dimensions, chunk sizes, GC policy and workload scope. Ghostty/cmux
-end-to-end PTY throughput must not be labelled a parser-only comparison.
+fail the command. Compare identical corpora, dimensions, chunk sizes, GC policy
+and workload scope. Ghostty/cmux end-to-end PTY throughput must not be labelled
+a parser-only comparison.
+
+The `termbench` build target runs all five native scenarios with 1 MiB corpora,
+five timed samples, 4096-byte feeds and required feature coverage. It applies
+[`tools/termbench/ci-budgets.json`](../tools/termbench/ci-budgets.json) on
+Linux, macOS and Windows CI. The floors are about five to seven times below the
+recorded 2026-10-13 native C measurements in the development baseline below;
+they are a coarse guard against major throughput regressions, not a cmux or
+Ghostty parity claim. The target writes its machine-specific result to
+`build/termbench-ci-report.json`. The local reference capture from 2026-10-17
+is saved as [termbench CI Mac report](benchmarks/2026-10-17-termbench-ci-macos.json).
 
 ## Baseline status and phase gates
 
