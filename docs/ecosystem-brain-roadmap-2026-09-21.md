@@ -1,5 +1,11 @@
 # Boggart as the brain: process compilation across the existing ecosystem
 
+**Remote direction updated 2026-10-17:** [Boggart Backbone](backbone.md) owns the
+multi-user remote control-plane plans and authoritative routing. This document's
+learning model and existing adapter analysis remain inputs; Backbone discovery
+will determine how execution adapters participate in its worker model. Its older
+remote ownership and delivery proposals do not prescribe the new server design.
+
 This revises the product direction in the [initial audit](audit-roadmap-2026-09-21.md) following two clarifications: **the core goal is mining LLM-driven steps into executable code over time**, and **LLM Station and AIbyWire already provide substantial tooling and execution machinery**.
 
 The initial audit's reproduced Boggart defects still apply. Its product sequencing should now be read through this document: process compilation and cheap verified execution are the centre; a coding workbench is one useful delivery surface and evaluation domain.

@@ -1,6 +1,13 @@
 # The team story: boggart as a colleague
 
-Status: plan of record (2026-09-07). Tracker: BTEAM.
+Status: historical team design (2026-09-07). Tracker: BTEAM.
+
+**Remote direction updated 2026-10-17:** [Boggart Backbone](backbone.md), in the
+private `llm-station-remote` repository, owns the remote server and its plans.
+Its multi-user server is authoritative for routing and provides a relay/shared
+view; workers own execution. The older one-binary hosted-hub placement and M3
+rollout below are superseded. Team, identity, and local collaboration concepts
+remain discovery inputs; this document is not evidence of implemented features.
 Settled by interview; research inputs at the bottom.
 
 ## What this is
