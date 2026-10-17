@@ -1174,12 +1174,18 @@ add_executable(terminal_unicode_test tests/c/terminal_unicode.c)
 target_link_libraries(terminal_unicode_test PRIVATE boggart_vt)
 add_test(NAME terminal_unicode COMMAND terminal_unicode_test)
 
-# Headless native parse/grid throughput. Performance budgets are supplied
-# explicitly after baseline measurement.
+# Headless native parse/grid throughput. The conservative CI floors are derived
+# from a recorded native baseline and intentionally allow a 5-7x slowdown
+# before failing; they catch regressions without treating shared-runner noise
+# as a product performance target.
 add_custom_target(termbench
   COMMAND ${CMAKE_COMMAND} -E env
     BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/termbench-home
-    $<TARGET_FILE:boggart> --eval ${CMAKE_CURRENT_SOURCE_DIR}/tools/termbench.lua
+    $<TARGET_FILE:boggart> --eval ${CMAKE_CURRENT_SOURCE_DIR}/tools/termbench.lua --
+      --bytes 1048576 --samples 5 --chunk 4096 --cols 80 --rows 24
+      --require-features
+      --budgets ${CMAKE_CURRENT_SOURCE_DIR}/tools/termbench/ci-budgets.json
+      --output ${CMAKE_CURRENT_BINARY_DIR}/termbench-ci-report.json
   DEPENDS boggart
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
   COMMENT "Measuring terminal parse throughput and stream fragmentation"

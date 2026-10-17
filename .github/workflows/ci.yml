@@ -218,6 +218,13 @@ jobs:
       - name: Build
         run: cmake --build build
 
+      # The native parser's per-scenario floors are intentionally permissive
+      # (about five to seven times below the recorded Mac baseline), while still
+      # catching major regressions on each runner OS. This custom target is
+      # excluded from the default build so local compile loops stay fast.
+      - name: Terminal performance budgets
+        run: cmake --build build --target termbench
+
       # The X11 trap, asserted rather than assumed. SDL_config.h is the file
       # its own compile actually read, so this is the built artifact talking
       # and not a repetition of the apt list above. If either driver is missing

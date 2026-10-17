@@ -1,0 +1,7 @@
+{
+  "plain": { "min_mbps": 10.0 },
+  "dense-sgr": { "min_mbps": 10.0 },
+  "unicode": { "min_mbps": 8.0 },
+  "scroll": { "min_mbps": 8.0 },
+  "alt-screen": { "min_mbps": 3.0 }
+}
