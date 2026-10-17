@@ -30,8 +30,8 @@ Enumerate before picking.
   running, you reattach later and everything is still there. For boggart this
   means an agent's hour-long task, its terminals, and its layout survive the
   client disconnecting.
-- **(c) Driving an external tmux** (`tmux -CC` control mode) as one of the
-  "systems boggart is a user of" (`docs/team.md`).
+- **(c) Driving an external tmux** (`tmux -CC` control mode) as an external
+  terminal multiplexer.
 - **(d) Some blend.**
 
 ### The pick: (b) primary, (a) as its local rendering, (c) rejected
@@ -52,9 +52,8 @@ The blend, precisely:
   panes exist. The studio has them; the cTUI needs a minimal split model
   (section 3). But an integrated multiplexer that is not detachable is just a
   worse terminal emulator -- table stakes, not a reason to exist.
-- **(c) is a non-goal.** Boggart hosting its own sessions is the whole thesis of
-  "one binary, whole stack" (`docs/team.md`). Driving an external tmux would put
-  the session's truth in a process boggart does not own and cannot serialize,
+- **(c) is a non-goal.** Boggart hosts its own sessions. Driving an external tmux
+  would put the session's truth in a process boggart does not own and cannot serialize,
   reattach cross-client, or attribute. A terminal *inside* boggart can of course
   run `tmux` (section 6); boggart the runtime does not delegate its session model
   to it.
@@ -196,11 +195,8 @@ operations the user does"). Detach/reattach is what makes "hand the agent a task
 and walk away" a real workflow instead of a slogan, because walking away no
 longer kills the work.
 
-Attribution rides along for free: agents already carry a principal
-(`docs/team.md`), so "which agent owns this pane" and "who typed into this
-terminal" are facts the session records, not guesses. A shared session (team.md
-M5) is then multi-human + multi-agent in one layout -- two people reattached to
-the same swarm's panes -- which is past what tmux does at all.
+Pane ownership and terminal input attribution are part of the session model.
+See the public terminal and agent-control APIs for currently supported fields.
 
 ## 5. Scope, phasing, and the hard problems
 

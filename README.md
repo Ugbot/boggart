@@ -7,6 +7,8 @@ interesting (the agent loop, the tools, the memory, the system prompt) is Lua,
 and the model is encouraged to edit that Lua and hot-reload it. It ships as a
 single embedded executable.
 
+Remote and team support is coming. Local Boggart will remain usable on its own.
+
 It feels like `pi` (four core tools, tight context, no product opinion) but,
 unlike most harnesses, it can grow its own capabilities: give it a task and it
 can write itself a new tool — and, in the desktop app, a new panel to draw the
