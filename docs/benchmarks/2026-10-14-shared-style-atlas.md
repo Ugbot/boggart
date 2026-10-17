@@ -98,6 +98,9 @@ italic. Those records exercised three effective styles; their document labels ar
 corrected while raw data remains unchanged. Independent four-style correctness
 tests were valid. This experiment uses four effective styles and corpus hashes.
 
-BMUX-24 remains in progress pending its instancing/backend contract and wider
-performance evidence. Unicode/profile alignment, remaining font/shaping work,
+BMUX-24's SDL3 renderer contract is recorded in
+[`docs/adr/bmux-sdl3-renderer.md`](../adr/bmux-sdl3-renderer.md): the production
+path uses native row commands, shared style atlases and SDL geometry batching;
+it does not use hardware instancing. The 120 fps end-to-end latency gate remains
+open under BMUX-28. Unicode/profile alignment, remaining font/shaping work,
 platform execution and whole-app gates remain open in their respective tickets.

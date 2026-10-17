@@ -64,6 +64,21 @@ Nearest-rank quantiles; p95 requires at least 20 samples and p99 at least 100.
 This is one Boggart capture and establishes no cmux/Ghostty advantage. CTest's
 three-sample dummy-renderer run checks correctness only and emits no p95/p99.
 
+A separate real Metal run on 2026-10-17 used the same 172x34 viewport and 200
+samples, with the frame cap set to 120 fps. The single server-owned PTY was
+otherwise idle; this was not a flood test.
+
+| Metric | p50 | p95 | p99 | Maximum |
+| --- | ---: | ---: | ---: | ---: |
+| Synthetic key to present return | 14.651 ms | 25.583 ms | 28.566 ms | 36.840 ms |
+| Subsequent one-pixel validation readback | 0.292 ms | 1.732 ms | 1.940 ms | 1.946 ms |
+
+[Raw samples and identities](benchmarks/2026-10-17-studio-key-present-120.json).
+This run misses the provisional p99-under-8-ms target. The 60 fps capture above
+used a different build and was taken on a different day, so these runs do not
+isolate the frame-cap effect. This remains a synthetic application-presentation
+measurement, not a physical scanout or comparison with cmux/Ghostty.
+
 ```sh
 ninja -C build termbench
 ctest --test-dir build -R '^termbench$' --output-on-failure
