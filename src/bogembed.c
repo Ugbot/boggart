@@ -31,6 +31,7 @@ int luaopen_boggart_git(lua_State *L);
 int luaopen_boggart_bus(lua_State *L);  /* src/lbus.c: pub/sub + work-queue fabric */
 int luaopen_boggart_voice(lua_State *L); /* src/lvoice.c: native voice input (opt-in) */
 int luaopen_boggart_station(lua_State *L); /* src/lstation.c: LLM Station ZMQ client (opt-in) */
+int luaopen_boggart_zmq(lua_State *L); /* src/lzmq.c: ZeroMQ sockets + msgpack */
 int luaopen_boggart_json(lua_State *L);
 int luaopen_boggart_hash(lua_State *L);
 int luaopen_boggart_terminal(lua_State *L);
@@ -128,6 +129,7 @@ void boggart_open_libs(lua_State *L) {
   luaL_requiref(L, "fileview", luaopen_boggart_fileview, 0); lua_pop(L, 1);   /* src/lview.c: lazy file views */
   luaL_requiref(L, "terminal", luaopen_boggart_terminal, 0); lua_pop(L, 1);
   luaL_requiref(L, "agent_channel", luaopen_boggart_channel, 0); lua_pop(L, 1);
+  luaL_requiref(L, "zmq", luaopen_boggart_zmq, 0); lua_setglobal(L, "zmq");
   luaL_requiref(L, "station", luaopen_boggart_station, 0); lua_setglobal(L, "station");
   luaL_requiref(L, "typesafe_core", luaopen_boggart_typesafe, 0); /* package.loaded name differs so require("typesafe") reaches lua/typesafe.lua */ lua_setglobal(L, "typesafe");
 

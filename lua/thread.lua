@@ -348,7 +348,10 @@ function M._run(rec, task)
   for attempt = 1, max_attempts do
     local buf = {}
     local ran, _msg, _stop = pcall(bog.api.run_on, rec.session, task,
-      function(s) buf[#buf + 1] = s end, rec.opts)
+      function(s)
+        buf[#buf + 1] = s
+        if rec.on_text then pcall(rec.on_text, s) end -- a remote caller's progress stream
+      end, rec.opts)
     stop = _stop
     text = table.concat(buf)
     if not ran then
@@ -389,6 +392,8 @@ function M._run(rec, task)
   M.live_recs[rec.id] = nil
   M.live=math.max(0,M.live-1)
   bog.log(string.format("agent %d (%s) %s", rec.id, rec.spec_name or "agent", status))
+  -- for a caller that ran the record itself (an extension serving remote runs)
+  return ok, text, why, stop
 end
 
 -- Kill one agent from a controlling interface (an operator picking a worker off

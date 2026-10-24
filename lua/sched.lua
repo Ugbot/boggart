@@ -21,6 +21,11 @@ local current_id = nil
 function M.current() return current_id end
 function M.alive(id) return M.by_id[id] ~= nil end
 function M.count() return #M.actors end
+function M.count_foreground()
+  local n = 0
+  for _, a in ipairs(M.actors) do if not a.background then n = n + 1 end end
+  return n
+end
 
 -- The actor lifecycle events are emitted here rather than in thread.lua
 -- because this is where the lifecycle actually is: every actor arrives through
@@ -28,8 +33,12 @@ function M.count() return #M.actors end
 -- way of leaving -- finished, crashed, killed -- goes through remove(). The
 -- payload is just the id, which is also the thread/session row id, so a
 -- handler that wants the agent's name or transcript can ask bog.store for it.
-function M.add(id, co)
-  local a = { id = id, co = co, status = "runnable", req = nil }
+-- opts.background: an actor that is not part of any foreground turn (a task
+-- served for a remote controller). It runs like any other; front ends that
+-- wait for "the turn's actors" count with M.count_foreground().
+function M.add(id, co, opts)
+  local a = { id = id, co = co, status = "runnable", req = nil,
+              background = opts and opts.background or nil }
   M.actors[#M.actors + 1] = a
   M.by_id[id] = a
   events.emit("swarm:actor_started", { id = id })
