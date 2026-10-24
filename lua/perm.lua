@@ -455,6 +455,70 @@ end
 -- parked record; the caller must set rec.decision (approve/reject) before the
 -- yield loop returns. Used by the cTUI; AgentView keeps its own hook so it can
 -- push a diff entry at the decision point.
+-- ---------------------------------------------------------------------------
+-- Parked approvals, addressable by request_id.
+--
+-- Every interactive gate (the cTUI bar, the REPL prompt, a sub-agent parked by
+-- tui/gate, a remote console) parks a record and waits for rec.decision. The
+-- registry gives each parked record a stable request_id and announces it on
+-- the bus (permission:ask), so a client that is not the local UI -- the
+-- a remote client over the control API -- can resolve it by id (M.resolve). Whoever decides
+-- first wins; the waiter announces the outcome (permission:resolved).
+M.pending = {}
+local ask_serial = 0
+local function events_mod()
+  local ok, ev = pcall(require, "events")
+  return ok and ev or nil
+end
+function M.track(rec, opts)
+  opts = opts or {}
+  ask_serial = ask_serial + 1
+  local ev = events_mod()
+  rec.request_id = rec.request_id or ("perm:" .. ask_serial)
+  rec.session = rec.session or opts.session or (ev and ev.session_id())
+  M.pending[rec.request_id] = rec
+  if ev and ev.any("permission:ask") then
+    local input = {}
+    for k, v in pairs(rec.input or {}) do input[k] = v end
+    ev.emit("permission:ask", { session = rec.session, request_id = rec.request_id,
+      tool = rec.name or rec.tool, summary = rec.summary, input = input,
+      why = rec.why, agent_id = rec.agent_id })
+  end
+  return rec.request_id
+end
+-- The waiter calls this once rec.decision is set (by anyone).
+function M.settle(rec)
+  if not rec or not rec.request_id or M.pending[rec.request_id] ~= rec then return end
+  M.pending[rec.request_id] = nil
+  local ev = events_mod()
+  if ev then
+    ev.emit("permission:resolved", { session = rec.session, request_id = rec.request_id,
+      decision = rec.decision })
+  end
+end
+-- Resolve a parked approval from anywhere (a remote client). decision is
+-- approve | reject | expired (expired counts as reject).
+function M.resolve(request_id, decision)
+  if decision ~= "approve" and decision ~= "reject" and decision ~= "expired" then
+    return nil, "invalid decision"
+  end
+  local rec = M.pending[request_id]
+  if not rec or rec.decision ~= nil then return nil, "stale approval request" end
+  rec.decision = decision
+  return true
+end
+function M.pending_list()
+  local out = {}
+  for id, rec in pairs(M.pending) do
+    if rec.decision == nil then
+      out[#out + 1] = { request_id = id, session = rec.session, tool = rec.name or rec.tool,
+        summary = rec.summary, why = rec.why, agent_id = rec.agent_id }
+    end
+  end
+  table.sort(out, function(a, b) return a.request_id < b.request_id end)
+  return out
+end
+
 function M.wrap_run(run, st, hooks)
   hooks=hooks or {}; st=st or M.state()
   local invoke=require("invoke")
@@ -462,8 +526,14 @@ function M.wrap_run(run, st, hooks)
     if not hooks.on_ask then return false end
     local rec=M.request(name,input) or {tool=name,input=input}
     rec.why=why
-    hooks.on_ask(rec)
+    M.track(rec)
+    local asked,ask_error=pcall(hooks.on_ask,rec)
+    if not asked then
+      if rec.decision==nil then rec.decision="reject" end
+      M.settle(rec);error(ask_error,0)
+    end
     while rec.decision==nil do coroutine.yield("approve") end
+    M.settle(rec)
     if hooks.on_done then hooks.on_done(rec) end
     return rec.decision=="approve"
   end

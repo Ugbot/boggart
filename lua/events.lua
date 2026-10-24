@@ -132,12 +132,16 @@ M.EVENTS = {
   ["session:saved"]    = "{ id, count }  transcript persisted to the store",
   ["turn:start"]       = "{ session, preview, chars }  preview = first 200 chars of the user text",
   ["turn:text"]        = "{ session, text }  one streamed assistant text delta (hot: fires per SSE chunk)",
+  ["turn:thinking"]    = "{ session, text }  one streamed reasoning/thinking delta (hot: fires per chunk)",
   ["turn:end"]         = "{ session, stop }  stop = end_turn/max_tokens/refusal/...",
   ["turn:error"]       = "{ session, message, kind }  kind is set for typed api errors (api.ERR.*)",
-  ["tool:before"]      = "{ name, input, invocation_id }  observation; input is an isolated copy",
-  ["tool:authorize"]   = "{ name, input, invocation_id }  return deny to veto; distinct from observation",
-  ["tool:after"]       = "{ name, error, bytes }  error = the tool returned a 'Tool error:' result",
-  ["tool:refused"]     = "{ name, reason }  a permission gate refused the call; it never ran",
+  ["tool:before"]      = "{ session, name, input, invocation_id }  observation; input is an isolated copy",
+  ["tool:authorize"]   = "{ session, name, input, invocation_id }  return deny to veto; distinct from observation",
+  ["tool:after"]       = "{ session, name, error, bytes }  error = the tool returned a 'Tool error:' result",
+  ["tool:result"]      = "{ session, invocation_id, name, ok, preview, bytes, truncated }  preview <= 2KB of the result (or error)",
+  ["tool:refused"]     = "{ session, name, reason }  a permission gate refused the call; it never ran",
+  ["permission:ask"]   = "{ session, request_id, tool, summary, input, why, agent_id }  a gated call is parked on an approval",
+  ["permission:resolved"] = "{ session, request_id, decision }  decision = approve | reject | expired",
   ["context:compacted"] = "{ session, before, after }  chars of transcript before, chars of summary",
   ["file:write"]       = "{ path, bytes, lines }  the write tool created/overwrote a file",
   ["file:edit"]        = "{ path, bytes }  the edit tool replaced a span; bytes = the new file size",
@@ -145,6 +149,29 @@ M.EVENTS = {
   ["swarm:actor_stopped"] = "{ id, reason }  reason = done | crashed | killed",
   ["notify"]           = "{ msg, level }  something wants a human to see it (see events.notify)",
 }
+
+-- ---------------------------------------------------------------------------
+-- Which session is this?
+--
+-- Tool and permission events fire deep inside invoke/perm, which have no handle
+-- on the session whose turn called them. api.run_on binds the running
+-- coroutine to its session id for the length of the turn; anything emitted on
+-- that coroutine can then say which session it belongs to. Outside a bound
+-- turn the active session is the best answer there is.
+local session_of = setmetatable({}, { __mode = "k" })
+function M.bind_session(id, co)
+  co = co or coroutine.running()
+  local prev = session_of[co]
+  session_of[co] = id
+  return prev
+end
+function M.session_id()
+  local id = session_of[coroutine.running()]
+  if id ~= nil then return id end
+  local b = rawget(_G, "bog")
+  local s = b and ((b.swarm_root and b.swarm_root.session) or b.session)
+  return s and s.id or nil
+end
 
 -- ---------------------------------------------------------------------------
 -- Patterns
