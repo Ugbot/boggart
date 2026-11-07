@@ -730,6 +730,7 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SOURCE_SUBDIR boggart-amalgamation-only)
   FetchContent_MakeAvailable(harfbuzz)
+  enable_language(CXX)
   add_library(boggart_harfbuzz STATIC ${harfbuzz_SOURCE_DIR}/src/harfbuzz.cc)
   target_compile_features(boggart_harfbuzz PRIVATE cxx_std_11)
   target_include_directories(boggart_harfbuzz PUBLIC ${harfbuzz_SOURCE_DIR}/src)
