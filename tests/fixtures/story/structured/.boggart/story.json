@@ -1,0 +1,14 @@
+{
+  "title": "The Test Autumn",
+  "layout": "structured",
+  "manuscript": { "glob": ["chapters/*.md"], "number": "^(%d+)", "prefer": ["revised", ""],
+                  "exclude": ["*_recovered.md"], "done": ["revised"] },
+  "characters": ["characters/*.md"],
+  "canon": [ { "glob": "plot/*.md", "role": "plot" } ],
+  "payoffs": "plot/payoffs.md",
+  "outline": ["plot/act_*.md"],
+  "povs": ["vera", "moth"],
+  "drop_sections": ["Canon flags"],
+  "target_words": 1000,
+  "narration": "close third person, past tense"
+}
