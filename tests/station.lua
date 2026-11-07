@@ -30,6 +30,19 @@ do
   ok(ep == nil and type(why) == "string", "endpoint miss: nil, why")
 end
 
+-- ---- handshake and relaunch policy ------------------------------------------
+
+do
+  local link = require("stationlink")
+  local version = tostring(link.PROTOCOL_VERSION)
+  ok(link.check_hello({ proto = version }) == true, "matching hello is accepted")
+  local good, why = link.check_hello({ error = "Unknown query type: hello" })
+  ok(good == false and why:find("incompatible", 1, true), "old daemon is incompatible")
+  ok(link.check_hello({ proto = "999" }) == false, "other protocol is incompatible")
+  ok(link.check_hello(nil) == false, "missing reply is refused")
+  ok(link.may_autolaunch(1000) == true, "first autostart is allowed")
+end
+
 -- ---- envelope codec round trip ---------------------------------------------
 
 do

@@ -18,6 +18,8 @@ local M = {}
 M.PING_TIMEOUT_MS = 1500
 M.CALL_TIMEOUT_MS = 30000
 M.RETRY_AFTER_S = 2.0          -- base backoff before another connect attempt
+M.PROTOCOL_VERSION = 1         -- Station's DaemonProtocol::PROTOCOL_VERSION
+M.RELAUNCH_AFTER_S = 30        -- minimum gap between autostart launches
 
 M.conn = nil                   -- live boggart.station connection, or nil
 M.state = "down"               -- "up" | "down"
@@ -26,7 +28,7 @@ M.topics = { "chat.*" }        -- re-subscribed after every (re)connect
 local last_attempt = 0
 
 -- msg_types the daemon answers inline on its poll thread.
-local QUERY_MSG = { ping = true, list_tools = true, tool_schema = true, status = true }
+local QUERY_MSG = { ping = true, hello = true, list_tools = true, tool_schema = true, status = true }
 
 -- Tools that ride the query channel: answered inline on the daemon's poll
 -- thread, ~0.1ms vs 10-110ms over cmd. The judgement that a tool is fast is
@@ -79,6 +81,26 @@ function M.ping(timeout_ms)
   return true
 end
 
+-- Judge a hello reply. A daemon too old to know hello answers an error, and a
+-- mismatched one refuses; either way the wire cannot be trusted.
+function M.check_hello(reply)
+  if type(reply) ~= "table" then return false, "no hello reply" end
+  if reply.error then return false, "incompatible: " .. tostring(reply.error) end
+  if reply.proto ~= tostring(M.PROTOCOL_VERSION) then
+    return false, "incompatible: daemon protocol " .. tostring(reply.proto)
+  end
+  return true
+end
+
+local function handshake(conn)
+  local ok, reply = pcall(function()
+    return conn:request("query", "hello", nil, { proto = tostring(M.PROTOCOL_VERSION) },
+                        M.PING_TIMEOUT_MS):wait()
+  end)
+  if not ok then return false, tostring(reply) end
+  return M.check_hello(reply)
+end
+
 -- Connect + ping, once. Success wires subscriptions and announces station.up.
 local function try_connect(workspace)
   local st = rawget(_G, "station")
@@ -92,6 +114,12 @@ local function try_connect(workspace)
     pcall(function() conn:close() end)
     M.conn = nil
     return nil, "daemon not answering (" .. tostring(why) .. ")"
+  end
+  local compatible, reason = handshake(conn)
+  if not compatible then
+    pcall(function() conn:close() end)
+    M.conn = nil
+    return nil, reason
   end
   for _, t in ipairs(M.topics) do pcall(function() conn:subscribe(t) end) end
   M.state, M.why = "up", ""
@@ -226,7 +254,13 @@ M.AUTOSTART_KEY = "config.station.autostart"
 -- this repository (vendored deps under build*/). Explicit /station start waits
 -- this long; autostart never waits at all.
 M.START_WAIT_S = 150
-local launched = false          -- autostart fires once per process
+local last_launch = nil         -- when autostart last fired
+
+-- A daemon can die or idle out mid-session, so autostart may fire again, but
+-- no more than once per window: a daemon that cannot start must not respawn hot.
+function M.may_autolaunch(now)
+  return last_launch == nil or now - last_launch >= M.RELAUNCH_AFTER_S
+end
 
 local function kv_get(k)
   local store = type(bog) == "table" and bog.store
@@ -264,7 +298,7 @@ function M.start(workspace, wait_s)
   last_attempt = 0
   if M.ensure(workspace) then return true, "already running" end
   if not ls.launch(workspace) then return nil, "could not launch " .. bin end
-  launched = true
+  last_launch = os.time()
   local deadline = os.time() + (wait_s or M.START_WAIT_S)
   local proc = require("proc")
   while os.time() <= deadline do
@@ -311,10 +345,11 @@ function M.active()
   local okd = M.enabled()
   if not okd then return false end
   if M.ensure() ~= nil then return true end
-  if not launched and M.autostart_enabled() then
+  local now = os.time()
+  if M.may_autolaunch(now) and M.autostart_enabled() then
     local bin, ls = binary()
     if bin then
-      launched = true
+      last_launch = now
       pcall(ls.launch, (sys.cwd and sys.cwd()) or ".")
       if bog and bog.log then bog.log("station: autostarting llm-station for this workspace") end
     end
