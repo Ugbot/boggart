@@ -24,6 +24,7 @@ M.RELAUNCH_AFTER_S = 30        -- minimum gap between autostart launches
 M.conn = nil                   -- live boggart.station connection, or nil
 M.state = "down"               -- "up" | "down"
 M.why = "not yet attempted"    -- last reason for being down
+M.index_state = nil            -- "held", "indexing" or "ready"; partial unless ready
 M.topics = { "chat.*" }        -- re-subscribed after every (re)connect
 local last_attempt = 0
 
@@ -59,6 +60,17 @@ end
 
 function M.up() return M.state == "up" and M.conn ~= nil end
 
+-- Search results before this are partial. Re-asks, since indexing finishes on its own.
+function M.index_ready()
+  if not M.up() then return false end
+  local ok, reply = pcall(function()
+    return M.conn:request("query", "hello", nil, { proto = tostring(M.PROTOCOL_VERSION) },
+                          M.PING_TIMEOUT_MS):wait()
+  end)
+  if ok then M.check_hello(reply) end
+  return M.index_state == "ready"
+end
+
 local function mark_down(why)
   local was = M.state
   M.state, M.why = "down", tostring(why or "unknown")
@@ -89,6 +101,7 @@ function M.check_hello(reply)
   if reply.proto ~= tostring(M.PROTOCOL_VERSION) then
     return false, "incompatible: daemon protocol " .. tostring(reply.proto)
   end
+  M.index_state = reply.index_state
   return true
 end
 

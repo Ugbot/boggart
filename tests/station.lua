@@ -40,6 +40,9 @@ do
   ok(good == false and why:find("incompatible", 1, true), "old daemon is incompatible")
   ok(link.check_hello({ proto = "999" }) == false, "other protocol is incompatible")
   ok(link.check_hello(nil) == false, "missing reply is refused")
+  link.check_hello({ proto = version, index_state = "indexing" })
+  ok(link.index_state == "indexing", "hello records the index state")
+  ok(link.index_ready() == false, "a down transport is not ready")
   ok(link.may_autolaunch(1000) == true, "first autostart is allowed")
 end
 
