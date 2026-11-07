@@ -1,0 +1,7 @@
+{
+  "title": "Flat Book",
+  "layout": "flat",
+  "manuscript": { "glob": ["manuscript_*.md"], "number": "chapter(%d+)", "prefer": ["draft"], "done": [] },
+  "characters": [],
+  "canon": [ { "glob": "[0-9]*.md", "role": "lore" } ]
+}
