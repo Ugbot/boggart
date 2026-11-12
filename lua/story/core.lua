@@ -15,6 +15,7 @@
 --   style      get | check | render        (n= or path= or text=; bits=)
 --   plan       get | set | expand | edit      (lua/story/draft.lua: beats -> paragraph lines)
 --   draft      next | write | redo | run      (one paragraph at a time, bounded context)
+--   kb         status | search | about | record | sparql   (lua/story/kb.lua: the optional shared KB, read-only)
 local sb = require("story.book")
 local si = require("story.index")
 local ss = require("story.style")
@@ -470,6 +471,10 @@ for noun, act in pairs(sw.DEFAULT) do DEFAULT[noun] = act end
 local sg = require("story.geotool")
 for noun, acts in pairs(sg.ACTIONS) do M.ACTIONS[noun] = acts end
 for noun, act in pairs(sg.DEFAULT) do DEFAULT[noun] = act end
+-- the shared knowledge base (kb): optional and read-only (lua/story/kb.lua, docs/story-kb.md)
+local sk = require("story.kb")
+for noun, acts in pairs(sk.ACTIONS) do M.ACTIONS[noun] = acts end
+for noun, act in pairs(sk.DEFAULT) do DEFAULT[noun] = act end
 
 function M.call(a)
   a = a or {}
@@ -556,15 +561,18 @@ M.tool = {
   -- the model is never the author: whatever it passes, its writes are proposals
   run = function(a) a = a or {}; a._author = nil; return M.call(a) end,
 }
-M.tool.description = M.tool.description .. " " .. sw.DESCRIPTION .. " " .. sg.DESCRIPTION
+M.tool.description = M.tool.description .. " " .. sw.DESCRIPTION .. " " .. sg.DESCRIPTION .. " " .. sk.DESCRIPTION
 for k, v in pairs(sw.PROPS) do
   if not M.tool.input_schema.properties[k] then M.tool.input_schema.properties[k] = v end
 end
 for k, v in pairs(sg.PROPS) do
   if not M.tool.input_schema.properties[k] then M.tool.input_schema.properties[k] = v end
 end
+for k, v in pairs(sk.PROPS) do
+  if not M.tool.input_schema.properties[k] then M.tool.input_schema.properties[k] = v end
+end
 M.tool.input_schema.properties.noun.description = "book|asset|search|character|chapter|style|plan|draft|"
-  .. "entity|event|fact|knows|promise|exemption|proposal|lore|model|geo|check"
+  .. "entity|event|fact|knows|promise|exemption|proposal|lore|model|geo|check|kb"
 
 function M.register()
   if bog and bog.tools and bog.tools.register then bog.tools.register("story", M.tool) end

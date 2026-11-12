@@ -5,6 +5,7 @@
 --   boggart story <noun> <action> key=value ...    any `story` tool call, e.g.
 --       boggart story book init path=.
 --       boggart story style check n=7 book=novel
+--       boggart story kb search query="red door"     (the optional shared KB: docs/story-kb.md)
 --
 -- Exit status is 1 when the answer is an error (a style check that finds
 -- issues is NOT an error; grep its VERDICT line).

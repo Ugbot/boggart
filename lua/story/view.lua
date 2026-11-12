@@ -142,6 +142,7 @@ M.HELP = table.concat({
   "    /story book init path=~/novel      /story book check_layout",
   "    /story search query=\"red door\"    /story character get name=vera",
   "    /story chapter get n=7             /story style check n=7",
+  "    /story kb status                   /story kb search query=\"red door\" layers=notes,canon",
 }, "\n")
 
 function M.command(args, width)

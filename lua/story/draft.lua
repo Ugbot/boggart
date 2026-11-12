@@ -268,6 +268,17 @@ local function retrieval(book, text, chapter_path, cap)
   return table.concat(out, "\n")
 end
 
+-- The optional shared-KB tier (story/kb.lua, docs/story-kb.md): a few passage
+-- hits for this beat that the local retrieval did not already pick. nil when
+-- the book names no shared KB or it does not answer, and then nothing is added.
+local function shared_kb(book, text, chapter_path, picked, cap)
+  local ok, kb = pcall(require, "story.kb")
+  if not ok or type(kb) ~= "table" then return nil end
+  local ok2, out = pcall(kb.draft_tier, book, text, { exclude_path = chapter_path, picked = picked, cap = cap })
+  if ok2 and type(out) == "string" then return out, kb.DRAFT_TITLE end
+  return nil
+end
+
 -- Blocks are output in the order given; each has a cap, and when the whole is
 -- over budget the blocks with the HIGHEST `prio` number are trimmed, then
 -- dropped, first -- `keep` blocks never. The report says what happened.
@@ -360,7 +371,10 @@ function M.packet(book, n, p, task, opts)
     cast[#cast + 1] = "### " .. (c.title ~= "" and c.title or c.id) .. "\n" .. sheet:sub(1, 900)
   end
   add("Cast", table.concat(cast, "\n\n"), math.floor(budget * 0.15), false, 3)
-  add("From the book's canon", retrieval(book, here, target, math.floor(budget * 0.1)), math.floor(budget * 0.1), false, 4)
+  local found = retrieval(book, here, target, math.floor(budget * 0.1))
+  add("From the book's canon", found, math.floor(budget * 0.1), false, 4)
+  local shared, shared_title = shared_kb(book, here, target, found, math.floor(budget * 0.08))
+  if shared then add(shared_title, shared, math.floor(budget * 0.08), false, 6) end
 
   -- 5. the author's own prose: the strongest style signal there is
   if Est then
