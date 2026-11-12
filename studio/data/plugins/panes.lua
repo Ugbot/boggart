@@ -36,22 +36,24 @@ command.add(unlocked, {
   end,
 
   ["root:next-pane"] = function()
+    local active=active_node();if active.bmux_owner then active.bmux_owner:cycle(1);return end
     local leaves = root():get_leaves()
     local node = active_node()
     for i, n in ipairs(leaves) do
       if n == node then
-        core.set_active_view(leaves[i % #leaves + 1].active_view)
+        leaves[i % #leaves + 1]:set_active_view(leaves[i % #leaves + 1].active_view)
         return
       end
     end
   end,
 
   ["root:previous-pane"] = function()
+    local active=active_node();if active.bmux_owner then active.bmux_owner:cycle(-1);return end
     local leaves = root():get_leaves()
     local node = active_node()
     for i, n in ipairs(leaves) do
       if n == node then
-        core.set_active_view(leaves[(i - 2) % #leaves + 1].active_view)
+        local target=leaves[(i - 2) % #leaves + 1];target:set_active_view(target.active_view)
         return
       end
     end
@@ -81,9 +83,7 @@ for _, dir in ipairs { "left", "right", "up", "down" } do
       local node = active_node()
       local target = node:get_node_in_direction(root(), dir)
       if not target or target == node or target:get_locked_size() then return end
-      node.views, target.views = target.views, node.views
-      node.active_view, target.active_view = target.active_view, node.active_view
-      core.set_active_view(target.active_view)   -- follow the moved view
+      node:swap_views(target)
       core.redraw = true
     end,
   })

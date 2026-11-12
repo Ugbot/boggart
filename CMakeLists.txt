@@ -13,7 +13,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(boggart C)
 
-set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
@@ -518,10 +518,13 @@ target_link_libraries(mining_parser_vendor PRIVATE boggart_quiet)
 # overlapped-I/O handling, so the shim and its glob are gone.)
 add_executable(boggart
   src/boggart.c
+  src/bctl.c
   src/bogcrash.c
   src/ljson.c
   src/lhash.c
   src/lview.c
+  src/lterminal.c src/lterminal_input.c
+  src/lchannel.c src/bchannel.c
   src/lhttp.c
   src/lsys.c
   src/ldb.c
@@ -551,6 +554,9 @@ target_link_libraries(boggart PRIVATE
   lua_vendor mining_parser_vendor sqlite_vendor cjson_vendor ltui_curses luv_lua uv_a
   isocline_vendor CURL::libcurl ${VOICE_LIBS} ${STATION_LIBS})
 target_compile_definitions(boggart PRIVATE ${VOICE_DEFS} ${STATION_DEFS})
+if(APPLE)
+  target_link_libraries(boggart PRIVATE proc)
+endif()
 if(BOGGART_VOICE OR BOGGART_STATION)
   # C executable, C++ static deps (whisper/ggml, libzmq): link with the C++
   # driver so libc++/libstdc++ comes along.
@@ -673,26 +679,23 @@ endif()
 
 # ---- FreeType ---------------------------------------------------------------
 # The text rasteriser. Same mechanism and the same reasoning as the SDL3 block
-# above: FetchContent, pinned by release tarball + SHA256, every optional
-# dependency switched off, linked statically, so `otool -L boggart-studio`
+# above: FetchContent, pinned by release tarball + SHA256, optional
+# dependencies either disabled or pinned, linked statically, so `otool -L boggart-studio`
 # still lists nothing but system libraries.
 #
 # It replaces stb_truetype, which was a single vendored header and cost
 # nothing. What that header cannot do is hint: it scales the outline and
 # rasterises wherever it lands, so small text is uniformly soft. That is the
 # whole legibility gap, and it is not closable downstream of the rasteriser.
-# See the comment at the top of studio/src/renderer.c.
+# See the comment at the top of studio/src/fontglyph.c.
 #
 # Cost, measured on an M-series mac: 680 KB of binary (5.14 MB -> 5.82 MB) and
 # five seconds of single-threaded compile, cached after -- next to SDL3's two
 # to three minutes it is not the expensive fetch here.
 #
-# Everything optional is off -- no zlib, bzip2, libpng, HarfBuzz or Brotli --
-# which means no transitive fetches and no system packages. It costs us:
-# compressed WOFF2 fonts (Brotli), PNG-backed colour-emoji strikes (libpng),
-# and HarfBuzz-assisted autohinting of Indic scripts. None of those are things
-# this renderer draws -- fontfallback.c refuses colour fonts on separate
-# grounds, and there is no shaping engine here for HarfBuzz to help.
+# PNG and zlib decode color-emoji bitmap strikes through pinned static targets.
+# Bzip2, Brotli and FreeType/HarfBuzz autohint interop remain disabled.
+# The separate OpenType shaper supplies positioned glyph IDs.
 #
 # Guarded on SDL3_FOUND as well as BOGGART_BUILD_APP so that a machine without
 # SDL3, which builds the CLI and skips the studio, does not download a
@@ -702,19 +705,41 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
   set(BOGGART_FREETYPE_SHA256 e61b31ab26358b946e767ed7eb7f4bb2e507da1cfefeb7a8861ace7fd5c899a1)
 
   set(BUILD_SHARED_LIBS   OFF  CACHE BOOL "" FORCE)
-  set(FT_DISABLE_ZLIB     TRUE CACHE BOOL "" FORCE)
   set(FT_DISABLE_BZIP2    TRUE CACHE BOOL "" FORCE)
-  set(FT_DISABLE_PNG      TRUE CACHE BOOL "" FORCE)
   set(FT_DISABLE_HARFBUZZ TRUE CACHE BOOL "" FORCE)
   set(FT_DISABLE_BROTLI   TRUE CACHE BOOL "" FORCE)
   set(SKIP_INSTALL_ALL    TRUE CACHE BOOL "" FORCE)
 
   include(FetchContent)
+  include(cmake/EmojiDependencies.cmake)
   FetchContent_Declare(freetype
     URL https://download.savannah.gnu.org/releases/freetype/freetype-${BOGGART_FREETYPE_VERSION}.tar.gz
     URL_HASH SHA256=${BOGGART_FREETYPE_SHA256}
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
   FetchContent_MakeAvailable(freetype)
+endif()
+
+if(BOGGART_BUILD_APP AND SDL3_FOUND)
+  # Upstream's supported amalgamation, static OpenType backend only. This avoids
+  # its CMake auto-enabling FreeType interop when our freetype target exists.
+  # Our C calls shape owned bytes; the existing FreeType alone rasterizes IDs.
+  include(FetchContent)
+  FetchContent_Declare(harfbuzz
+    URL https://github.com/harfbuzz/harfbuzz/releases/download/14.4.0/harfbuzz-14.4.0.tar.xz
+    URL_HASH SHA256=2357ed966c6ced7bfa720b0640c0231065af01158fbea215093ffa15aed44371
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SOURCE_SUBDIR boggart-amalgamation-only)
+  FetchContent_MakeAvailable(harfbuzz)
+  enable_language(CXX)
+  add_library(boggart_harfbuzz STATIC ${harfbuzz_SOURCE_DIR}/src/harfbuzz.cc)
+  target_compile_features(boggart_harfbuzz PRIVATE cxx_std_11)
+  target_include_directories(boggart_harfbuzz PUBLIC ${harfbuzz_SOURCE_DIR}/src)
+  target_compile_definitions(boggart_harfbuzz PRIVATE
+    HB_NO_GETENV HB_NO_BUFFER_SERIALIZE HB_NO_BUFFER_VERIFY HB_NO_DRAW HB_NO_PAINT
+    HB_NO_COLOR HB_NO_OT_FONT_GLYPH_NAMES HB_NO_SUBSET_DEPEND
+    HB_BUFFER_MAX_LEN_FACTOR=4 HB_BUFFER_MAX_LEN_MIN=256
+    HB_BUFFER_MAX_OPS_FACTOR=1024 HB_BUFFER_MAX_OPS_MIN=65536)
+  target_link_libraries(boggart_harfbuzz PRIVATE boggart_quiet)
 endif()
 
 if(BOGGART_BUILD_APP AND SDL3_FOUND)
@@ -748,6 +773,8 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
     src/ljson.c
     src/lhash.c
     src/lview.c
+    src/lterminal.c src/lterminal_input.c
+    src/lchannel.c src/bchannel.c
     ${STUDIO_ASSETS_C}
     src/lhttp.c
     src/lsys.c
@@ -775,10 +802,13 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
     ${VENDOR}/stb
     ${SDL3_INCLUDE_DIRS})
   target_compile_definitions(boggart-studio PRIVATE BOGGART_STUDIO=1 ${VOICE_DEFS} ${STATION_DEFS})
+  if(APPLE)
+    target_link_libraries(boggart-studio PRIVATE proc)
+  endif()
   target_link_libraries(boggart-studio PRIVATE
     boggart_warnings
     lua_vendor mining_parser_vendor sqlite_vendor cjson_vendor luv_lua uv_a isocline_vendor
-    CURL::libcurl freetype ${VOICE_LIBS} ${STATION_LIBS})
+    CURL::libcurl freetype boggart_harfbuzz ${VOICE_LIBS} ${STATION_LIBS})
   if(BOGGART_VOICE OR BOGGART_STATION)
     set_target_properties(boggart-studio PROPERTIES LINKER_LANGUAGE CXX)
   endif()
@@ -918,7 +948,317 @@ endif()
 # rule itself under test -- it still resolves %LOCALAPPDATA%, that just now
 # points somewhere disposable.
 enable_testing()
-foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable typesafe judge ladder toolroute ladder_sites harden policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast mining_recognition mining_compile mining_jobs learning_evaluate learning_promote learning_route learning_monitor workflow_slack workflow_novel workflow_triggers searchroute tracker story story_model story_geo story_geosql story_style story_kb auth_file looplag http_body json_c store_save hash_c fileview)
+add_test(NAME cell_partition COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/cell_partition $<TARGET_FILE:boggart> --eval ${CMAKE_CURRENT_SOURCE_DIR}/tests/cell_partition.lua)
+set_tests_properties(cell_partition PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME fleet COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/fleet $<TARGET_FILE:boggart> --eval ${CMAKE_CURRENT_SOURCE_DIR}/tests/fleet.lua)
+set_tests_properties(fleet PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+add_library(boggart_unicode STATIC src/bunicode.c)
+target_include_directories(boggart_unicode PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_executable(unicode_test tests/c/unicode.c)
+target_link_libraries(unicode_test PRIVATE boggart_unicode)
+add_test(NAME unicode COMMAND unicode_test
+  ${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY/unicode/16.0.0/auxiliary/GraphemeBreakTest.txt)
+if(UNIX)
+  add_executable(agent_channel_test tests/c/agent_channel.c src/bchannel.c)
+  target_include_directories(agent_channel_test PRIVATE src)
+  target_link_libraries(agent_channel_test PRIVATE uv_a boggart_warnings)
+  boggart_apply_sanitizer(agent_channel_test)
+  add_test(NAME agent_channel COMMAND agent_channel_test)
+endif()
+# Embed the sources actually compiled into this terminal backend. Benchmarks
+# reject a stale executable instead of attributing it to current disk contents.
+set(BMUX_TERMINAL_SOURCE_FILES src/bchannel.c src/bchannel.h src/lchannel.c src/lchannel.h src/bpty.c src/bpty.h src/lvt.c src/vt_table.h src/lstyle.c src/llink.c src/lpage.c src/lpage_resize.c src/lpage_layout.c src/lpage_layout.h src/lidmap.c src/lidmap.h src/lbitmap.c src/lbitmap.h
+  src/bterm.c src/bterm_input_batch.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c src/lterminal.c src/lterminal_input.c src/lterminal.h
+  src/lvt.h src/lstyle.h src/llink.h src/lpage.h src/lpage_internal.h src/bosc.h src/bmouse.h src/bkey.h src/bpaste.h src/bterm.h src/bterm_internal.h
+  src/bunicode.c src/bunicode.h src/bunicode_data.h src/btunicode.c src/btunicode.h src/btunicode_data.h src/lgrapheme.c src/lgrapheme.h)
+set(_terminal_source_header "/* Generated build identity; do not edit. */\nstatic const struct { const char *path, *sha256; } terminal_source_files[] = {\n")
+foreach(_source IN LISTS BMUX_TERMINAL_SOURCE_FILES)
+  file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${_source}" _sha)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${_source}")
+  string(APPEND _terminal_source_header "  {\"${_source}\", \"${_sha}\"},\n")
+endforeach()
+string(APPEND _terminal_source_header "};\n")
+file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/terminal-source.h" CONTENT "${_terminal_source_header}" @ONLY)
+target_include_directories(boggart PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+if(TARGET boggart-studio)
+  target_include_directories(boggart-studio PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+  set(_renderer_source_header "/* Generated renderer build identity. */\nstatic const struct { const char *path, *sha256; } terminalrender_source_files[] = {\n")
+  foreach(_source CMakeLists.txt cmake/EmojiDependencies.cmake studio/src/renderer.c studio/src/renderer.h studio/src/fontglyph.c studio/src/fontglyph.h studio/src/fontfallback.c studio/src/fontfallback.h
+      studio/src/gridtext.c studio/src/clusterdraw.c studio/src/fontshape.c studio/src/fontshape.h studio/src/fontcluster.c studio/src/fontcluster.h studio/src/glyphcache.c studio/src/glyphcache.h studio/src/rencache.c studio/src/rencache.h
+      studio/src/termgrid.c studio/src/termgrid.h studio/src/termrender.c studio/src/termrender.h studio/src/fontatlas.c studio/src/fontatlas.h
+      studio/src/api/renderer.c studio/src/api/renderer_font.c studio/src/api/terminalrender.c
+      studio/src/api/terminalimage.c studio/src/api/terminalimage.h)
+    file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${_source}" _sha)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${_source}")
+    string(APPEND _renderer_source_header "  {\"${_source}\", \"${_sha}\"},\n")
+  endforeach()
+  string(APPEND _renderer_source_header "};\n")
+  file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/terminalrender_source.h "${_renderer_source_header}")
+endif()
+add_library(boggart_vt STATIC src/lvt.c src/lstyle.c src/llink.c src/lpage.c src/lpage_resize.c src/lpage_layout.c src/lidmap.c src/lbitmap.c src/lgrapheme.c src/btunicode.c
+  src/bterm.c src/bterm_input_batch.c src/bterm_dispatch.c src/bterm_sgr.c src/bosc.c src/bmouse.c src/bkey.c src/bpaste.c src/bterm_osc.c)
+target_include_directories(boggart_vt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(boggart_vt PUBLIC boggart_unicode)
+add_library(boggart_pty STATIC src/bpty.c)
+target_include_directories(boggart_pty PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(boggart_pty PUBLIC boggart_vt uv_a)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(boggart_pty PUBLIC util)
+endif()
+target_link_libraries(boggart PRIVATE boggart_pty)
+if(TARGET boggart-studio)
+  target_link_libraries(boggart-studio PRIVATE boggart_pty)
+endif()
+if(UNIX)
+  add_executable(pty_transport_test tests/c/pty_transport.c)
+  target_link_libraries(pty_transport_test PRIVATE boggart_pty)
+  add_test(NAME pty_transport COMMAND pty_transport_test)
+  set_tests_properties(pty_transport PROPERTIES TIMEOUT 30)
+endif()
+if(TARGET boggart-studio AND UNIX)
+  add_executable(studio_uvbridge_test tests/c/studio_uvbridge.c studio/src/uvbridge.c)
+  target_include_directories(studio_uvbridge_test PRIVATE studio/src ${SDL3_INCLUDE_DIRS})
+  target_link_libraries(studio_uvbridge_test PRIVATE uv_a)
+  if(BOGGART_SDL_TARGET)
+    target_link_libraries(studio_uvbridge_test PRIVATE ${BOGGART_SDL_TARGET})
+  elseif(TARGET SDL3::SDL3)
+    target_link_libraries(studio_uvbridge_test PRIVATE SDL3::SDL3)
+  else()
+    target_link_libraries(studio_uvbridge_test PRIVATE ${SDL3_LIBRARIES})
+    target_link_directories(studio_uvbridge_test PRIVATE ${SDL3_LIBRARY_DIRS})
+  endif()
+  add_test(NAME studio_uvbridge COMMAND studio_uvbridge_test)
+  set_tests_properties(studio_uvbridge PROPERTIES TIMEOUT 10)
+endif()
+target_link_libraries(boggart PRIVATE boggart_vt)
+if(TARGET boggart-studio)
+  target_link_libraries(boggart-studio PRIVATE boggart_vt)
+endif()
+add_executable(vt_parser_test tests/c/vt_parser.c)
+target_link_libraries(vt_parser_test PRIVATE boggart_vt)
+add_test(NAME vt_parser COMMAND vt_parser_test)
+add_executable(page_storage_test tests/c/page.c)
+target_link_libraries(page_storage_test PRIVATE boggart_vt)
+add_test(NAME page_storage COMMAND page_storage_test)
+add_executable(page_resize_test tests/c/page_resize.c)
+target_link_libraries(page_resize_test PRIVATE boggart_vt)
+add_test(NAME page_resize COMMAND page_resize_test)
+add_executable(termgrid_test tests/c/termgrid.c)
+target_include_directories(termgrid_test PRIVATE studio/src)
+target_link_libraries(termgrid_test PRIVATE boggart_vt)
+add_test(NAME termgrid COMMAND termgrid_test)
+add_executable(terminal_text_width_test tests/c/terminal_text_width.c)
+target_link_libraries(terminal_text_width_test PRIVATE boggart_vt)
+add_test(NAME terminal_text_width COMMAND terminal_text_width_test)
+if(TARGET boggart-studio)
+  add_executable(termcache_test tests/c/termcache.c studio/src/termgrid.c)
+  target_include_directories(termcache_test PRIVATE studio/src ${SDL3_INCLUDE_DIRS})
+  target_link_libraries(termcache_test PRIVATE boggart_vt)
+  if(BOGGART_SDL_TARGET)
+    target_link_libraries(termcache_test PRIVATE ${BOGGART_SDL_TARGET})
+  elseif(TARGET SDL3::SDL3)
+    target_link_libraries(termcache_test PRIVATE SDL3::SDL3)
+  else()
+    target_link_libraries(termcache_test PRIVATE ${SDL3_LIBRARIES})
+    target_link_directories(termcache_test PRIVATE ${SDL3_LIBRARY_DIRS})
+  endif()
+  add_test(NAME termcache COMMAND termcache_test)
+  add_executable(renderer_fonts_test tests/c/renderer_fonts.c studio/src/gridtext.c studio/src/clusterdraw.c studio/src/fontshape.c studio/src/fontcluster.c studio/src/glyphcache.c studio/src/fontfallback.c studio/src/fontatlas.c studio/src/termgrid.c studio/src/termrender.c)
+  target_include_directories(renderer_fonts_test PRIVATE studio/src ${SDL3_INCLUDE_DIRS})
+  target_link_libraries(renderer_fonts_test PRIVATE boggart_vt freetype boggart_harfbuzz uv_a)
+  if(UNIX)
+    target_link_libraries(renderer_fonts_test PRIVATE m)
+  endif()
+  if(BOGGART_SDL_TARGET)
+    target_link_libraries(renderer_fonts_test PRIVATE ${BOGGART_SDL_TARGET})
+  elseif(TARGET SDL3::SDL3)
+    target_link_libraries(renderer_fonts_test PRIVATE SDL3::SDL3)
+  else()
+    target_link_libraries(renderer_fonts_test PRIVATE ${SDL3_LIBRARIES})
+    target_link_directories(renderer_fonts_test PRIVATE ${SDL3_LIBRARY_DIRS})
+  endif()
+  if(APPLE)
+    target_link_libraries(renderer_fonts_test PRIVATE "-framework CoreText" "-framework CoreFoundation")
+  endif()
+  add_test(NAME renderer_fonts COMMAND renderer_fonts_test ${CMAKE_CURRENT_SOURCE_DIR}/studio/data/fonts/monospace.ttf)
+  add_executable(renderer_clusters_test tests/c/renderer_clusters.c studio/src/gridtext.c studio/src/clusterdraw.c studio/src/fontshape.c studio/src/fontcluster.c studio/src/glyphcache.c studio/src/fontfallback.c studio/src/fontatlas.c studio/src/termgrid.c studio/src/termrender.c)
+  target_include_directories(renderer_clusters_test PRIVATE studio/src ${SDL3_INCLUDE_DIRS})
+  target_link_libraries(renderer_clusters_test PRIVATE boggart_vt freetype boggart_harfbuzz uv_a)
+  if(UNIX)
+    target_link_libraries(renderer_clusters_test PRIVATE m)
+  endif()
+  if(BOGGART_SDL_TARGET)
+    target_link_libraries(renderer_clusters_test PRIVATE ${BOGGART_SDL_TARGET})
+  elseif(TARGET SDL3::SDL3)
+    target_link_libraries(renderer_clusters_test PRIVATE SDL3::SDL3)
+  else()
+    target_link_libraries(renderer_clusters_test PRIVATE ${SDL3_LIBRARIES})
+    target_link_directories(renderer_clusters_test PRIVATE ${SDL3_LIBRARY_DIRS})
+  endif()
+  if(APPLE)
+    target_link_libraries(renderer_clusters_test PRIVATE "-framework CoreText" "-framework CoreFoundation")
+  endif()
+  add_test(NAME renderer_clusters COMMAND ${CMAKE_COMMAND} -E env SDL_VIDEODRIVER=dummy $<TARGET_FILE:renderer_clusters_test> ${CMAKE_CURRENT_SOURCE_DIR}/studio/data/fonts/monospace.ttf ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fonts/NotoSansDevanagari.ttf)
+  add_test(NAME renderer_emoji COMMAND ${CMAKE_COMMAND} -E env SDL_VIDEODRIVER=dummy BOGGART_STUDIO_FONTS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fonts/NotoColorEmoji-subset.ttf $<TARGET_FILE:renderer_clusters_test> ${CMAKE_CURRENT_SOURCE_DIR}/studio/data/fonts/monospace.ttf ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fonts/NotoSansDevanagari.ttf ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fonts/NotoColorEmoji-subset.ttf)
+  add_executable(renderer_atlas_test tests/c/renderer_atlas.c studio/src/fontshape.c studio/src/fontcluster.c studio/src/fontfallback.c)
+  target_include_directories(renderer_atlas_test PRIVATE studio/src ${SDL3_INCLUDE_DIRS})
+  target_link_libraries(renderer_atlas_test PRIVATE boggart_vt freetype boggart_harfbuzz uv_a)
+  if(BOGGART_SDL_TARGET)
+    target_link_libraries(renderer_atlas_test PRIVATE ${BOGGART_SDL_TARGET})
+  elseif(TARGET SDL3::SDL3)
+    target_link_libraries(renderer_atlas_test PRIVATE SDL3::SDL3)
+  else()
+    target_link_libraries(renderer_atlas_test PRIVATE ${SDL3_LIBRARIES})
+    target_link_directories(renderer_atlas_test PRIVATE ${SDL3_LIBRARY_DIRS})
+  endif()
+  if(UNIX)
+    target_link_libraries(renderer_atlas_test PRIVATE m)
+  endif()
+  if(APPLE)
+    target_link_libraries(renderer_atlas_test PRIVATE "-framework CoreText" "-framework CoreFoundation")
+  endif()
+  add_test(NAME renderer_atlas COMMAND ${CMAKE_COMMAND} -E env SDL_VIDEODRIVER=dummy $<TARGET_FILE:renderer_atlas_test> ${CMAKE_CURRENT_SOURCE_DIR}/studio/data/fonts/monospace.ttf)
+endif()
+add_executable(page_layout_test tests/c/page_layout.c)
+target_link_libraries(page_layout_test PRIVATE boggart_vt)
+add_test(NAME page_layout COMMAND page_layout_test)
+add_executable(bitmap_test tests/c/bitmap.c)
+target_include_directories(bitmap_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_test(NAME bitmap COMMAND bitmap_test)
+add_executable(idmap_test tests/c/idmap.c)
+target_include_directories(idmap_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_test(NAME idmap COMMAND idmap_test)
+add_executable(idmap_scalar_test tests/c/idmap.c)
+target_compile_definitions(idmap_scalar_test PRIVATE LIDMAP_FORCE_SCALAR=1)
+target_include_directories(idmap_scalar_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_test(NAME idmap_scalar COMMAND idmap_scalar_test)
+add_executable(resize_failure_test tests/c/resize_failure.c)
+target_link_libraries(resize_failure_test PRIVATE boggart_vt)
+add_test(NAME resize_failure COMMAND resize_failure_test)
+add_executable(wide_cells_test tests/c/wide_cells.c)
+target_link_libraries(wide_cells_test PRIVATE boggart_vt)
+add_test(NAME wide_cells COMMAND wide_cells_test)
+add_executable(grapheme_cells_test tests/c/grapheme_cells.c)
+target_link_libraries(grapheme_cells_test PRIVATE boggart_vt)
+add_test(NAME grapheme_cells COMMAND grapheme_cells_test)
+add_executable(terminal_dispatch_test tests/c/terminal.c)
+target_link_libraries(terminal_dispatch_test PRIVATE boggart_vt)
+add_test(NAME terminal_dispatch COMMAND terminal_dispatch_test)
+add_executable(osc_commands_test tests/c/osc.c)
+target_link_libraries(osc_commands_test PRIVATE boggart_vt)
+add_test(NAME osc_commands COMMAND osc_commands_test)
+add_executable(terminal_events_test tests/c/terminal_events.c)
+target_link_libraries(terminal_events_test PRIVATE boggart_vt)
+add_test(NAME terminal_events COMMAND terminal_events_test)
+add_executable(terminal_links_test tests/c/links.c)
+target_link_libraries(terminal_links_test PRIVATE boggart_vt)
+add_test(NAME terminal_links COMMAND terminal_links_test)
+add_executable(mouse_encode_test tests/c/mouse.c)
+target_link_libraries(mouse_encode_test PRIVATE boggart_vt)
+add_test(NAME mouse_encode COMMAND mouse_encode_test)
+add_executable(terminal_mouse_test tests/c/terminal_mouse.c)
+target_link_libraries(terminal_mouse_test PRIVATE boggart_vt)
+add_test(NAME terminal_mouse COMMAND terminal_mouse_test)
+add_executable(key_encode_test tests/c/key.c)
+target_link_libraries(key_encode_test PRIVATE boggart_vt)
+add_test(NAME key_encode COMMAND key_encode_test)
+add_executable(terminal_key_test tests/c/terminal_key.c)
+target_link_libraries(terminal_key_test PRIVATE boggart_vt)
+add_test(NAME terminal_key COMMAND terminal_key_test)
+add_executable(paste_encode_test tests/c/paste.c)
+target_link_libraries(paste_encode_test PRIVATE boggart_vt)
+add_test(NAME paste_encode COMMAND paste_encode_test)
+add_executable(terminal_input_test tests/c/terminal_input.c)
+target_link_libraries(terminal_input_test PRIVATE boggart_vt)
+add_test(NAME terminal_input COMMAND terminal_input_test)
+add_executable(terminal_unicode_test tests/c/terminal_unicode.c)
+target_link_libraries(terminal_unicode_test PRIVATE boggart_vt)
+add_test(NAME terminal_unicode COMMAND terminal_unicode_test)
+
+# Headless native parse/grid throughput. The conservative CI floors are derived
+# from a recorded native baseline and intentionally allow a 5-7x slowdown
+# before failing; they catch regressions without treating shared-runner noise
+# as a product performance target.
+add_custom_target(termbench
+  COMMAND ${CMAKE_COMMAND} -E env
+    BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/termbench-home
+    $<TARGET_FILE:boggart> --eval ${CMAKE_CURRENT_SOURCE_DIR}/tools/termbench.lua --
+      --bytes 1048576 --samples 5 --chunk 4096 --cols 80 --rows 24
+      --require-features
+      --budgets ${CMAKE_CURRENT_SOURCE_DIR}/tools/termbench/ci-budgets.json
+      --output ${CMAKE_CURRENT_BINARY_DIR}/termbench-ci-report.json
+  DEPENDS boggart
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  COMMENT "Measuring terminal parse throughput and stream fragmentation"
+  USES_TERMINAL)
+
+if(UNIX)
+  add_executable(termbench_pty tools/termbench/pty_fixture.c)
+  set_target_properties(termbench_pty PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES)
+  boggart_apply_sanitizer(termbench_pty)
+  add_test(NAME termbench_pty
+    COMMAND ${CMAKE_COMMAND} -E env
+      BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/termbench_pty
+      BMUX_BENCH_FIXTURE=$<TARGET_FILE:termbench_pty>
+      $<TARGET_FILE:boggart> --eval tests/termbench_pty.lua
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  set_tests_properties(termbench_pty PROPERTIES TIMEOUT 15)
+  add_test(NAME termbench_measure
+    COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/termbench_measure
+      $<TARGET_FILE:boggart> --eval tests/termbench_measure.lua
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
+
+if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(termbench_sample tools/termbench/process_sample.c)
+  set_target_properties(termbench_sample PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES)
+  target_link_libraries(termbench_sample PRIVATE uv_a)
+  if(APPLE)
+    target_link_libraries(termbench_sample PRIVATE proc)
+  endif()
+  boggart_apply_sanitizer(termbench_sample)
+  add_test(NAME termbench_sample COMMAND termbench_sample --self-test)
+  set_tests_properties(termbench_sample PROPERTIES TIMEOUT 10)
+  if(TARGET boggart-studio)
+    add_test(NAME termbench_system
+      COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/termbench_system
+        BMUX_SYSTEM_STUDIO=$<TARGET_FILE:boggart-studio> BMUX_BENCH_FIXTURE=$<TARGET_FILE:termbench_pty>
+        BMUX_SYSTEM_SAMPLER=$<TARGET_FILE:termbench_sample> BMUX_SYSTEM_STARTS=1 BMUX_SYSTEM_STARTUP_TRACE=1
+        BMUX_SYSTEM_IDLE_SAMPLES=1 BMUX_SYSTEM_IDLE_MS=100 BMUX_SYSTEM_SETTLE_MS=50
+        BMUX_SYSTEM_RTT_SAMPLES=3 BMUX_SYSTEM_RTT_WARMUPS=2 SDL_VIDEODRIVER=dummy
+        BMUX_SYSTEM_REPORT=${CMAKE_CURRENT_BINARY_DIR}/termbench-system-smoke.json
+        $<TARGET_FILE:boggart> --eval tools/termbench/system.lua
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(termbench_system PROPERTIES TIMEOUT 150)
+    add_test(NAME termbench_attach_burst
+      COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/termbench_attach_burst
+        BMUX_SYSTEM_STUDIO=$<TARGET_FILE:boggart-studio> BMUX_BENCH_FIXTURE=$<TARGET_FILE:termbench_pty>
+        BMUX_SYSTEM_SAMPLER=$<TARGET_FILE:termbench_sample> BMUX_SYSTEM_STARTS=1 BMUX_SYSTEM_PANES=100
+        BMUX_SYSTEM_DIAGNOSTICS=1 BMUX_SYSTEM_ATTACH_DELAY_MS=60
+        BMUX_SYSTEM_IDLE_SAMPLES=1 BMUX_SYSTEM_IDLE_MS=100 BMUX_SYSTEM_SETTLE_MS=50
+        BMUX_SYSTEM_RTT_SAMPLES=3 BMUX_SYSTEM_RTT_WARMUPS=2 SDL_VIDEODRIVER=dummy
+        BMUX_SYSTEM_REPORT=${CMAKE_CURRENT_BINARY_DIR}/termbench-attach-burst-smoke.json
+        $<TARGET_FILE:boggart> --eval tools/termbench/system.lua
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(termbench_attach_burst PROPERTIES TIMEOUT 150)
+  endif()
+endif()
+
+# Explicit test-only oracle. Zig/Ghostty are never product dependencies.
+set(BOGGART_GHOSTTY_ORACLE_WORK_ROOT "${CMAKE_CURRENT_BINARY_DIR}/ghostty-oracle"
+    CACHE PATH "Scratch directory for the optional pinned Ghostty VT oracle")
+add_custom_target(ghostty-oracle
+  COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/ghostty/build_oracle.py"
+    --work-root "${BOGGART_GHOSTTY_ORACLE_WORK_ROOT}"
+  COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/ghostty_oracle_cli_test.py"
+    --binary "${BOGGART_GHOSTTY_ORACLE_WORK_ROOT}/resize-oracle"
+  COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/ghostty/capture_resize.py"
+    --binary "${BOGGART_GHOSTTY_ORACLE_WORK_ROOT}/resize-oracle" --check
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  COMMENT "Building the pinned test oracle and verifying resize fixtures"
+  USES_TERMINAL)
+
+foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor wire jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents agentbridge agentcontrol fleetworkers grapheme_edit vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable typesafe judge ladder toolroute ladder_sites harden policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast mining_recognition mining_compile mining_jobs learning_evaluate learning_promote learning_route learning_monitor workflow_slack workflow_novel workflow_triggers searchroute tracker story story_model story_geo story_geosql story_style story_kb auth_file looplag http_body json_c store_save hash_c fileview termbench terminal terminal_input_route terminal_process terminal_process_shutdown terminal_graphemes terminal_resize terminal_resize_cached terminal_resize_api terminal_resize_large ghostty_page_growth ghostty_bitmap)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home}
@@ -932,13 +1272,138 @@ foreach(suite test integration swarm mcp ltui sysfs bus fabric trace supervisor 
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
 
+foreach(suite bmux_tree bmux_layout bmux_checkpoint bmux_rehydrate bmux_journal_native bmux_journal bmux_recovery bmux_recovery_client bmux_session_transfer bmux_session_files bmux_session_restart bmux_layout_server bmux_snapshot bmux_layout_client bmux_ctui bmux_ctui_sessions bmux_ctui_fleet bmux_server_agents bmux_fleet_client bmux_fleet_source agent_channel_watch control_unix manualfleet terminal_environment agenthooks providerevents provider_notify actionfocus terminal_registry terminal_server terminal_attachments terminal_watch terminal_observers serve_streams terminal_push terminal_transport terminal_replica terminal_client terminal_input_events terminal_attach_queue)
+  add_test(NAME ${suite}
+    COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite}
+      $<TARGET_FILE:boggart> --eval tests/${suite}.lua
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  set_tests_properties(${suite} PROPERTIES TIMEOUT 20)
+endforeach()
+set_tests_properties(terminal_server PROPERTIES TIMEOUT 45)
+add_test(NAME terminal_transport_shutdown
+  COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/terminal_transport_shutdown
+    $<TARGET_FILE:boggart> --eval tests/terminal_transport_shutdown.lua
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+set_tests_properties(terminal_transport_shutdown PROPERTIES TIMEOUT 15)
+add_test(NAME terminal_transport_workers
+  COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/terminal_transport_workers
+    $<TARGET_FILE:boggart> --eval tests/terminal_transport_workers.lua
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+set_tests_properties(terminal_transport_workers PROPERTIES TIMEOUT 15)
+add_test(NAME control_unix_burst
+  COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/control_unix_burst
+    $<TARGET_FILE:boggart> --eval tests/control_unix_burst.lua
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+set_tests_properties(control_unix_burst PROPERTIES TIMEOUT 15)
+set_tests_properties(bmux_ctui bmux_ctui_sessions bmux_ctui_fleet bmux_session_restart bmux_session_transfer PROPERTIES TIMEOUT 60)
+set_tests_properties(bmux_server_agents PROPERTIES TIMEOUT 60)
+
+if(TARGET boggart-studio)
+  if(UNIX)
+    set(_latency_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/studio_termbench_latency)
+    add_test(NAME studio_termbench_latency
+      COMMAND ${CMAKE_COMMAND} -E env HOME=${_latency_home}
+        BOGGART_HOME=${_latency_home}/.boggart SHELL=/bin/sh SDL_VIDEODRIVER=dummy
+        BMUX_BENCH_FIXTURE=$<TARGET_FILE:termbench_pty>
+        BMUX_LATENCY_SAMPLES=3 BMUX_LATENCY_WARMUPS=2
+        BMUX_LATENCY_REPORT=${CMAKE_CURRENT_BINARY_DIR}/termbench-latency-smoke.json
+        BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/termbench/studio_latency.lua
+        $<TARGET_FILE:boggart-studio> .
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(studio_termbench_latency PROPERTIES TIMEOUT 60)
+  endif()
+  set(_process_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/terminal_process_studio)
+  add_test(NAME terminal_process_studio
+    COMMAND ${CMAKE_COMMAND} -E env HOME=${_process_home} USERPROFILE=${_process_home}
+      LOCALAPPDATA=${_process_home}/AppData/Local BOGGART_HOME=${_process_home}/.boggart
+      SDL_VIDEODRIVER=dummy BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/terminal_process_studio.lua
+      $<TARGET_FILE:boggart-studio> .
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  set_tests_properties(terminal_process_studio PROPERTIES TIMEOUT 30)
+  set(_pane_suites studio_terminal_image studio_terminal_remote studio_terminal_attached studio_terminal_native studio_terminal_shutdown studio_terminal_render studio_terminal_clusters studio_grid_text studio_agent_clusters studio_color_emoji studio_grapheme_edit studio_bmux studio_bmux_tree studio_bmux_layout studio_bmux_sessions studio_server_agents studio_fleet_agents studio_agent_control studio_fleet_workers studio_manual_agents studio_agent_hooks studio_provider_events studio_fleet_keyboard)
+  if(UNIX AND EXISTS /usr/bin/vim)
+    list(APPEND _pane_suites studio_terminal_vim)
+  endif()
+  list(APPEND _pane_suites studio_chooser studio_present_probe studio_transport_shutdown studio_project_scan)
+  foreach(_pane_suite IN LISTS _pane_suites)
+    set(_pane_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${_pane_suite})
+    set(_pane_shell_env)
+    if(_pane_suite STREQUAL "studio_bmux_sessions" OR _pane_suite STREQUAL "studio_bmux_layout" OR _pane_suite STREQUAL "studio_server_agents")
+      list(APPEND _pane_shell_env SHELL=/bin/sh)
+    endif()
+    if(_pane_suite STREQUAL "studio_color_emoji" OR _pane_suite STREQUAL "studio_terminal_image")
+      list(APPEND _pane_shell_env BOGGART_STUDIO_FONTS=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/fonts/NotoColorEmoji-subset.ttf)
+    endif()
+    if(_pane_suite STREQUAL "studio_bmux" OR _pane_suite STREQUAL "studio_fleet_agents" OR _pane_suite STREQUAL "studio_agent_control" OR _pane_suite STREQUAL "studio_fleet_workers" OR _pane_suite STREQUAL "studio_manual_agents" OR _pane_suite STREQUAL "studio_agent_hooks" OR _pane_suite STREQUAL "studio_provider_events" OR _pane_suite STREQUAL "studio_fleet_keyboard")
+      # Test interactive input without inheriting a user's shell startup scripts.
+      set(_pane_shell_env SHELL=/bin/sh)
+    endif()
+    add_test(NAME ${_pane_suite}
+      COMMAND ${CMAKE_COMMAND} -E env HOME=${_pane_home} USERPROFILE=${_pane_home}
+        LOCALAPPDATA=${_pane_home}/AppData/Local BOGGART_HOME=${_pane_home}/.boggart
+        ${_pane_shell_env}
+        SDL_VIDEODRIVER=dummy BMUX_RENDER_DIR=${_pane_home} BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/${_pane_suite}.lua
+        $<TARGET_FILE:boggart-studio> .
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(${_pane_suite} PROPERTIES TIMEOUT 15)
+    if(_pane_suite STREQUAL "studio_terminal_attached" OR _pane_suite STREQUAL "studio_bmux_sessions" OR _pane_suite STREQUAL "studio_bmux_layout" OR _pane_suite STREQUAL "studio_server_agents")
+      set_tests_properties(${_pane_suite} PROPERTIES TIMEOUT 60)
+    endif()
+    if(_pane_suite STREQUAL "studio_terminal_remote")
+      set_tests_properties(${_pane_suite} PROPERTIES TIMEOUT 60)
+    endif()
+    if(_pane_suite STREQUAL "studio_agent_hooks" OR _pane_suite STREQUAL "studio_provider_events" OR _pane_suite STREQUAL "studio_fleet_keyboard")
+      set_tests_properties(${_pane_suite} PROPERTIES TIMEOUT 90)
+    endif()
+  endforeach()
+  if(UNIX)
+    # Optional real-application compatibility gate. Keep ordinary builds
+    # independent of these packages, but exercise their actual PTYs when the
+    # TUI programs are installed on a developer or CI host.
+    find_program(BMUX_TEST_HTOP htop)
+    find_program(BMUX_TEST_LESS less)
+    find_program(BMUX_TEST_TMUX tmux)
+    find_program(BMUX_TEST_VIM vim)
+    if(BMUX_TEST_HTOP AND BMUX_TEST_LESS AND BMUX_TEST_TMUX AND BMUX_TEST_VIM)
+      set(_apps_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/studio_terminal_apps)
+      file(MAKE_DIRECTORY ${_apps_home}/.boggart)
+      add_test(NAME studio_terminal_apps
+        COMMAND ${CMAKE_COMMAND} -E env HOME=${_apps_home} USERPROFILE=${_apps_home}
+          BOGGART_HOME=${_apps_home}/.boggart BOGGART_AGENT_HOOKS=0 SHELL=/bin/sh
+          SDL_VIDEODRIVER=dummy BMUX_TEST_HTOP=${BMUX_TEST_HTOP}
+          BMUX_TEST_LESS=${BMUX_TEST_LESS} BMUX_TEST_TMUX=${BMUX_TEST_TMUX}
+          BMUX_TEST_VIM=${BMUX_TEST_VIM}
+          BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/studio_terminal_apps.lua
+          $<TARGET_FILE:boggart-studio> .
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+      set_tests_properties(studio_terminal_apps PROPERTIES TIMEOUT 90)
+    endif()
+    string(SHA256 _bmux_autostart_hash "${CMAKE_BINARY_DIR}")
+    string(SUBSTRING "${_bmux_autostart_hash}" 0 12 _bmux_autostart_hash)
+    set(_bmux_autostart_home "/tmp/bmx-${_bmux_autostart_hash}")
+    add_test(NAME studio_bmux_autostart
+      COMMAND ${CMAKE_COMMAND} -E env HOME=${_bmux_autostart_home}
+        USERPROFILE=${_bmux_autostart_home} LOCALAPPDATA=${_bmux_autostart_home}/AppData/Local
+        BOGGART_HOME=${_bmux_autostart_home}/data SHELL=/bin/sh SDL_VIDEODRIVER=dummy
+        BOGGART_STUDIO_BIN=$<TARGET_FILE:boggart-studio>
+        BOGGART_STUDIO_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/studio_bmux_autostart.lua
+        BMUX_AUTOSTART_HOME=${_bmux_autostart_home}
+        BMUX_AUTOSTART_PROJECT=${CMAKE_CURRENT_SOURCE_DIR}
+        BMUX_AUTOSTART_STATE=${_bmux_autostart_home}/state.json
+        BMUX_AUTOSTART_PIDFILE=${_bmux_autostart_home}/server.pid
+        sh tests/run_studio_bmux_autostart.sh
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(studio_bmux_autostart PROPERTIES TIMEOUT 180)
+  endif()
+endif()
+
 # termctl (B0 of the cTUI, docs/cli-plan.md): the dependency-free full-screen
 # terminal layer. Compiled standalone and smoke-tested here so it stays
 # build-verified and regression-guarded before the cTUI that consumes it exists.
 # The smoke test degrades gracefully with no tty, so </dev/null it self-exits 0.
 add_executable(termctl_smoke src/termctl.c src/termctl_test.c)
 target_include_directories(termctl_smoke PRIVATE src ${VENDOR}/libuv/include)
-target_link_libraries(termctl_smoke PRIVATE uv_a)
+target_link_libraries(termctl_smoke PRIVATE uv_a boggart_vt)
 add_test(NAME termctl COMMAND sh -c "$<TARGET_FILE:termctl_smoke> </dev/null")
 
 # BOG-6: the credential code under concurrency (8 threads reading headers while
@@ -965,4 +1430,5 @@ endif()
 # Sanitizers on boggart's own code and the C tests (BOG-10); the vendored
 # interpreter and JSON lib too, so a misuse inside them is attributed.
 boggart_apply_sanitizer(boggart boggart-studio auth_threads_test assert_trap_test crash_handler_test
-                        termctl_smoke lua_vendor cjson_vendor luv_lua)
+                        termctl_smoke lua_vendor cjson_vendor luv_lua boggart_vt boggart_pty pty_transport_test studio_uvbridge_test termgrid_test termcache_test renderer_fonts_test renderer_clusters_test renderer_atlas_test freetype png_static zlibstatic vt_parser_test page_storage_test page_resize_test page_layout_test bitmap_test idmap_test idmap_scalar_test resize_failure_test
+                        terminal_dispatch_test osc_commands_test terminal_events_test terminal_links_test mouse_encode_test terminal_mouse_test key_encode_test terminal_key_test paste_encode_test terminal_input_test boggart_unicode unicode_test wide_cells_test grapheme_cells_test terminal_unicode_test terminal_text_width_test)

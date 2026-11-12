@@ -1,0 +1,1717 @@
+{
+  "schema": 1,
+  "ticket": "BMUX-20",
+  "status": "pending compatibility fix",
+  "oracle": {
+    "schema": 1,
+    "revision": "05dcf887ef51ea27821f20979493306ec3a19149",
+    "archive_sha256": "61a0158a9b2592f147d1e2e0f965d6c952c90410faab6e7265c169a1ccc9481a",
+    "source_files_verified": 5915,
+    "zig_version": "0.16.0",
+    "library_sha256": "062a23bd140067b7a25a9996a42aa73e522509998b9a9fd0015c5266447d7b99",
+    "binary_sha256": "f310b419168ce8580b3a4ba4a437736add098090af7b4dafe73ea6d967fc48fe",
+    "adapter_sha256": "791cb26dc8f054d843ceffdde0e23ef08a36119c482469f315b04af021e1a68e",
+    "compiler": "Apple clang version 21.0.0 (clang-2100.3.34.2)"
+  },
+  "native_source": {
+    "files": [
+      {
+        "path": "src/lvt.c",
+        "sha256": "a45cdcb9684d586c29a8ec02a8a7cf9faeaa2ef71cb2768ff742f36009f45b86"
+      },
+      {
+        "path": "src/vt_table.h",
+        "sha256": "2afeb25ada6c85e69d76514bc7b77d67b758248b1dd3de014bf4233926598fb0"
+      },
+      {
+        "path": "src/lstyle.c",
+        "sha256": "5a04f044ba88f2c1a1a2483dee6996f8fe0884cdf206e249edaf2b72b1070ccd"
+      },
+      {
+        "path": "src/llink.c",
+        "sha256": "ecc969ed12638e399bbd23cdde593a2a4d6766ec9e38f48543acbadbe0bb53ee"
+      },
+      {
+        "path": "src/lpage.c",
+        "sha256": "054a7b9936834450108a808ac35b621c7613301418b06a256d2205ab4d9d76bf"
+      },
+      {
+        "path": "src/lpage_resize.c",
+        "sha256": "48e5a8c923262620179cfa37cc7b38ec36dcf31f9258a321356987a0e67dc9f3"
+      },
+      {
+        "path": "src/bterm.c",
+        "sha256": "1aa6ef665564e822aecbb968546d7872f48a3f5c005c5cac208e8611e67a82af"
+      },
+      {
+        "path": "src/bterm_dispatch.c",
+        "sha256": "6777ab82af6438ab2d44e0b73500ee988588406cc12b6b1f02b47b6e715e4b72"
+      },
+      {
+        "path": "src/bterm_sgr.c",
+        "sha256": "782bdc8449e8133dbfa844ce6aad2fb21458abaab932ebdbff945c2ac3ab564d"
+      },
+      {
+        "path": "src/bosc.c",
+        "sha256": "3a35af6311b4170a9771a66d1c953d288e743e566c5977f0361f12a2a39558fb"
+      },
+      {
+        "path": "src/bmouse.c",
+        "sha256": "7ddd50cbf1efacb17d00dceb81e38cbfff44e0c9514be0b6a66dab1bd0660a97"
+      },
+      {
+        "path": "src/bkey.c",
+        "sha256": "fe2200855007dffdff210a317274f9ee127ca08773b593eecc38c47ea8f487c4"
+      },
+      {
+        "path": "src/bpaste.c",
+        "sha256": "a8e435e985a42b668c939808bfe52ac3911e182c06838eddca5dcd95b4451c1f"
+      },
+      {
+        "path": "src/bterm_osc.c",
+        "sha256": "f3a071dc1caefd9cdb693029bd091eec2731c7ea441ab1dd7b3ac2934aa0db8c"
+      },
+      {
+        "path": "src/lterminal.c",
+        "sha256": "eb6edab90bb1dba8626f5c73e4e04fad2d8d410223257eca33533998ef0f6f64"
+      },
+      {
+        "path": "src/lvt.h",
+        "sha256": "3804524af44dc3f066563e3b817ec76112c8ca25257cc6896a007e20933cdbbc"
+      },
+      {
+        "path": "src/lstyle.h",
+        "sha256": "347bda983d0f4dd0f73b844f7e92d3cb6baf02a4317efaf242d4d8d0971e9ed3"
+      },
+      {
+        "path": "src/llink.h",
+        "sha256": "1649bdeed0e9f70a6d8e65cf635de2a5a94f6b77c0cbd4c455abb05509994d8e"
+      },
+      {
+        "path": "src/lpage.h",
+        "sha256": "958e6b342ee0068ebf4dd9f829fc1e92f21c30df385d0f548dfd6b1bb2c2b0cd"
+      },
+      {
+        "path": "src/lpage_internal.h",
+        "sha256": "c88274a2caa81237712c465e10d2caf72e03c6aca6c87254bc79da322adc2e5b"
+      },
+      {
+        "path": "src/bosc.h",
+        "sha256": "b27e7071efd010b72776cc01da613c2b28891197eb5ebb9f6fad26057c6fc413"
+      },
+      {
+        "path": "src/bmouse.h",
+        "sha256": "8bd5f65f309002c160f646cbc5756b4e977ac48ce508a6f2b9418507a719b422"
+      },
+      {
+        "path": "src/bkey.h",
+        "sha256": "752759364e13dcce694cd412de919ef5239b0f1862635690d64ddd8e8174ece4"
+      },
+      {
+        "path": "src/bpaste.h",
+        "sha256": "fa0f7c0fbe12bb7bf5d72a71564dab309b78fa3f40a879ae30cb36084d0faa4d"
+      },
+      {
+        "path": "src/bterm.h",
+        "sha256": "da2e160c0dbfdb67df1cf915b505e1f79a802c7a2208e696bcabe0d6437c979d"
+      },
+      {
+        "path": "src/bterm_internal.h",
+        "sha256": "764673d1aa4eee5c1102f878cb41b326ffaf7d97b307889568d90181cba96d51"
+      },
+      {
+        "path": "src/bunicode.c",
+        "sha256": "9c464a09a424e360d248b50d00f44f09e72e4333e77842f467826c299a3d6c91"
+      },
+      {
+        "path": "src/bunicode.h",
+        "sha256": "6de749d713e55630f1ac67bbfeaa6863fd83916b688db95872050f6536d992f6"
+      },
+      {
+        "path": "src/bunicode_data.h",
+        "sha256": "4fcc577349d9cf06441901a35025048372ff4daeb29a0e9cbb213fc2e7450cc5"
+      },
+      {
+        "path": "src/lgrapheme.c",
+        "sha256": "76c8b945125a36f3a0ec19aa40ea0b53f7d25b718daf2953c42c987543e18c26"
+      },
+      {
+        "path": "src/lgrapheme.h",
+        "sha256": "470adec5f24a6bf7e1b4467673ad43ab37864b9c09befa22b54ab1bbabdbee49"
+      }
+    ]
+  },
+  "input": {
+    "columns": 6,
+    "rows": 3,
+    "history_limit": 2000,
+    "operations": [
+      {
+        "feed_hex": "6162636465666768696a1b5b3f376c"
+      },
+      {
+        "resize": [
+          4,
+          3
+        ]
+      },
+      {
+        "resize": [
+          6,
+          3
+        ]
+      }
+    ]
+  },
+  "oracle_snapshots": [
+    {
+      "cols": 6,
+      "rows": 3,
+      "x": 4,
+      "y": 1,
+      "pending_wrap": false,
+      "alternate": false,
+      "screen": [
+        {
+          "wrapped": true,
+          "cells": [
+            {
+              "cps": [
+                97
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                98
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                99
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                100
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                101
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                102
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            }
+          ]
+        },
+        {
+          "wrapped": false,
+          "cells": [
+            {
+              "cps": [
+                103
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                104
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                105
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                106
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            }
+          ]
+        },
+        {
+          "wrapped": false,
+          "cells": [
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            }
+          ]
+        }
+      ],
+      "scrollback": []
+    },
+    {
+      "cols": 4,
+      "rows": 3,
+      "x": 3,
+      "y": 1,
+      "pending_wrap": false,
+      "alternate": false,
+      "screen": [
+        {
+          "wrapped": true,
+          "cells": [
+            {
+              "cps": [
+                97
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                98
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                99
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                100
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            }
+          ]
+        },
+        {
+          "wrapped": false,
+          "cells": [
+            {
+              "cps": [
+                103
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                104
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                105
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                106
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            }
+          ]
+        },
+        {
+          "wrapped": false,
+          "cells": [
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            }
+          ]
+        }
+      ],
+      "scrollback": []
+    },
+    {
+      "cols": 6,
+      "rows": 3,
+      "x": 3,
+      "y": 1,
+      "pending_wrap": false,
+      "alternate": false,
+      "screen": [
+        {
+          "wrapped": true,
+          "cells": [
+            {
+              "cps": [
+                97
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                98
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                99
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                100
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            }
+          ]
+        },
+        {
+          "wrapped": false,
+          "cells": [
+            {
+              "cps": [
+                103
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                104
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                105
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [
+                106
+              ],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            }
+          ]
+        },
+        {
+          "wrapped": false,
+          "cells": [
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            },
+            {
+              "cps": [],
+              "width": 1,
+              "head": false,
+              "protected": false,
+              "style": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "uri": []
+            }
+          ]
+        }
+      ],
+      "scrollback": []
+    }
+  ],
+  "native_snapshots": [
+    {
+      "cols": 6,
+      "pending": {
+        "intermediates": [
+          63
+        ],
+        "osc": {},
+        "osc_overflow": false,
+        "param_acc": 7,
+        "param_digits": 1,
+        "params": [
+          7
+        ],
+        "separators": 0,
+        "state": 0,
+        "utf8_acc": 0,
+        "utf8_high": 0,
+        "utf8_low": 0,
+        "utf8_need": 0
+      },
+      "rows": 3,
+      "screen": [
+        {
+          "cells": [
+            {
+              "codepoint": 97,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "a",
+              "width": 1
+            },
+            {
+              "codepoint": 98,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "b",
+              "width": 1
+            },
+            {
+              "codepoint": 99,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "c",
+              "width": 1
+            },
+            {
+              "codepoint": 100,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "d",
+              "width": 1
+            },
+            {
+              "codepoint": 101,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "e",
+              "width": 1
+            },
+            {
+              "codepoint": 102,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "f",
+              "width": 1
+            }
+          ],
+          "wrapped": true
+        },
+        {
+          "cells": [
+            {
+              "codepoint": 103,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "g",
+              "width": 1
+            },
+            {
+              "codepoint": 104,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "h",
+              "width": 1
+            },
+            {
+              "codepoint": 105,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "i",
+              "width": 1
+            },
+            {
+              "codepoint": 106,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "j",
+              "width": 1
+            },
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            },
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            }
+          ],
+          "wrapped": false
+        },
+        {
+          "cells": [
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            },
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            },
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            },
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            },
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            },
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            }
+          ],
+          "wrapped": false
+        }
+      ],
+      "scrollback": {},
+      "state": {
+        "alternate": false,
+        "bottom": 3,
+        "col": 5,
+        "cursor_style": 0,
+        "modes": 1028,
+        "pen": {
+          "attrs": 0,
+          "bg": 0,
+          "fg": 0,
+          "underline": 0
+        },
+        "pending_wrap": false,
+        "row": 2,
+        "top": 1
+      }
+    },
+    {
+      "cols": 4,
+      "pending": {
+        "intermediates": [
+          63
+        ],
+        "osc": {},
+        "osc_overflow": false,
+        "param_acc": 7,
+        "param_digits": 1,
+        "params": [
+          7
+        ],
+        "separators": 0,
+        "state": 0,
+        "utf8_acc": 0,
+        "utf8_high": 0,
+        "utf8_low": 0,
+        "utf8_need": 0
+      },
+      "rows": 3,
+      "screen": [
+        {
+          "cells": [
+            {
+              "codepoint": 97,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "a",
+              "width": 1
+            },
+            {
+              "codepoint": 98,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "b",
+              "width": 1
+            },
+            {
+              "codepoint": 99,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "c",
+              "width": 1
+            },
+            {
+              "codepoint": 100,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "d",
+              "width": 1
+            }
+          ],
+          "wrapped": true
+        },
+        {
+          "cells": [
+            {
+              "codepoint": 103,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "g",
+              "width": 1
+            },
+            {
+              "codepoint": 104,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "h",
+              "width": 1
+            },
+            {
+              "codepoint": 105,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "i",
+              "width": 1
+            },
+            {
+              "codepoint": 106,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "j",
+              "width": 1
+            }
+          ],
+          "wrapped": false
+        },
+        {
+          "cells": [
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            },
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            },
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            },
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            }
+          ],
+          "wrapped": false
+        }
+      ],
+      "scrollback": {},
+      "state": {
+        "alternate": false,
+        "bottom": 3,
+        "col": 4,
+        "cursor_style": 0,
+        "modes": 1028,
+        "pen": {
+          "attrs": 0,
+          "bg": 0,
+          "fg": 0,
+          "underline": 0
+        },
+        "pending_wrap": false,
+        "row": 2,
+        "top": 1
+      }
+    },
+    {
+      "cols": 6,
+      "pending": {
+        "intermediates": [
+          63
+        ],
+        "osc": {},
+        "osc_overflow": false,
+        "param_acc": 7,
+        "param_digits": 1,
+        "params": [
+          7
+        ],
+        "separators": 0,
+        "state": 0,
+        "utf8_acc": 0,
+        "utf8_high": 0,
+        "utf8_low": 0,
+        "utf8_need": 0
+      },
+      "rows": 3,
+      "screen": [
+        {
+          "cells": [
+            {
+              "codepoint": 97,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "a",
+              "width": 1
+            },
+            {
+              "codepoint": 98,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "b",
+              "width": 1
+            },
+            {
+              "codepoint": 99,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "c",
+              "width": 1
+            },
+            {
+              "codepoint": 100,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "d",
+              "width": 1
+            },
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            },
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            }
+          ],
+          "wrapped": false
+        },
+        {
+          "cells": [
+            {
+              "codepoint": 103,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "g",
+              "width": 1
+            },
+            {
+              "codepoint": 104,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "h",
+              "width": 1
+            },
+            {
+              "codepoint": 105,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "i",
+              "width": 1
+            },
+            {
+              "codepoint": 106,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "j",
+              "width": 1
+            },
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            },
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            }
+          ],
+          "wrapped": false
+        },
+        {
+          "cells": [
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            },
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            },
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            },
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            },
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            },
+            {
+              "codepoint": 0,
+              "flags": 0,
+              "hyperlink": 0,
+              "style": {
+                "attrs": 0,
+                "bg": 0,
+                "fg": 0,
+                "underline": 0
+              },
+              "text": "",
+              "width": 1
+            }
+          ],
+          "wrapped": false
+        }
+      ],
+      "scrollback": {},
+      "state": {
+        "alternate": false,
+        "bottom": 3,
+        "col": 4,
+        "cursor_style": 0,
+        "modes": 1028,
+        "pen": {
+          "attrs": 0,
+          "bg": 0,
+          "fg": 0,
+          "underline": 0
+        },
+        "pending_wrap": false,
+        "row": 2,
+        "top": 1
+      }
+    }
+  ],
+  "failure": "After 6 -> 4 -> 6 columns with autowrap disabled, Ghostty keeps screen row 0 wrapped; Boggart clears it. The pinned resizeWithoutReflowGrowCols cached-capacity path preserves wrap metadata."
+}

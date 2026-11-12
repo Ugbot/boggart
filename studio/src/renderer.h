@@ -37,7 +37,7 @@ typedef enum {
 
 typedef enum {
   REN_HINT_NONE,     /* the outline as designed */
-  REN_HINT_SLIGHT,   /* vertical-only autohint; the default, see renderer.c */
+  REN_HINT_SLIGHT,   /* vertical-only autohint; the default, see fontglyph.c */
   REN_HINT_FULL      /* the autohinter's full grid fitting */
 } RenHinting;
 
@@ -61,8 +61,27 @@ void ren_init(SDL_Window *win);
 void ren_update_rects(RenRect *rects, int count);
 void ren_set_clip_rect(RenRect rect);
 void ren_get_size(int *x, int *y);
+typedef struct {
+  uint64_t quads,batches,texture_switches,shared_atlas_bytes,standalone_atlas_bytes;
+  bool shared_style_atlases;const char *backend;
+} RenGlyphStats;
+void ren_reset_glyph_stats(void);
+RenGlyphStats ren_glyph_stats(void);
+/* Test-script control affects future atlas loads, not existing pages. */
+bool ren_test_style_atlas_sharing(bool enabled);
+bool ren_test_cluster_shaping(bool enabled);
 /* Writes the retained backbuffer to a BMP. 0 on success; SDL_GetError() on fail. */
 int ren_save_screenshot(const char *path);
+/* Opt-in script probe: retained scene pixel validated AFTER a successful
+ * present. ns precedes the readback; this is not a display scanout clock. */
+typedef struct {
+  bool enabled, valid;
+  int x, y;
+  uint64_t serial, ns, readback_ns;
+  RenColor color;
+} RenPresentProbe;
+bool ren_test_present_probe(bool enabled, int x, int y);
+RenPresentProbe ren_test_present_sample(void);
 
 RenImage* ren_new_image(int width, int height);
 void ren_free_image(RenImage *image);
@@ -75,6 +94,10 @@ RenFont* ren_load_font(const char *filename, float size, const RenFontOptions *o
 RenFont* ren_load_font_mem(const void *data, size_t len, float size,
                            const RenFontOptions *opt);
 void ren_free_font(RenFont *font);
+/* Borrowed synthetic variant, owned/freed by the base font. Only BOLD/ITALIC
+ * bits are added; caches and file bytes are shared across repeated requests.
+ * NULL on allocation/face failure, without changing the base font. */
+RenFont *ren_get_font_variant(RenFont *font, unsigned style);
 /* The system fonts discovered to draw what the bundled ones cannot, in the
  * order they are consulted. Diagnostic: it is how a user finds out why their
  * Japanese is boxes, and how the tests assert the chain degrades rather than
@@ -84,11 +107,20 @@ const char* ren_fallback_path(int i, int *loaded);
 void ren_set_font_tab_width(RenFont *font, int n);
 int ren_get_font_tab_width(RenFont *font);
 int ren_get_font_width(RenFont *font, const char *text);
+RenRect ren_get_text_bounds(RenFont *font, const char *text);
 int ren_get_font_height(RenFont *font);
 
 void ren_draw_rect(RenRect rect, RenColor color);
 void ren_draw_line(float x0, float y0, float x1, float y1, float thickness, RenColor color);
 void ren_draw_image(RenImage *image, RenRect *sub, RenRect *dst, RenColor color);
 int ren_draw_text(RenFont *font, const char *text, int x, int y, RenColor color);
-
+/* Native cell text with authoritative pixel advance; shapes one bounded cell
+ * cluster. Bounds prepare font caches before deferred replay. */
+bool ren_get_cluster_bounds(RenFont *font,const char *text,size_t length,int advance,RenRect *bounds);
+void ren_draw_cluster(RenFont *font,const char *text,size_t length,int x,int y,int advance,RenColor color);
+/* Whole plain-text grid strings use the native on-mode policy and font's "0"
+ * cell unit. Explicit lengths include NUL; C0/DEL do not paint/move the pen. */
+int ren_get_grid_width(RenFont *font,const char *text,size_t length);
+bool ren_get_grid_bounds(RenFont *font,const char *text,size_t length,RenRect *bounds);
+void ren_draw_grid(RenFont *font,const char *text,size_t length,int x,int y,RenColor color);
 #endif

@@ -13,7 +13,7 @@ local MenuBar = View:extend()
 
 MenuBar.menus = {
   "boggart", "File", "Edit", "View", "Go",
-  "Agent", "Run", "Project", "Tools", "Help",
+  "Agent", "Bmux", "Run", "Project", "Tools", "Help",
 }
 
 local GAP = 10  -- px around each title
@@ -40,7 +40,12 @@ function MenuBar:new()
 end
 
 function MenuBar:update()
-  self.size.y = style.font:get_height() + style.padding.y
+  local menus, workspaces = self:items(), self:workspace_items()
+  local last = menus[#menus]
+  self.workspace_second_row = workspaces[1] and last
+    and workspaces[1].x < last.x + last.w + GAP * 2
+  self.size.y = (style.font:get_height() + style.padding.y)
+    * (self.workspace_second_row and 2 or 1)
   MenuBar.super.update(self)
 end
 
@@ -60,7 +65,7 @@ local function title_hit(it, px) return px >= it.x - GAP and px < it.x + it.w + 
 
 -- The title the pointer is over (or nil).
 function MenuBar:title_at(px, py)
-  if py < self.position.y or py >= self.position.y + self.size.y then return nil end
+  if py < self.position.y or py >= self.position.y + style.font:get_height() + style.padding.y then return nil end
   for _, it in ipairs(self:items()) do
     if title_hit(it, px) then return it.name, it.x end
   end
@@ -68,7 +73,7 @@ function MenuBar:title_at(px, py)
 end
 
 -- ---- workspace tabs (right side of the bar) --------------------------------
--- The three workspaces (AGENT / EDIT / FLEET) as tab-like segments, laid out
+-- Workspace modes as tab-like segments, laid out
 -- right-aligned so the current one reads as the active view. Same shape as
 -- items() so draw and hit-testing share one geometry.
 function MenuBar:workspace_items()
@@ -93,7 +98,8 @@ end
 
 -- The workspace tab the pointer is over (or nil).
 function MenuBar:workspace_at(px, py)
-  if py < self.position.y or py >= self.position.y + self.size.y then return nil end
+  local y = self.position.y + (self.workspace_second_row and style.font:get_height() + style.padding.y or 0)
+  if py < y or py >= y + style.font:get_height() + style.padding.y then return nil end
   for _, it in ipairs(self:workspace_items()) do
     if px >= it.x and px < it.x + it.w then return it.name end
   end
@@ -235,7 +241,7 @@ end
 function MenuBar:draw()
   self:draw_background(style.background2)
   local font = style.font
-  local y = self.position.y + (self.size.y - font:get_height()) / 2
+  local y = self.position.y + style.padding.y / 2
   for _, it in ipairs(self:items()) do
     local on = (it.name == self.hovered) or (it.name == self.open)
     local color = (on or it.name == "boggart") and style.accent or style.text
@@ -245,6 +251,7 @@ function MenuBar:draw()
   -- accented, the rest dim, with a dim divider between.
   local wsitems = self:workspace_items()
   local cur = require("shell").current
+  if self.workspace_second_row then y = y + font:get_height() + style.padding.y end
   for i, it in ipairs(wsitems) do
     renderer.draw_text(font, it.label, it.x, y, it.name == cur and style.accent or style.dim)
     if i < #wsitems then renderer.draw_text(font, WS_SEP, it.x + it.w, y, style.dim) end

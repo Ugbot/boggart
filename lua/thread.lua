@@ -362,7 +362,9 @@ function M._run(rec, task)
       result = rec.result,
     })
   end
+  rec.final_status,rec.final_error=status,why
   M.live_recs[rec.id] = nil
+  M.live=math.max(0,M.live-1)
   bog.log(string.format("agent %d (%s) %s", rec.id, rec.spec_name or "agent", status))
 end
 
@@ -389,7 +391,16 @@ end
 -- Spawn a child actor; returns its id immediately (it runs when the scheduler
 -- next resumes it).
 function M.spawn(p)
+  if not M.lifecycle_sub then
+    M.lifecycle_sub=require('events').on('swarm:actor_stopped',function(_,ev)
+      local rec=M.live_recs[ev.id]
+      if not rec or not rec.spawned then return end
+      M.live_recs[ev.id]=nil;M.live=math.max(0,M.live-1)
+      pcall(bog.store.thread_set_status,ev.id,ev.reason=='killed' and 'killed' or 'error')
+    end)
+  end
   local rec = M.new_agent(p)
+  rec.spawned=true
   local task = p.task or ""
   if p.schema then
     -- Said plainly and last, where a model actually reads it. The contract

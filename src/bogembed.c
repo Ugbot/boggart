@@ -16,6 +16,7 @@
 #include "lauxlib.h"
 
 #include "embedded.h"
+#include "vendor/luv/luv.h"
 
 int luaopen_boggart_http(lua_State *L);
 int luaopen_boggart_sys(lua_State *L);
@@ -32,11 +33,35 @@ int luaopen_boggart_voice(lua_State *L); /* src/lvoice.c: native voice input (op
 int luaopen_boggart_station(lua_State *L); /* src/lstation.c: LLM Station ZMQ client (opt-in) */
 int luaopen_boggart_json(lua_State *L);
 int luaopen_boggart_hash(lua_State *L);
+int luaopen_boggart_terminal(lua_State *L);
+int luaopen_boggart_channel(lua_State *L);
 int luaopen_boggart_fileview(lua_State *L); /* src/lview.c: lazy file views */    /* src/lhash.c: SHA-256 in C */    /* src/ljson.c: JSON + UTF-8 in C */
 int luaopen_boggart_typesafe(lua_State *L); /* src/ltypesafe.c: TypeSafe System One codec */
 int luaopen_boggart_serve(lua_State *L); /* src/lserve.c: the inbound control surface (HTTP+SSE) */
 int luaopen_luv(lua_State *L);
 void boggart_open_mem(lua_State *L);
+
+/* Cancel outgoing terminal/Fleet/layout sockets while Lua userdata are alive.
+ * Do not require an unused module or create a loop for parser-only processes. */
+void boggart_transport_shutdown(lua_State *L) {
+  int top=lua_gettop(L);
+  lua_getfield(L,LUA_REGISTRYINDEX,LUA_LOADED_TABLE);
+  if (!lua_istable(L,-1)) { lua_settop(L,top);return; }
+  lua_pushliteral(L,"terminal.transport");lua_rawget(L,-2);
+  if (lua_istable(L,-1)) {
+    lua_pushliteral(L,"shutdown");lua_rawget(L,-2);
+    if (lua_isfunction(L,-1)) {
+      if (lua_pcall(L,0,0,0)!=LUA_OK) {
+        const char *why=lua_tostring(L,-1);
+        fprintf(stderr,"control transport shutdown: %s\n",why ? why : "unknown error");
+      } else {
+        uv_loop_t *loop=luv_loop(L);
+        if (loop) uv_run(loop,UV_RUN_NOWAIT);
+      }
+    }
+  }
+  lua_settop(L,top);
+}
 
 /* boggart.embedded(name) -> source | nil */
 static int l_embedded(lua_State *L) {
@@ -101,6 +126,8 @@ void boggart_open_libs(lua_State *L) {
   luaL_requiref(L, "json_c", luaopen_boggart_json, 0); lua_pop(L, 1);
   luaL_requiref(L, "hash_c", luaopen_boggart_hash, 0); lua_pop(L, 1);   /* src/lhash.c: sha256 */
   luaL_requiref(L, "fileview", luaopen_boggart_fileview, 0); lua_pop(L, 1);   /* src/lview.c: lazy file views */
+  luaL_requiref(L, "terminal", luaopen_boggart_terminal, 0); lua_pop(L, 1);
+  luaL_requiref(L, "agent_channel", luaopen_boggart_channel, 0); lua_pop(L, 1);
   luaL_requiref(L, "station", luaopen_boggart_station, 0); lua_setglobal(L, "station");
   luaL_requiref(L, "typesafe_core", luaopen_boggart_typesafe, 0); /* package.loaded name differs so require("typesafe") reaches lua/typesafe.lua */ lua_setglobal(L, "typesafe");
 

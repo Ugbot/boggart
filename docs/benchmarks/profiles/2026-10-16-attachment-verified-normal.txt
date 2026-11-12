@@ -1,0 +1,31 @@
+Test project /Users/bengamble/boggart/build
+      Start  36: termbench_measure
+ 1/13 Test  #36: termbench_measure ................   Passed    0.30 sec
+      Start  38: termbench_system
+ 2/13 Test  #38: termbench_system .................   Passed   15.56 sec
+      Start 182: terminal_attachments
+ 3/13 Test #182: terminal_attachments .............   Passed    0.48 sec
+      Start 186: terminal_push
+ 4/13 Test #186: terminal_push ....................   Passed    0.50 sec
+      Start 187: terminal_transport
+ 5/13 Test #187: terminal_transport ...............   Passed    0.20 sec
+      Start 189: terminal_client
+ 6/13 Test #189: terminal_client ..................   Passed    4.24 sec
+      Start 191: terminal_attach_queue
+ 7/13 Test #191: terminal_attach_queue ............   Passed    0.21 sec
+      Start 198: studio_terminal_remote
+ 8/13 Test #198: studio_terminal_remote ...........   Passed    4.38 sec
+      Start 200: studio_terminal_native
+ 9/13 Test #200: studio_terminal_native ...........   Passed    0.82 sec
+      Start 210: studio_bmux_layout
+10/13 Test #210: studio_bmux_layout ...............   Passed    4.42 sec
+      Start 211: studio_bmux_sessions
+11/13 Test #211: studio_bmux_sessions .............   Passed    4.57 sec
+      Start 212: studio_server_agents
+12/13 Test #212: studio_server_agents .............   Passed    5.42 sec
+      Start 213: studio_fleet_agents
+13/13 Test #213: studio_fleet_agents ..............   Passed    1.25 sec
+
+100% tests passed out of 13
+
+Total Test time (real) =  42.40 sec

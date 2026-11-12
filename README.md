@@ -7,6 +7,8 @@ interesting (the agent loop, the tools, the memory, the system prompt) is Lua,
 and the model is encouraged to edit that Lua and hot-reload it. It ships as a
 single embedded executable.
 
+Remote and team support is coming. Local Boggart will remain usable on its own.
+
 It feels like `pi` (four core tools, tight context, no product opinion) but,
 unlike most harnesses, it can grow its own capabilities: give it a task and it
 can write itself a new tool — and, in the desktop app, a new panel to draw the
@@ -18,6 +20,20 @@ different focus, the way an editor's CLI and its GUI are the same editor. That
 is enforced rather than intended: `ninja core-parity` runs both binaries and
 fails the build if the version, API surface, system prompt, limits, scopes,
 paths or tools have drifted apart.
+
+Studio also has a **BMUX** mode beside **AGENT / EDIT / FLEET**: interactive
+terminal tabs and split panes with visible controls. Click BMUX to open a shell;
+its toolbar creates tabs/splits and closes, focuses or zooms panes. Switching
+modes keeps the running shells and split layout. See
+[BMUX controls](docs/studio-panels.md#bmux-mode).
+**New agent** starts Boggart TUIs or external/custom agent commands in those
+panes and registers them in the same Fleet roster, with process status and
+working focus/stop controls. Launched Boggart TUIs also report their actual
+session/model and offer **Send prompt**, **Interrupt**, and live **Approve/Reject**
+controls in Fleet. Prompts preserve human drafts; approvals target one current
+request. Workers inside those TUIs appear beneath their owner in Fleet, with
+**Focus pane** and **Cancel worker** controls. Foreign-provider adapters and
+manual-launch hooks remain follow-ups.
 
 ![The conversation is the application](docs/images/chat.png)
 
@@ -137,6 +153,7 @@ login`) and boggart will use that token.
 ```sh
 ./boggart                 # interactive REPL — a coordinator that can spawn a fleet
 ./boggart --tui           # full-screen chat: scrolling transcript + live agents pane
+./boggart bmux --socket /path/to/private/control.sock  # attach shared terminal workspace
 ./boggart "one-shot task" # run a single prompt and exit
 echo "task" | ./boggart --headless   # scriptable: prompt on stdin, reply on stdout
 ./boggart swarm           # swarm coordinator that fans out to sub-agents
@@ -151,6 +168,9 @@ echo "task" | ./boggart --headless   # scriptable: prompt on stdin, reply on std
 ./boggart-studio          # the desktop app; ./boggart-studio <dir> opens a project
 # BOGGART_STUDIO_LEGACY=1 restores the old single-primary-node + sidebar layout
 ```
+
+Bmux's [terminal client](docs/bmux-ctui.md) and Studio **Join layout** share a
+server's panes and PTYs. Press Ctrl-B then `?` for terminal workspace controls.
 
 The studio's composer shares the cTUI's engines: **Tab** completes `/` commands and skills and `@` file mentions (typing `@` opens a filterable file menu), a leading `/command` runs the same handler the REPL uses (`/help`, `/tdd`, `/clear`, `/mode`, …), **`!command`** runs a shell command, and **Shift-Tab** cycles the shared permission modes (auto / smart / manual / chat). Both surfaces persist composer history to the same file.
 
@@ -488,6 +508,9 @@ docs/images/    the screenshots above, rendered by the app itself
 - ncurses — MIT-X11, fetched and linked statically into the CLI on Unix.
 - SDL3 — zlib, fetched at configure time (pinned by SHA256) and linked
   statically, so `boggart-studio` has no runtime SDL dependency at all.
+- libpng 1.6.59 and zlib 1.3.2 — libpng/zlib licenses, pinned and linked
+  statically into FreeType for installed color emoji bitmap strikes. Notices
+  are in `THIRD_PARTY/libpng-LICENSE` and `THIRD_PARTY/zlib-LICENSE`.
 - stb_truetype — public domain / MIT (© Sean Barrett), the glyph rasteriser,
   vendored in `studio/src/lib/stb/`.
 - **rxi/lite** — MIT (© rxi). `boggart-studio` grew out of its C+Lua editor

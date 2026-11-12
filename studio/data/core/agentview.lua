@@ -42,6 +42,7 @@ local vimmode = require "vimmode"
 -- adapter over {lines, cy, cx, edit_mode} lives below (search "Vim adapter"),
 -- so normal/visual-mode keys run the SAME engine the cTUI composer uses.
 local vim = require "vim"
+local grapheme = require "grapheme"
 
 local AgentView = View:extend()
 
@@ -537,6 +538,7 @@ function AgentView:composer_selection()
   if not a then return nil end
   local ay, ax, by, bx = a.cy, a.cx, self.cy, self.cx
   if ay > by or (ay == by and ax > bx) then ay, ax, by, bx = by, bx, ay, ax end
+  ax=grapheme.snap(self.lines[ay] or '',ax);bx=grapheme.snap(self.lines[by] or '',bx,true)
   if ay == by then return (self.lines[ay] or ""):sub(ax, bx - 1) end
   local parts = { (self.lines[ay] or ""):sub(ax) }
   for i = ay + 1, by - 1 do parts[#parts + 1] = self.lines[i] or "" end
@@ -549,11 +551,12 @@ function AgentView:delete_composer_selection()
   if not a then return false end
   local ay, ax, by, bx = a.cy, a.cx, self.cy, self.cx
   if ay > by or (ay == by and ax > bx) then ay, ax, by, bx = by, bx, ay, ax end
+  ax=grapheme.snap(self.lines[ay] or '',ax);bx=grapheme.snap(self.lines[by] or '',bx,true)
   local head = (self.lines[ay] or ""):sub(1, ax - 1)
   local tail = (self.lines[by] or ""):sub(bx)
   for _ = ay + 1, by do table.remove(self.lines, ay + 1) end
   self.lines[ay] = head .. tail
-  self.cy, self.cx = ay, ax
+  self.cy, self.cx = ay,grapheme.snap(self.lines[ay],ax)
   self.sel_anchor = nil
   core.redraw = true
   return true
@@ -916,7 +919,7 @@ function AgentView:voice_replace_span(text)
   local b = math.min(a + v.len, #line + 1)
   self.lines[v.cy] = line:sub(1, a - 1) .. text .. line:sub(b)
   v.len = #text
-  self.cy, self.cx = v.cy, a + #text
+  self.cy,self.cx=v.cy,grapheme.snap(self.lines[v.cy],a+#text,true)
   complete.dismiss(self)
   core.redraw = true
 end
@@ -1044,37 +1047,22 @@ function AgentView:jump_user(dir)
 end
 
 -- Caret arithmetic. self.cx is a byte offset into the line -- the same index
--- string.sub wants -- but it must always sit on a character boundary.
+-- string.sub wants -- but it must always sit on a native cluster boundary.
 function AgentView:prev_char(line, i)
-  i = i - 1
-  while i > 1 do
-    local b = line:byte(i)
-    if b < 0x80 or b >= 0xc0 then break end
-    i = i - 1
-  end
-  return math.max(1, i)
+  return grapheme.prev(line,i)
 end
 
 function AgentView:next_char(line, i)
-  local len = #line
-  i = i + 1
-  while i <= len do
-    local b = line:byte(i)
-    if b < 0x80 or b >= 0xc0 then break end
-    i = i + 1
-  end
-  return math.min(i, len + 1)
+  return grapheme.next(line,i)
 end
 
 -- Keep the caret inside the current line and on a boundary, after a move that
 -- changed which line it is on.
 function AgentView:clamp_caret()
   local l = self.lines[self.cy] or ""
-  if self.cx > #l + 1 then self.cx = #l + 1 end
-  if self.cx < 1 then self.cx = 1 end
-  if self.cx <= #l then
-    local b = l:byte(self.cx)
-    if b >= 0x80 and b < 0xc0 then self.cx = self:prev_char(l, self.cx + 1) end
+  self.cx=grapheme.snap(l,self.cx)
+  if self.edit_mode=='normal' or self.edit_mode=='visual' or self.edit_mode=='vline' then
+    self.cx=math.min(self.cx,grapheme.prev(l,#l+1))
   end
 end
 
@@ -1082,12 +1070,12 @@ end
 -- Vim adapter (docs/vim-unify.md P2): presents this composer's own
 -- {lines, cy, cx, edit_mode} buffer to the shared modal grammar in lua/vim.lua,
 -- so normal/visual-mode keys run the SAME engine the cTUI composer drives
--- (lua/tui/vim.lua is the sibling adapter over the same shape, codepoint- not
--- byte-indexed). One adapter per view, created lazily and cached on self._va
+-- (lua/tui/vim.lua is the sibling adapter over codepoint-indexed fields).
+-- Both expose virtual grapheme columns to the grammar while preserving their
+-- original public cursor fields. One adapter per view is cached on self._va
 -- so the grammar's own pending-command state (attached to the adapter as
 -- a._vs -- counts, a half-typed operator, the "/"/":" prompt) persists across
--- keystrokes. Byte-indexed columns throughout, matching prev_char/next_char
--- above; a snapshot undo stack (self._undo/._redo), since the draft is short
+-- keystrokes. Snapshot undo (self._undo/._redo), since the draft is short
 -- text, not a document; the unnamed register mirrored to the system
 -- clipboard, matching studio/data/core/vim.lua's DocView engine.
 local Adapter = {}
@@ -1101,46 +1089,52 @@ end
 -- reading
 function Adapter:line_count() return #self.buf.lines end
 function Adapter:get_line(y) return self.buf.lines[y] or "" end
-function Adapter:line_len(y) return #(self.buf.lines[y] or "") end
+function Adapter:line_len(y) return grapheme.count(self.buf.lines[y] or "") end
 function Adapter:first_nonblank(y)
   local line = self.buf.lines[y] or ""
-  for i = 1, #line do
-    local b = line:byte(i)
+  for i = 1, grapheme.count(line) do
+    local b = grapheme.char(line,i):byte(1)
     if b ~= 32 and b ~= 9 then return i end
   end
   return 1
 end
 function Adapter:get_char(y, x)
-  local buf, line = self.buf, self.buf.lines[y] or ""
-  if x < 1 or x > #line then return "" end
-  return line:sub(x, buf:next_char(line, x) - 1)
+  local line = self.buf.lines[y] or ""
+  if x < 1 or x > grapheme.count(line) then return "" end
+  return grapheme.char(line,x)
 end
 function Adapter:next_pos(y, x)
   local buf, line = self.buf, self.buf.lines[y] or ""
-  if x <= #line then return y, buf:next_char(line, x) end
+  if x <= grapheme.count(line) then return y,x+1 end
   if y < #buf.lines then return y + 1, 1 end
   return nil
 end
 function Adapter:prev_pos(y, x)
   local buf = self.buf
-  if x > 1 then return y, buf:prev_char(buf.lines[y] or "", x) end
-  if y > 1 then return y - 1, #(buf.lines[y - 1] or "") + 1 end
+  if x > 1 then return y,x-1 end
+  if y > 1 then return y-1,grapheme.count(buf.lines[y-1] or '')+1 end
   return nil
 end
 function Adapter:get_text(l1, c1, l2, c2)
   local buf = self.buf
+  c1=grapheme.byte(buf.lines[l1] or '',c1);c2=grapheme.byte(buf.lines[l2] or '',c2)
   if l1 == l2 then return (buf.lines[l1] or ""):sub(c1, c2 - 1) end
   local parts = { (buf.lines[l1] or ""):sub(c1) }
   for i = l1 + 1, l2 - 1 do parts[#parts + 1] = buf.lines[i] or "" end
   parts[#parts + 1] = (buf.lines[l2] or ""):sub(1, c2 - 1)
   return table.concat(parts, "\n")
 end
+function Adapter:pattern_units(pat) return grapheme.units(pat) end
 
 -- cursor and mode -- proxies onto the fields draw() and the mouse code
 -- already read directly, so a visual selection paints and copies with no
 -- more plumbing than a normal-mode caret move needed.
-function Adapter:get_cursor() return self.buf.cy, self.buf.cx end
-function Adapter:set_cursor(y, x) self.buf.cy, self.buf.cx = y, x end
+function Adapter:get_cursor()
+  local buf=self.buf;return buf.cy,grapheme.index(buf.lines[buf.cy] or '',buf.cx)
+end
+function Adapter:set_cursor(y, x)
+  local buf=self.buf;buf.cy,buf.cx=y,grapheme.byte(buf.lines[y] or '',x)
+end
 function Adapter:clamp_caret() self.buf:clamp_caret() end
 function Adapter:mode() return self.buf.edit_mode end
 function Adapter:set_mode(m) self.buf:set_edit_mode(m) end
@@ -1148,12 +1142,15 @@ function Adapter:set_mode(m) self.buf:set_edit_mode(m) end
 -- composer_selection()/delete_composer_selection() already read; the cursor
 -- itself is tracked by get_cursor/set_cursor above, so only the anchor half
 -- of the pair needs setting here.
-function Adapter:set_selection(ay, ax) self.buf.sel_anchor = { cy = ay, cx = ax } end
+function Adapter:set_selection(ay, ax)
+  self.buf.sel_anchor={cy=ay,cx=grapheme.byte(self.buf.lines[ay] or '',ax)}
+end
 function Adapter:clear_selection() self.buf.sel_anchor = nil end
 
 -- mutation (all ranges half-open [start, end), per the interface)
 function Adapter:delete_range(l1, c1, l2, c2)
   local buf = self.buf
+  c1=grapheme.byte(buf.lines[l1] or '',c1);c2=grapheme.byte(buf.lines[l2] or '',c2)
   if l1 == l2 then
     local line = buf.lines[l1] or ""
     local n = #line
@@ -1161,8 +1158,9 @@ function Adapter:delete_range(l1, c1, l2, c2)
     c2 = math.max(c1, math.min(c2, n + 1))
     buf.lines[l1] = line:sub(1, c1 - 1) .. line:sub(c2)
   else
-    local head = (buf.lines[l1] or ""):sub(1, c1 - 1)
-    local tail = (buf.lines[l2] or ""):sub(c2)
+    local first,last=buf.lines[l1] or '',buf.lines[l2] or ''
+    local head = first:sub(1, c1 - 1)
+    local tail = last:sub(c2)
     buf.lines[l1] = head .. tail
     for i = l2, l1 + 1, -1 do table.remove(buf.lines, i) end
   end
@@ -1173,19 +1171,18 @@ end
 function Adapter:insert_at(y, x, text)
   local buf = self.buf
   local line = buf.lines[y] or ""
-  local n = #line
-  local ic = math.max(1, math.min(x, n + 1))
+  local ic = grapheme.byte(line,x)
   local before, tail = line:sub(1, ic - 1), line:sub(ic)
   local parts = {}
   for ln in (text .. "\n"):gmatch("(.-)\n") do parts[#parts + 1] = ln end
   if #parts == 1 then
     buf.lines[y] = before .. parts[1] .. tail
-    return y, ic + #parts[1]
+    return y,grapheme.index(buf.lines[y],ic+#parts[1],true)
   end
   buf.lines[y] = before .. parts[1]
   for i = 2, #parts - 1 do table.insert(buf.lines, y + i - 1, parts[i]) end
   table.insert(buf.lines, y + #parts - 1, parts[#parts] .. tail)
-  return y + #parts - 1, #parts[#parts] + 1
+  return y+#parts-1,grapheme.index(buf.lines[y+#parts-1],#parts[#parts]+1,true)
 end
 -- Replace whole lines [y1, y2] (inclusive) with `list`, the linewise
 -- primitive; y2 < y1 inserts `list` before y1 without removing anything.
@@ -1331,6 +1328,7 @@ function AgentView:on_text_input(text)
   local l = self.lines[self.cy]
   self.lines[self.cy] = l:sub(1, self.cx - 1) .. text .. l:sub(self.cx)
   self.cx = self.cx + #text
+  self.cx=grapheme.snap(self.lines[self.cy],self.cx,true)
   complete.refresh(self)
   core.redraw = true
 end
@@ -1417,6 +1415,7 @@ function AgentView:on_key_pressed(key)
         self.cx = #lines[#lines] + 1
       end
       self.sel_anchor = nil
+      self.cx=grapheme.snap(self.lines[self.cy],self.cx,true)
       complete.refresh(self)
       core.redraw = true
     end
@@ -1482,9 +1481,21 @@ function AgentView:on_key_pressed(key)
       table.remove(self.lines, self.cy)
       self.cy = self.cy - 1
     end
+    self.cx=grapheme.snap(self.lines[self.cy],self.cx)
     complete.refresh(self)
     core.redraw = true
     return true
+
+  elseif key == 'delete' then
+    if self.sel_anchor then self:delete_composer_selection();return true end
+    local line=self.lines[self.cy]
+    if self.cx<=#line then
+      self.lines[self.cy]=line:sub(1,self.cx-1)..line:sub(self:next_char(line,self.cx))
+    elseif self.cy<#self.lines then
+      self.lines[self.cy]=line..self.lines[self.cy+1];table.remove(self.lines,self.cy+1)
+    end
+    self.cx=grapheme.snap(self.lines[self.cy],self.cx)
+    complete.refresh(self);core.redraw=true;return true
 
   elseif key == "ctrl+backspace" or key == "alt+backspace" then
     -- The tail has to be taken before the caret moves. Reading l:sub(self.cx)
@@ -1493,6 +1504,7 @@ function AgentView:on_key_pressed(key)
     -- silently left the caret in the middle of the line.
     local l = self.lines[self.cy]
     local head = l:sub(1, self.cx - 1):gsub("%s*%S+%s*$", "")
+    head=l:sub(1,grapheme.snap(l,#head+1)-1)
     self.lines[self.cy] = head .. l:sub(self.cx)
     self.cx = #head + 1
     complete.refresh(self)
@@ -1641,19 +1653,14 @@ end
 -- drew 192 cells wide and ran off the right of the panel with no way to scroll
 -- to it.
 --
--- Cells are the third, and are what a monospace grid actually has. sys.width
--- and sys.wtake are C, over the Unicode tables in src/utf8width.h, so this
--- agrees with the renderer's own advances by construction rather than by two
--- pieces of code being kept in step by hand.
---
--- What is still not right, and is not fixable here: no grapheme clustering, so
--- a ZWJ emoji sequence measures as its parts and wraps as if it were several
--- characters; and no bidi, so Hebrew and Arabic wrap correctly by width while
--- being drawn in logical rather than visual order.
+-- Native cell metrics and grid paint share the pinned terminal profile.
+-- Styled runs are partitioned across their original boundaries: the token at
+-- a cluster's head owns its color/bold/link metadata. Source text stays exact
+-- for selection, including suffixes beyond the native paint retention cap.
 
 -- Display cells occupied by s, which is not #s (bytes) and not utf8.len(s)
 -- (characters).
-local function cols_of(s) return sys.width(s) end
+local function cols_of(s) return sys.cell_width(s) end
 
 -- Split s at n cells: the part that fits, the rest, and the cells that part
 -- took.
@@ -1664,22 +1671,14 @@ local function cols_of(s) return sys.width(s) end
 -- cell does not end. See first_char for the case where there is no new row to
 -- start either.
 local function split(s, n)
-  local head, w = sys.wtake(s, n)
+  local head, w = sys.cell_take(s, n)
   return head, s:sub(#head + 1), w
 end
 
 -- The first character of s whatever it costs. The escape hatch for a two-cell
 -- glyph in a one-cell column: it overflows by a cell, which is visible, and
 -- the alternative is a hang, which is not.
-local function first_char(s)
-  local i = 2
-  while i <= #s do
-    local b = s:byte(i)
-    if b < 0x80 or b >= 0xc0 then break end
-    i = i + 1
-  end
-  return s:sub(1, i - 1)
-end
+local function first_char(s) return sys.cell_first(s) end
 
 -- Everything past the first n cells of s.
 local function cdrop(s, n) return select(2, split(s, n)) end
@@ -1723,9 +1722,21 @@ local function syntax_for(lang)
   return nil
 end
 
+local function cell_tokens(tokens)
+  local parts,ends={},{};local bytes=0
+  for i,t in ipairs(tokens) do parts[i]=t[2];bytes=bytes+#t[2];ends[i]=bytes end
+  local out={}
+  for _,span in ipairs(sys.cell_partition(table.concat(parts),ends)) do
+    local head=tokens[span[1]]
+    out[#out+1]={head[1],span[2],bold=head.bold,link=head.link}
+  end
+  return out
+end
+
 -- Break a coloured token row to fit `cols` cells, splitting between tokens
 -- where possible and inside one only when a single token is too wide.
 local function fit(tokens, cols)
+  tokens=cell_tokens(tokens)
   local rows, cur, used = {}, {}, 0
   for _, t in ipairs(tokens) do
     local col, text = t[1], t[2]
@@ -1734,7 +1745,7 @@ local function fit(tokens, cols)
       local room = cols - used
       local n = cols_of(text)
       if n <= room then
-        cur[#cur + 1] = { col, text }; used = used + n; text = ""
+        cur[#cur + 1] = { col, text, bold=t.bold, link=t.link }; used = used + n; text = ""
       else
         local head, tail, w = split(text, room)
         if head == "" and used > 0 then
@@ -1750,7 +1761,7 @@ local function fit(tokens, cols)
             tail = text:sub(#head + 1)
             w = cols_of(head)
           end
-          cur[#cur + 1] = { col, head }
+          cur[#cur + 1] = { col, head, bold=t.bold, link=t.link }
           text, used = tail, used + w
         end
       end
@@ -1816,6 +1827,7 @@ end
 -- lettered lists keep their marker in a column instead of wrapping into the
 -- body. Matches termrender's wrap_runs hanging indent.
 local function wrap_tokens(tokens, cols, hang)
+  tokens=cell_tokens(tokens)
   local hang_w = (hang and hang[2] and cols_of(hang[2])) or 0
   if hang_w >= cols then hang, hang_w = nil, 0 end
   local inner = math.max(1, cols - hang_w)
@@ -1851,8 +1863,10 @@ local function wrap_tokens(tokens, cols, hang)
         rows[#rows + 1] = cur; cur, used = {}, 0
         word = tail; wlen = cols_of(word)
       end
-      cur[#cur + 1] = { t[1], word, bold = t.bold, link = t.link }
-      used = used + wlen
+      if word ~= "" then
+        cur[#cur + 1] = { t[1], word, bold = t.bold, link = t.link }
+        used = used + wlen
+      end
     end
     -- ...and the trailing whitespace, which gmatch never yields either. That
     -- is the space *before* the next span: "add a **bounded**" would otherwise
@@ -2149,6 +2163,7 @@ function AgentView:pos_at(x, y)
   local col = math.floor((x - best.x) / self.char_w + 0.5)
   if col < 0 then col = 0 end
   if col > best.cells then col = best.cells end
+  if best.text then local _,used=sys.cell_take(best.text,col);col=used end
   return { e = best.e, r = best.r, c = col }
 end
 
@@ -2164,7 +2179,7 @@ function AgentView:composer_visual_rows(cols)
     local rest, byte0 = line, 1
     while true do
       local head, tail = split(rest, cols)
-      if head == "" and tail ~= "" then head, tail = rest, "" end -- never loop forever
+      if head == "" and tail ~= "" then head=first_char(rest);tail=rest:sub(#head+1) end
       rows[#rows + 1] = { i = i, byte0 = byte0, text = head }
       if tail == "" then break end
       byte0 = byte0 + #head
@@ -2426,7 +2441,7 @@ function AgentView:draw_working(x, y, w, font)
   elseif self.tool_running then what = "running " .. self.tool_running end
 
   local label = string.format("%s  %.0fs", what, elapsed)
-  common.draw_text(font, style.dim, label, "left", x, y, w, lh)
+  common.draw_grid(font, style.dim, label, "left", x, y, w, lh)
 
   -- The track, and a segment sliding along it. Two seconds a lap: fast enough
   -- to read as alive, slow enough not to nag.
@@ -2537,11 +2552,11 @@ function AgentView:draw_pending(x, y, w, font)
   -- the filename you were being asked to approve.
   local verb = (p.name == "bash" and "run: " or "apply: ")
   local body = p.summary or p.name
-  local room = math.floor(w / font:get_width("0")) - #verb
+  local room = math.floor(w / font:get_grid_width("0")) - #verb
   if room > 4 and cols_of(body) > room then
     body = "..." .. cdrop(body, cols_of(body) - (room - 3))
   end
-  common.draw_text(font, style.accent, verb .. body, "left", x, y + pad, w, lh)
+  common.draw_grid(font, style.accent, verb .. body, "left", x, y + pad, w, lh)
 
   local hits = widgets.row(font, {
     { label = "Approve", action = function() self:decide("approve") end },
@@ -2592,7 +2607,7 @@ function AgentView:draw_choice(rec, x, y, w, cols, font, visible)
   local function draw_row(row)
     local tx = x
     for _, t in ipairs(row) do
-      tx = renderer.draw_text(font, t[2], tx, ty + voff, t[1])
+      tx = renderer.draw_grid(font, t[2], tx, ty + voff, t[1])
     end
     ty = ty + lh
   end
@@ -2623,7 +2638,7 @@ function AgentView:draw_choice(rec, x, y, w, cols, font, visible)
   end
 
   if rec.allow_input then
-    common.draw_text(font, style.dim,
+    common.draw_grid(font, style.dim,
       "(click one, press its letter, or type your own answer below)",
       "left", x, ty, w, lh)
   end
@@ -2639,7 +2654,7 @@ function AgentView:draw()
   local lh = font:get_height() * config.line_height
   local pad = style.padding.x
   local vpad = style.padding.y
-  local charw = font:get_width("0")
+  local charw = font:get_grid_width("0")
 
   -- The composer wraps to this many monospace columns. Computed up front so the
   -- box height (input_lines, below) and the draw loop share ONE wrapped layout:
@@ -2724,7 +2739,7 @@ function AgentView:draw()
     e.content_y = (y + self.scroll.y) - body_top
     if e.role == "diff" and e.diff then
       if visible(y) then
-        common.draw_text(font, style.dim, difflib.summary(e.diff, e.path or ""),
+        common.draw_grid(font, style.dim, difflib.summary(e.diff, e.path or ""),
           "left", x, y, w, lh)
       end
       y = y + lh
@@ -2734,7 +2749,7 @@ function AgentView:draw()
                     or style.dim
         if visible(y) then
           renderer.draw_rect(x - pad / 2, y, w + pad, lh, style.background2)
-          common.draw_text(font, col or style.text, kind .. " " .. text,
+          common.draw_grid(font, col or style.text, kind .. " " .. text,
             "left", x, y, w, lh)
         end
         y = y + lh
@@ -2783,7 +2798,7 @@ function AgentView:draw()
               -- lifting a snippet, brightening on hover, flips to "copied" after
               -- a click. Registered as a hit so on_mouse_pressed dispatches it.
               local label = (self.copied_block == row.copy_block) and "copied" or "copy"
-              local bw = font:get_width(label) + pad
+              local bw = font:get_grid_width(label) + pad
               local bx = x + w - bw
               local hov = self.mouse and widgets.inside(
                 { x = bx, y = y, w = bw, h = lh }, self.mouse.x, self.mouse.y)
@@ -2813,7 +2828,7 @@ function AgentView:draw()
             local rtext = row_text(row)
             local cells = cell_len(rtext)
             self.rows_drawn[#self.rows_drawn + 1] = {
-              e = ei, r = ri, x = ex, y = y, h = lh, cells = cells,
+              e = ei, r = ri, x = ex, y = y, h = lh, cells = cells, text = rtext,
             }
             if sel_lo then
               -- The part of this row inside the selection, as two columns.
@@ -2835,11 +2850,11 @@ function AgentView:draw()
             end
             local tx = ex
             for _, t in ipairs(row) do
-              local nx = renderer.draw_text(font, t[2], tx, y + voff, t[1])
+              local nx = renderer.draw_grid(font, t[2], tx, y + voff, t[1])
               -- Faux-bold: the same glyphs a pixel to the right. Cheap, and the
               -- only way to show emphasis with one font cut.
               if t.bold then
-                renderer.draw_text(font, t[2], tx + math.max(1, SCALE * 0.5),
+                renderer.draw_grid(font, t[2], tx + math.max(1, SCALE * 0.5),
                   y + voff, t[1])
               end
               if t.link then
@@ -2881,7 +2896,7 @@ function AgentView:draw()
 
   -- An empty panel should say what to do, not sit there blankly.
   if #self.entries == 0 then
-    common.draw_text(font, style.dim, "Ask boggart anything about this project.",
+    common.draw_grid(font, style.dim, "Ask boggart anything about this project.",
       "center", self.position.x, body_top, self.size.x, body_bottom - body_top)
   end
 
@@ -3042,9 +3057,9 @@ function AgentView:draw()
       else
         placeholder = "Reply to boggart..."
       end
-      common.draw_text(font, style.dim, placeholder, "left", x, ty, w, lh)
+      common.draw_grid(font, style.dim, placeholder, "left", x, ty, w, lh)
     else
-      common.draw_text(font, (not composing) and style.dim or style.text,
+      common.draw_grid(font, (not composing) and style.dim or style.text,
         shown, "left", x, ty, w, lh)
     end
     -- The insert-mode bar sits on top of the text, between glyphs, and blinks.

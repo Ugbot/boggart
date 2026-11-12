@@ -1,6 +1,9 @@
 #include "api.h"
 #include "renderer.h"
 #include "rencache.h"
+#include <stdlib.h>
+#include <math.h>
+void terminalrender_open(lua_State *L);
 
 
 static RenColor checkcolor(lua_State *L, int idx, int def) {
@@ -48,6 +51,32 @@ static int f_end_frame(lua_State *L) {
   return 0;
 }
 
+static int f_terminal_replay_stats(lua_State *L) {
+  RenCacheStats stats = rencache_stats();
+  RenGlyphStats glyphs=stats.glyphs;
+  lua_createtable(L,0,11);
+  lua_pushinteger(L,(lua_Integer)stats.rows_queued); lua_setfield(L,-2,"rows_queued");
+  lua_pushinteger(L,(lua_Integer)stats.rows_replayed); lua_setfield(L,-2,"rows_replayed");
+  lua_pushinteger(L,(lua_Integer)stats.rows_skipped); lua_setfield(L,-2,"rows_skipped");
+  lua_pushinteger(L,stats.dirty_rects); lua_setfield(L,-2,"dirty_rects");
+  lua_pushinteger(L,(lua_Integer)glyphs.quads); lua_setfield(L,-2,"glyph_quads");
+  lua_pushinteger(L,(lua_Integer)glyphs.batches); lua_setfield(L,-2,"glyph_batches");
+  lua_pushinteger(L,(lua_Integer)glyphs.texture_switches); lua_setfield(L,-2,"glyph_texture_switches");
+  lua_pushboolean(L,glyphs.shared_style_atlases); lua_setfield(L,-2,"shared_style_atlases");
+  lua_pushinteger(L,(lua_Integer)glyphs.shared_atlas_bytes);lua_setfield(L,-2,"shared_atlas_bytes");
+  lua_pushinteger(L,(lua_Integer)glyphs.standalone_atlas_bytes);lua_setfield(L,-2,"standalone_atlas_bytes");
+  lua_pushstring(L,glyphs.backend ? glyphs.backend : "unknown");lua_setfield(L,-2,"renderer_backend");
+  return 1;
+}
+static int f_test_cluster_shaping(lua_State *L) {
+  luaL_checktype(L,1,LUA_TBOOLEAN);
+  lua_pushboolean(L,ren_test_cluster_shaping(lua_toboolean(L,1)));return 1;
+}
+static int f_test_style_atlas_sharing(lua_State *L) {
+  luaL_checktype(L,1,LUA_TBOOLEAN);
+  lua_pushboolean(L,ren_test_style_atlas_sharing(lua_toboolean(L,1)));return 1;
+}
+
 
 static int f_set_clip_rect(lua_State *L) {
   RenRect rect;
@@ -90,9 +119,21 @@ static int f_draw_text(lua_State *L) {
   int x = luaL_checknumber(L, 3);
   int y = luaL_checknumber(L, 4);
   RenColor color = checkcolor(L, 5, 255);
+  luaL_argcheck(L,*font!=NULL,1,"closed font");
   x = rencache_draw_text(*font, text, x, y, color);
   lua_pushnumber(L, x);
   return 1;
+}
+static int f_draw_grid(lua_State *L) {
+  RenFont **font=luaL_checkudata(L,1,API_TYPE_FONT);
+  size_t length;const char *text=luaL_checklstring(L,2,&length);
+  double x=luaL_checknumber(L,3),y=luaL_checknumber(L,4);
+  luaL_argcheck(L,isfinite(x) && x>=-100000000 && x<=100000000,3,"position out of range");
+  luaL_argcheck(L,isfinite(y) && y>=-100000000 && y<=100000000,4,"position out of range");
+  RenColor color=checkcolor(L,5,255);
+  luaL_argcheck(L,*font!=NULL,1,"closed font");int end;
+  if(!rencache_draw_grid(*font,text,length,(int)x,(int)y,color,&end))return luaL_error(L,"cannot prepare grid text");
+  lua_pushinteger(L,end);return 1;
 }
 
 
@@ -199,10 +240,12 @@ static const luaL_Reg lib[] = {
   { "get_size",        f_get_size        },
   { "begin_frame",     f_begin_frame     },
   { "end_frame",       f_end_frame       },
+  { "terminal_replay_stats", f_terminal_replay_stats },
   { "set_clip_rect",   f_set_clip_rect   },
   { "draw_rect",       f_draw_rect       },
   { "draw_line",       f_draw_line       },
   { "draw_text",       f_draw_text       },
+  { "draw_grid",       f_draw_grid       },
   { "image_from_rgba", f_image_from_rgba },
   { "image_from_file", f_image_from_file },
   { "draw_image",      f_draw_image      },
@@ -214,6 +257,11 @@ int luaopen_renderer_font(lua_State *L);
 
 int luaopen_renderer(lua_State *L) {
   luaL_newlib(L, lib);
+  if(getenv("BOGGART_STUDIO_SCRIPT")) {
+    lua_pushcfunction(L,f_test_cluster_shaping);lua_setfield(L,-2,"_test_cluster_shaping");
+    lua_pushcfunction(L,f_test_style_atlas_sharing);lua_setfield(L,-2,"_test_style_atlas_sharing");
+  }
+  terminalrender_open(L);
 
   /* the Image userdata metatype: frees its RenImage on GC, and answers :size(). */
   luaL_newmetatable(L, API_TYPE_IMAGE);

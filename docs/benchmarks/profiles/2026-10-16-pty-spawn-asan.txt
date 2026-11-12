@@ -1,0 +1,39 @@
+Test project /Users/bengamble/boggart/build-asan
+      Start   5: pty_transport
+ 1/17 Test   #5: pty_transport ....................   Passed    4.94 sec
+      Start  35: termbench_pty
+ 2/17 Test  #35: termbench_pty ....................   Passed    0.91 sec
+      Start  36: termbench_measure
+ 3/17 Test  #36: termbench_measure ................   Passed    0.28 sec
+      Start 173: agent_channel_watch
+ 4/17 Test #173: agent_channel_watch ..............   Passed    2.41 sec
+      Start 176: terminal_environment
+ 5/17 Test #176: terminal_environment .............   Passed    0.38 sec
+      Start 183: terminal_attachments
+ 6/17 Test #183: terminal_attachments .............   Passed    0.99 sec
+      Start 187: terminal_push
+ 7/17 Test #187: terminal_push ....................   Passed    0.66 sec
+      Start 188: terminal_transport
+ 8/17 Test #188: terminal_transport ...............   Passed    0.67 sec
+      Start 190: terminal_client
+ 9/17 Test #190: terminal_client ..................   Passed    9.96 sec
+      Start 192: terminal_attach_queue
+10/17 Test #192: terminal_attach_queue ............   Passed    0.46 sec
+      Start 199: studio_terminal_remote
+11/17 Test #199: studio_terminal_remote ...........   Passed    6.12 sec
+      Start 201: studio_terminal_native
+12/17 Test #201: studio_terminal_native ...........   Passed    0.84 sec
+      Start 202: studio_terminal_shutdown
+13/17 Test #202: studio_terminal_shutdown .........   Passed    0.73 sec
+      Start 211: studio_bmux_layout
+14/17 Test #211: studio_bmux_layout ...............   Passed    5.73 sec
+      Start 212: studio_bmux_sessions
+15/17 Test #212: studio_bmux_sessions .............   Passed    4.79 sec
+      Start 213: studio_server_agents
+16/17 Test #213: studio_server_agents .............   Passed    9.27 sec
+      Start 214: studio_fleet_agents
+17/17 Test #214: studio_fleet_agents ..............   Passed    1.96 sec
+
+100% tests passed out of 17
+
+Total Test time (real) =  51.15 sec

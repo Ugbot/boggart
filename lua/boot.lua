@@ -1431,7 +1431,7 @@ bog.first_run = (bog.store.state and bog.store.state.first_run) or false
 -- emits only the model's answer on stdout.
 if bog.store.state and bog.store.state.first_run
    and bog.mode ~= "eval" and bog.mode ~= "embedded"
-   and bog.mode ~= "tracker" and bog.mode ~= "story" and bog.mode ~= "models" then
+   and bog.mode ~= "tracker" and bog.mode ~= "story" and bog.mode ~= "models" and bog.mode ~= "bmux" then
   io.stderr:write(bog.lifecycle.welcome(), "\n")
 end
 
@@ -1476,7 +1476,7 @@ end
 -- skips it here too: connect/handshake block the thread, and the window
 -- stays hidden until boot returns. Studio starts the same load after the
 -- first present, from a core thread that yields between servers.
-if bog.mode ~= "eval" and bog.mode ~= "embedded" then
+if bog.mode ~= "eval" and bog.mode ~= "embedded" and bog.mode ~= "bmux" then
   bog.try(bog.mcphost.load)
   -- Best-effort: if a local LLM Station is installed, expose its deterministic
   -- code-intelligence tools over MCP. Dormant (a no-op) when it is not.
@@ -1576,6 +1576,9 @@ elseif bog.mode == "swarm" then
   bog.activate_agents()
   return require("swarmmode").run() -- "swarm" is the C bus global; the mode lives in swarmmode.lua
 
+elseif bog.mode == "bmux" then
+  return require('bmux.tui').run{socket=boggart.socket,token=boggart.token or os.getenv('BOGGART_SERVE_TOKEN')}
+
 elseif bog.mode == "serve" then
   -- `boggart serve` -- the same runtime as every other mode, with the inbound
   -- control plane up and the process staying alive instead of running to
@@ -1592,7 +1595,8 @@ elseif bog.mode == "serve" then
   bog.new_session()
   local control = require "control"
   local srv, url = control.start{
-    host = boggart.host, port = boggart.port, token = boggart.token,
+    host = boggart.host, port = boggart.port, token = boggart.token, socket=boggart.socket,
+    session=boggart['bmux-session']or (boggart.socket and (boggart.socket:sub(1,1)=='/'and boggart.socket or require('uv').cwd()..'/'..boggart.socket)),
   }
   if not srv then
     io.stderr:write("boggart serve: " .. tostring(url) .. "\n")
@@ -1601,6 +1605,10 @@ elseif bog.mode == "serve" then
   io.write("boggart " .. boggart.version .. " serving on " .. url .. "\n")
   if control.token then io.write("token: " .. control.token .. "\n") end
   io.write("routes: " .. url .. "/routes   events: " .. url .. "/events\n")
+  if control.journal then
+    local status=control.journal:status()
+    io.write('bmux session: '..status.name..(status.blocked and ('; recovery required: '..status.error)or status.restored and '; restored'or '; new')..'\n')
+  end
 
   -- Triggers: schedules restored from the store, plus the one uv timer that
   -- drives them. This is what makes the daemon act on its own rather than only
@@ -1625,6 +1633,14 @@ elseif bog.mode == "serve" then
   end, { desc="serve: queue workflow occasions", source="boot.lua" })
 
   local stop = false
+  local shutdown_signals={}
+  if sys.caps().process_groups then
+    local uv=require 'uv'
+    for _,name in ipairs{'sigint','sigterm'}do
+      local signal=uv.new_signal();signal:start(name,function()stop=true end)
+      shutdown_signals[#shutdown_signals+1]=signal
+    end
+  end
   bog.events.on("serve:shutdown", function() stop = true end,
     { desc = "serve: stop the service", source = "boot.lua" })
 
@@ -1676,6 +1692,7 @@ elseif bog.mode == "serve" then
   bog.sched.add("serve", co)
   bog.sched.run()
 
+  for _,signal in ipairs(shutdown_signals)do signal:stop();signal:close()end
   triggers.stop()
   control.stop()
   return 0

@@ -1,0 +1,6 @@
+{
+  "purpose": "Historical Studio v1 parser reference; never a production terminal data path",
+  "origin_path": "studio/data/core/terminalview.lua",
+  "origin_commit": "93772f7b73fa26c2badfc7f35f809fd653400cca",
+  "sha256": "74b819186f68abd48ee7db85fbe12ef50cd9fcc148d11b022f35a020880a38b7"
+}

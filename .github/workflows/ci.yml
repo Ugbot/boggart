@@ -66,6 +66,19 @@ jobs:
 
       - uses: actions/checkout@v5
 
+      - name: Check terminal port attribution
+        run: python3 tools/check_ghostty_port.py
+
+      - name: Check generated Unicode data
+        run: |
+          python3 tools/genwidth.py --check
+          python3 tests/genwidth_test.py
+          python3 tools/ghostty/unicode_fixture.py --check
+          python3 tests/ghostty_unicode_profile_test.py
+
+      - name: Check Ghostty oracle fixtures (offline)
+        run: python3 tests/ghostty_oracle_test.py
+
       # ---- toolchain -------------------------------------------------------
       # The newest released CMake and Ninja, rather than whatever each runner
       # image ships. The images drift apart by years, and CI that builds with
@@ -204,6 +217,13 @@ jobs:
 
       - name: Build
         run: cmake --build build
+
+      # The native parser's per-scenario floors are intentionally permissive
+      # (about five to seven times below the recorded Mac baseline), while still
+      # catching major regressions on each runner OS. This custom target is
+      # excluded from the default build so local compile loops stay fast.
+      - name: Terminal performance budgets
+        run: cmake --build build --target termbench
 
       # The X11 trap, asserted rather than assumed. SDL_config.h is the file
       # its own compile actually read, so this is the built artifact talking

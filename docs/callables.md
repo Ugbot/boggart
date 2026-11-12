@@ -177,7 +177,7 @@ zero-model-turn win lands in the swarm, and it is tracked, not done.
 ## Trust
 
 Code that runs instead of the model runs with authority and no human mid-step,
-so trust is the BTEAM tier question (docs/team.md): a builtin skill's
+so the capability sandbox matters (docs/skills-and-tools.md): a builtin skill's
 `before`/`run`/`finally` are trusted like `provides.run` today; an imported or
 crew skill's code runs in the capability sandbox until blessed. Front-end calls
 use permission gates, but the audit found nested raw-dispatch paths that do not

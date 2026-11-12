@@ -80,6 +80,7 @@ end
 
 
 function CommandView:move_suggestion_idx(dir)
+  if self.suggestion_text ~= self:get_text() then self:update_suggestions() end
   local n = #self.suggestions
   if n > 0 then
     self.suggestion_idx = ((self.suggestion_idx - 1 + dir) % n) + 1
@@ -90,13 +91,19 @@ end
 
 
 function CommandView:complete()
+  if self.suggestion_text ~= self:get_text() then self:update_suggestions() end
   if #self.suggestions > 0 then
     self:set_text(self.suggestions[self.suggestion_idx].text)
+    -- Completion changes the field while retaining the explicitly chosen row.
+    self.suggestion_text = self:get_text()
+    self.last_change_id = self.doc:get_change_id()
   end
 end
 
 
 function CommandView:submit()
+  -- SDL may deliver text and Enter before the next view update.
+  if self.suggestion_text ~= self:get_text() then self:update_suggestions() end
   local suggestion = self.suggestions[self.suggestion_idx]
   local text = self:get_text()
   local submit = self.state.submit
@@ -151,7 +158,8 @@ end
 
 
 function CommandView:update_suggestions()
-  local t = self.state.suggest(self:get_text()) or {}
+  local text = self:get_text()
+  local t = self.state.suggest(text) or {}
   local res = {}
   for i, item in ipairs(t) do
     if i == max_suggestions then
@@ -164,6 +172,8 @@ function CommandView:update_suggestions()
   end
   self.suggestions = res
   self.suggestion_idx = 1
+  self.suggestion_text = text
+  self.last_change_id = self.doc:get_change_id()
 end
 
 

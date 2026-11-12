@@ -43,7 +43,15 @@ function modal.chooser(label, choices, on_pick)
     end
     if pick then on_pick(pick) end
   end, function(text)
-    return common.fuzzy_match(choices, text or "")
+    if not text or text == '' then return choices end
+    local ranked={}
+    for i,choice in ipairs(choices)do
+      local score=system.fuzzy_match(choice.text,text or '')
+      if score then ranked[#ranked+1]={choice=choice,score=score,index=i}end
+    end
+    table.sort(ranked,function(a,b)return a.score>b.score or a.score==b.score and a.index<b.index end)
+    local matches={};for i,item in ipairs(ranked)do matches[i]=item.choice end
+    return matches
   end)
 end
 
@@ -134,6 +142,10 @@ function modal.intercept(k)
 
   if typing() then return false end
 
+  -- A focused local control owns activation before read-only leader shortcuts.
+  local view=core.active_view
+  if view and view.on_action_key and view:on_action_key(stroke)then return true end
+
   -- Ctrl-w is the pane/window prefix on read-only surfaces, but in a text field
   -- it is the word-delete every editor binds -- so it is claimed only once the
   -- typing() guard above has let a field keep it.
@@ -153,9 +165,10 @@ function modal.install()
   if modal.installed then return end
   modal.installed = true
   local orig = keymap.on_key_pressed
-  keymap.on_key_pressed = function(k)
+  keymap.on_key_pressed = function(k,event)
+    if core.active_view and core.active_view.raw_keys then return orig(k,event) end
     if modal.intercept(k) then return true end
-    return orig(k)
+    return orig(k,event)
   end
 end
 

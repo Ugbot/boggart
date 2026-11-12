@@ -23,6 +23,7 @@
  * a userdata handle -- there is only ever one terminal to talk to.
  */
 #include <stdbool.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -206,6 +207,12 @@ static int l_size(lua_State *L) {
   return 2;
 }
 
+static int l_request_resize(lua_State *L) {
+  (void)L;
+  tc_request_resize();
+  return 0;
+}
+
 static int l_clear(lua_State *L) {
   (void) L;
   tc_clear();
@@ -222,6 +229,23 @@ static int l_set(lua_State *L) {
   int attr = check_attr(L, 6);
   tc_set(x, y, cp, fg, bg, attr);
   return 0;
+}
+
+/* tc.cluster(x, y, text, width, fg, bg, attr) -> written:boolean */
+static int l_cluster(lua_State *L) {
+  lua_Integer x = luaL_checkinteger(L, 1);
+  lua_Integer y = luaL_checkinteger(L, 2);
+  size_t length;
+  const char *text = luaL_checklstring(L, 3, &length);
+  lua_Integer width = luaL_checkinteger(L, 4);
+  int fg = check_colour(L, 5);
+  int bg = check_colour(L, 6);
+  int attr = check_attr(L, 7);
+  int valid = x >= 0 && x <= INT_MAX && y >= 0 && y <= INT_MAX &&
+              (width == 1 || width == 2);
+  lua_pushboolean(L, valid && tc_put_cluster((int)x, (int)y, text, length,
+                                            (int)width, fg, bg, attr));
+  return 1;
 }
 
 /* tc.puts(x, y, s, fg, bg, attr) -> x2 */
@@ -332,9 +356,7 @@ static int l_poll(lua_State *L) {
 /* tc.snapshot() -> string. The on-screen buffer as UTF-8 rows -- exactly what
  * the terminal is showing, for tests. */
 static int l_snapshot(lua_State *L) {
-  int w = 0, h = 0;
-  tc_size(&w, &h);
-  size_t cap = (size_t) (w + 1) * (size_t) (h + 1) * 4 + 64;
+  size_t cap = tc_snapshot_size() + 1;
   char *buf = (char *) malloc(cap);
   if (!buf) { lua_pushliteral(L, ""); return 1; }
   size_t n = tc_snapshot(buf, cap);
@@ -362,8 +384,10 @@ static const luaL_Reg tc_lib[] = {
   {"mouse",    l_mouse},
   {"snapshot", l_snapshot},
   {"size",     l_size},
+  {"request_resize", l_request_resize},
   {"clear",    l_clear},
   {"set",      l_set},
+  {"cluster",  l_cluster},
   {"puts",     l_puts},
   {"flush",    l_flush},
   {"poll",     l_poll},

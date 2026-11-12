@@ -1,0 +1,158 @@
+{
+  "backend": "boggart-c",
+  "backend_source": {
+    "files": [
+      {
+        "path": "src/lvt.c",
+        "sha256": "a45cdcb9684d586c29a8ec02a8a7cf9faeaa2ef71cb2768ff742f36009f45b86"
+      },
+      {
+        "path": "src/vt_table.h",
+        "sha256": "2afeb25ada6c85e69d76514bc7b77d67b758248b1dd3de014bf4233926598fb0"
+      },
+      {
+        "path": "src/lstyle.c",
+        "sha256": "5a04f044ba88f2c1a1a2483dee6996f8fe0884cdf206e249edaf2b72b1070ccd"
+      },
+      {
+        "path": "src/lpage.c",
+        "sha256": "1afc583b181f035557f89f1a1952fe2b913f00e2a6f815e359f9c917ff4227e5"
+      },
+      {
+        "path": "src/bterm.c",
+        "sha256": "aacb8bb75ca1b25c5a07107fdb5b314de130b2e853a4515a8750a2062577ca78"
+      },
+      {
+        "path": "src/bterm_dispatch.c",
+        "sha256": "57cc62f6b767dbb927697578985bc0c54f1b7083863a58b0b17c76a2f25c142f"
+      },
+      {
+        "path": "src/bterm_sgr.c",
+        "sha256": "782bdc8449e8133dbfa844ce6aad2fb21458abaab932ebdbff945c2ac3ab564d"
+      },
+      {
+        "path": "src/lterminal.c",
+        "sha256": "85d04eeef2a69b1d25c0b3cbf0b863253a21c2820643c03a57b70dcb14fa5bfc"
+      },
+      {
+        "path": "src/lvt.h",
+        "sha256": "3804524af44dc3f066563e3b817ec76112c8ca25257cc6896a007e20933cdbbc"
+      },
+      {
+        "path": "src/lstyle.h",
+        "sha256": "347bda983d0f4dd0f73b844f7e92d3cb6baf02a4317efaf242d4d8d0971e9ed3"
+      },
+      {
+        "path": "src/lpage.h",
+        "sha256": "5aa759e3929b0acdce9178d96da72789d8a7f267e367be81a3f10edc27512114"
+      },
+      {
+        "path": "src/bterm.h",
+        "sha256": "c6f744c85634f97710633bf710ef5a267fda0fa51442f03015fb339e6259d38d"
+      },
+      {
+        "path": "src/bterm_internal.h",
+        "sha256": "e71b0adaec07da922fcbcffeb3c523bc17cbedc2d823a89c2fa97d5dfecbf32b"
+      }
+    ]
+  },
+  "chunk_bytes": 4096,
+  "cols": 80,
+  "environment": {
+    "boggart": "0.2.0",
+    "libuv": "1.52.1",
+    "lua": "Lua 5.5",
+    "measured_at_utc": "2026-10-13T14:07:25Z",
+    "uname": {
+      "machine": "arm64",
+      "release": "25.6.0",
+      "sysname": "Darwin",
+      "version": "Darwin Kernel Version 25.6.0: Fri Jul 31 19:19:08 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6050"
+    }
+  },
+  "gc": "enabled",
+  "results": [
+    {
+      "bytes": 1048629,
+      "corpus_sha256": "993897b513a919d375b170578eafb6b46858c7974afd33271242caf80d7761d3",
+      "mbps": 124.05039481856,
+      "median_ns": 8453250,
+      "missing_features": [],
+      "samples_ns": [
+        8453250,
+        8043041,
+        8500375
+      ],
+      "scenario": "plain",
+      "stream_equivalent": true,
+      "supported": true
+    },
+    {
+      "bytes": 1048608,
+      "corpus_sha256": "f7a28eacc70afedac1e76c7ccecfa76efdac636a1b834dd06ea17f228cd4304e",
+      "mbps": 130.41577016355,
+      "median_ns": 8040500,
+      "missing_features": [],
+      "samples_ns": [
+        8040500,
+        8155125,
+        7913667
+      ],
+      "scenario": "dense-sgr",
+      "stream_equivalent": true,
+      "supported": true
+    },
+    {
+      "bytes": 1048600,
+      "corpus_sha256": "336898f9ba82dd94ac123fb1f6fb116d92d3232773599bf4a36bba65ed5e2609",
+      "mbps": 173.8659540915,
+      "median_ns": 6031083,
+      "missing_features": [
+        "wide",
+        "graphemes"
+      ],
+      "samples_ns": [
+        7175625,
+        6031083,
+        5670667
+      ],
+      "scenario": "unicode",
+      "stream_equivalent": true,
+      "supported": false
+    },
+    {
+      "bytes": 1049152,
+      "corpus_sha256": "e2ca8e3a457316f269ec8a96a2c58fe4a877780f6d57a9ef4cf3fcc8b92f9b64",
+      "mbps": 85.657584712998,
+      "median_ns": 12248209,
+      "missing_features": [],
+      "samples_ns": [
+        10771042,
+        12577166,
+        12248209
+      ],
+      "scenario": "scroll",
+      "stream_equivalent": true,
+      "supported": true
+    },
+    {
+      "bytes": 1048750,
+      "corpus_sha256": "02913183f6243916ecc7f4d02bb7d6b7876a8f9c64ebe449b23e9319471d25d7",
+      "mbps": 22.511524075793,
+      "median_ns": 46587250,
+      "missing_features": [],
+      "samples_ns": [
+        44329458,
+        48491750,
+        46587250
+      ],
+      "scenario": "alt-screen",
+      "stream_equivalent": true,
+      "supported": true
+    }
+  ],
+  "rows": 24,
+  "samples": 3,
+  "schema": 1,
+  "target_bytes": 1048576
+}

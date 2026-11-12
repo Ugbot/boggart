@@ -112,16 +112,21 @@ for _=1,2000 do
  assert(engine:tick(active));require('uv').sleep(1)
 end
 check(assert(engine:status(active)).status=='completed','worker completes with concurrent foreground calls')
-check(heartbeats>0 and worst<100 and dispatch_ms<100,'measured foreground latency bound on qualification host')
 print(('mining_jobs fairness: dispatch=%.3fms foreground_max=%.3fms heartbeats=%d'):format(dispatch_ms,worst,heartbeats))
+check(heartbeats>0 and worst<100 and dispatch_ms<100,'measured foreground latency bound on qualification host')
 -- A transient lock at settlement must retain the completed worker result.
 local retry=start('directed',{record('retry-a'),record('retry-b')})
 assert(engine:tick(retry))
 local blocker=assert(require('db').open(dbpath))
 assert(blocker:exec('BEGIN IMMEDIATE'))
-require('uv').sleep(100)
-local blocked,blocked_error=engine:tick(retry)
-check(blocked==nil and blocked_error~=nil,'settlement lock surfaced')
+local blocked,blocked_error
+for _=1,2000 do
+ blocked,blocked_error=engine:tick(retry)
+ if not blocked then break end
+ check(blocked.status=='running','worker still running before locked settlement')
+ require('uv').sleep(1)
+end
+check(blocked==nil and blocked_error and blocked_error.code=='database','settlement lock surfaced')
 assert(blocker:exec('ROLLBACK'));blocker:close()
 local retried,retry_error=engine:tick(retry)
 check(retried and retried.status=='completed','completed analysis survives transient settlement lock')

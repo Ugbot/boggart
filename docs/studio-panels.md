@@ -5,6 +5,15 @@ on the layout code that already ships (`studio/data/core/rootview.lua`,
 `studio/data/core/commands/root.lua`, `studio/data/shell/`) and names the real
 API rather than inventing one.
 
+**Shared layout update (2026-10-15):** Structural pane operations now live in
+[`lua/bmux/tree.lua`](../lua/bmux/tree.lua), used directly by RootView's node
+class. Split/close, tab movement, swaps, direction, resizing, dock bounds and
+zoom share that implementation. Studio retains rendering and leaf presentation.
+See [the current model contract](bmux-layout.md) and
+[Studio Join layout](bmux-studio-layout.md) for the server-owned hierarchy and
+actual Studio client. The cTUI consumer remains open BMUX-31/BMUX-35 work;
+persistence remains BMUX-33.
+
 ## Context
 
 boggart-studio is a lite-xl fork. lite-xl already has the hard part of a
@@ -136,6 +145,95 @@ A terminal is a grid of monospace cells; drawing it is drawing runs of cells
 with those two calls.
 
 ### Pieces
+
+**Current implementation (2026-10-14):** the v1 split below is historical.
+TerminalView now presents native `terminal.open` grids, using `src/bpty.c` and
+the shared C VT core. The production Lua byte parser and frame-polled PTY
+module are removed. A single SDL/libuv waiter wakes main-thread dispatch;
+native encoders handle keyboard/IME, paste/focus and mouse. RGB/256 colors,
+alternate screen, scroll regions, wide clusters and reflow come from the C
+core. See [process-backed terminals](terminal-process.md) and the
+[integration plan](superpowers/plans/2026-10-14-bmux-libuv-pty.md). Batched cell
+rendering and positioned cell shaping are implemented. Selection, search and
+the remaining terminal presentation gates stay separate work.
+
+### BMUX mode
+
+Click **BMUX** beside AGENT / EDIT / FLEET, or use **Ctrl+Alt+4**
+(**Cmd+Option+4** on macOS). The first visit opens an interactive shell in the
+project directory. Its toolbar exposes **New terminal**, **New agent**, **Attach**, **Split right**,
+**Split down**, **Close**, **Zoom** and **Next pane**. New terminals open tabs in
+the focused pane; splits create independent shells. Click a tab/pane to focus it
+and drag dividers to resize. On macOS, **Cmd+T** opens a terminal tab,
+**Cmd+D** splits right, **Cmd+Shift+D** splits down and **Cmd+W** closes the
+focused terminal. **Ctrl+Alt+arrows** moves pane focus. Toolbar controls wrap
+in narrow windows; mode buttons move below the menus when their rows would overlap.
+
+Switching modes keeps BMUX's running shells, tabs, split proportions, focused
+pane and zoom state. New shells inherit a valid directory reported by OSC 7,
+falling back to their originating project directory. These new local shells are
+owned by Studio. **Attach** (also **Ctrl-Alt-A**) connects a thin pane to a
+server-owned terminal over a trusted private UDS, with read-only observation,
+explicit controller actions and same-process detach/reattach. See
+[attached Studio terminals](bmux-studio-attachment.md). Persistent restoration,
+the shared layout and the cTUI attached view remain BMUX-31/33/35 work. Terminal selection/search and
+the remaining cmux roadmap still have separate tracker gates.
+
+`tests/studio_bmux.lua` exercises real Studio mouse/keyboard dispatch and native
+PTYs, including output while hidden, mode roundtrips, tab closure and narrow
+controls. `shell.workspaces.bmux` owns terminal actions and
+`shell.bmuxtoolbar` owns their visible controls; the existing Node tree remains
+responsible for tabs, dividers and layout.
+
+### Agent TUIs in Bmux and Fleet
+
+**New agent** opens a profile chooser for **Boggart TUI**, **Resume Boggart TUI**,
+**Codex**, **Claude Code** and **Custom agent command**. It runs the actual
+executable in a native terminal tab. Custom commands support quoted arguments;
+variables, backticks, globs and pipelines are passed literally rather than
+expanded by a shell. An explicit shell executable can be selected when wanted.
+The Boggart executable is found beside Studio, in a source checkout or on PATH.
+
+Launched agents register in the existing **FLEET** view alongside Boggart's
+scheduled workers. External entries show their provider, cwd, process ID and
+exit/failure status. **Focus pane** switches to the original Bmux pane, including
+a pane hidden by zoom. **Stop** closes its native PTY without switching away
+from Fleet. Closing a Bmux agent tab retires its controls; natural exit preserves
+the native screen for inspection. Known live resumed Boggart sessions are focused
+instead of launched twice.
+
+Process liveness and agent activity are separate: external rows say
+**alive / unknown** until a runtime integration supplies semantic status. The
+launcher does not infer tasks, model names, approvals or completion from screen
+text. Launched **Boggart TUIs** use a private native channel to report their
+actual session/model and idle/running/approval/question state. Select their
+Fleet row to **Send prompt**, **Interrupt** a running turn, or **Approve/Reject**
+the displayed tool request. The result of each action appears in the details.
+Prompts use the same conversation and refuse to overwrite a human draft or
+enter an owned dialog; a draft changed since the prompt dialog opened is also
+rejected. A running session accepts steering into its existing inbox.
+
+The TUI remains interactive in its BMUX pane. Interrupt cancels its turn and
+keeps that process/session open; Stop closes the process. Approvals identify
+the exact live request and never synthesize terminal keys or enable blanket
+approval. Workers started inside that TUI also register beneath it, including
+workers that complete or fail between UI polls. Their details show the actual
+worker session/model and native parent session. **Focus pane** opens the owning
+TUI; **Cancel worker** stops only that worker, preserving its coordinator and
+other workers. Finished rows remain inspectable within bounded Fleet history.
+Losing the control channel marks live workers unreachable and removes Cancel;
+closing the owning pane retires their controls. They share the TUI's terminal;
+dedicated worker panes remain future work. Hooks for agents started manually in
+shells and rich foreign-provider adapters remain subsequent stages.
+See [channel ownership and protocol](bmux-agent-channel.md).
+
+`lua/fleet.lua` owns bounded metadata, adapter capabilities and generation checks;
+`core.fleetagents` connects native PTYs and cached scheduler records to that
+model. Polling reads an in-memory revision before allocating process metadata.
+Ended, released history can be evicted at capacity; live records and open panes
+cannot be silently evicted. `core.agentlauncher` owns profiles and literal argv.
+`tests/studio_fleet_agents.lua` verifies the actual chooser, Boggart TUI keyboard
+quit/resume, foreign processes, Fleet focus/stop, hidden exit and literal arguments.
 
 1. **PTY host (new C).** Add `openpty`/`forkpty` (or `posix_openpt` +
    `grantpt`/`unlockpt`) behind a small Lua surface, e.g. `sys.pty.open{cmd,
@@ -310,10 +408,10 @@ Each phase ships on its own.
 
 ## 8. Non-goals
 
-- **No full tmux/screen.** No tmux control protocol, no session server, no
-  detach/reattach. Panes are studio panes.
-- **No remote panes.** A terminal is a local child on a local PTY. Remote work
-  is SSH inside a local terminal, not a studio feature.
+- **No tmux/screen control protocol.** Studio panes can attach to the native
+  Bmux terminal host; they do not control an external tmux/screen server.
+- **No network remote pane transport.** Host attachment uses a same-user private
+  UDS. Network remote work uses SSH inside a terminal.
 - **No floating or OS windows.** The tree tiles; panes do not overlap and do not
   detach into separate OS windows.
 - **No terminal multiplexer semantics inside a pane.** One child per terminal

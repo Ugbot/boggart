@@ -62,6 +62,7 @@ jobs:
           # are arm64 runners; macos-13 is the last x86_64 one.
           - target: macos-arm64
             os: macos-14
+            cmake_args: -DBOGGART_STATION=ON
           - target: macos-x86_64
             os: macos-13
           - target: windows-x86_64
@@ -76,6 +77,19 @@ jobs:
         run: git config --global core.autocrlf false
 
       - uses: actions/checkout@v5
+
+      - name: Check terminal port attribution
+        run: python3 tools/check_ghostty_port.py
+
+      - name: Check generated Unicode data
+        run: |
+          python3 tools/genwidth.py --check
+          python3 tests/genwidth_test.py
+          python3 tools/ghostty/unicode_fixture.py --check
+          python3 tests/ghostty_unicode_profile_test.py
+
+      - name: Check Ghostty oracle fixtures (offline)
+        run: python3 tests/ghostty_oracle_test.py
 
       # The newest released CMake and Ninja on every platform, rather than
       # whatever each runner image happens to ship -- those drift apart by
@@ -147,13 +161,13 @@ jobs:
       - name: Configure
         id: configure
         continue-on-error: true
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake_args }}
 
       - name: Configure again, without the cache
         if: steps.configure.outcome == 'failure'
         run: |
           cmake -E rm -rf build
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake_args }}
 
       - name: Build
         run: cmake --build build
@@ -203,6 +217,7 @@ jobs:
           # to be displayed on every copy, and the third-party notices it carries
           # must travel with the work they cover.
           cp LICENSE "dist/$name/"
+          cp -R THIRD_PARTY "dist/$name/"
           cp studio/LICENSE-lite studio/LICENSE-rough "dist/$name/" 2>/dev/null || true
           tar -C dist -czf "$name.tar.gz" "$name"
           echo "ARCHIVE=$name.tar.gz" >> "$GITHUB_ENV"
@@ -220,6 +235,7 @@ jobs:
           Copy-Item README.md "dist/$name/" -ErrorAction SilentlyContinue
           # Same on Windows: BSL 1.1 requires the licence on every copy.
           Copy-Item LICENSE "dist/$name/"
+          Copy-Item THIRD_PARTY "dist/$name/" -Recurse
           Copy-Item studio/LICENSE-lite, studio/LICENSE-rough "dist/$name/" -ErrorAction SilentlyContinue
           Compress-Archive -Path "dist/$name" -DestinationPath "$name.zip"
           "ARCHIVE=$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append

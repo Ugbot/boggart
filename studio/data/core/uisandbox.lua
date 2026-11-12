@@ -191,7 +191,7 @@ function uisandbox.context(panel, x, y, w, h, mouse, font)
     state = panel.state,
     mouse = mouse and { x = mouse.x, y = mouse.y } or nil,
 
-    text_width = function(s) return font:get_width(tostring(s or "")) end,
+    text_width = function(s) return font:get_grid_width(tostring(s or "")) end,
 
     rect = function(rx, ry, rw, rh, colour)
       local cx, cy, cw, ch = clip(rx or 0, ry or 0, rw or 0, rh or 0)
@@ -210,8 +210,8 @@ function uisandbox.context(panel, x, y, w, h, mouse, font)
       if tx > x + w then return end
       local room = math.floor(((x + w) - math.max(tx, x)) / font:get_width("0"))
       if room < 1 then return end
-      if sys.width(s) > room then s = sys.wtake(s, math.max(1, room - 1)) .. "…" end
-      common.draw_text(font, colour or style.text, s, align or "left",
+      if sys.cell_width(s) > room then s = sys.cell_take(s, math.max(0, room - 1)) .. "…" end
+      common.draw_grid(font, colour or style.text, s, align or "left",
         tx, ty, tw or (x + w - tx), lh)
     end,
 

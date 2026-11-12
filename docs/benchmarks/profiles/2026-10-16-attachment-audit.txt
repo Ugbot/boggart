@@ -1,0 +1,3 @@
+normal: 100 snapshots + 100 first stream events, no client errors, peak handshakes=4, 100 server attachments, valid first frame, 100 current identities verified; complete metadata-only traces
+asan: 100 snapshots + 100 first stream events, no client errors, peak handshakes=4, 100 server attachments, valid first frame, 78 current identities verified; complete metadata-only traces
+ASAN resource sampling is NOT a pass: separate pre-exec child failure BMUX-109, both failed attempts retained.

@@ -22,30 +22,17 @@
  * all gets an empty chain and renders exactly what it rendered before this
  * file existed. Nothing here can stop the editor starting.
  *
- * WHAT IT DELIBERATELY REFUSES. Colour emoji fonts. Apple Color Emoji, Noto
- * Color Emoji and Segoe UI Emoji store bitmaps or layered vectors in sbix,
- * CBDT or COLR tables. Accepting one would be worse than refusing it: the cmap
- * says the codepoint is covered, so the fallback search would stop there, and
- * the emoji would come out as a blank with a correct advance and no way to
- * tell why. So probe_sfnt() rejects them by table, and on a machine whose only
- * emoji font is a colour one -- which is every stock macOS -- emoji do not
- * draw. That is a stated limit, not an oversight. A monochrome symbols font
- * (Apple Symbols, Noto Sans Symbols2, Segoe UI Symbol) does get picked up,
- * which covers arrows, box drawing, maths and dingbats.
- *
- * That rule outlived the reason it was written for. It was stb_truetype that
- * could not read those tables at all; FreeType can, and returns BGRA bitmaps.
- * Two things still stand in the way, and either alone is enough: sbix and CBDT
- * store their strikes as PNG, which needs a FreeType built against libpng --
- * ours is not, on purpose (see CMakeLists.txt) -- and the glyph atlas here is
- * one coverage per pixel multiplied by the caller's colour, so a colour glyph
- * would arrive as a silhouette even if it decoded. Colour emoji is a real
- * feature and this is where it would start; it is not a comment that needs
- * deleting.
+ * Color emoji uses FreeType bitmap/COLRv0 decoding and preserves intrinsic
+ * colors in the SDL atlas. SVG/COLRv1 paint graphs remain unsupported and
+ * are checked by the glyph raster path before a cluster accepts that face.
  */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#ifndef _WIN32
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 #include "uv.h"
 #include "fontfallback.h"
@@ -58,10 +45,9 @@
 static FontFallback chain[MAX_FALLBACKS];
 static int chain_n = -1;   /* -1 until discovery has run */
 
-/* A 25 MB pan-Unicode face is worth mapping. A 192 MB one is a colour emoji
- * font that probe_sfnt() will reject anyway; this is the belt to that braces,
- * so a pathological file cannot be read into memory before we look at it. */
-#define MAX_FONT_BYTES (64u * 1024u * 1024u)
+/* Installed Apple Color Emoji is about 183MB. Bound accepted files, and
+ * map them read-only on POSIX rather than allocating a copy per process. */
+#define MAX_FONT_BYTES (384u * 1024u * 1024u)
 
 static uint32_t be32(const unsigned char *p) {
   return ((uint32_t) p[0] << 24) | ((uint32_t) p[1] << 16)
@@ -77,7 +63,7 @@ static uint16_t be16(const unsigned char *p) {
  *
  * Header-only: a few hundred bytes per candidate, so the whole scan costs less
  * than one glyph bake even when nothing matches. Returns 1 if this file has
- * outlines we can rasterise and no colour-glyph table, 0 otherwise. */
+ * outlines or bitmap/color tables our font loader can inspect, 0 otherwise. */
 static int probe_sfnt(const char *path) {
   FILE *fp = fopen(path, "rb");
   if (!fp) { return 0; }
@@ -113,14 +99,8 @@ static int probe_sfnt(const char *path) {
     for (int t = 0; t < ntab; t++) {
       unsigned char rec[16];
       if (fread(rec, 1, 16, fp) != 16) { goto done; }
-      /* Any colour-glyph table disqualifies the whole file: this renderer
-       * cannot draw one (see the header comment), and a font we accept must
-       * be one we can draw. */
       if (!memcmp(rec, "sbix", 4) || !memcmp(rec, "CBDT", 4)
-          || !memcmp(rec, "COLR", 4) || !memcmp(rec, "SVG ", 4)) {
-        ok = 0;
-        goto done;
-      }
+          || !memcmp(rec, "COLR", 4)) { has_outlines = 1; }
       /* 'glyf' is TrueType outlines, 'CFF ' is PostScript ones. FreeType has
        * a driver for both, and hints both. */
       if (!memcmp(rec, "glyf", 4) || !memcmp(rec, "CFF ", 4)) { has_outlines = 1; }
@@ -267,6 +247,7 @@ static void discover(void) {
 #if defined(__APPLE__)
   static const char *const mac[] = {
     /* symbols, arrows, box drawing, maths -- small and monochrome */
+    "/System/Library/Fonts/Apple Color Emoji.ttc",
     "/System/Library/Fonts/Apple Symbols.ttf",
     "/System/Library/Fonts/Menlo.ttc",
     /* CJK: PingFang on current macOS, Hiragino on older, STHeiti older still */
@@ -303,6 +284,7 @@ static void discover(void) {
   char fonts[512];
   snprintf(fonts, sizeof fonts, "%s\\Fonts", root ? root : "C:\\Windows");
   static const char *const win[] = {
+    "seguiemj.ttf",                 /* Segoe UI Emoji (COLRv0) */
     "seguisym.ttf",                 /* Segoe UI Symbol: arrows, box, dingbats */
     "msgothic.ttc", "meiryo.ttc",   /* Japanese */
     "simsun.ttc", "msyh.ttc",       /* Simplified Chinese */
@@ -321,7 +303,13 @@ static void discover(void) {
    * fonts-noto-cjk, fonts-dejavu, fonts-liberation and their RPM equivalents
    * all land somewhere under one of these. Missing directories cost a failed
    * scandir each. */
+  /* Reserve emoji coverage before broad family scans can fill the cap with
+   * several weights of DejaVu/Liberation. These are common package layouts. */
+  add_candidate("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf");
+  add_candidate("/usr/share/fonts/noto/NotoColorEmoji.ttf");
+  add_candidate("/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf");
   static const char *const stems[] = {
+    "NotoColorEmoji", "NotoEmoji",
     "NotoSansCJK", "NotoSerifCJK", "NotoSansMono", "NotoSansSymbols",
     "NotoSansArabic", "NotoSansHebrew", "NotoSansDevanagari", "NotoSansThai",
     "NotoSans-", "NotoSansMath",
@@ -371,6 +359,13 @@ void* fontfallback_data(FontFallback *f, size_t *size) {
   if (len <= 0 || (uint64_t) len > MAX_FONT_BYTES) { fclose(fp); return NULL; }
   rewind(fp);
 
+#ifndef _WIN32
+  void *mapped=mmap(NULL,(size_t)len,PROT_READ,MAP_PRIVATE,fileno(fp),0);
+  if(mapped!=MAP_FAILED) {
+    fclose(fp);f->data=mapped;f->size=(size_t)len;
+    if(size)*size=f->size;return mapped;
+  }
+#endif
   void *buf = malloc((size_t) len);
   if (!buf) { fclose(fp); return NULL; }
   size_t got = fread(buf, 1, (size_t) len, fp);

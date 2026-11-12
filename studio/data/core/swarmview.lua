@@ -18,8 +18,8 @@
 -- allowed to sleep inside libuv, because nothing is drawing sixty times a
 -- second behind it.
 --
--- OBSERVATION, NOT PLUMBING. The roster's state model is lua/dash.lua's --
--- literally: that module is required and its records are reused. dash learns
+-- OBSERVATION, NOT PLUMBING. The shared Fleet registry combines native agent
+-- processes with lua/dash.lua's existing scheduler records. dash learns
 -- what each agent is doing by wrapping three bog.* entry points and
 -- attributing every chunk to whichever actor's coroutine is running; that
 -- mechanism exists, is tested (tests/ltui.lua), and writing a second one would
@@ -33,6 +33,7 @@ local config = require "core.config"
 local style = require "core.style"
 local View = require "core.view"
 local widgets = require "core.widgets"
+local actions = require "core.fleetactions"
 
 local dash = require "dash"
 
@@ -72,6 +73,14 @@ local STATE = {
   err      = { "crashed",             "error"   },
   idle     = { "idle",                "dim"     },
   new      = { "new",                 "dim"     },
+  alive    = { "alive / unknown",     "link"    },
+  starting = { "starting",            "dim"     },
+  exited   = { "exited",              "dim"     },
+  failed   = { "failed",              "error"   },
+  unreachable = { "unreachable",      "warn"    },
+  running = { "running",             "good"    },
+  waiting_for_approval = { "waiting on approval", "warn" },
+  waiting_for_answer = { "waiting for answer", "warn" },
 }
 
 function SwarmView:new()
@@ -82,6 +91,8 @@ function SwarmView:new()
   -- on_spine_scroll, which turns them into roster movement.
   self.scrollable = true
   self.hits = {}
+  self.action_focus = require('actionfocus').new()
+  self.action_items = {}
   self.journal = {}        -- bus entries, oldest first (newest last on screen)
   self.transcripts = {}    -- id -> persisted transcript lines, for dead agents
   self.killed = {}         -- ids this view stopped, so they don't read "crashed"
@@ -91,7 +102,7 @@ function SwarmView:new()
 end
 
 function SwarmView:get_name()
-  return self:live() and "Swarm *" or "Swarm"
+  return self:live() and "Fleet *" or "Fleet"
 end
 
 -- Closing is just closing now. This view no longer owns the run -- the studio's
@@ -247,6 +258,7 @@ end
 -- ---------------------------------------------------------------------------
 
 function SwarmView:state_of(rec)
+  if rec.fleet_origin == "external" then return rec.state end
   if self.killed[rec.id] then return "stopped" end
   -- The swarm gate holds approval requests out of band in bog.approvals; if one
   -- is outstanding for this agent it is waiting on approval, whatever its
@@ -273,12 +285,7 @@ local function state_word(s)
 end
 
 function SwarmView:records()
-  local out = {}
-  for _, id in ipairs(dash.order) do
-    local rec = dash.agents[id]
-    if rec then out[#out + 1] = rec end
-  end
-  return out
+  return require("core.fleetagents").registry:records()
 end
 
 function SwarmView:selected_record()
@@ -342,6 +349,7 @@ function SwarmView:on_mouse_pressed(button, x, y, clicks)
   core.set_active_view(self)
   local item = widgets.hit(self.hits, x, y)
   if item then
+    self.action_focus.key=item.key
     if item.action then item.action()
     elseif item.command then command.perform(item.command) end
   end
@@ -354,13 +362,54 @@ function SwarmView:select_delta(d)
   local i = 1
   for k, rec in ipairs(recs) do if rec.id == self.selected then i = k end end
   self.selected = recs[common.clamp(i + d, 1, #recs)].id
+  self.action_focus:clear()
   core.redraw = true
 end
 
 function SwarmView:on_key_pressed(key)
+  if self:on_action_key(key)then return true end
   if key == "up" then self:select_delta(-1); return true end
   if key == "down" then self:select_delta(1); return true end
-  if key == "escape" and self:live() then self:stop(); return true end
+end
+
+function SwarmView:on_action_key(key)
+  local shell=package.loaded['shell']
+  if shell and shell.menubar and shell.menubar.open then return end
+  if key=='tab' or key=='shift+tab'then
+    self.action_focus:move(self.action_items,key=='tab' and 1 or -1);core.redraw=true;return true
+  end
+  if key=='escape'then self.action_focus:clear();core.redraw=true;return true end
+  local item=self.action_focus:current(self.action_items)
+  if item and (key=='return' or key=='keypad enter' or key=='space')then
+    if item.action then item.action()elseif item.command then command.perform(item.command)end
+    core.redraw=true;return true
+  end
+end
+
+function SwarmView:draw_actions(font,items,x,y,limit)
+  local hits,bottom=widgets.wrap_row(font,items,x,y,self.mouse,limit)
+  for _,hit in ipairs(hits)do
+    if hit.x+hit.w<=limit and hit.y+hit.h<=(self.detail_bottom or math.huge)then self.hits[#self.hits+1]=hit end
+  end
+  return bottom
+end
+
+function SwarmView:draw_action_focus()
+  self.action_items={}
+  for _,hit in ipairs(self.hits)do
+    if hit.item.key and hit.x>=self.position.x and hit.x+hit.w<=self.position.x+self.size.x
+      and hit.y>=self.position.y and hit.y+hit.h<=self.action_bottom then
+      self.action_items[#self.action_items+1]=hit.item
+    end
+  end
+  local item=self.action_focus:current(self.action_items)
+  if not item or core.active_view~=self then return end
+  for _,hit in ipairs(self.hits)do if hit.item==item then
+    local x,y,w,h=hit.x,hit.y,hit.w,hit.h;local line=math.max(1,SCALE)
+    renderer.draw_rect(x,y,w,line,style.accent);renderer.draw_rect(x,y+h-line,w,line,style.accent)
+    renderer.draw_rect(x,y,line,h,style.accent);renderer.draw_rect(x+w-line,y,line,h,style.accent)
+    break
+  end end
 end
 
 -- The spine's j/k/Ctrl-d/u, mapped onto the roster instead of a pixel scroll.
@@ -397,16 +446,23 @@ end
 
 function SwarmView:toolbar_items()
   local items = {}
+  local workspace=package.loaded['shell.workspaces.bmux'];local joined=workspace and workspace.session
+  if joined then
+    items[#items+1]={key='toolbar:new-server-agent',label='New server agent',action=function()joined.agents:choose()end}
+    items[#items+1]={key='toolbar:new-local-agent',label='New local agent',action=function()require('core.agentlauncher').choose()end}
+  else
+    items[#items + 1] = { key='toolbar:new-agent',label = "New agent", action = function() require("core.agentlauncher").choose() end }
+  end
   if self:live() then
-    items[#items + 1] = { label = "Stop", tone = style.warn,
+    items[#items + 1] = { key='toolbar:stop',label = "Stop", tone = style.warn,
                           action = function() self:stop() end }
   else
-    items[#items + 1] = { label = "New task",
+    items[#items + 1] = { key='toolbar:new-task',label = "New task",
                           action = function() self:ask_task() end }
   end
-  items[#items + 1] = { label = (bog.session and bog.session.model) or "?",
+  items[#items + 1] = { key='toolbar:model',label = (bog.session and bog.session.model) or "?",
                         command = "agent:set-model", dim = true }
-  items[#items + 1] = { label = "Close", action = function()
+  items[#items + 1] = { key='toolbar:close',label = "Close", action = function()
     local node = core.root_view:get_primary_node()
     node:close_active_view(core.root_view.root_node)
   end }
@@ -467,8 +523,8 @@ function SwarmView:draw_roster(font, charw, x, y, lh, voff, cols, rows)
     -- step up a shade on the row you are actually reading.
     local quiet = sel and style.text or style.dim
     if sel and colour == style.dim then colour = style.text end
-    cell(font, charw, x, y + voff, C.id, tostring(rec.id), style.text, 4)
-    cell(font, charw, x, y + voff, C.kind, rec.kind or "agent", style.accent,
+    cell(font, charw, x, y + voff, C.id, rec.short_id or tostring(rec.id), style.text, 4)
+    cell(font, charw, x, y + voff, C.kind, (rec.worker and '↳ ' or '')..(rec.kind or "agent"), style.accent,
          (C.state - C.kind) - 1)
     cell(font, charw, x, y + voff, C.state, word, colour,
          ((wide and C.model or C.act) - C.state) - 1)
@@ -480,19 +536,21 @@ function SwarmView:draw_roster(font, charw, x, y, lh, voff, cols, rows)
     -- A row waiting on approval says so where its activity would be, in warn,
     -- so the request is legible from the index without opening the detail pane.
     -- The state column already reads "waiting on approval"; this is the what.
-    local pend = self:pending_for(rec.id)
+    local pend = rec.fleet_origin=='external' and rec.request or self:pending_for(rec.id)
     if pend then
       cell(font, charw, x, y + voff, C.act,
         "approve? " .. pend.name .. " " .. (pend.summary or ""):gsub("%s+", " "),
         style.warn, cols - C.act)
     else
-      cell(font, charw, x, y + voff, C.act, dash.activity(rec), style.text, cols - C.act)
+      local activity=rec.activity==rec.state and word or rec.activity or dash.activity(rec)
+      cell(font, charw, x, y + voff, C.act, (rec.attention and '! ' or '')..activity, rec.attention and style.warn or style.text, cols - C.act)
     end
     local id = rec.id
     self.hits[#self.hits + 1] = {
       x = x, y = y, w = self.size.x - (x - self.position.x) * 2, h = lh,
       item = { id = "agent" .. id, action = function()
         self.selected = id
+        self.action_focus:clear()
         core.redraw = true
       end },
     }
@@ -582,6 +640,27 @@ function SwarmView:draw_detail(font, charw, x, y, lh, voff, cols, rows)
     return
   end
 
+  if rec.fleet_origin == "external" then
+    local registry = require("core.fleetagents").registry
+    local phase=select(1,state_word(rec.state))
+    cell(font, charw, x, y + voff, 0, rec.name .. "  " .. rec.provider .. "  " .. phase, style.accent, cols)
+    y = y + lh
+    y=self:draw_actions(font,actions.external(self,rec),x,y,x+cols*charw)
+    for _,text in ipairs { rec.worker and ("owning TUI: "..tostring((registry:get(rec.parent) or {}).short_id or rec.parent)) or ("pane: " .. (rec.pane_id or rec.short_id or rec.id)), "cwd: " .. (rec.cwd or "?"),
+      "session: " .. tostring(rec.session_id or "?") .. "  model: " .. tostring(rec.model or "?"),
+      rec.worker and ("parent session: "..tostring(rec.parent_session_id or '?')) or ("process: " .. tostring(rec.pid or "?") .. (rec.exit_status and rec.exit_status>=0 and ("  exit: " .. rec.exit_status) or "")),
+      rec.activity==rec.state and phase or rec.activity or "agent activity unknown",
+      rec.reported_event and ('Last provider event: '..rec.reported_event) or '',
+      rec.attention and 'Attention: focus the pane to respond' or '',
+      rec.request and ('Approval: '..rec.request.summary) or '',
+      rec.control_result and (rec.control_result.accepted and 'Action accepted' or 'Action rejected: '..(rec.control_result.error or 'unknown reason')) or '',
+      rec.error or "" } do
+      if y + lh > self.position.y + self.size.y - style.padding.y then break end
+      cell(font,charw,x,y+voff,0,text,style.text,cols);y=y+lh
+    end
+    return
+  end
+
   local word = select(1, state_word(self:state_of(rec)))
   cell(font, charw, x, y + voff, 0, string.format(
     "AGENT %d  %s  %s%s  %s out  %d tool call%s", rec.id, rec.kind or "agent", word,
@@ -617,34 +696,16 @@ function SwarmView:draw_detail(font, charw, x, y, lh, voff, cols, rows)
     cell(font, charw, x, y + voff, 0, string.format("wants to run '%s': %s",
       pend.name, ((pend.summary or ""):gsub("%s+", " "))), style.warn, cols)
     y = y + lh
-    local items = {
-      { label = "Approve", tone = style.good,
-        action = function() bog.approvals.decide(rec.id, "approve") end },
-      { label = "Reject", tone = style.error,
-        action = function() bog.approvals.decide(rec.id, "reject") end },
-      { label = "Approve all", action = function() bog.approvals.decide(rec.id, "always") end },
-    }
-    for _, hit in ipairs(widgets.row(font, items, x, y, self.mouse)) do
-      self.hits[#self.hits + 1] = hit
-    end
-    y = y + widgets.height(font)
-    rows = rows - math.ceil(widgets.height(font) / lh) - 1
+    local before=y;y=self:draw_actions(font,actions.approvals(self,rec,pend),x,y,x+cols*charw)
+    rows = rows - math.ceil((y-before) / lh) - 1
   end
 
   -- Per-actor controls, and only the ones the engine actually has: pause and
   -- kill are lua/sched.lua's; approval, when one is pending, is the block above.
   local a = bog.sched and bog.sched.by_id and bog.sched.by_id[rec.id]
   if a then
-    local items = {
-      { label = a.paused and "Resume" or "Pause",
-        action = function() self:toggle_pause(rec.id) end },
-      { label = "Kill", tone = style.error, action = function() self:kill(rec.id) end },
-    }
-    for _, hit in ipairs(widgets.row(font, items, x, y, self.mouse)) do
-      self.hits[#self.hits + 1] = hit
-    end
-    y = y + widgets.height(font)
-    rows = rows - math.ceil(widgets.height(font) / lh)
+    local before=y;y=self:draw_actions(font,actions.actor(self,rec,a),x,y,x+cols*charw)
+    rows = rows - math.ceil((y-before) / lh)
   end
 
   local src = rec.lines or {}
@@ -673,11 +734,14 @@ local TALLY = {
   { "run", "running" }, { "io", "io" }, { "mail", "mail" },
   { "proc", "in a command" }, { "paused", "paused" }, { "stopped", "stopped" },
   { "done", "done" }, { "err", "crashed" },
+  { "alive", "alive (activity unknown)" }, { "starting", "starting" },
+  { "exited", "exited" }, { "failed", "failed" }, { "unreachable", "unreachable" },
+  { "idle", "idle" }, { "approve", "waiting on approval" }, { "waiting_for_answer", "waiting for answer" },
 }
 local ALWAYS = { run = true, io = true, mail = true, done = true, err = true }
 
 function SwarmView:draw_totals(font, charw, x, y, cols)
-  local t = dash.totals()   -- the aggregates: how many, and how much came out
+  local t = dash.totals(self:records())
   -- The states are counted from the same state_of() the roster rows use, so
   -- the bar and the rows cannot disagree. dash.totals counts only the five it
   -- has words for, which is why a stopped swarm read "3 done, 1 crashed" under
@@ -685,6 +749,7 @@ function SwarmView:draw_totals(font, charw, x, y, cols)
   local n = {}
   for _, rec in ipairs(self:records()) do
     local s = self:state_of(rec)
+    if s=='running' then s='run' elseif s=='waiting_for_approval' then s='approve' end
     n[s] = (n[s] or 0) + 1
   end
   local parts = { { string.format("%d agent%s", t.n, t.n == 1 and "" or "s"), style.text } }
@@ -747,12 +812,14 @@ function SwarmView:draw()
 
   -- ---- toolbar ------------------------------------------------------------
   local top = self.position.y
-  local tb_h = bh + vpad * 2
+  local toolbar=self:toolbar_items()
+  local _,tb_bottom=widgets.wrap_layout(font,toolbar,self.position.x+pad,top+vpad,self.position.x+self.size.x-pad)
+  local tb_h = tb_bottom-top+vpad
   renderer.draw_rect(self.position.x, top, self.size.x, tb_h, style.background2)
   renderer.draw_rect(self.position.x, top + tb_h - 1, self.size.x, 1, style.divider)
   local endx = self.position.x + pad
-  for _, hit in ipairs(widgets.row(font, self:toolbar_items(),
-      self.position.x + pad, top + vpad, self.mouse)) do
+  for _, hit in ipairs(widgets.wrap_row(font, toolbar,
+      self.position.x + pad, top + vpad, self.mouse,self.position.x+self.size.x-pad)) do
     self.hits[#self.hits + 1] = hit
     endx = math.max(endx, hit.x + hit.w)
   end
@@ -770,6 +837,7 @@ function SwarmView:draw()
   -- ---- totals bar ---------------------------------------------------------
   local sb_h = lh + vpad
   local sb_y = self.position.y + self.size.y - sb_h
+  self.action_bottom=sb_y
   renderer.draw_rect(self.position.x, sb_y, self.size.x, sb_h, style.background2)
   renderer.draw_rect(self.position.x, sb_y, self.size.x, 1, style.divider)
   local x = self.position.x + pad
@@ -782,7 +850,7 @@ function SwarmView:draw()
   -- ---- roster -------------------------------------------------------------
   -- Capped at just under half the body: the roster is the index, and the pane
   -- underneath is where the reading happens.
-  local n = math.max(#dash.order, 1)
+  local n = math.max(#self:records(), 1)
   local roster_rows = math.max(1, math.min(n, math.floor(body_h * 0.45 / lh) - 1))
   local y = self:draw_roster(font, charw, x, body_y, lh, voff, cols, roster_rows)
 
@@ -808,14 +876,21 @@ function SwarmView:draw()
     local left_cols = math.floor(cols * 0.55)
     local right_x = x + (left_cols + 2) * charw
     renderer.draw_rect(right_x - charw, y, math.max(1, SCALE), pane_h, style.divider)
+    self.detail_bottom=y+pane_h
+    core.push_clip_rect(x,y,(left_cols-1)*charw,pane_h)
     self:draw_detail(font, charw, x, y, lh, voff, left_cols - 1, pane_rows - 1)
+    core.pop_clip_rect()
     self:draw_journal(font, charw, right_x, y, lh, voff, cols - left_cols - 2, pane_rows - 1)
   else
-    local half = math.max(1, pane_rows // 2)
+    local half = math.max(1, pane_rows - 3)
+    self.detail_bottom=y+half*lh
+    core.push_clip_rect(x,y,w,half*lh)
     self:draw_detail(font, charw, x, y, lh, voff, cols, half - 1)
+    core.pop_clip_rect()
     self:draw_journal(font, charw, x, y + half * lh, lh, voff, cols,
       pane_rows - half - 1)
   end
+  self:draw_action_focus()
 end
 
 -- The FLEET workspace and `swarm:open` must share one roster: constructing

@@ -142,6 +142,7 @@ function font:get_width(s)
   return #s * W
 end
 function font:get_height() return 10 end
+function font:get_grid_width(s) return sys.cell_width(s)*W end
 
 local function new_font() return setmetatable({}, font) end
 
@@ -154,6 +155,7 @@ rawset(_G, "renderer", {
   font = { load = function() return new_font() end },
   draw_rect = function() end,
   draw_text = function(_, text, x) return x + #text * W end,
+  draw_grid = function(_, text, x) return x + sys.cell_width(text)*W end,
   set_clip_rect = function() end,
 })
 if rawget(_G, "system") == nil then
@@ -221,6 +223,26 @@ if loaded then
     local _, n = s:gsub("[^\128-\191]", "")
     return n
   end
+  -- Graphemes cross markdown boundaries, inheriting the head's style.
+  for _,case in ipairs{
+    {'e**́**X','é',1,false},
+    {'**e**́X','é',1,true},
+    {'👩**‍💻**X','👩‍💻',2,false},
+    {'🇬**🇧**X','🇬🇧',2,false},
+  } do
+    local wrapped=rows_of(case[1],case[3]);local found
+    for _,row in ipairs(wrapped) do for _,token in ipairs(row) do
+      if token[2]==case[2] then found=token;break end
+    end end
+    ok(found~=nil,'a whole cluster crosses markup token boundaries: '..case[1])
+    ok(found and not not found.bold==case[4],'cluster keeps the head style: '..case[1])
+  end
+  local narrow=rows_of('👩‍💻X',1)
+  ok(#narrow==2 and text_of(narrow[1])=='👩‍💻' and text_of(narrow[2])=='X','one-cell transcript column preserves a whole wide cluster')
+  v.lines={'👩‍💻X'};local visual=v:composer_visual_rows(1)
+  ok(#visual==2 and visual[1].text=='👩‍💻' and visual[2].text=='X','one-cell composer column makes whole-cluster progress')
+  v.char_w=W;v.rows_drawn={{e=1,r=1,x=0,y=0,h=10,cells=3,text='👩‍💻X'}}
+  ok(v:pos_at(W,5).c==0 and v:pos_at(2*W,5).c==2,'selection hit-testing snaps to native cell boundaries')
 
   -- ---- wrapping ----------------------------------------------------------
   local long = string.rep("abcdefghij", 30)   -- 300 characters, no spaces
@@ -278,6 +300,13 @@ if loaded then
     ok(sys.width(c[1]) == c[2], string.format(
       "width: %s is %d cells (got %d)", c[3], c[2], sys.width(c[1])))
   end
+
+  ok(sys.width("\192\128") == 2 and sys.width("\255\128") == 2,
+    "width: invalid UTF-8 consumes one replacement cell per bad byte")
+  ok(sys.width("a\0b") == 2, "width: explicitly sized strings preserve embedded NUL")
+  local large, large_used = sys.wtake("a日b", 0x7fffffff + 100)
+  ok(large == "a日b" and large_used == 4,
+    "wtake: large Lua column budgets clamp without integer wrap")
 
   -- The cut is on a character boundary, and a two-cell character straddling
   -- the limit is left out whole rather than halved -- which is why the columns
@@ -408,6 +437,39 @@ if loaded then
   end
 
   -- ---- the composer ------------------------------------------------------
+  for _,cluster in ipairs({'é','👩‍💻','👍🏽','🇬🇧','❤️','क्‍ष','क्ष'}) do
+    v:set_input('A'..cluster..'B')
+    v:on_key_pressed('left');v:on_key_pressed('left')
+    ok(v.cx==2,'composer left skips complete cluster '..cluster)
+    v:on_key_pressed('right');ok(v.cx==2+#cluster,'composer right skips complete cluster '..cluster)
+    v:on_key_pressed('backspace');ok(v:input_text()=='AB' and v.cx==2,'composer backspace removes cluster '..cluster)
+    v:set_input('A'..cluster..'B');v:on_key_pressed('home');v:on_key_pressed('right')
+    v:on_key_pressed('delete');ok(v:input_text()=='AB' and v.cx==2,'composer delete removes cluster '..cluster)
+    v:set_input('A'..cluster..'B');v:on_key_pressed('home');v:on_key_pressed('right')
+    v:on_key_pressed('shift+right')
+    ok(v:composer_selection()==cluster,'composer selection preserves complete cluster '..cluster)
+    v:on_key_pressed('delete');ok(v:input_text()=='AB','composer selected delete '..cluster)
+  end
+  do
+    local modes=require('vimmode');local enabled=modes.enabled
+    modes.enabled=function()return true end
+    for _,cluster in ipairs({'é','👩‍💻','👍🏽','🇬🇧','❤️','क्‍ष','क्ष'}) do
+      v:set_input('A'..cluster..cluster..'B');v.edit_mode='insert';v:on_key_pressed('escape')
+      v:on_text_input('0');v:on_text_input('l');v:on_text_input('l')
+      ok(v.cx==2+#cluster,'modal motions use grapheme columns '..cluster)
+      v:on_text_input('h');v:on_text_input('2');v:on_text_input('x')
+      ok(v:input_text()=='AB','modal count deletes two complete clusters '..cluster)
+      v:on_text_input('P');ok(v:input_text()=='A'..cluster..cluster..'B','modal paste preserves clusters '..cluster)
+      v:on_text_input('u');ok(v:input_text()=='AB','modal Unicode undo '..cluster)
+      v:set_input('A'..cluster..'B');v.edit_mode='insert';v:on_key_pressed('escape')
+      v:on_text_input('0');v:on_text_input('l');v:on_text_input('a');v:on_text_input('X')
+      ok(v:input_text()=='A'..cluster..'XB','modal append follows whole cluster '..cluster)
+      v:on_key_pressed('escape');v:on_text_input('0');v:on_text_input('/');v:on_text_input(cluster)
+      v:on_key_pressed('return');ok(v.cx==2,'modal search finds complete cluster '..cluster)
+    end
+    modes.enabled=enabled;v.edit_mode='insert'
+  end
+
   v:set_input("hello world again")
   v:on_key_pressed("ctrl+backspace")
   ok(v:input_text() == "hello world",
@@ -653,7 +715,10 @@ if loaded then
     ok(has_cmd("Agent", "agent:tool-permission"), "Agent menu has per-tool permissions")
     ok(has_cmd("Run", "automations:run"), "Run menu runs automations")
     ok(has_cmd("Run", "automations:schedule"), "Run menu schedules automations")
+    ok(has_cmd("Run", "agent:workflows"), "Run menu opens workflows")
     ok(has_cmd("Run", "agent:react"), "Run menu has ReAct until goal")
+    ok(has_cmd("Bmux", "bmux:new-local-agent"), "Bmux menu starts a local agent")
+    ok(has_cmd("Bmux", "bmux:retry-local"), "Bmux menu retries a project server")
     ok(has_cmd("View", "studio:toggle-sidebar"), "View menu toggles the session list")
     ok(has_cmd("View", "studio:toggle-files"), "View menu toggles the file tree")
     ok(has_cmd("boggart", "agent:welcome"), "boggart menu has welcome")
@@ -921,7 +986,7 @@ if okdoc and package.loaded.fileview then
   local config = require("core.config")
   local saved = config.large_file_mb
   config.large_file_mb = 1
-  local TMPL = sys.tmpdir() .. "/large-doc-" .. tostring(os.time()) .. ".log"
+  local TMPL = os.tmpname() -- Normal/ASAN suites may run concurrently.
   local fl = io.open(TMPL, "wb")
   for i = 1, 60000 do fl:write(string.format("line %06d of a large file, padded out a bit\r\n", i)) end
   fl:close()
@@ -943,7 +1008,7 @@ if okdoc and package.loaded.fileview then
   d:save(TMPL)
   local fl2 = io.open(TMPL, "rb"); local head = fl2:read(12); fl2:close()
   ok(head == "line 000001 ", "save is refused: the file is untouched")
-  local SMALL = sys.tmpdir() .. "/small-doc-" .. tostring(os.time()) .. ".txt"
+  local SMALL = os.tmpname()
   local fs = io.open(SMALL, "wb"); fs:write("a\nb\n"); fs:close()
   local small = Doc(SMALL)
   ok(small.large == nil and type(rawget(small, "lines")) == "table", "small files are unchanged")

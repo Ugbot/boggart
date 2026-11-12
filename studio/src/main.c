@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <inttypes.h>
+#include <uv.h>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include "api/api.h"
@@ -7,6 +9,7 @@
 #include "assets.h"
 #include "version.h" /* BOGGART_VERSION, shared with the CLI so they can't drift */
 #include "bogcrash.h"   /* src/bogcrash.c: the crash handler */
+#include "bpty.h"
 
 /* boggart, embedded. See src/bogembed.c for why the agent shares this exact
  * lua_State rather than living in a subprocess. */
@@ -14,6 +17,12 @@ void boggart_open_libs(lua_State *L);
 int  boggart_boot(lua_State *L, const char *mode, const char *version);
 lua_State *boggart_newstate(void);
 void boggart_http_shutdown(lua_State *L); /* src/lhttp.c: close raw uv handles before lua_close */
+void boggart_serve_shutdown(lua_State *L);
+void boggart_terminal_shutdown(lua_State *L);
+void boggart_transport_shutdown(lua_State *L);
+void boggart_channel_shutdown(lua_State *L);
+void boggart_channel_quiesce(lua_State *L);
+void boggart_studio_loop_shutdown(void);
 void boggart_station_shutdown(lua_State *L); /* src/lstation.c: same doctrine for the ZMQ polls */
 void boggart_voice_shutdown(void); /* src/lvoice.c: free the warm whisper ctx before exit */
 
@@ -30,6 +39,27 @@ void boggart_voice_shutdown(void); /* src/lvoice.c: free the warm whisper ctx be
 
 
 SDL_Window *window;
+
+/* Opt-in development attribution. The same monotonic clock as termbench's
+ * parent lets it account for pre-main time separately. Never time frames or
+ * print anything in ordinary sessions. Phase names below are fixed literals. */
+static bool trace_startup;
+static void startup_mark(const char *phase) {
+  if (trace_startup) {
+    fprintf(stderr, "BMUX_STARTUP {\"phase\":\"%s\",\"ns\":%" PRIu64 "}\n",
+            phase, uv_hrtime());
+    fflush(stderr);
+  }
+}
+
+static int f_startup_mark(lua_State *L) {
+  static const char *const phases[] = {
+    "core_required", "core_initialized", "run_enter", NULL
+  };
+  int phase = luaL_checkoption(L, 1, NULL, phases);
+  startup_mark(phases[phase]);
+  return 0;
+}
 
 
 /* The backing-store scale factor.
@@ -97,6 +127,10 @@ static void init_window_icon(void) {
 
 
 int main(int argc, char **argv) {
+  bpty_reexec(argc,argv);
+  const char *startup_env = getenv("BOGGART_STUDIO_STARTUP_TRACE");
+  trace_startup = startup_env && strcmp(startup_env, "1") == 0;
+  startup_mark("main_enter");
   bog_crash_install();   /* reports with C + Lua stacks (src/bogcrash.c) */
 #ifdef _WIN32
   /* Best-effort: on a stripped system either call can fail, and calling through
@@ -120,6 +154,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "boggart-studio: SDL_Init failed: %s\n", SDL_GetError());
     return EXIT_FAILURE;
   }
+  startup_mark("sdl_initialized");
   SDL_EnableScreenSaver();
   atexit(SDL_Quit);
 
@@ -141,6 +176,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "boggart-studio: SDL_CreateWindow failed: %s\n", SDL_GetError());
     return EXIT_FAILURE;
   }
+  startup_mark("window_created");
   init_window_icon();
   /* SDL3 gates SDL_EVENT_TEXT_INPUT behind an explicit per-window opt-in; without
    * this, plain typing delivers only key events (bindings) and no characters, and
@@ -149,6 +185,7 @@ int main(int argc, char **argv) {
    * enable it once for the main window. */
   SDL_StartTextInput(window);
   ren_init(window);
+  startup_mark("renderer_initialized");
 
 
   lua_State *L = boggart_newstate();
@@ -160,12 +197,14 @@ int main(int argc, char **argv) {
    * means `bog` exists by the time core.init() builds views, and boggart's own
    * overlay path (~/.boggart/lua) is set up independently of lite's. */
   boggart_open_libs(L);
+  startup_mark("libraries_opened");
   if (boggart_boot(L, "embedded", BOGGART_VERSION) != 0) {
     fprintf(stderr, "boggart-studio: failed to start the agent harness: %s\n",
             lua_tostring(L, -1));
     /* Not fatal: an editor that cannot reach a model is still an editor. */
     lua_pop(L, 1);
   }
+  startup_mark("harness_booted");
 
 
   lua_newtable(L);
@@ -193,9 +232,16 @@ int main(int argc, char **argv) {
   /* The baked-in studio/data. Installed before the bootstrap so require()
    * can find core/ even when there is no data/ directory anywhere. */
   studio_assets_open(L);
+  startup_mark("assets_registered");
+  if (trace_startup) {
+    lua_pushcfunction(L, f_startup_mark);
+    lua_setglobal(L, "_STUDIO_STARTUP_MARK");
+  }
 
-  (void) luaL_dostring(L,
+  int bootstrap_status=luaL_dostring(L,
     "local core\n"
+    "local mark = rawget(_G, '_STUDIO_STARTUP_MARK')\n"
+    "rawset(_G, '_STUDIO_STARTUP_MARK', nil)\n"
     "xpcall(function()\n"
     "  SCALE = tonumber(os.getenv(\"BOGGART_SCALE\")) or SCALE\n"
     "  PATHSEP = package.config:sub(1, 1)\n"
@@ -219,7 +265,9 @@ int main(int argc, char **argv) {
      * agent view wants `bog` to already exist. boot in embedded mode wires the
      * harness and opens the store, then returns instead of dispatching a REPL. */
     "  core = require('core')\n"
+    "  if mark then mark('core_required') end\n"
     "  core.init()\n"
+    "  if mark then mark('core_initialized'); mark('run_enter') end\n"
     "  core.run()\n"
     "end, function(err)\n"
     "  print('Error: ' .. tostring(err))\n"
@@ -227,20 +275,28 @@ int main(int argc, char **argv) {
     "  if core and core.on_error then\n"
     "    pcall(core.on_error, err)\n"
     "  end\n"
-    "  os.exit(1)\n"
+    "  rawset(_G, 'STUDIO_BOOT_FAILED', true)\n"
     "end)");
 
 
+  lua_pushglobaltable(L); lua_pushliteral(L,"STUDIO_BOOT_FAILED"); lua_rawget(L,-2);
+  bool bootstrap_failed=bootstrap_status!=LUA_OK || lua_toboolean(L,-1); lua_pop(L,2);
   /* Close our raw curl-on-libuv handles before lua_close() runs luv's loop_gc,
    * or it type-confuses on their non-luv handle->data and faults at exit -- the
    * same exit crash the CLI had. See boggart_http_shutdown in src/lhttp.c. */
+  boggart_channel_quiesce(L);
+  boggart_studio_loop_shutdown();
+  boggart_transport_shutdown(L);
+  boggart_serve_shutdown(L);
   boggart_http_shutdown(L);
   boggart_station_shutdown(L);
+  boggart_terminal_shutdown(L);
+  boggart_channel_shutdown(L);
   /* Free the warm whisper context before GGML's Metal device destructors run at
    * exit, which assert every residency set was released. See src/lvoice.c. */
   boggart_voice_shutdown();
   lua_close(L);
   SDL_DestroyWindow(window);
 
-  return EXIT_SUCCESS;
+  return bootstrap_failed ? EXIT_FAILURE : EXIT_SUCCESS;
 }

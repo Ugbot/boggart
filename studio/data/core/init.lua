@@ -73,12 +73,13 @@ end
 -- Read one directory. This is the only place that touches the filesystem, and
 -- the whole point of the rewrite is that it is called for the directories that
 -- changed rather than for all of them.
-local function read_dir(path)
+local function read_dir(path, scan)
   local all = system.list_dir(path)
   if not all then return nil end
   local size_limit = config.file_size_limit * 10e5
   local dirs, files = {}, {}
   for _, file in ipairs(all) do
+    if scan then scan.checkpoint() end
     if not common.match_pattern(file, config.ignore_files) then
       local filename = (path ~= "." and path .. PATHSEP or "") .. file
       local info = system.get_file_info(filename)
@@ -127,14 +128,16 @@ local function adjust_span(node, delta)
 end
 
 
-local function build_node(path, parent, info)
+local function build_node(path, parent, info, scan)
   local node = { path = path, parent = parent, info = info,
                  dirs = {}, files = {}, span = 0 }
-  project.nodes[path] = node
-  local dirs, files = read_dir(path)
+  local nodes = scan and scan.nodes or project.nodes
+  nodes[path] = node
+  if scan then scan.checkpoint() end
+  local dirs, files = read_dir(path, scan)
   if dirs then
     for _, di in ipairs(dirs) do
-      node.dirs[#node.dirs + 1] = build_node(di.filename, node, di)
+      node.dirs[#node.dirs + 1] = build_node(di.filename, node, di, scan)
     end
     node.files = files
   end
@@ -143,10 +146,14 @@ local function build_node(path, parent, info)
 end
 
 
-local function flatten(node, out)
+local function flatten(node, out, scan)
+  if scan then scan.checkpoint() end
   if node.info then out[#out + 1] = node.info end
-  for _, d in ipairs(node.dirs) do flatten(d, out) end
-  for _, f in ipairs(node.files) do out[#out + 1] = f end
+  for _, d in ipairs(node.dirs) do flatten(d, out, scan) end
+  for _, f in ipairs(node.files) do
+    if scan then scan.checkpoint() end
+    out[#out + 1] = f
+  end
   return out
 end
 
@@ -317,10 +324,6 @@ end
 
 
 local function rebuild()
-  for _, r in ipairs(project.roots) do forget_node(r) end
-  project.roots, project.nodes = {}, {}
-  project.exhausted, project.watch_error = false, nil
-
   -- Every root, not just the one the process started in.
   --
   -- The project used to be exactly the directory boggart was launched from,
@@ -331,25 +334,63 @@ local function rebuild()
   local paths = { "." }
   for _, r in ipairs(core.project_roots or {}) do paths[#paths + 1] = r end
 
-  local list = {}
-  for _, path in ipairs(paths) do
-    local node = build_node(path, nil, nil)
-    if path ~= "." and #node.dirs == 0 and #node.files == 0
-    and not system.get_file_info(path) then
-      core.log_quiet("project root is unreadable: %s", path)
+  -- A full scan must not monopolize the UI coroutine. Stage its graph/list
+  -- privately so a yield never exposes an incomplete tree to consumers.
+  local owner, cwd = core.project_files, system.absolute_path(".")
+  local cancelled = {}
+  local scan = { nodes = {} }
+  local operations, slice_start = 0, system.get_time()
+  local function validate()
+    local roots = core.project_roots or {}
+    if core.project_files ~= owner or system.absolute_path(".") ~= cwd
+    or #roots ~= #paths - 1 then error(cancelled, 0) end
+    for i, root in ipairs(roots) do
+      if root ~= paths[i + 1] then error(cancelled, 0) end
     end
-    project.roots[#project.roots + 1] = node
-    flatten(node, list)
   end
+  scan.checkpoint = function()
+    operations = operations + 1
+    if operations % 32 == 0
+    and (operations >= 128 or system.get_time() - slice_start >= 0.002) then
+      coroutine.yield(0)
+      validate()
+      operations, slice_start = 0, system.get_time()
+    end
+  end
+  local list, roots = {}, {}
+  local ok, why = pcall(function()
+    for _, path in ipairs(paths) do
+      local node = build_node(path, nil, nil, scan)
+      if path ~= "." and #node.dirs == 0 and #node.files == 0
+      and not system.get_file_info(path) then
+        core.log_quiet("project root is unreadable: %s", path)
+      end
+      roots[#roots + 1] = node
+      flatten(node, list, scan)
+    end
+    validate()
+  end)
+  if not ok then
+    if why == cancelled then return false end
+    error(why, 0)
+  end
+
+  -- No yields during watcher transition/publication: the previous graph and
+  -- its watches remain valid until the complete replacement is ready.
+  for _, r in ipairs(project.roots) do forget_node(r) end
+  project.roots, project.nodes = roots, scan.nodes
+  project.exhausted, project.watch_error = false, nil
   for _, r in ipairs(project.roots) do watch_subtree(r) end
 
   core.project_files = list
   project.owned = list
+  project.cwd = cwd
   -- Counted because a full rescan is the expensive path and the one that means
   -- something went wrong -- a burst too large to coalesce, a root swapped out.
   -- A number that climbs while nothing is happening is the bug report.
   core.project_rescans = (core.project_rescans or 0) + 1
   touch(true)
+  return true
 end
 
 
@@ -425,14 +466,19 @@ end
 
 
 local function poll_all()
+  local owner, cwd = core.project_files, system.absolute_path(".")
   local paths = {}
   for p in pairs(project.nodes) do paths[#paths + 1] = p end
   table.sort(paths, function(a, b) return #a < #b end)
   for i, p in ipairs(paths) do
     local node = project.nodes[p]   -- may have been dropped earlier in this pass
     while node do node = refresh_dir(node) end
-    if i % 16 == 0 then coroutine.yield() end
+    if i % 16 == 0 then
+      coroutine.yield()
+      if core.project_files ~= owner or system.absolute_path(".") ~= cwd then return false end
+    end
   end
+  return true
 end
 
 
@@ -497,12 +543,18 @@ local function project_scan_thread()
   clear()
 
   while true do
-    if core.project_files ~= project.owned or roots_changed() then
+    ::retry::
+    if core.project_files ~= project.owned or roots_changed()
+    or project.cwd ~= system.absolute_path(".") then
       -- Someone replaced the list or changed the roots underneath us --
       -- studio.work_in chdirs and resets both. Every path held here is relative
       -- to a directory we may no longer be in, so start again.
-      rebuild()
+      if not rebuild() then clear(); coroutine.yield(0); goto retry end
       clear()
+      -- The staged traversal yielded before the new watches were installed.
+      -- Reconcile once with those watches active, so changes during the build
+      -- are not lost on a fully watched project that otherwise never polls.
+      if not poll_all() then clear(); coroutine.yield(0); goto retry end
       next_poll = system.get_time() + config.project_scan_rate
     end
 
@@ -532,7 +584,8 @@ local function project_scan_thread()
           -- which means a checkout or a build ran. One bounded full rescan
           -- cannot miss anything; an unbounded list of directory rescans is
           -- neither bounded nor obviously complete.
-          rebuild()
+          if not rebuild() then clear(); coroutine.yield(0); goto retry end
+          if not poll_all() then clear(); coroutine.yield(0); goto retry end
         else
           refresh_paths(pending)
         end
@@ -550,7 +603,7 @@ local function project_scan_thread()
     -- Anything not covered by a watch still has to be noticed, so the periodic
     -- scan keeps running whenever the watcher is absent or incomplete.
     if (not project.monitor or project.exhausted) and now >= next_poll then
-      poll_all()
+      if not poll_all() then clear(); coroutine.yield(0); goto retry end
       next_poll = system.get_time() + config.project_scan_rate
     end
 
@@ -688,7 +741,8 @@ end
 function core.quit(force)
   if force then
     delete_temp_files()
-    os.exit()
+    core.quit_requested=true
+    return
   end
   local dirty_count = 0
   local dirty_name
@@ -756,8 +810,10 @@ end
 function core.set_active_view(view)
   assert(view, "Tried to set active view to nil")
   if view ~= core.active_view then
+    if core.active_view and core.active_view.on_focus_lost then core.active_view:on_focus_lost() end
     core.last_active_view = core.active_view
     core.active_view = view
+    if view.on_focus_gained then view:on_focus_gained() end
   end
 end
 
@@ -878,9 +934,16 @@ function core.on_event(type, ...)
   if type == "textinput" then
     core.root_view:on_text_input(...)
   elseif type == "keypressed" then
-    did_keymap = keymap.on_key_pressed(...)
+    local handled,suppress_text=keymap.on_key_pressed(...)
+    did_keymap=suppress_text==nil and handled or suppress_text
   elseif type == "keyreleased" then
     keymap.on_key_released(...)
+  elseif type == 'textediting' then
+    if core.active_view.on_text_editing then core.active_view:on_text_editing(...) end
+  elseif type == 'focus' then
+    local focused=...; core.window_focused=focused
+    if not focused then keymap.clear_modifiers() end
+    if core.active_view.on_window_focus then core.active_view:on_window_focus(focused) end
   elseif type == "mousemoved" then
     core.root_view:on_mouse_moved(...)
   elseif type == "mousepressed" then
@@ -920,12 +983,20 @@ function core.request_frames(n)
 end
 
 function core.step()
+  if system.pump_uv then system.pump_uv() end
   -- handle events
   local did_keymap = false
   local mouse_moved = false
   local mouse = { x = 0, y = 0, dx = 0, dy = 0 }
+  local function flush_mouse()
+    if not mouse_moved then return end
+    core.try(core.on_event,"mousemoved",mouse.x,mouse.y,mouse.dx,mouse.dy)
+    mouse_moved=false;mouse.dx,mouse.dy=0,0
+  end
 
   for type, a,b,c,d in system.poll_event do
+    -- Coalesce adjacent motions without moving them past a release or key.
+    if type~="mousemoved" then flush_mouse()end
     if type == "mousemoved" then
       mouse_moved = true
       mouse.x, mouse.y = a, b
@@ -934,18 +1005,17 @@ function core.step()
       did_keymap = false
     else
       local _, res = core.try(core.on_event, type, a, b, c, d)
-      did_keymap = res or did_keymap
+      if type=='keypressed' then did_keymap=res or false
+      elseif type=='textinput' then did_keymap=false end
     end
-    core.redraw = true
-    core.last_event = core.frame_start
+    if type~='uv' then core.redraw=true; core.last_event=core.frame_start end
   end
   if core.frames_to_render > 0 then
     core.frames_to_render = core.frames_to_render - 1
     core.redraw = true
   end
-  if mouse_moved then
-    core.try(core.on_event, "mousemoved", mouse.x, mouse.y, mouse.dx, mouse.dy)
-  end
+  flush_mouse()
+  if core.active_view.flush_input then core.active_view:flush_input() end
 
   local width, height = renderer.get_size()
 
@@ -1049,7 +1119,7 @@ end)
 local blink_period = 0.8   -- caret on/off cycle; kept in sync with docview.lua
 
 function core.run()
-  while true do
+  while not core.quit_requested do
     core.frame_start = system.get_time()
     local did_redraw = core.step()
     local time_to_wake = run_threads()
@@ -1071,7 +1141,7 @@ function core.run()
       system.wait_event(math.max(0, math.min(cap, time_to_wake)))
     end
     local elapsed = system.get_time() - core.frame_start
-    system.sleep(math.max(0, 1 / config.fps - elapsed))
+    system.wait_event(math.max(0, 1 / config.fps - elapsed))
   end
 end
 

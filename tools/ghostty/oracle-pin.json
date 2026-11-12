@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "revision": "05dcf887ef51ea27821f20979493306ec3a19149",
+  "archive_url": "https://codeload.github.com/ghostty-org/ghostty/tar.gz/05dcf887ef51ea27821f20979493306ec3a19149",
+  "archive_sha256": "61a0158a9b2592f147d1e2e0f965d6c952c90410faab6e7265c169a1ccc9481a",
+  "zig_version": "0.16.0",
+  "optimize": "ReleaseFast",
+  "simd": false
+}

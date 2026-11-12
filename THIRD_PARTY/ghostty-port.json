@@ -1,0 +1,391 @@
+{
+  "repository": "https://github.com/ghostty-org/ghostty",
+  "revision": "05dcf887ef51ea27821f20979493306ec3a19149",
+  "license_file": "THIRD_PARTY/ghostty-LICENSE",
+  "license_sha256": "386211873e5b7a02f663ae4d7adf96285999f91608f8f9f31fecfd0f4095e6f1",
+  "modules": [
+    {
+      "upstream_path": "src/terminal/Parser.zig",
+      "sha256": "51b8c098523e6dc1e245646bca835212eada57336ac54456a96f3ebeb9e0f84b",
+      "status": "ported",
+      "ported_files": [
+        "src/lvt.c",
+        "src/lvt.h"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/parse_table.zig",
+      "sha256": "8d6072a6b69fded203bdeb0afdae63c884bea1c8ed91f9aca832d3b468e560f8",
+      "status": "ported",
+      "ported_files": [
+        "src/vt_table.h"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/osc.zig",
+      "sha256": "4becfd85af8b55e03f6fb273ce3e0badfc7d0f640435fd9e2c0fd132acf626a8",
+      "status": "ported",
+      "ported_files": [
+        "src/bosc.c",
+        "src/bosc.h"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/stream.zig",
+      "sha256": "7b1503e59e09b47e382ae35041e9e0575de409977198c70e569293d7cbcd6f6d",
+      "status": "ported",
+      "ported_files": [
+        "src/bterm.c",
+        "src/bterm_dispatch.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/sgr.zig",
+      "sha256": "6d33d0bb999f1388e8c7313368c36d7cb4a6a5579bc21e2219d080122634ad8e",
+      "status": "ported",
+      "ported_files": [
+        "src/bterm_sgr.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/PageList.zig",
+      "sha256": "c7008280a3dafdcafb48779540faa5605544587b92cbef32b2e52eec678506b0",
+      "status": "ported",
+      "ported_files": [
+        "src/lpage.c",
+        "src/lpage.h",
+        "src/lpage_resize.c",
+        "src/lpage_layout.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/page.zig",
+      "sha256": "f5fba3771276655beef524f0c291d1438c005b8be5db5e09ba00446bd546dcd4",
+      "status": "ported",
+      "ported_files": [
+        "src/lpage.c",
+        "src/lpage.h",
+        "src/lgrapheme.c",
+        "src/lgrapheme.h",
+        "src/lpage_resize.c",
+        "src/lpage_layout.c",
+        "src/lpage_layout.h"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/Screen.zig",
+      "sha256": "eafa0ea0e161ad9e4d004ee6c418f679663b0d342c57c8d90be94922a1ba3f4a",
+      "status": "ported",
+      "ported_files": [
+        "src/lpage.c",
+        "src/lpage.h",
+        "src/bterm.c",
+        "src/bterm_internal.h",
+        "src/llink.c",
+        "src/llink.h",
+        "src/lpage_resize.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/style.zig",
+      "sha256": "b26507489473b7b2158adf3e70c9aac2665417e582eb5c3cab5a491e6d2cf5c9",
+      "status": "ported",
+      "ported_files": [
+        "src/lstyle.c",
+        "src/lstyle.h",
+        "src/llink.c",
+        "src/lpage_layout.c"
+      ]
+    },
+    {
+      "upstream_path": "src/input/key_encode.zig",
+      "sha256": "b628b7d2877b1fac2ae789f394990ef934c3fbc5a0a0998ead28de34a0a76e66",
+      "status": "ported",
+      "ported_files": [
+        "src/bkey.c",
+        "src/bterm.c"
+      ]
+    },
+    {
+      "upstream_path": "src/input/kitty.zig",
+      "sha256": "19e022f678d67178b7fc5cf2276d2888fb21323258b30498229bfaec17e5837f",
+      "status": "studied",
+      "ported_files": []
+    },
+    {
+      "upstream_path": "src/input/mouse_encode.zig",
+      "sha256": "71ea58fed0566cf5f7b56bff429d487e10b2add9e6c1aa368eec43f546677d9a",
+      "status": "ported",
+      "ported_files": [
+        "src/bmouse.c",
+        "src/bmouse.h"
+      ]
+    },
+    {
+      "upstream_path": "src/unicode/grapheme.zig",
+      "sha256": "34a5d773605b41fd77850b5731bf4e11c36fea737ae4456d2a2cc84fd712727c",
+      "status": "ported",
+      "ported_files": [
+        "src/bunicode.c",
+        "src/bunicode.h",
+        "src/btunicode.c",
+        "src/btunicode.h"
+      ]
+    },
+    {
+      "upstream_path": "src/unicode/props.zig",
+      "sha256": "7841b204fc783c2f99c6f562afc3487a4f5b1b47d2deea1c4ae5c9bdcb2f0b05",
+      "status": "studied",
+      "ported_files": []
+    },
+    {
+      "upstream_path": "src/unicode/props_table.zig",
+      "sha256": "24515a3ad399aa168c148f6f97afe02e13213137565d8136b317b13511f415e9",
+      "status": "ported",
+      "ported_files": [
+        "src/btunicode_data.h"
+      ]
+    },
+    {
+      "upstream_path": "src/renderer",
+      "status": "skipped",
+      "ported_files": []
+    },
+    {
+      "upstream_path": "src/font",
+      "status": "skipped",
+      "ported_files": []
+    },
+    {
+      "upstream_path": "src/apprt",
+      "status": "skipped",
+      "ported_files": []
+    },
+    {
+      "upstream_path": "src/config",
+      "status": "skipped",
+      "ported_files": []
+    },
+    {
+      "upstream_path": "build.zig",
+      "status": "skipped",
+      "ported_files": []
+    },
+    {
+      "upstream_path": "src/terminal/UTF8Decoder.zig",
+      "sha256": "834bae8f538cf0914fabbd16dc8184ce3ef8a5d412f4be6e80a44b93f3836794",
+      "status": "studied",
+      "ported_files": []
+    },
+    {
+      "upstream_path": "src/terminal/osc/parsers/change_window_title.zig",
+      "sha256": "a8f667f3ae75b21804af5d09bc162fd1db11002628475eff1a585cc7cf2dbe64",
+      "status": "ported",
+      "ported_files": [
+        "src/bosc.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/osc/parsers/clipboard_operation.zig",
+      "sha256": "70ccb60ae7aa4aec9aafea72c58bfe1ea8503b2a113772fd317dccfd8c0718d3",
+      "status": "ported",
+      "ported_files": [
+        "src/bosc.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/osc/parsers/hyperlink.zig",
+      "sha256": "444fb06dc81a9aa6e04b36ebd30b7c4389bc881c34edaf6d9a58d4b50fab2028",
+      "status": "ported",
+      "ported_files": [
+        "src/bosc.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/osc/parsers/kitty_desktop_notification.zig",
+      "sha256": "201ec9b0212eb6d3217ad775e7d09ed71940cbd430d2d29e0bfe51d77684feac",
+      "status": "ported",
+      "ported_files": [
+        "src/bosc.c",
+        "src/bterm_osc.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/osc/parsers/report_pwd.zig",
+      "sha256": "9a43c6d152a64e8e2b72cfca1b92db07b23da9909f96867ec90063dc43d93b0a",
+      "status": "ported",
+      "ported_files": [
+        "src/bosc.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/osc/parsers/rxvt_extension.zig",
+      "sha256": "b9948779c0813a636ae409ad24189a463eb8c7aa974a829de0d9fd563c1fef95",
+      "status": "ported",
+      "ported_files": [
+        "src/bosc.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/osc/parsers/semantic_prompt.zig",
+      "sha256": "5d70b90974ddb3abed9eaa28b5046de9b09cf3d1e6de9fd6515bb12f71a07e05",
+      "status": "ported",
+      "ported_files": [
+        "src/bosc.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/osc/parsers/osc9.zig",
+      "sha256": "6175870b19e2b74b894408b1014f2d7a765cfd3cd80e2d9adc6711ed0bc1e276",
+      "status": "ported",
+      "ported_files": [
+        "src/bosc.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/Terminal.zig",
+      "sha256": "bbe10662c020e4fd79043341ec1d5061f06dc000798b5140601eba446f169687",
+      "status": "ported",
+      "ported_files": [
+        "src/bterm.c"
+      ]
+    },
+    {
+      "upstream_path": "src/termio/stream_handler.zig",
+      "sha256": "25b77318b27367acc0b3588ebae5314da163b8b7add718d85259d2afd535eaa6",
+      "status": "ported",
+      "ported_files": [
+        "src/bterm_dispatch.c"
+      ]
+    },
+    {
+      "upstream_path": "src/input/function_keys.zig",
+      "sha256": "44867663fd3c67a470cd0315b5643e5353a309de6e816a210eccaca20a33de82",
+      "status": "ported",
+      "ported_files": [
+        "src/bkey.c"
+      ]
+    },
+    {
+      "upstream_path": "src/input/key.zig",
+      "sha256": "90278d384e354432b7977cc6d630235f7691ab40bd0ffc16e3db34171f033658",
+      "status": "ported",
+      "ported_files": [
+        "src/bkey.c",
+        "src/bkey.h"
+      ]
+    },
+    {
+      "upstream_path": "src/input/key_mods.zig",
+      "sha256": "3d4d36600b064c9ada53719b10a2b3a49d893d5c2532cfe2ba94ddbf96efb0de",
+      "status": "ported",
+      "ported_files": [
+        "src/bkey.c",
+        "src/bkey.h"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/kitty/key.zig",
+      "sha256": "c8a5697bb53acea9429aad6dd6ebeeef6e1e4d26665aada0184db88160d5a6f7",
+      "status": "ported",
+      "ported_files": [
+        "src/bterm_internal.h",
+        "src/bterm_dispatch.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/modes.zig",
+      "sha256": "304bc9130bb5b47b8ddc555536792b33438f2f9092c436318051050055f7ea60",
+      "status": "ported",
+      "ported_files": [
+        "src/bterm.c",
+        "src/bterm_dispatch.c"
+      ]
+    },
+    {
+      "upstream_path": "src/input/paste.zig",
+      "sha256": "81cc2943b84787062afcc72547471252dde929038eb32b3c61be235309198bc4",
+      "status": "ported",
+      "ported_files": [
+        "src/bpaste.c",
+        "src/bpaste.h"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/focus.zig",
+      "sha256": "150d78d10d25a065384a7e20630c50df29f1e9ecee40843c88ea21f14da9c40b",
+      "status": "ported",
+      "ported_files": [
+        "src/bterm.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/paste.zig",
+      "sha256": "99442289e7941e5a3944a957f9a1055ee1e086f9144d0c2a8c66309a11c3e0b9",
+      "status": "studied",
+      "ported_files": []
+    },
+    {
+      "upstream_path": "src/termio/Termio.zig",
+      "sha256": "d80ea8fdecd3da3a9eeefec9a87b92edfc0f2f6db92d23953a7e2003976ffbc7",
+      "status": "studied",
+      "ported_files": []
+    },
+    {
+      "upstream_path": "src/terminal/ref_counted_set.zig",
+      "sha256": "e85a6de1d297a11c2291b52eabe024364134aa2afd7514135527831b88cdfefc",
+      "status": "ported",
+      "ported_files": [
+        "src/lpage_layout.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/bitmap_allocator.zig",
+      "sha256": "bac61a65b5a3141ccfad2d9d0a6a452be7106a647182470fcf38e1289b5f86e1",
+      "status": "ported",
+      "ported_files": [
+        "src/lpage_layout.c",
+        "src/lbitmap.c",
+        "src/lbitmap.h"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/hash_map.zig",
+      "sha256": "37e3259bfee3e92f9002606bf48e90063678e1a3f30ea4c52958ae90ca7e3405",
+      "status": "ported",
+      "ported_files": [
+        "src/lpage_layout.c"
+      ]
+    },
+    {
+      "upstream_path": "src/terminal/hyperlink.zig",
+      "sha256": "8b7db5f00723871e268034f314c1dec6dcfeb99947abe9f63bf15f38b8786884",
+      "status": "ported",
+      "ported_files": [
+        "src/lpage_layout.c"
+      ]
+    }
+  ],
+  "nested_licenses": [
+    {
+      "component": "Foot function-key mappings via Ghostty src/input/function_keys.zig",
+      "copyright": "Copyright (c) 2019 Daniel Ekl\u00f6f",
+      "source": "https://codeberg.org/dnkl/foot/raw/branch/master/LICENSE",
+      "license_file": "THIRD_PARTY/foot-LICENSE",
+      "sha256": "d534a23a31500a0ac958d9634b84f532bd73ff1aca1bb8f7debbcbebc16ff39a",
+      "ported_files": [
+        "src/bkey.c"
+      ]
+    },
+    {
+      "component": "uucode terminal Unicode properties and grapheme transition data via pinned Ghostty",
+      "copyright": "Copyright (c) 2026 Jacob Sandlund",
+      "source": "pinned SDK archive zig-pkg/uucode-0.2.0-ZZjBPuuFVgC8YZ8eld4fOKsZANLIhTFMzULQxhkLi1C7/LICENSE.md",
+      "license_file": "THIRD_PARTY/uucode-LICENSE",
+      "sha256": "312e901e142be2477b4ca859e9311f9e3f80d33372991759b7921c1893605f33",
+      "ported_files": [
+        "src/btunicode_data.h"
+      ]
+    }
+  ]
+}

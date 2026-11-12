@@ -11,6 +11,8 @@
  *   sys.add_history(line)        -> (void)
  *   sys.width(s)                 -> display columns (wcwidth, not bytes)
  *   sys.wtake(s, cols)           -> prefix fitting in cols, columns used
+ *   sys.cell_width(s)            -> native on-mode plain-text cells
+ *   sys.cell_take(s, cols)       -> whole effective-cluster prefix, used cells
  *
  * File read/write, os.getenv, os.tmpname, io.popen etc. are already provided by
  * the Lua standard library, so we do not re-bind them.
@@ -20,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <limits.h>
 
 /* POSIX regex + glob back the fast text/file helpers (sys.re_*, sys.glob) that
  * gold wraps. They are not in the Lua stdlib and Lua patterns are far weaker
@@ -38,6 +41,7 @@
 #include "isocline.h"
 
 #include "utf8width.h"
+#include "btunicode.h"
 #include "bogpaths.h"
 
 /* MSVC's <sys/stat.h> defines S_IFDIR/S_IFREG but not the S_IS* predicates,
@@ -594,7 +598,7 @@ static int l_add_history(lua_State *L) {
  * How many monospace cells `s` occupies. Not #s, which is bytes, and not
  * utf8.len(s), which is characters: a Japanese ideograph is one character,
  * three bytes and two columns, and Lua can compute the first two of those and
- * not the third. The tables are Unicode's and live in utf8width.h, which is
+ * not the third. The shared Unicode table lives in bunicode_data.h, which is
  * why this is here rather than in the harness -- both the studio's renderer
  * and lua/dash.lua's line arithmetic have to agree, and a table transcribed
  * into Lua would be a second copy to keep in step.
@@ -621,11 +625,75 @@ static int l_wtake(lua_State *L) {
   const char *s = luaL_checklstring(L, 1, &len);
   lua_Integer cols = luaL_checkinteger(L, 2);
   if (cols < 0) { cols = 0; }
+  if (cols > INT_MAX) { cols = INT_MAX; }
   int used = 0;
   size_t n = bog_str_take(s, len, (int) cols, &used);
   lua_pushlstring(L, s, n);
   lua_pushinteger(L, used);
   return 2;
+}
+/* Native plain-text cell policy, paired with Studio grid text. Scalar helpers
+ * above remain for their existing renderers. No VT escape/tab interpretation. */
+static int l_cell_width(lua_State *L) {
+  size_t length;const char *text=luaL_checklstring(L,1,&length);
+  lua_pushinteger(L,btunicode_text_width(text,length,true));return 1;
+}
+static int l_cell_take(lua_State *L) {
+  size_t length;const char *text=luaL_checklstring(L,1,&length);
+  lua_Integer columns=luaL_checkinteger(L,2);
+  if(columns<0)columns=0;if(columns>INT_MAX)columns=INT_MAX;
+  int used;size_t bytes=btunicode_text_take(text,length,(int)columns,true,&used);
+  lua_pushlstring(L,text,bytes);lua_pushinteger(L,used);return 2;
+}
+static int l_cell_first(lua_State *L) {
+  size_t length;const char *text=luaL_checklstring(L,1,&length);
+  size_t bytes=btunicode_text_next(text,length,true,NULL);
+  lua_pushlstring(L,text,bytes);return 1;
+}
+/* Offset iterator: no Lua substring or result-string allocation. The caller
+ * may bound a physical line so ignored controls never swallow its newline. */
+static int l_cell_next(lua_State *L) {
+  size_t length;const char *text=luaL_checklstring(L,1,&length);
+  luaL_argcheck(L,length<(size_t)LUA_MAXINTEGER,1,"text too long");
+  lua_Integer pos=luaL_checkinteger(L,2);
+  lua_Integer end=luaL_optinteger(L,3,(lua_Integer)length+1);
+  luaL_argcheck(L,end>=1 && (lua_Unsigned)end<=length+1,3,"end outside text");
+  luaL_argcheck(L,pos>=1 && pos<=end,2,"position outside range");
+  size_t start=(size_t)pos-1,remaining=(size_t)(end-pos);
+  size_t bytes=btunicode_text_next(text+start,remaining,true,NULL);
+  lua_pushinteger(L,pos+(lua_Integer)bytes);return 1;
+}
+typedef struct { size_t start,length,owner; } cell_span;
+/* Partition whole text by native clusters and the token owning each head.
+ * End offsets and ranges live in rooted userdata before any result allocation;
+ * source bytes remain exact, including ignored/over-cap suffixes for copying. */
+static int l_cell_partition(lua_State *L) {
+  size_t length;const char *text=luaL_checklstring(L,1,&length);
+  luaL_checktype(L,2,LUA_TTABLE);size_t count=lua_rawlen(L,2);
+  luaL_argcheck(L,count<=SIZE_MAX/(sizeof(size_t)+sizeof(cell_span)),2,"too many token boundaries");
+  size_t *ends=lua_newuserdatauv(L,count*(sizeof(size_t)+sizeof(cell_span)),0);
+  cell_span *spans=(cell_span *)(ends+count);size_t previous=0;
+  for(size_t i=0;i<count;i++) {
+    lua_rawgeti(L,2,(lua_Integer)i+1);lua_Integer value=luaL_checkinteger(L,-1);lua_pop(L,1);
+    luaL_argcheck(L,value>=0 && (lua_Unsigned)value<=length && (size_t)value>=previous,2,"invalid token boundary");
+    ends[i]=previous=(size_t)value;
+  }
+  luaL_argcheck(L,previous==length && (!length || count),2,"token boundaries must cover text");
+  size_t used=0,owner=0;
+  for(size_t p=0;p<length;) {
+    while(owner<count && ends[owner]<=p)owner++;
+    size_t next=p+btunicode_text_next(text+p,length-p,true,NULL);
+    if(used && spans[used-1].owner==owner+1)spans[used-1].length=next-spans[used-1].start;
+    else spans[used++]=(cell_span){p,next-p,owner+1};
+    p=next;
+  }
+  lua_createtable(L,0,0);
+  for(size_t i=0;i<used;i++) {
+    lua_createtable(L,2,0);lua_pushinteger(L,(lua_Integer)spans[i].owner);lua_rawseti(L,-2,1);
+    lua_pushlstring(L,text+spans[i].start,spans[i].length);lua_rawseti(L,-2,2);
+    lua_rawseti(L,-2,(lua_Integer)i+1);
+  }
+  return 1;
 }
 
 /* ---- POSIX regex + glob (sys.re_find, sys.re_gsub, sys.glob) --------------
@@ -816,6 +884,11 @@ static const luaL_Reg sys_lib[] = {
   {"uv_version", l_uv_version},
   {"width", l_width},
   {"wtake", l_wtake},
+  {"cell_width", l_cell_width},
+  {"cell_take", l_cell_take},
+  {"cell_first", l_cell_first},
+  {"cell_next", l_cell_next},
+  {"cell_partition", l_cell_partition},
   {NULL, NULL},
 };
 

@@ -15,6 +15,8 @@
 
 #include "lua.h"
 #include "bogcrash.h"
+#include "bctl.h"
+#include "bpty.h"
 #include "lauxlib.h"
 #include "lualib.h"
 
@@ -24,6 +26,12 @@
 
 int luaopen_boggart_http(lua_State *L);
 void boggart_http_shutdown(lua_State *L); /* src/lhttp.c: close raw uv handles before lua_close */
+void boggart_serve_shutdown(lua_State *L);
+void boggart_terminal_shutdown(lua_State *L);
+void boggart_transport_shutdown(lua_State *L);
+void boggart_channel_shutdown(lua_State *L);
+void boggart_channel_quiesce(lua_State *L);
+int luaopen_boggart_channel(lua_State *L);
 void boggart_station_shutdown(lua_State *L); /* src/lstation.c: same doctrine for the ZMQ polls */
 int luaopen_boggart_sys(lua_State *L);
 int luaopen_boggart_db(lua_State *L);
@@ -41,6 +49,7 @@ int luaopen_boggart_voice(lua_State *L); /* src/lvoice.c: native voice input (op
 int luaopen_boggart_station(lua_State *L); /* src/lstation.c: LLM Station ZMQ client (opt-in) */
 int luaopen_boggart_json(lua_State *L);
 int luaopen_boggart_hash(lua_State *L);
+int luaopen_boggart_terminal(lua_State *L);
 int luaopen_boggart_fileview(lua_State *L); /* src/lview.c: lazy file views */    /* src/lhash.c: SHA-256 in C */    /* src/ljson.c: JSON + UTF-8 in C (lua/json.lua uses it) */
 int luaopen_boggart_serve(lua_State *L); /* src/lserve.c: the inbound control surface (HTTP+SSE) */
 int luaopen_boggart_typesafe(lua_State *L); /* src/ltypesafe.c: TypeSafe System One codec (typed judge) */
@@ -102,6 +111,7 @@ static void configure(lua_State *L, int argc, char **argv) {
      * The port/host/token are read in Lua from flags or the environment; C only
      * needs to know which mode this is. */
     else if (strcmp(argv[i], "serve") == 0) { mode = "serve"; i++; }
+    else if (strcmp(argv[i], "bmux") == 0) { mode = "bmux"; i++; }
     /* `boggart models [list|import|export|refresh] [arg]` -- the model catalog.
      * Everything after the subcommand is handed to Lua verbatim in
      * boggart.args, because what those words MEAN is lua/catalog.lua's
@@ -132,7 +142,7 @@ static void configure(lua_State *L, int argc, char **argv) {
     } else if (strcmp(a, "--model") == 0 && i + 1 < argc) {
       model = argv[++i];
     } else if ((strcmp(a, "--port") == 0 || strcmp(a, "--host") == 0
-                || strcmp(a, "--token") == 0) && i + 1 < argc) {
+                || strcmp(a, "--token") == 0 || strcmp(a,"--socket")==0 || strcmp(a,"--bmux-session")==0) && i + 1 < argc) {
       /* Serve options, set straight onto the boggart table as
        * boggart.port / .host / .token. C splits the words; lua/control.lua
        * decides what they mean and whether they are allowed. */
@@ -198,6 +208,8 @@ static void register_boggart(lua_State *L, int argc, char **argv) {
   lua_pop(L, 1);   /* package.loaded.json_c; lua/json.lua picks it up */
   luaL_requiref(L, "hash_c", luaopen_boggart_hash, 0); lua_pop(L, 1);   /* src/lhash.c: sha256 */
   luaL_requiref(L, "fileview", luaopen_boggart_fileview, 0); lua_pop(L, 1);   /* src/lview.c: lazy file views */
+  luaL_requiref(L, "terminal", luaopen_boggart_terminal, 0); lua_pop(L, 1);
+  luaL_requiref(L, "agent_channel", luaopen_boggart_channel, 0); lua_pop(L, 1);
   luaL_requiref(L, "station", luaopen_boggart_station, 0);
   lua_setglobal(L, "station");
   luaL_requiref(L, "typesafe_core", luaopen_boggart_typesafe, 0); /* package.loaded name differs so require("typesafe") reaches lua/typesafe.lua */
@@ -256,6 +268,8 @@ static int early_exit_flags(int argc, char **argv) {
         "  boggart --headless         read the prompt from stdin\n"
         "  boggart swarm \"<task>\"     swarm mode (coordinator; --tui adds a dashboard)\n"
         "  boggart serve              run as a service: control plane + webhooks\n"
+        "  boggart bmux --socket PATH  attach the Bmux terminal workspace\n"
+        "  boggart ctl [args]         native BMUX shell control (`ctl --help`)\n"
         "  boggart models [cmd]       the model catalog: list, import, export, refresh\n"
         "  boggart tracker [args]     the built-in tracker (for scripts and CI; `tracker help`)\n"
         "  boggart story [args]       the story layer: books, chapters, style checks (`story help`)\n"
@@ -273,6 +287,8 @@ static int early_exit_flags(int argc, char **argv) {
         "      --port <n>             serve: port to listen on (0 = pick one)\n"
         "      --host <addr>          serve: bind address (loopback unless a token is set)\n"
         "      --token <secret>       serve: require this bearer token\n"
+        "      --socket <path>        serve: private Unix-domain socket\n"
+        "      --bmux-session <name>  serve: saved Bmux session (default: socket path)\n"
         "  -V, --version              print the version\n\n"
         "environment:\n"
         "  BOGGART_HOME               data directory (store, credentials, overlay Lua)\n"
@@ -288,6 +304,8 @@ static int early_exit_flags(int argc, char **argv) {
 }
 
 int main(int argc, char **argv) {
+  bpty_reexec(argc,argv);
+  if(argc>1 && !strcmp(argv[1],"ctl"))return boggart_ctl_main(argc-2,argv+2);
   if (early_exit_flags(argc, argv)) return 0;
   /* First: a crash anywhere after this point gets a report with the C and Lua
    * stacks in <data dir>/crashes (src/bogcrash.c, BOG-9). */
@@ -333,8 +351,13 @@ int main(int argc, char **argv) {
   /* Close our raw curl-on-libuv handles before lua_close() runs luv's loop_gc,
    * which would otherwise type-confuse on their non-luv handle->data and fault
    * at exit (the exit-139 crash). See boggart_http_shutdown in src/lhttp.c. */
+  boggart_channel_quiesce(L);
+  boggart_transport_shutdown(L);
+  boggart_serve_shutdown(L);
   boggart_http_shutdown(L);
   boggart_station_shutdown(L);
+  boggart_terminal_shutdown(L);
+  boggart_channel_shutdown(L);
   /* Free the warm whisper context before GGML's Metal device destructors run at
    * exit, which assert every residency set was released. See src/lvoice.c. */
   boggart_voice_shutdown();

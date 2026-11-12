@@ -745,6 +745,7 @@ local function run_turn(st, text)
   end
   st.cur, st.think = nil, nil -- first answer/reasoning chunk opens a fresh entry
   st.scroll, st.running, st.t0, st.abort = 0, true, os.time(), false
+  if st.bridge then st.bridge:publish() end
   st.dirty, st.last_paint = true, 0
 
   -- The coordinator's opts captured the ORIGINAL bog.log_tool (raw stdout) when
@@ -856,6 +857,7 @@ local function run_turn(st, text)
       end
       ev = tc.poll(0)
     end
+    if st.bridge then st.bridge:poll() end
     if st.abort then break end
 
     bog.sched.resume_ready()               -- advance the swarm (coroutines only)
@@ -891,6 +893,7 @@ local function run_turn(st, text)
   pcall(bog.store.thread_save, st.coord.id,
     { messages = st.coord.session.messages, status = "idle" })
   st.running = false
+  if st.bridge then st.bridge:publish() end
   draw(st)
   if st.abort or turn_err then return nil end
   return maybe_capture_choice(st)
@@ -1027,6 +1030,7 @@ function M.run()
   -- uv.run("once") until the next keypress wakes us (stdin is on the loop). No
   -- poll timeout, no spin -- the process is asleep between keystrokes.
   local ok, err = pcall(function()
+    st.bridge = require('tui.agentbridge').attach(st)
     draw(st)
     local quit = false
     while not quit do
@@ -1118,11 +1122,21 @@ function M.run()
         ev = tc.poll(0)
       end
       if quit then break end
+      if st.bridge then
+        st.bridge:poll()
+        local prompt=st.bridge:take_prompt()
+        if prompt then
+          local reply=run_turn(st,prompt)
+          while reply do reply=run_turn(st,reply)end
+          gate.sync(st);draw(st)
+        end
+      end
       uv.run("once") -- sleep until a keypress (or leftover loop handle) wakes us
     end
   end)
 
   if voice and voice.listening and voice.listening() then pcall(voice.stop) end -- close the mic on any exit
+  if st.bridge then st.bridge:close() end
   bog.choice_ui, bog.choice = nil, nil            -- no async chooser once we leave
   bog.log_tool, bog.log = saved_log_tool, saved_log -- restore before leaving the alt screen
   bog.clear_ui, bog.copy_text, bog.approve = nil, nil, nil

@@ -1,5 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
+#include <math.h>
+#include <string.h>
 #include "rencache.h"
 
 /* a cache over the software renderer -- all drawing operations are stored as
@@ -22,7 +25,7 @@
  * invariant is the whole argument, so it is stated rather than assumed. */
 #define COMMAND_BUF_INITIAL (1024 * 512)
 
-enum { FREE_FONT, SET_CLIP, DRAW_TEXT, DRAW_RECT, DRAW_LINE, DRAW_IMAGE };
+enum { FREE_FONT, SET_CLIP, DRAW_TEXT, DRAW_RECT, DRAW_LINE, DRAW_IMAGE, DRAW_ROW, DRAW_GRID };
 
 typedef struct {
   int type, size;
@@ -38,6 +41,25 @@ typedef struct {
   char text[0];
 } Command;
 
+/* Only terminal rows carry this payload; ordinary editor commands keep their
+ * original size and hashing cost. */
+typedef struct {
+  Command command;
+  tg_row *row;
+  uint64_t row_hash;
+  tg_theme theme;
+  int cell_width, cell_height;
+  double x;
+  int y;
+} RowCommand;
+
+
+typedef struct {
+  Command command;
+  size_t length;
+  int x,y;
+  char text[];
+} GridCommand;
 
 static unsigned cells_buf1[CELLS_X * CELLS_Y];
 static unsigned cells_buf2[CELLS_X * CELLS_Y];
@@ -49,6 +71,7 @@ static int command_buf_size;
 static int command_buf_idx;
 static RenRect screen_rect;
 static bool show_debug;
+static RenCacheStats last_frame;
 
 
 static inline int min(int a, int b) { return a < b ? a : b; }
@@ -100,14 +123,16 @@ static Command* push_command(int type, int size) {
    * otherwise leave the NEXT command at an odd offset -- next_command() then reads
    * its int/float/pointer fields unaligned (works on x86/ARM64 by luck, UB
    * strictly, and UBSan-tripping). */
+  if (size < (int)sizeof(Command) || size > INT_MAX - 7) { return NULL; }
   size = (size + 7) & ~7;
+  if (command_buf_idx > INT_MAX - size) { return NULL; }
   int n = command_buf_idx + size;
   if (n > command_buf_size) {
     /* Double until it fits. A frame's command list is bounded by what is on
      * screen, so this settles after the first busy frame and never shrinks --
      * the alternative is reallocating every time a diagram appears. */
     int want = command_buf_size ? command_buf_size : COMMAND_BUF_INITIAL;
-    while (want < n) { want *= 2; }
+    while (want < n) { want = want > INT_MAX / 2 ? n : want * 2; }
     char *grown = realloc(command_buf, want);
     if (!grown) {
       /* Out of memory is not a reason to take the window down; dropping the
@@ -120,7 +145,7 @@ static Command* push_command(int type, int size) {
   }
   Command *cmd = (Command*) (command_buf + command_buf_idx);
   command_buf_idx = n;
-  memset(cmd, 0, sizeof(Command));
+  memset(cmd, 0, (size_t)size);
   cmd->type = type;
   cmd->size = size;
   return cmd;
@@ -128,6 +153,7 @@ static Command* push_command(int type, int size) {
 
 
 static bool next_command(Command **prev) {
+  if (!command_buf_idx) { return false; }
   if (*prev == NULL) {
     *prev = (Command*) command_buf;
   } else {
@@ -206,7 +232,9 @@ int rencache_draw_text(RenFont *font, const char *text, int x, int y, RenColor c
   rect.height = ren_get_font_height(font);
 
   if (rects_overlap(screen_rect, rect)) {
-    int sz = strlen(text) + 1;
+    size_t length = strlen(text);
+    if (length > (size_t)INT_MAX - sizeof(Command) - 1) { return x + rect.width; }
+    int sz = (int)length + 1;
     Command *cmd = push_command(DRAW_TEXT, sizeof(Command) + sz);
     if (cmd) {
       memcpy(cmd->text, text, sz);
@@ -220,6 +248,36 @@ int rencache_draw_text(RenFont *font, const char *text, int x, int y, RenColor c
   return x + rect.width;
 }
 
+bool rencache_draw_grid(RenFont *font,const char *text,size_t length,int x,int y,RenColor color,int *end) {
+  int width=ren_get_grid_width(font,text,length);if(width<0)return false;
+  if(end)*end=x+width;
+  if(!color.a || !length || !width)return true;
+  RenRect bounds;if(!ren_get_grid_bounds(font,text,length,&bounds))return false;
+  RenRect rect={x+bounds.x,y+bounds.y,bounds.width,bounds.height};
+  if(!rects_overlap(screen_rect,rect))return true;
+  if(length>(size_t)INT_MAX-sizeof(GridCommand))return false;
+  GridCommand *cmd=(GridCommand *)push_command(DRAW_GRID,(int)(sizeof(GridCommand)+length));
+  if(!cmd)return false;
+  cmd->command.rect=rect;cmd->command.color=color;cmd->command.font=font;
+  cmd->length=length;cmd->x=x;cmd->y=y;memcpy(cmd->text,text,length);return true;
+}
+
+bool rencache_draw_row(tg_row *row, RenFont *font, const tg_theme *theme,
+                      double x, int y, int cw, int ch, RenRect bounds) {
+  if (!row || !font || !theme || cw < 1 || ch < 1 || row->columns > (unsigned)(INT_MAX - 1) / (unsigned)cw) { return false; }
+  RenRect rect = {(int)floor(x)+bounds.x, y+bounds.y, bounds.width, bounds.height};
+  if (!rects_overlap(screen_rect, rect)) { return true; }
+  if (!tg_retain(row)) { return false; }
+  Command *cmd = push_command(DRAW_ROW, sizeof(RowCommand));
+  if (!cmd) { tg_release(row); return false; }
+  RowCommand *payload = (RowCommand *)cmd;
+  payload->row = row; payload->row_hash = row->hash; cmd->font = font;
+  payload->theme = *theme; cmd->rect = rect; payload->cell_width = cw; payload->cell_height = ch;
+  payload->x = x; payload->y = y;
+  cmd->tab_width = ren_get_font_tab_width(font);
+  return true;
+}
+
 
 void rencache_invalidate(void) {
   memset(cells_prev, 0xff, sizeof(cells_buf1));
@@ -227,6 +285,7 @@ void rencache_invalidate(void) {
 
 
 void rencache_begin_frame(void) {
+  ren_reset_glyph_stats();
   /* reset all cells if the screen width/height has changed */
   int w, h;
   ren_get_size(&w, &h);
@@ -277,15 +336,23 @@ static void push_rect(RenRect r, int *count) {
 
 
 void rencache_end_frame(void) {
+  last_frame = (RenCacheStats){0};
   /* update cells from commands */
   Command *cmd = NULL;
   RenRect cr = screen_rect;
   while (next_command(&cmd)) {
+    if (cmd->type == DRAW_ROW) { last_frame.rows_queued++; }
     if (cmd->type == SET_CLIP) { cr = cmd->rect; }
     RenRect r = intersect_rects(cmd->rect, cr);
     if (r.width == 0 || r.height == 0) { continue; }
     unsigned h = HASH_INITIAL;
-    hash(&h, cmd, cmd->size);
+    /* Snapshot allocation addresses are not visual identity. Hash their
+     * content instead, so cache eviction/reallocation cannot create damage. */
+    if (cmd->type == DRAW_ROW) {
+      RowCommand *payload = (RowCommand *)cmd;
+      tg_row *row = payload->row; payload->row = NULL;
+      hash(&h, cmd, cmd->size); payload->row = row;
+    } else { hash(&h, cmd, cmd->size); }
     update_overlapping_cells(r, h);
   }
 
@@ -318,9 +385,11 @@ void rencache_end_frame(void) {
   }
 
   /* redraw updated regions */
+  last_frame.dirty_rects = rect_count;
   for (int i = 0; i < rect_count; i++) {
     /* draw */
     RenRect r = rect_buf[i];
+    RenRect replay_clip = r;
     ren_set_clip_rect(r);
 
     cmd = NULL;
@@ -329,7 +398,8 @@ void rencache_end_frame(void) {
         case FREE_FONT:
           break;  /* a marker, not drawn; freed unconditionally below */
         case SET_CLIP:
-          ren_set_clip_rect(intersect_rects(cmd->rect, r));
+          replay_clip = intersect_rects(cmd->rect, r);
+          ren_set_clip_rect(replay_clip);
           break;
         case DRAW_RECT:
           ren_draw_rect(cmd->rect, cmd->color);
@@ -342,9 +412,26 @@ void rencache_end_frame(void) {
           ren_set_font_tab_width(cmd->font, cmd->tab_width);
           ren_draw_text(cmd->font, cmd->text, cmd->rect.x, cmd->rect.y, cmd->color);
           break;
+        case DRAW_GRID: {
+          GridCommand *payload=(GridCommand *)cmd;
+          ren_draw_grid(cmd->font,payload->text,payload->length,payload->x,payload->y,cmd->color);
+          break;
+        }
         case DRAW_IMAGE:
           ren_draw_image(cmd->image, &cmd->sub, &cmd->rect, cmd->color);
           break;
+        case DRAW_ROW: {
+          /* The cached bounds include glyph/decorations overhang. Clip state
+           * must still be replayed in order, even when a row has no pixels. */
+          RenRect visible = intersect_rects(cmd->rect, replay_clip);
+          if (!visible.width || !visible.height) { last_frame.rows_skipped++; break; }
+          last_frame.rows_replayed++;
+          RowCommand *payload = (RowCommand *)cmd;
+          ren_set_font_tab_width(cmd->font, cmd->tab_width);
+          tg_draw(payload->row, cmd->font, &payload->theme, payload->x, payload->y,
+                  payload->cell_width, payload->cell_height);
+          break;
+        }
       }
     }
 
@@ -368,6 +455,7 @@ void rencache_end_frame(void) {
     if (cmd->type == FREE_FONT) {
       ren_free_font(cmd->font);
     }
+    if (cmd->type == DRAW_ROW) { tg_release(((RowCommand *)cmd)->row); }
   }
 
   /* swap cell buffer and reset */
@@ -375,4 +463,7 @@ void rencache_end_frame(void) {
   cells = cells_prev;
   cells_prev = tmp;
   command_buf_idx = 0;
+  last_frame.glyphs=ren_glyph_stats();
 }
+
+RenCacheStats rencache_stats(void) { return last_frame; }

@@ -42,6 +42,37 @@ put("events", tostring(bog.events ~= nil))
 -- git is a C capability registered by both front ends; a missing registration on
 -- one side must fail parity, so its surface is part of the fingerprint.
 put("git", sorted_keys(git))
+local terminal = require "terminal"
+put("terminal", sorted_keys(terminal))
+local width_vectors = {"é日😀", "e\u{301}", "👩‍💻", "\192\128", "a\0b"}
+local width_results = {}
+for _, text in ipairs(width_vectors) do
+  local prefix, used = sys.wtake(text, 3)
+  width_results[#width_results + 1] = {sys.width(text), prefix, used}
+end
+put("unicode_width", require("hash_c").sha256(require("json").encode(width_results)))
+local probe <close> = terminal.new(8, 3, 2)
+probe:feed("\27[38;2;1;2;3mX\27[?1049hALT\27[?1049l\27[6n")
+put("terminal_grid", require("hash_c").sha256(require("json").encode(probe:snapshot(true))))
+put("terminal_replies", require("hash_c").sha256(probe:replies()))
+probe:feed("\27]2;title\7\27]99;i=job:d=0;hello\7\27]99;i=job:p=body;body\7\7")
+local terminal_events = probe:events()
+put("terminal_events", require("hash_c").sha256(require("json").encode(terminal_events)))
+probe:feed("\27]8;id=parity;https://example.com\7linked text\27]8;;\7")
+put("terminal_links", require("hash_c").sha256(require("json").encode(probe:snapshot(true))))
+probe:feed("\27[?1003;1006h")
+put("terminal_mouse", require("hash_c").sha256(probe:mouse{action="motion",button=1,x=2,y=3}))
+put("terminal_input", require("hash_c").sha256(require("json").encode(probe:input_state())))
+probe:feed("\27[>31u")
+put("terminal_key", require("hash_c").sha256(probe:key{text="A",unshifted=97,base_layout=97,modifiers=require("terminal").SHIFT,consumed_modifiers=require("terminal").SHIFT}))
+probe:feed("\27[?2004;1004h")
+put("terminal_paste", require("hash_c").sha256(probe:paste("hello\nworld")))
+put("terminal_focus", require("hash_c").sha256(probe:focus(false)..probe:replies()))
+probe:reset();probe:feed("é👩‍💻🇬🇧❤️⌚︎日\r\n\27[?2027$p")
+put("terminal_unicode", require("hash_c").sha256(require("json").encode({probe:snapshot(true),probe:replies()})))
+probe:reset(); probe:feed("abcde日é👩‍💻\27" .. "7\27[H")
+probe:resize(4,3); probe:resize(9,4); probe:feed("\27" .. "8Z\27[6n")
+put("terminal_resize", require("hash_c").sha256(require("json").encode({probe:snapshot(true),probe:replies()})))
 
 -- ---- the tools the model is offered ----------------------------------------
 -- The one place asymmetry is legitimate: the studio registers panel-drawing
