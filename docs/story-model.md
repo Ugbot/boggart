@@ -1,9 +1,10 @@
 # The story model — design
 
-Status: **proposal for review, revision 2**. It now takes in a survey of
+Status: **design, revision 2, partly built**. It takes in a survey of
 research, commercial tools and practitioners (see "What the field says").
-Nothing here is built yet beyond the file index, the style checks and the
-line-by-line drafting from the P1/P2 work.
+Built so far: the file index, the style checks and the line-by-line drafting
+from the P1/P2 work, and M1, the model core (2026-09-27; see "Build order").
+M2 onward is not built.
 
 **Code:** the `story` module, `lua/story/`. It is pure Lua, with no C of its
 own, and uses only what the core offers everyone: SQLite with FTS5, `sys.*`,
@@ -483,6 +484,7 @@ straight onto facts and knowledge.
   - `interview`, `draft`, `edit`, `extract`, `search`
   - `geo` and `check`: code-only world lookups (where is X, is X inside Y, can they
     get there in time, is this claim true) — see [story-world-tools.md](story-world-tools.md)
+  - `kb`: the optional, read-only shared knowledge base — see [story-kb.md](story-kb.md)
 
   Queries take `as_of=` (a chapter, scene or ord).
 - **TUI `/story` views:**
