@@ -155,6 +155,7 @@ CREATE TABLE IF NOT EXISTS models (
   tools INTEGER,                -- 0/1 capability flags, read by api.lua
   vision INTEGER,
   effort INTEGER,               -- accepts reasoning_effort
+  reasoning_echo INTEGER,       -- 0 = withhold prior reasoning on the OpenAI wire
   input_price REAL,             -- per 1M tokens, for the cost estimate
   output_price REAL,
   source TEXT,
@@ -487,6 +488,9 @@ function M.open()
   -- migration is a no-op rather than a rewrite of the store.
   ensure_column(bog.db, "sessions", "project", "TEXT")
   ensure_column(bog.db, "memory", "project", "TEXT")
+  -- Whether the OpenAI wire sends a model's earlier reasoning back to it.
+  -- NULL (every existing row) means yes, the default.
+  ensure_column(bog.db, "models", "reasoning_echo", "INTEGER")
   -- Drop the old column-level UNIQUE(title) on stores that predate projects.
   -- SQLite cannot alter a constraint away, so the table is rebuilt once --
   -- guarded by a meta flag, and by keeping every row and id so the FTS content

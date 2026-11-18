@@ -152,5 +152,32 @@ ok(other.session.route.url ~= child.session.route.url,
 local plain = thread.new_agent{ task = "inherit" }
 ok(plain.session.model ~= nil, "a child with no model spec still has one")
 
+-- ---- reasoning_echo rides the route to the OpenAI wire --------------------
+do
+  local C = require "catalog"
+  C.import({ models = { ["picky-model"] = { provider = "xai", reasoning_echo = false } } }, "user")
+  local r = route.resolve("picky-model")
+  eq(r.reasoning_echo, false, "reasoning_echo: a catalogued model's false reaches its route")
+  eq(route.resolve("grok-4.6").reasoning_echo, nil, "reasoning_echo: unset elsewhere")
+  eq(route.resolve{ model = "x", wire = "openai", reasoning_echo = false }.reasoning_echo, false,
+     "reasoning_echo: an inline route can withhold")
+  presets.set("picky_local", { url = "http://127.0.0.1:8090", wire = "openai", model = "q",
+                               reasoning_echo = false })
+  eq(route.resolve("picky_local").reasoning_echo, false, "reasoning_echo: a preset can withhold")
+  eq(route.resolve("picky_local/other").reasoning_echo, false, "reasoning_echo: preset/model too")
+  -- the configured endpoint honours the catalog row of its model
+  local saved = bog.session.model
+  bog.session.model = "picky-model"
+  eq(route.current().reasoning_echo, false, "reasoning_echo: the current route honours the catalog")
+  bog.session.model = saved
+  -- and the wire withholds when the route says so
+  local api = require "api"
+  local b = api._body_for_wire("openai", { model = "picky-model", max_tokens = 10, messages = {
+    { role = "user", content = "q" },
+    { role = "assistant", content = { { type = "thinking", thinking = "plan" }, { type = "text", text = "a" } } },
+  } }, r)
+  eq(b.messages[2].reasoning_content, nil, "reasoning_echo: withheld on the wire for that route")
+end
+
 io.write(string.format("route: %d passed, %d failed\n", passed, failed))
 os.exit(failed == 0 and 0 or 1)

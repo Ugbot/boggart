@@ -53,7 +53,8 @@ end
 -- Define a preset explicitly (used to seed known endpoints).
 function M.set(name, spec)
   local t = M.load()
-  t[name] = { url = spec.url, wire = spec.wire or "anthropic", model = spec.model, effort = spec.effort }
+  t[name] = { url = spec.url, wire = spec.wire or "anthropic", model = spec.model, effort = spec.effort,
+              reasoning_echo = spec.reasoning_echo }
   M.save(t)
   return t[name]
 end

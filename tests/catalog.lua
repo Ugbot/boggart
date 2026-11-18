@@ -138,5 +138,23 @@ ok(auth.slot_allowed("https://anything.test", "a-slot-nothing-registers"),
 ok(auth.set("api_key", "test-key-xai", "xai"), "a key can be stored per provider")
 ok(auth.has_key("xai"), "and is found under that provider")
 
+-- ---- reasoning_echo: absent = send, false = withhold, survives a refresh ----
+-- The OpenAI wire sends a model's earlier reasoning back to it unless its row
+-- says reasoning_echo = false (a route that rejects unknown message fields).
+do
+  eq(C.model("grok-4.6").reasoning_echo, nil, "reasoning_echo: unset by default (send)")
+  eq(C.destination("grok-4.6").reasoning_echo, nil, "reasoning_echo: absent from an unset destination")
+  C.import({ models = { ["picky-model"] = { provider = "xai", tools = true, reasoning_echo = false } } }, "user")
+  eq(C.model("picky-model").reasoning_echo, false, "reasoning_echo: false round-trips as a boolean")
+  eq(C.destination("picky-model").reasoning_echo, false, "reasoning_echo: the destination carries it")
+  -- a vendor refresh never knows this flag; it must not wipe a hand-set value
+  C.import({ models = { ["picky-model"] = { provider = "xai", tools = true, context = 1234 } } }, "refresh")
+  eq(C.model("picky-model").context, 1234, "reasoning_echo: the refresh landed")
+  eq(C.model("picky-model").reasoning_echo, false, "reasoning_echo: a refresh keeps the hand-set false")
+  eq(C.export().models["picky-model"].reasoning_echo, false, "reasoning_echo: exported")
+  C.import({ models = { ["picky-model"] = { provider = "xai", reasoning_echo = true } } }, "user")
+  eq(C.model("picky-model").reasoning_echo, true, "reasoning_echo: can be turned back on")
+end
+
 io.write(string.format("catalog: %d passed, %d failed\n", passed, failed))
 os.exit(failed == 0 and 0 or 1)

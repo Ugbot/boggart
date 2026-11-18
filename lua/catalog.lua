@@ -25,7 +25,12 @@ M.SOURCES = { seed = true, import = true, refresh = true, user = true }
 -- truthy. `if model.effort then` on a row straight from the store is therefore
 -- always true, which is exactly the kind of bug that hides for months. Every
 -- row leaves this module with real booleans.
-local FLAGS = { "tools", "vision", "effort" }
+--
+-- `reasoning_echo` is the one flag whose ABSENCE means yes: the OpenAI wire
+-- sends a model's earlier reasoning back to it unless the model's row says
+-- false (a route that rejects unknown message fields). Same shape as
+-- `effort = false` withholding reasoning_effort.
+local FLAGS = { "tools", "vision", "effort", "reasoning_echo" }
 
 local function to_bool(v)
   if v == nil then return nil end
@@ -76,7 +81,7 @@ function M.destination(id)
     key_slot = p.key_slot or p.name, headers = p.headers,
     provider = p.name, name = p.name,
     context = m.context, tools = m.tools, vision = m.vision, effort = m.effort,
-    max_output = m.max_output,
+    reasoning_echo = m.reasoning_echo, max_output = m.max_output,
   }
 end
 
@@ -167,6 +172,7 @@ function M.import(t, source)
         id = id, provider = m.provider, label = m.label,
         context = m.context, max_output = m.max_output,
         tools = m.tools, vision = m.vision, effort = m.effort,
+        reasoning_echo = m.reasoning_echo,
         input_price = m.input_price, output_price = m.output_price,
         source = m.source or source,
       })
@@ -207,7 +213,8 @@ function M.export()
   for _, m in ipairs(M.models()) do
     out.models[m.id] = { provider = m.provider, label = m.label, context = m.context,
                          max_output = m.max_output, tools = m.tools, vision = m.vision,
-                         effort = m.effort, input_price = m.input_price,
+                         effort = m.effort, reasoning_echo = m.reasoning_echo,
+                         input_price = m.input_price,
                          output_price = m.output_price, source = m.source }
   end
   for name, spec in pairs(M.roles()) do
