@@ -1776,7 +1776,7 @@ function M.run_on(sess, user_text, on_text, opts)
     return stream_impl(body, sink, think_sink, route)
   end
   local system = opts.system or function() return bog.prompt.system() end
-  local tools_fn = opts.tools or function() return bog.tools.schemas() end
+  local tools_fn = opts.tools or function() return bog.tools.offered(sess) end
   -- Gate by default. If the front end did not pass its own run_tool, wrap the
   -- raw dispatcher in the permission gate rather than running tools blind -- the
   -- old default (bare bog.tools.run) let headless/one-shot/swarm turns run

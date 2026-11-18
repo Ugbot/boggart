@@ -1074,14 +1074,20 @@ function M.names()
   return ns
 end
 
+-- Tools that exist only to serve a tool profile (below), and so are not offered
+-- without one: the default list stays byte-identical to what it was before
+-- profiles existed.
+local PROFILE_ONLY = { load_tools = true }
+
 -- The tool list sent to the API each turn. Skill-provided tools (skill__*) are
 -- excluded from this unrestricted default -- they are meaningless without their
 -- skill's instructions, so they surface only via schemas_for() when an agent is
 -- actually granted the skill.
 function M.schemas()
   local out = {}
+  local profile_only = not M.profile() and PROFILE_ONLY or {}
   for _, name in ipairs(M.names()) do
-    if name:sub(1, #SKILL_PREFIX) ~= SKILL_PREFIX then
+    if name:sub(1, #SKILL_PREFIX) ~= SKILL_PREFIX and not profile_only[name] then
       local d = M.registry[name]
       out[#out + 1] = {
         name = name,
@@ -1124,6 +1130,189 @@ function M.schemas_for(allow)
   end
   return out
 end
+
+-- ---- tool profiles -----------------------------------------------------------
+--
+-- A profile narrows the tools an agent is OFFERED, to keep the fixed prompt
+-- prefix small: every request carries every offered schema, and on providers
+-- that bill or cache by prompt prefix that is most of the cost of a call. The
+-- rest of the registry stays reachable: the agent calls load_tools to add what
+-- it needs, and what it loads is appended after the profile's tools, so the
+-- part of the prompt already cached is unchanged.
+--
+-- Opt-in. With no profile (the default) the offered list is schemas(), exactly
+-- as before. Select one with BOGGART_TOOLS=<name>, or M.set_profile(name) from
+-- Lua (an init overlay, a front end). A profile applies to agents with no
+-- skill-granted allow set; an agent whose skills name its tools already has a
+-- narrowed surface and is left alone.
+--
+-- A profile changes what is offered, not what is permitted: it is a prompt-size
+-- setting, not a policy. Permission still comes from the allow set and perm.
+M.PROFILES = {
+  -- The tools a coding task touches on most turns: the file and shell
+  -- primitives, search, delegation, and the means to grow the set.
+  coding = { "bash", "read", "write", "edit", "list", "code_search",
+             "spawn", "await", "define_tool", "load_tools" },
+}
+
+
+local OFF = { [""] = true, full = true, all = true, default = true, none = true }
+
+local function profile_state()
+  local holder = rawget(_G, "bog")
+  local st = holder and rawget(holder, "__tool_profile")
+  if not st then
+    st = { name = os.getenv("BOGGART_TOOLS") or "" }
+    if not OFF[st.name] and not M.PROFILES[st.name] then
+      if holder and holder.log then
+        holder.log("BOGGART_TOOLS: unknown tool profile '" .. st.name .. "'; offering every tool")
+      end
+      st.name = ""
+    end
+    if holder then holder.__tool_profile = st end
+  end
+  return st
+end
+
+-- -> { name, tools = {...}, set = {name=true} } or nil when no profile is on.
+function M.profile()
+  local name = profile_state().name
+  if OFF[name] then return nil end
+  local list = M.PROFILES[name]
+  if not list then return nil end
+  local set = {}
+  for _, n in ipairs(list) do set[n] = true end
+  return { name = name, tools = list, set = set }
+end
+
+-- Select a profile by name (nil or "full" turns profiles off). Returns true, or
+-- false and a reason for an unknown name, which leaves the setting unchanged.
+function M.set_profile(name)
+  name = name or ""
+  if not OFF[name] and not M.PROFILES[name] then
+    return false, "unknown tool profile '" .. tostring(name) .. "'"
+  end
+  profile_state().name = name
+  return true
+end
+
+local function profiled(rec)
+  if rec and rec.allow and next(rec.allow) ~= nil then return nil end
+  return M.profile()
+end
+
+local function schema_of(name)
+  local d = M.registry[name]
+  return {
+    name = name,
+    description = d.description or "",
+    input_schema = d.input_schema or { type = "object", properties = {} },
+  }
+end
+
+-- The tool list an agent with no skill allow set is offered on this turn.
+-- `sess` holds what load_tools has added (sess.loaded_tools, in load order).
+function M.offered(sess)
+  local prof = M.profile()
+  if not prof then return M.schemas() end
+  local out, seen = {}, {}
+  for _, name in ipairs(M.names()) do
+    if prof.set[name] then
+      out[#out + 1] = schema_of(name)
+      seen[name] = true
+    end
+  end
+  for _, name in ipairs(sess and sess.loaded_tools or {}) do
+    if not seen[name] and M.registry[name] then
+      out[#out + 1] = schema_of(name)
+      seen[name] = true
+    end
+  end
+  return out
+end
+
+-- The system-prompt note for a profiled agent, so the model knows the list it
+-- sees is deliberately short and how to get the rest. nil when no profile
+-- applies to `rec`.
+function M.profile_note(rec)
+  local prof = profiled(rec)
+  if not prof then return nil end
+  return "# Tools\nYou are offered a short tool list (profile `" .. prof.name .. "`). "
+    .. "Every other boggart tool named in these instructions still exists: call "
+    .. "`load_tools` with no arguments to list them, or with `names` to add the ones "
+    .. "you need. Loaded tools are available from your next step on."
+end
+
+-- Load tools into `sess`'s offered list. input: { names = {...} } with exact
+-- names or trailing-`*` wildcards; with no names, list what can be loaded.
+function M.load_for(sess, input)
+  sess = sess or {}
+  local prof = M.profile()
+  local names = type(input) == "table" and input.names or nil
+  if type(names) == "string" then names = { names } end
+  local offered = {}
+  for _, s in ipairs(M.offered(sess)) do offered[s.name] = true end
+
+  if type(names) ~= "table" or #names == 0 then
+    local out = { prof and ("Tools you can load (profile `" .. prof.name .. "`):")
+                  or "No tool profile is active: every tool is already offered." }
+    if prof then
+      for _, name in ipairs(M.names()) do
+        if not offered[name] and name:sub(1, #SKILL_PREFIX) ~= SKILL_PREFIX then
+          local desc = (M.registry[name].description or ""):match("^[^\n]*") or ""
+          local first = desc:match("^(.-[%.%?!])%s") or desc
+          if #first > 100 then first = first:sub(1, 97) .. "..." end
+          out[#out + 1] = "- " .. name .. ": " .. first
+        end
+      end
+    end
+    return table.concat(out, "\n")
+  end
+  if not prof then
+    return "No tool profile is active: every tool is already offered."
+  end
+
+  sess.loaded_tools = sess.loaded_tools or {}
+  local added, already, unknown = {}, {}, {}
+  local function add(name)
+    if offered[name] then already[#already + 1] = name; return end
+    offered[name] = true
+    sess.loaded_tools[#sess.loaded_tools + 1] = name
+    added[#added + 1] = name
+  end
+  for _, pat in ipairs(names) do
+    pat = tostring(pat)
+    if pat:sub(-1) == "*" then
+      local pre, any = pat:sub(1, -2), false
+      for _, name in ipairs(M.names()) do
+        if name:sub(1, #pre) == pre and name:sub(1, #SKILL_PREFIX) ~= SKILL_PREFIX then
+          any = true
+          add(name)
+        end
+      end
+      if not any then unknown[#unknown + 1] = pat end
+    elseif M.registry[pat] then
+      add(pat)
+    else
+      unknown[#unknown + 1] = pat
+    end
+  end
+  local out = {}
+  if #added > 0 then out[#out + 1] = "Loaded: " .. table.concat(added, ", ") end
+  if #already > 0 then out[#out + 1] = "Already offered: " .. table.concat(already, ", ") end
+  if #unknown > 0 then
+    out[#out + 1] = "Unknown (call load_tools with no names to list): " .. table.concat(unknown, ", ")
+  end
+  return table.concat(out, "\n")
+end
+
+-- The calling agent's session: a spawned agent's own, else the REPL's.
+local function calling_session()
+  local id = bog.sched and bog.sched.current and bog.sched.current()
+  local rec = id and bog.thread and bog.thread.live_recs and bog.thread.live_recs[id]
+  return (rec and rec.session) or bog.session
+end
+
 
 -- Run a tool by name; may return a "Tool error: ..." string or raise (the API
 -- loop turns a raise into a tool_result too).
@@ -1663,6 +1852,17 @@ M.register("tools", {
   input_schema = { type = "object",
     properties = { name = { type = "string", description = "show this tool's body" } } },
   run = tool_tools,
+})
+
+-- load_tools: the profile's way to the rest of the registry (see M.offered).
+M.register("load_tools", {
+  description = "Add tools to your tool list. Your list is deliberately short; call this "
+    .. "with no arguments to see every other tool, then with `names` to load the ones "
+    .. "you need (exact names, or a prefix ending in `*`).",
+  input_schema = { type = "object", properties = {
+    names = { type = "array", items = { type = "string" },
+              description = "tool names to load; omit to list what can be loaded" } } },
+  run = function(a) return M.load_for(calling_session(), a) end,
 })
 
 M.register("define_tool", {

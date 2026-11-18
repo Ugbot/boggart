@@ -187,6 +187,13 @@ turn's fleet is running you keep the foreground: **Ctrl-C** cancels the turn, **
 pauses and resumes the whole fleet, **k** kills the newest sub-agent — the same
 scheduler primitives the cTUI's agents pane draws.
 
+By default every agent is offered the whole tool registry. `BOGGART_TOOLS=coding`
+opts into a short list instead (bash, read, write, edit, list, code_search,
+spawn, await, define_tool) plus `load_tools`, which lists the other tools and
+adds the ones the agent asks for. Loaded tools are appended to the end of the
+list, so the start of the prompt stays byte-identical and prefix caches keep
+hitting. Agents whose skills name their tools are not affected.
+
 On a new install the studio opens on a welcome screen rather than an empty
 conversation it has no credentials to run: paste an API key, or point it at a
 local server (`http://127.0.0.1:8000` speaks the Messages API), pick a model
