@@ -952,6 +952,8 @@ add_test(NAME cell_partition COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAK
 set_tests_properties(cell_partition PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME fleet COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/fleet $<TARGET_FILE:boggart> --eval ${CMAKE_CURRENT_SOURCE_DIR}/tests/fleet.lua)
 set_tests_properties(fleet PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME compact_long_turn COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/compact_long_turn $<TARGET_FILE:boggart> --eval ${CMAKE_CURRENT_SOURCE_DIR}/tests/compact_long_turn.lua)
+set_tests_properties(compact_long_turn PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_library(boggart_unicode STATIC src/bunicode.c)
 target_include_directories(boggart_unicode PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_executable(unicode_test tests/c/unicode.c)

@@ -89,7 +89,7 @@ put("tools", table.concat(tools, ","))
 -- program you typed it into.
 put("prompt_bytes", #bog.prompt.system())
 put("model", bog.session.model)
-put("compact_ratio", bog.api.COMPACT_RATIO)
+put("compact_at", bog.api.compact_threshold(bog.session))
 put("context_limit", bog.api.context_limit(bog.session))
 put("retry", string.format("%d/%d/%d", bog.api.RETRY.attempts,
   bog.api.RETRY.base_ms, bog.api.RETRY.max_ms))

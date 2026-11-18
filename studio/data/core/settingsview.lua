@@ -156,7 +156,7 @@ function SettingsView:fields()
       label = "Context window",
       value = tostring(bog.api.context_limit(bog.session)) .. " tokens",
       hint = string.format("compacts at %d%%; blank to use the default for the model",
-        (bog.api.COMPACT_RATIO or 0.8) * 100),
+        math.floor(bog.api.compact_fraction(bog.session) * 100 + 0.5)),
       set = function(v)
         local n = tonumber(v)
         if not n or n < 1000 then
