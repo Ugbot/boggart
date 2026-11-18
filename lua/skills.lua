@@ -70,6 +70,13 @@ function M.validate(s)
       end
     end
   end
+  -- keywords: extra routing words for the skill router (lua/skillrouter.lua).
+  if s.keywords ~= nil then
+    if type(s.keywords) ~= "table" then return "'keywords' must be a list of words" end
+    for i, k in ipairs(s.keywords) do
+      if type(k) ~= "string" or k == "" then return "keywords[" .. i .. "] must be a non-empty string" end
+    end
+  end
   -- invocation: who may reach for this skill.
   --   "model" -- the agent (and find_skill) may adopt it when the task fits
   --   "user"  -- only when the user explicitly grants it (slash / spawn skills=)

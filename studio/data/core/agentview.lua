@@ -404,7 +404,7 @@ function AgentView:submit(text)
     -- agent_system lands in the prompt. Empty skills still means the whole
     -- registry, including studio-only drawing tools.
     if bog.thread and bog.thread.session_agent then
-      local okag, rec = pcall(bog.thread.session_agent, bog.session)
+      local okag, rec = pcall(bog.thread.session_agent, bog.session, nil, text)
       if okag and rec and rec.opts then extra = rec.opts end
     end
     local okrun, err = pcall(bog.api.run_on, bog.session, text,

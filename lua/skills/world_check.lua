@@ -23,6 +23,8 @@ return {
   invocation = "model",
   fallback = { "core" },
   tools = { "story", "read" },
+  keywords = { "story", "book", "chapter", "scene", "continuity", "consistency", "canon",
+               "world", "draft", "revise" },
 
   -- The audit, up front, so the model starts from the facts instead of guessing.
   before = function(ctx)

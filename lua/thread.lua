@@ -84,12 +84,35 @@ end
 -- coordinator seen from the REPL). Skills resolve here exactly as they do for a
 -- spawned child -- which is the whole point: skills work in single-agent mode
 -- because there is only one kind of agent.
-function M.session_agent(sess, skills)
-  skills = skills or sess.skills or {}
+--
+-- `text` is the new user turn, when there is one. With skill auto-routing on
+-- (lua/skillrouter.lua, /autoskills) and no skills set on the session, the
+-- turn's skills are picked from it by BM25, plus files+shell and a few meta
+-- tools, so a story request carries only the writing skills.
+function M.session_agent(sess, skills, text)
+  local routed
+  if skills == nil and not (sess.skills and #sess.skills > 0) and bog.skillrouter
+     and bog.skillrouter.select then
+    local ok, pick = pcall(bog.skillrouter.select, text, sess)
+    if ok and type(pick) == "table" and #pick > 0 then routed = pick end
+  end
+  skills = skills or (routed and bog.skillrouter.with_base(routed)) or sess.skills or {}
   local instructions, allow, unknown = bog.skills.resolve(skills)
   if #unknown > 0 then
-    error("unknown skill(s): " .. table.concat(unknown, ", ")
-      .. " (see the `skills` tool for what exists)", 0)
+    if not routed then
+      error("unknown skill(s): " .. table.concat(unknown, ", ")
+        .. " (see the `skills` tool for what exists)", 0)
+    end
+    -- A routed pick named a skill that has since gone (an overlay deleted
+    -- mid-session): drop the routing for this turn rather than fail it.
+    sess.routed, routed = nil, nil
+    skills = sess.skills or {}
+    instructions, allow = bog.skills.resolve(skills)
+  end
+  if routed then
+    for _, t in ipairs(bog.skillrouter.ALWAYS_TOOLS) do
+      if bog.tools.registry[t] then allow[t] = true end
+    end
   end
   -- The session's own agent occupies a slot: a cap of 1 means "just me", which
   -- is exactly what single-agent mode is. Counting it here is what makes
@@ -97,7 +120,7 @@ function M.session_agent(sess, skills)
   if M.live < 1 then M.live = 1 end
   local rec = {
     id = sess.id, skills = skills, allow = allow, instructions = instructions,
-    may_spawn = not M.at_capacity(), session = sess,
+    may_spawn = not M.at_capacity(), session = sess, routed = routed ~= nil,
   }
   rec.opts = M.agent_opts(rec)
   sess.agent = rec
