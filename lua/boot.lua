@@ -1565,6 +1565,20 @@ function bog.activate_agents()
   end
 end
 
+-- --effort / --context-window / --max-output (or BOGGART_EFFORT,
+-- BOGGART_CONTEXT_WINDOW, BOGGART_MAX_OUTPUT): the session settings an
+-- interactive user sets with slash commands, for a run that has nobody to type
+-- them (lua/runflags.lua). Every mode that runs a conversation reads them; a
+-- spawned agent or a swarm coordinator inherits them from this session. A bad
+-- value stops the run before any request rather than being quietly ignored.
+if bog.mode == "headless" or bog.mode == "oneshot" or bog.mode == "swarm" or bog.mode == "repl" then
+  local okf, err = require("runflags").setup(bog.session, boggart, os.getenv)
+  if not okf then
+    io.stderr:write("boggart: ", tostring(err), "\n")
+    return 2
+  end
+end
+
 if bog.mode == "embedded" then
   -- Embedded in boggart-studio: the harness is wired and the store is open;
   -- the editor drives it from here. No REPL, no dispatch, no reading stdin.

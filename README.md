@@ -169,6 +169,28 @@ echo "task" | ./boggart --headless   # scriptable: prompt on stdin, reply on std
 # BOGGART_STUDIO_LEGACY=1 restores the old single-primary-node + sidebar layout
 ```
 
+A scripted run (`--headless`, `-p`, a bare prompt, `swarm`) has nobody to
+type `/effort`, so the session settings that matter for an unattended task
+are flags, each with an environment variable for when the command line is not
+yours to change (a flag beats its variable):
+
+```sh
+echo "task" | ./boggart --headless --effort high --context-window 131072 --max-output 32000
+BOGGART_EFFORT=high BOGGART_CONTEXT_WINDOW=131072 BOGGART_MAX_OUTPUT=32000 ./boggart -p "task"
+```
+
+| flag | variable | meaning |
+|---|---|---|
+| `--effort <level>` | `BOGGART_EFFORT` | reasoning effort: `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
+| `--context-window <n>` | `BOGGART_CONTEXT_WINDOW` | the model's window in tokens; compaction runs at the window minus 15% (at least 16k tokens) |
+| `--max-output <n>` | `BOGGART_MAX_OUTPUT` | longest reply in tokens; default the catalog's figure for the model, else 16,000 |
+
+Each request's reply limit is lowered to the room the prompt leaves in the
+window (never below 1,024), so a provider that enforces prompt + reply <=
+window is never sent a request it must refuse. Sub-agents inherit all three.
+A value that is not a known level or a positive whole number stops the run
+with exit status 2 before any request is sent.
+
 Bmux's [terminal client](docs/bmux-ctui.md) and Studio **Join layout** share a
 server's panes and PTYs. Press Ctrl-B then `?` for terminal workspace controls.
 

@@ -141,6 +141,16 @@ static void configure(lua_State *L, int argc, char **argv) {
       prompt = argv[++i];
     } else if (strcmp(a, "--model") == 0 && i + 1 < argc) {
       model = argv[++i];
+    } else if ((strcmp(a, "--effort") == 0 || strcmp(a, "--context-window") == 0
+                || strcmp(a, "--max-output") == 0) && i + 1 < argc) {
+      /* Session settings for a run with nobody to type /effort: set as raw
+       * strings on boggart.effort / .context_window / .max_output.
+       * lua/runflags.lua validates them and owns what they mean. */
+      const char *field = strcmp(a, "--effort") == 0 ? "effort"
+                        : strcmp(a, "--context-window") == 0 ? "context_window"
+                        : "max_output";
+      lua_pushstring(L, argv[++i]);
+      lua_setfield(L, -2, field);
     } else if ((strcmp(a, "--port") == 0 || strcmp(a, "--host") == 0
                 || strcmp(a, "--token") == 0 || strcmp(a,"--socket")==0 || strcmp(a,"--bmux-session")==0) && i + 1 < argc) {
       /* Serve options, set straight onto the boggart table as
@@ -281,6 +291,9 @@ static int early_exit_flags(int argc, char **argv) {
         "options:\n"
         "  -p, --prompt <text>        one-shot prompt\n"
         "      --model <id>           model for this run\n"
+        "      --effort <level>       reasoning effort: minimal|low|medium|high|xhigh|max\n"
+        "      --context-window <n>   context window in tokens (compaction, reply room)\n"
+        "      --max-output <n>       longest reply in tokens (default: the model's, else 16000)\n"
         "      --resume [id]          resume a saved session\n"
         "      --eval <file.lua>      run a Lua file in the harness\n"
         "      --tui                  full-screen UI (chat cTUI; swarm dashboard with swarm)\n"
@@ -293,6 +306,9 @@ static int early_exit_flags(int argc, char **argv) {
         "environment:\n"
         "  BOGGART_HOME               data directory (store, credentials, overlay Lua)\n"
         "  BOGGART_MAX_AGENTS         fleet fan-out cap (default 16)\n"
+        "  BOGGART_EFFORT             as --effort (the flag wins over the variable)\n"
+        "  BOGGART_CONTEXT_WINDOW     as --context-window\n"
+        "  BOGGART_MAX_OUTPUT         as --max-output\n"
         "  BOGGART_SERVE_PORT/_HOST/_TOKEN   serve defaults\n"
         "  ANTHROPIC_API_KEY          API key; overrides the stored credential\n"
         "  ANTHROPIC_BASE_URL         endpoint, e.g. a local server\n",
