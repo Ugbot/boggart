@@ -971,6 +971,17 @@ local ANTHROPIC_EFFORT = {
 --     A real Anthropic thinking block carries a signature and is KEPT.
 local _warned_schema = {} -- tool names already reported as repaired, to log each once
 
+-- Claude models that return a 400 for a forced tool_choice ({type="tool"} or
+-- {type="any"}): Opus 5.5, Sonnet 5.5, Fable 5.1/5.2, Mythos 5.1/5.2. Matched by
+-- id prefix so dated or suffixed ids of the same model match too.
+M.NO_FORCED_TOOL = { "^claude%-opus%-5%-5", "^claude%-sonnet%-5%-5", "^claude%-fable%-5%-[12]",
+                     "^claude%-mythos%-5%-[12]" }
+function M.rejects_forced_tool(model)
+  if type(model) ~= "string" then return false end
+  for _, p in ipairs(M.NO_FORCED_TOOL) do if model:match(p) then return true end end
+  return false
+end
+
 local function to_anthropic_body(body)
   local out = {}
   for k, v in pairs(body) do out[k] = v end
@@ -1002,20 +1013,22 @@ local function to_anthropic_body(body)
   end
 
   -- Router-forced tool (lua/toolroute.lua): neutral {name=} -> Anthropic's shape,
-  -- and never without tools to force.
+  -- and never without tools to force. Models that refuse forced tool use (a 400
+  -- for type "tool"/"any", see M.rejects_forced_tool) get no tool_choice at all:
+  -- the default is auto, and the caller's ignored-force retry still applies.
   if out.tool_choice ~= nil then
     local tc = out.tool_choice
-    out.tool_choice = (type(tc) == "table" and tc.name and type(out.tools) == "table" and #out.tools > 0)
-      and { type = "tool", name = tc.name } or nil
+    local can = type(tc) == "table" and tc.name and type(out.tools) == "table" and #out.tools > 0
+    out.tool_choice = (can and not M.rejects_forced_tool(out.model)) and { type = "tool", name = tc.name } or nil
   end
 
   local eff = out.reasoning_effort
   out.reasoning_effort = nil
   -- output_config.effort is a Claude feature; only send it to a Claude model, and
-  -- not to haiku (not in the effort-supported set) or an arbitrary anthropic-wire
-  -- endpoint (a local ds4/deepseek server would reject the unknown field).
-  if eff and type(out.model) == "string"
-     and out.model:match("^claude%-") and not out.model:find("haiku", 1, true) then
+  -- not to a Haiku before 5.5 (not in the effort-supported set) or an arbitrary
+  -- anthropic-wire endpoint (a local ds4/deepseek server would reject the field).
+  if eff and type(out.model) == "string" and out.model:match("^claude%-")
+     and (not out.model:find("haiku", 1, true) or out.model:find("haiku%-5")) then
     out.output_config = { effort = ANTHROPIC_EFFORT[eff] or eff }
   end
 
@@ -1192,6 +1205,12 @@ M.CONTEXT = {
   ["claude-opus-5"] = 200000,
   ["claude-sonnet-5"] = 200000,
   ["claude-haiku-4-5-20251001"] = 200000,
+  -- The 5.5 / Fable 5.2 generation has 1M windows; 200k keeps compaction where
+  -- the older rows put it (cheaper turns, same behaviour across models).
+  ["claude-opus-5-5"] = 200000,
+  ["claude-sonnet-5-5"] = 200000,
+  ["claude-fable-5-2"] = 200000,
+  ["claude-haiku-5-5"] = 200000,
   -- DeepSeek v4. 100k is what a v4 server reports for itself in /v1/models;
   -- their Anthropic-compatible endpoint does not publish a window, so this is
   -- an observation rather than a documented figure. sess.context_limit
@@ -1212,10 +1231,14 @@ M.CONTEXT = {
 -- bogus price. Cache reads bill at roughly a tenth of the input rate, which
 -- M.cost applies to the accumulated cached-token total.
 M.PRICING = {
-  { "claude-opus",   5.0,  25.0 },  -- Opus 5 / Opus 4.x
-  { "claude-sonnet", 3.0,  15.0 },  -- Sonnet 5 / Sonnet 4.x
-  { "claude-haiku",  1.0,   5.0 },  -- Haiku 4.5
-  { "claude-fable", 10.0,  50.0 },  -- Fable 5 (most capable)
+  { "claude-opus-5-5",   4.0, 20.0 },  -- Opus 5.5
+  { "claude-opus",       5.0, 25.0 },  -- Opus 5 / Opus 4.x
+  { "claude-sonnet-5",   2.0, 10.0 },  -- Sonnet 5.5 / Sonnet 5
+  { "claude-sonnet",     3.0, 15.0 },  -- Sonnet 4.x
+  { "claude-haiku-5-5",  0.10, 0.50 }, -- Haiku 5.5 (prompts up to 100k)
+  { "claude-haiku",      1.0,  5.0 },  -- Haiku 4.5
+  { "claude-fable-5-2",  8.0, 40.0 },  -- Fable 5.2
+  { "claude-fable",     10.0, 50.0 },  -- Fable 5 / 5.1
   { "deepseek",      0.30,  1.20 }, -- DeepSeek v4 -- order-of-magnitude estimate
   default = { 3.0, 15.0 },          -- unknown remote model: assume Sonnet-class
 }
@@ -1248,7 +1271,7 @@ M.PROVIDER_DEFAULTS = {
   anthropic = {
     label = "Anthropic",
     base_url = nil,                       -- the built-in default endpoint
-    models = { "claude-opus-5", "claude-sonnet-5" },
+    models = { "claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-2", "claude-opus-5", "claude-sonnet-5" },
     key_hint = "sk-ant-...",
   },
   deepseek = {

@@ -531,6 +531,9 @@ function M.open()
   -- Seed the model catalog the first time its tables are empty. Idempotent and
   -- quiet: a user who has curated their own catalog is never re-seeded over.
   pcall(function() require("catalog").seed_if_empty() end)
+  -- ...and on a store seeded by an older build, add what has shipped since
+  -- (never over a row or role someone chose; lua/catalog.lua merge_seed).
+  pcall(function() require("catalog").merge_seed() end)
   -- The `global` project exists from the first run: it is where every chat and
   -- memory that is not about a particular body of work lives, and every other
   -- project reads it. Then adopt the project owning this directory, if exactly

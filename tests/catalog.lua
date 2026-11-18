@@ -107,7 +107,7 @@ eq(#C.models{}, count_before, "a round trip changes nothing")
 eq(C.import_json("not json at all"), nil, "invalid JSON is refused, not thrown")
 
 -- ---- roles ----------------------------------------------------------------
-eq(C.role("default")[1], "claude-opus-5", "the seed binds a default role")
+eq(C.role("default")[1], "claude-opus-5-5", "the seed binds a default role")
 eq(C.role("nothing-bound"), nil, "an unbound role is nil")
 C.bind_role("critic", { "grok-4.6", "glm-5.3" })
 local chain = C.role("critic")
@@ -137,6 +137,55 @@ ok(auth.slot_allowed("https://anything.test", "a-slot-nothing-registers"),
 -- ---- keys can be stored for a provider you are not pointed at -------------
 ok(auth.set("api_key", "test-key-xai", "xai"), "a key can be stored per provider")
 ok(auth.has_key("xai"), "and is found under that provider")
+
+-- ---- merging the baked catalog into an older store ---------------------------
+-- A store seeded by an older build never heard of models that shipped later;
+-- merge_seed adds them without touching anything someone chose.
+do
+  bog.db:run("DELETE FROM models WHERE id = ?", { "claude-sonnet-5-5" })
+  ok(C.model("claude-sonnet-5-5") == nil, "merge: a shipped model is missing from an old store")
+  C.import({ models = { ["claude-fable-5-2"] = { provider = "anthropic", label = "Mine" } } }, "user")
+  C.import({ models = { ["claude-haiku-5-5"] = { provider = "anthropic", label = "Stale seed" } } }, "seed")
+  C.bind_role("default", "claude-opus-5")          -- what the previous seed chose
+  C.bind_role("critic", "grok-4.6")                 -- someone's own role
+  local n = C.merge_seed()
+  ok(n and n.models > 0, "merge: imports from the baked catalog")
+  ok(C.model("claude-sonnet-5-5") ~= nil, "merge: the missing model is added")
+  eq(C.model("claude-fable-5-2").label, "Mine", "merge: a user's row is left alone")
+  eq(C.model("claude-haiku-5-5").label, "Claude Haiku 5.5", "merge: a row still from the seed is updated")
+  eq(C.role("default")[1], "claude-opus-5-5", "merge: a role on the PREVIOUS seed default moves to the new one")
+  eq(C.role("critic")[1], "grok-4.6", "merge: a role someone bound is theirs")
+  C.bind_role("default", "grok-4.6")
+  C.merge_seed()
+  eq(C.role("default")[1], "grok-4.6", "merge: a default someone rebound is never moved back")
+  C.bind_role("default", "claude-opus-5-5")
+  local again = C.merge_seed()
+  ok(again ~= nil, "merge: idempotent")
+end
+
+-- ---- Anthropic's own model list --------------------------------------------------
+do
+  local anth = C.provider("anthropic")
+  eq(anth and anth.catalog_url, "https://api.anthropic.com/v1/models", "anthropic publishes its catalog")
+  local body = '{"data":[{"type":"model","id":"claude-opus-5-5","display_name":"Claude Opus 5.5",'
+    .. '"max_input_tokens":1000000,"max_tokens":128000}]}'
+  local rows = C.parse_openai_models(body, "anthropic")
+  local m = rows and rows["claude-opus-5-5"]
+  ok(m and m.label == "Claude Opus 5.5", "anthropic list: display_name is the label")
+  ok(m and m.context == 1000000 and m.max_output == 128000, "anthropic list: max_input_tokens / max_tokens")
+  local real = http.request
+  local seen
+  http.request = function(req) seen = req; return 200, body end
+  local r = C.refresh("anthropic")
+  http.request = real
+  ok(r and r.models == 1, "refresh anthropic imports its list")
+  local hv = false
+  for _, h in ipairs((seen and seen.headers) or {}) do hv = hv or h == "anthropic-version: 2023-06-01" end
+  ok(hv, "refresh sends anthropic-version on the Messages wire")
+  eq(C.model("claude-opus-5-5").source, "refresh", "refreshed rows say where they came from")
+  local s = C.sync_summary({ seed = { models = 7 }, refreshed = { anthropic = { models = 9 }, xai = "xai answered 401" } })
+  eq(s, "built-in: 7 models; anthropic: 9 models; xai: xai answered 401", "sync summary, one line")
+end
 
 io.write(string.format("catalog: %d passed, %d failed\n", passed, failed))
 os.exit(failed == 0 and 0 or 1)
