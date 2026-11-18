@@ -1033,10 +1033,44 @@ end
 
 -- ---- registry assembly -----------------------------------------------------
 
+-- The order tools are listed in is a prompt-caching contract. Tool schemas sit
+-- near the start of every request, and providers that cache by exact prefix
+-- (vLLM, SGLang, llama.cpp, Anthropic) lose everything after the first byte
+-- that changes. A plain sort put a tool added mid-run (define_tool, reload, a
+-- skill, an MCP server) in the middle of the list and changed every byte after
+-- it, so instead each name gets a position the first time it is listed and
+-- keeps it:
+--   * the tools present at the first listing (the boot set) are sorted, so the
+--     order is deterministic across processes;
+--   * tools that appear later append, a batch of them in sorted order;
+--   * a tool that is removed and comes back returns to its old position.
+-- Positions live on bog.__tool_order rather than in this module, so they
+-- survive bog.reload() re-running this file (as event registrations survive on
+-- bog.__events).
+local function tool_order()
+  local holder = rawget(_G, "bog")
+  local order = holder and rawget(holder, "__tool_order")
+  if not order then
+    order = { pos = {}, next = 0 }
+    if holder then holder.__tool_order = order end
+  end
+  return order
+end
+
 function M.names()
-  local ns = {}
-  for name in pairs(M.registry) do ns[#ns + 1] = name end
-  table.sort(ns)
+  local order = tool_order()
+  local ns, fresh = {}, {}
+  for name in pairs(M.registry) do
+    ns[#ns + 1] = name
+    if not order.pos[name] then fresh[#fresh + 1] = name end
+  end
+  table.sort(fresh)
+  for _, name in ipairs(fresh) do
+    order.next = order.next + 1
+    order.pos[name] = order.next
+  end
+  local pos = order.pos
+  table.sort(ns, function(a, b) return pos[a] < pos[b] end)
   return ns
 end
 
