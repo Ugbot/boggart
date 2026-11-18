@@ -33,7 +33,10 @@ defs.spawn = {
   description = "Spawn a sub-agent (its own conversation thread) to work on a task in parallel; "
     .. "returns its id. Optionally name a standard agent (researcher/coder/critic) and/or skills. "
     .. "Pass `deliverables` (paths the agent MUST produce) and/or `verify` (a checker tool) to hold "
-    .. "the agent to an exit contract: an agent that does not deliver + verify is reported as failed.",
+    .. "the agent to an exit contract: an agent that does not deliver + verify is reported as failed. "
+    .. "Pass `fork = true` to start the child as a copy of YOUR conversation so far (same prompt, "
+    .. "tools and model, so it reuses your cached prefix and already knows what you have read); "
+    .. "use it for a subtask that needs your context, and a fresh spawn for one that does not.",
   input_schema = {
     type = "object",
     properties = {
@@ -47,6 +50,7 @@ defs.spawn = {
       schema = { type = "object", description = "a JSON Schema the child MUST answer with (its reply ends with a matching JSON object). Its `required` keys are enforced by the exit contract, so a prose-only answer is retried. Use this whenever you intend to branch on the result rather than read it." },
       perms = { type = "object", description = "a permission profile for this child alone: {bash={[\"git *\"]=\"allow\",[\"*\"]=\"deny\"}, edit={[\"src/**\"]=\"allow\"}}. It can only NARROW what this run already permits, never widen it -- use it to make a reviewer read-only." },
       budget = { type = "integer", description = "output-token budget for this child. Exceeding it stops the child and reports failure, so a runaway worker cannot spend the whole run." },
+      fork = { type = "boolean", description = "start the child from a copy of your conversation (your system prompt, tools, model, effort, limits and permission profile) instead of a blank one; it gets `task` as its next message. Default false. Cannot be combined with `agent` or `skills` (they would change the prompt), and a forked child cannot fork again." },
     },
     required = { "task" },
   },
@@ -60,10 +64,28 @@ defs.spawn = {
         "Tool error: [validation_error] agent cap reached (%d): cannot spawn more agents. "
         .. "Do this work yourself.", bog.thread.max_agents)
     end
+    local fork = a.fork == true
+    if fork then
+      -- A fork is the parent's prompt and tools by definition; an agent spec or
+      -- skills would replace both and silently make it a fresh spawn that also
+      -- pays for the copied history.
+      if a.agent ~= nil or a.skills ~= nil then
+        return "Tool error: [validation_error] fork cannot be combined with `agent` or "
+          .. "`skills`: a fork keeps your prompt and tools. Spawn without fork for a specialist."
+      end
+      -- Depth one. The agent cap bounds how many agents exist, but each fork
+      -- also carries a full copy of a transcript that keeps growing; forks of
+      -- forks multiply that memory for no context the first fork lacked.
+      local me = bog.thread.live_recs[bog.sched.current()]
+      if me and me.forked_from then
+        return "Tool error: [validation_error] a forked agent cannot fork again. "
+          .. "Spawn without fork, or do this work yourself."
+      end
+    end
     local id = bog.thread.spawn{
       task = a.task, agent = a.agent, model = a.model, skills = a.skills,
       deliverables = a.deliverables, verify = a.verify, effort = a.effort,
-      schema = a.schema, budget = a.budget, perms = a.perms,
+      schema = a.schema, budget = a.budget, perms = a.perms, fork = fork or nil,
       parent_id = bog.sched.current(),
     }
     return json.encode{ spawned = id }

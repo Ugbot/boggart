@@ -143,8 +143,18 @@ function M.new_agent(p)
   -- providers and someone running one local model, which is the property that
   -- makes a shared spec worth having. An unbound role falls through to
   -- `default` rather than failing (see route.resolve_chain).
+  --
+  -- A fork (spawn{ fork = true }) puts the parent's own route at 4: it is on
+  -- whatever its parent is on, which is not necessarily the root session.
+  local fork_parent = p.fork and M.fork_parent(p.parent_id)
+  if p.fork and not fork_parent then
+    error("fork: agent " .. tostring(p.parent_id) .. " has no live conversation to fork", 0)
+  end
+  local fork_err = fork_parent and require("fork").check(fork_parent, p)
+  if fork_err then error("fork: " .. fork_err, 0) end
   local spec_model = p.model or spec.model
     or (spec.role and ("role:" .. spec.role))
+    or (fork_parent and (fork_parent.session.route or fork_parent.session.model))
     or bog.session.route or bog.session.model
   local route = require("route").resolve(spec_model)
   local model = route.model
@@ -195,7 +205,11 @@ function M.new_agent(p)
                 token_budget = tonumber(p.budget) or M.default_token_budget,
                 effort = p.effort or M.default_effort },
   }
-  rec.may_spawn = not M.at_capacity()
+  if fork_parent then
+    require("fork").adopt(rec, fork_parent, p, M.default_token_budget)
+  else
+    rec.may_spawn = not M.at_capacity()
+  end
   rec.opts = M.agent_opts(rec)
   M.live = M.live + 1
   M.live_recs[rec.id] = rec
@@ -388,6 +402,27 @@ function M.kill(id)
   return bog.sched.kill(id)
 end
 
+-- The live record of the agent a fork copies. A spawned agent is in live_recs;
+-- the interactive root may not be (its row is created on its first turn, after
+-- session_agent ran), so fall back to the session that owns that id.
+function M.fork_parent(id)
+  if id == nil then return nil end
+  local rec = M.live_recs[id]
+  if rec and rec.session then return rec end
+  local sessions = { bog.session }
+  if bog.active_session then
+    local ok, s = pcall(bog.active_session)
+    if ok then sessions[#sessions + 1] = s end
+  end
+  for _, s in ipairs(sessions) do
+    if type(s) == "table" and s.id == id and type(s.agent) == "table"
+       and s.agent.session == s then
+      return s.agent
+    end
+  end
+  return nil
+end
+
 -- Spawn a child actor; returns its id immediately (it runs when the scheduler
 -- next resumes it).
 function M.spawn(p)
@@ -402,6 +437,7 @@ function M.spawn(p)
   local rec = M.new_agent(p)
   rec.spawned=true
   local task = p.task or ""
+  if rec.forked_from then task = require("fork").directive(p.parent_id, task) end
   if p.schema then
     -- Said plainly and last, where a model actually reads it. The contract
     -- checks the answer regardless, so this is help, not the enforcement.
