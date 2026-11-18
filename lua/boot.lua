@@ -36,7 +36,7 @@ do
 end
 bog.mode = boggart.mode
 bog.session = {
-  model = boggart.model or "claude-opus-5",
+  model = boggart.model or "claude-opus-5-5",
   messages = {},
   max_tokens = 16000,
   compact_at = 400000,
@@ -1771,6 +1771,11 @@ elseif bog.mode == "models" then
     if not n then io.stderr:write("import failed: " .. tostring(err) .. "\n"); return 1 end
     io.write(string.format("imported %d providers, %d models, %d roles\n",
       n.providers, n.models, n.roles))
+    return 0
+
+  elseif cmd == "sync" then
+    -- the built-in catalog merged in, then every keyed provider's live list
+    io.write(C.sync_summary(C.sync()), "\n")
     return 0
 
   elseif cmd == "refresh" then

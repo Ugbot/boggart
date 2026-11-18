@@ -53,7 +53,7 @@ eq(#route.resolve_chain("role:utility"), 1, "a single binding is a one-entry cha
 -- The portability property: an agent asking for a role this machine has never
 -- heard of still runs, on the default.
 local unbound = route.resolve("role:nobody-bound-this")
-eq(unbound.model, "claude-opus-5", "an unbound role falls through to the default")
+eq(unbound.model, "claude-opus-5-5", "an unbound role falls through to the default")
 eq(unbound.role, "nobody-bound-this", "while recording what was asked for")
 
 -- ---- the precedence chain -------------------------------------------------
