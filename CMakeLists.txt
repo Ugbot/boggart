@@ -954,6 +954,8 @@ add_test(NAME fleet COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT
 set_tests_properties(fleet PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME compact_long_turn COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/compact_long_turn $<TARGET_FILE:boggart> --eval ${CMAKE_CURRENT_SOURCE_DIR}/tests/compact_long_turn.lua)
 set_tests_properties(compact_long_turn PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME reply_limit COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/reply_limit $<TARGET_FILE:boggart> --eval ${CMAKE_CURRENT_SOURCE_DIR}/tests/reply_limit.lua)
+set_tests_properties(reply_limit PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_library(boggart_unicode STATIC src/bunicode.c)
 target_include_directories(boggart_unicode PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_executable(unicode_test tests/c/unicode.c)

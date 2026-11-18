@@ -1,4 +1,5 @@
--- window.lua -- context-window arithmetic: when to compact and what to keep.
+-- window.lua -- context-window arithmetic: when to compact, what to keep, and
+-- how long a reply the next request may ask for.
 --
 -- Pure functions over numbers and message lists, so the rules can be tested
 -- without a model. lua/api.lua owns the session state and the model calls and
@@ -7,7 +8,8 @@
 -- The rules follow the behaviour of the harnesses that hold up on long agent
 -- tasks: compact when the conversation reaches the window minus a buffer (15%
 -- of the window, at least 16k tokens), keep roughly the last 15k tokens of
--- conversation verbatim beside a summary of everything older.
+-- conversation verbatim beside a summary of everything older, and never ask
+-- for a reply longer than the room left in the window.
 local json = require("json")
 
 local M = {}
@@ -23,6 +25,8 @@ M.KEEP = 15000             -- recent tokens kept verbatim through a compaction
 -- by themselves, and every round would compact again. Cap the kept tail at a
 -- share of the threshold so a compacted conversation always has room to grow.
 M.KEEP_SHARE = 0.25
+M.REPLY_DEFAULT = 16000    -- longest reply when neither session nor catalog says
+M.REPLY_MIN = 1024         -- never ask for less than this, however full
 -- Estimates of messages the server has not measured yet are scaled up by this
 -- much: chars/4 runs low on code and JSON, and the cost of guessing low is a
 -- refused request rather than a slightly early compaction.
@@ -103,6 +107,17 @@ function M.tail_start(messages, budget)
     if messages[i].role == "assistant" then start = i end
   end
   return start
+end
+
+-- The reply limit for one request: the longest reply wanted, lowered to the
+-- room left in a window of `limit` tokens when `used` are already taken, and
+-- never below REPLY_MIN (unless the wanted length itself is smaller -- a
+-- session that asks for 100 tokens gets 100).
+function M.reply_tokens(want, limit, used)
+  want = math.floor(want)
+  if not (limit and used) then return want end
+  local room = math.max(M.REPLY_MIN, math.floor(limit - used))
+  return math.min(want, room)
 end
 
 return M

@@ -27,7 +27,7 @@ M.HARD_MAX = 50           -- an absolute ceiling nothing may exceed
 local function sub_session(spec)
   return {
     model = spec.model or (bog.session and bog.session.model),
-    messages = {}, max_tokens = 16000,
+    messages = {},
     effort = spec.effort, token_budget = spec.token_budget,
   }
 end

@@ -1450,6 +1450,44 @@ function M.context_used(sess)
   return window.tokens_of(msgs), "estimated"
 end
 
+-- The longest reply a session's requests ask for, before the per-request
+-- clamp: the session's own setting (--max-output, a parent agent's), then
+-- the catalog's longest reply for the model being called, then 16,000. The
+-- catalog figure is per model, which is the point: a model that can write
+-- 64k-token replies is not held to 16k, and one that cannot is not asked for
+-- more than it can give.
+function M.reply_limit(sess, route)
+  sess = sess or bog.session
+  if tonumber(sess.max_tokens) then return math.floor(tonumber(sess.max_tokens)) end
+  local cat = route and tonumber(route.max_output)
+  if not cat then
+    local ok, row = pcall(function()
+      return require("catalog").model((route and route.model) or sess.model)
+    end)
+    cat = ok and row and tonumber(row.max_output) or nil
+  end
+  if cat and cat > 0 then return math.floor(cat) end
+  return window.REPLY_DEFAULT
+end
+
+-- max_tokens for one request: the reply limit, lowered to the room the
+-- prompt leaves in the window (never below window.REPLY_MIN). A provider that
+-- enforces prompt + max_tokens <= window refuses the request outright
+-- otherwise, and that refusal comes exactly when a long task is deepest into
+-- its work. The prompt is the measured size of the last request plus an
+-- estimate of what is newer (context_used); before anything is measured, the
+-- whole body is estimated, since the system prompt and the tool schemas are
+-- not in sess.messages and can be tens of thousands of tokens on their own.
+function M.request_max_tokens(sess, route, body)
+  local want = M.reply_limit(sess, route)
+  local used, how = M.context_used(sess)
+  if how ~= "measured" and body then
+    local ok, s = pcall(json.encode, { system = body.system, messages = body.messages, tools = body.tools })
+    if ok then used = math.ceil(#s / 4 * window.ESTIMATE_MARGIN) end
+  end
+  return window.reply_tokens(want, M.context_limit(sess), used)
+end
+
 -- Fraction of the window in use, 0..1+. What the UI shows.
 function M.context_fraction(sess)
   sess = sess or bog.session
@@ -2059,7 +2097,8 @@ function M.run_on(sess, user_text, on_text, opts)
       -- the ROUTE's model: it may differ from sess.model when this call or this
       -- agent was pointed somewhere else
       model = route.model or sess.model,
-      max_tokens = sess.max_tokens or 16000,
+      -- set below, once the tools are known: the clamp needs the whole prompt
+      max_tokens = nil,
       system = system(),
       messages = sess.messages,
       stream = true,
@@ -2087,6 +2126,7 @@ function M.run_on(sess, user_text, on_text, opts)
       end
     end
     if #tools > 0 then body.tools = tools end
+    body.max_tokens = M.request_max_tokens(sess, route, body)
 
     ttfb_t0 = tel and tel.now_ms() or nil; ttfb_ms = nil
     -- on_think streams the model's reasoning live (reasoning models emit a long

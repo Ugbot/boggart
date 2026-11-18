@@ -38,8 +38,9 @@ bog.mode = boggart.mode
 bog.session = {
   model = boggart.model or "claude-opus-5",
   messages = {},
-  max_tokens = 16000,
-  compact_at = 400000,
+  -- No max_tokens: unset means "the catalog's longest reply for the model,
+  -- else 16,000" (api.reply_limit), lowered per request to the room left in
+  -- the window. Setting it here would make every session look explicit.
 }
 
 -- How model-authored skill code (a skill's `provides` body) runs: "sandboxed"
