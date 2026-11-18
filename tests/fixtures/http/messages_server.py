@@ -50,5 +50,7 @@ class S(socketserver.ThreadingMixIn, socketserver.TCPServer):
 
 with S(("127.0.0.1", 0), H) as s:
     print(s.server_address[1], flush=True)
-    threading.Timer(LIFE, s.shutdown).start()
+    timer = threading.Timer(LIFE, s.shutdown)
+    timer.daemon = True   # /quit must end the process now, not when this fires
+    timer.start()
     s.serve_forever()
