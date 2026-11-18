@@ -109,7 +109,7 @@ Judge each prose source and record it in `voice/sources.md` as a table
 - The author telling you outranks everything. Ask when the evidence is thin.
 - `.boggart/story/generated.jsonl` lists prose Boggart generated: model-drafted.
 - Git: `git log --format='%h %an %s' -- <file>` and `Co-Authored-By` trailers, notes
-  that say "draft", "slow-cut", "revision", or describe themselves as analysis.
+  that say "draft" or "revision", or describe themselves as analysis.
 - Chat logs saved as notes usually start with the author's own prompt glued to the
   reply: the first sentence is author direction; quote it, the rest is the model.
 - Roughness (typos, missing quotation marks) is a sign of a human first draft; keep
