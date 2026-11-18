@@ -146,9 +146,10 @@ end
 -- This is a correctness statement, not decoration: sys.exec hands the command
 -- to the platform shell, so on Windows the model is writing for cmd.exe. Left
 -- unsaid, it will confidently emit `ls | grep foo`, `2>/dev/null`, `rm -rf` and
--- forward-slash paths, all of which fail or silently misbehave there. Kept out
--- of the cached DISCIPLINE block below so the text stays identical per platform
--- rather than fragmenting the prompt cache.
+-- forward-slash paths, all of which fail or silently misbehave there. A block
+-- of its own after DISCIPLINE, so DISCIPLINE stays identical on every platform;
+-- it is constant for the life of a process, which is what lets it close the
+-- shared head (see M.agent_system).
 function M.shell_note()
   local exe, flag = sys.shell()
   local win = sys.caps().shell_kind == "cmd"
@@ -310,29 +311,60 @@ nothing cannot be mistaken for success:
 -- A lone agent is a swarm of one, so it takes the same path with the fanout
 -- capped and the actor preamble left out.
 --
+-- Block order is a caching contract. Providers that cache by exact prompt
+-- prefix (vLLM, SGLang, llama.cpp, and Anthropic at its breakpoints) share work
+-- only up to the first differing byte, so the text is laid out from most to
+-- least shared:
+--
+--   1. head   -- identical for every agent in the process: DISCIPLINE and the
+--                shell note. Carries the first breakpoint. A coordinator and its
+--                children (whose may_spawn depends on capacity at spawn time)
+--                start with these same bytes.
+--   2. role   -- what differs between agents but not between one agent's
+--                turns: the swarm preamble, sys_override, the tool-profile note,
+--                skills. Carries a second breakpoint when present.
+--   3. turn   -- what can change while a session runs: the project frame and
+--                instructions, the memory index, the working directory. Never
+--                inside a cached block.
+--
+-- Nothing in the head may vary between calls of a session: no timestamps,
+-- counters or live status. tests/prompt.lua holds this.
+--
 -- rec may be nil (a plain agent with no skills), and is:
---   { instructions?, sys_override?, may_spawn? }
+--   { instructions?, sys_override?, may_spawn?, allow? }
 function M.agent_system(rec)
   rec = rec or {}
   local blocks = {}
+  -- Head. Both breakpoints are 1h: the head is written once and read on every
+  -- turn of every agent that shares it, and the role part once per agent. The
+  -- growing conversation gets the request-level 5m breakpoint
+  -- (api.to_anthropic_body); Anthropic requires the longer TTL to come first,
+  -- which this order keeps (1h head, 1h role, then the 5m conversation), and
+  -- three breakpoints stay under its limit of four. Non-Anthropic endpoints
+  -- (ds4, OpenAI) ignore the marker entirely.
+  blocks[#blocks + 1] = { type = "text", text = DISCIPLINE }
+  blocks[#blocks + 1] = { type = "text", text = M.shell_note(),
+                          cache_control = { type = "ephemeral", ttl = "1h" } }
+
+  -- Role.
+  local role_start = #blocks
   if rec.may_spawn then
     blocks[#blocks + 1] = { type = "text", text = SWARM_BASE }
   end
   if rec.sys_override and rec.sys_override ~= "" then
     blocks[#blocks + 1] = { type = "text", text = rec.sys_override }
   end
-  -- The stable prefix carries the cache breakpoint wherever it lands. 1h TTL: the
-  -- tools+system head is written once per session/agent but read on every turn
-  -- (and across a swarm's agents that share it), so the longer-lived entry pays
-  -- off; the growing conversation gets its own 5m breakpoint (api.to_anthropic_body).
-  -- Ordering holds (1h head before the 5m conversation). Non-Anthropic endpoints
-  -- (ds4, OpenAI) ignore the marker entirely.
-  blocks[#blocks + 1] = { type = "text", text = DISCIPLINE,
-                          cache_control = { type = "ephemeral", ttl = "1h" } }
+  local tools = bog.tools
+  local note = tools and tools.profile_note and tools.profile_note(rec)
+  if note then blocks[#blocks + 1] = { type = "text", text = note } end
   if rec.instructions and rec.instructions ~= "" then
     blocks[#blocks + 1] = { type = "text", text = "# Skills\n" .. rec.instructions }
   end
-  blocks[#blocks + 1] = { type = "text", text = M.shell_note() }
+  if #blocks > role_start then
+    blocks[#blocks].cache_control = { type = "ephemeral", ttl = "1h" }
+  end
+
+  -- Turn.
   local frame = M.project_frame()
   if frame then blocks[#blocks + 1] = { type = "text", text = frame } end
   local proj = M.project_instructions()
