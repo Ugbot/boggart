@@ -170,6 +170,14 @@ function M.new_agent(p)
     }
   end
 
+  -- What this agent inherits from the one that spawned it (api.inherit_limits
+  -- says why each part is or is not inherited). The parent is the spawning
+  -- agent's session when it is live, else the root session.
+  local prec = p.parent_id and M.live_recs[p.parent_id]
+  local parent = (prec and prec.session) or bog.session
+  local inherited = bog.api.inherit_limits(parent, model,
+    { max_tokens = p.max_tokens, context_limit = p.context_limit })
+
   local rec = {
     invocation_context = require("invoke").current(),
     id = id, parent_id = p.parent_id, spec_name = p.agent, skills = skills,
@@ -187,13 +195,14 @@ function M.new_agent(p)
     -- only narrow what the run permits; see agent_opts.run_tool.
     perms = p.perms,
     session = { id = id, model = model, route = route,
-                messages = resumed_messages or {}, max_tokens = 16000,
-                compact_at = 400000,
+                messages = resumed_messages or {},
+                context_limit = inherited.context_limit,
+                max_tokens = inherited.max_tokens,
                 -- a per-child budget when the coordinator set one; the turn
                 -- loop in api.lua already enforces token_budget and reports
                 -- stop="token_budget", which the exit contract treats as failure
                 token_budget = tonumber(p.budget) or M.default_token_budget,
-                effort = p.effort or M.default_effort },
+                effort = p.effort or inherited.effort or M.default_effort },
   }
   rec.may_spawn = not M.at_capacity()
   rec.opts = M.agent_opts(rec)

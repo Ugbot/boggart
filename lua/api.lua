@@ -1488,6 +1488,35 @@ function M.request_max_tokens(sess, route, body)
   return window.reply_tokens(want, M.context_limit(sess), used)
 end
 
+-- The limits a sub-agent starts with, from the session that spawned it.
+--
+-- A child on the parent's model gets the parent's context window and reply
+-- limit: they describe that model (or what the user said about it with
+-- --context-window / --max-output), and a child without them compacts against
+-- the wrong window and asks for replies of the wrong length. A child routed
+-- to a DIFFERENT model gets neither -- those numbers describe another model --
+-- and resolves its own from the catalog at request time. Effort is a level,
+-- not a model property, so it is inherited either way. `narrow` (the spawn's
+-- own max_tokens / context_limit) may lower the inherited numbers, never
+-- raise them.
+function M.inherit_limits(parent, child_model, narrow)
+  local out = {}
+  if not parent then return out end
+  narrow = narrow or {}
+  local pmodel = (parent.resolved_route and parent.resolved_route.model)
+    or (type(parent.route) == "table" and parent.route.model) or parent.model
+  local same = child_model == nil or child_model == pmodel
+  local function lower(inherited, asked)
+    asked = tonumber(asked) and math.floor(tonumber(asked)) or nil
+    if inherited and asked then return math.min(inherited, asked) end
+    return inherited or asked
+  end
+  out.context_limit = lower(same and tonumber(parent.context_limit) or nil, narrow.context_limit)
+  out.max_tokens = lower(same and tonumber(parent.max_tokens) or nil, narrow.max_tokens)
+  out.effort = parent.effort
+  return out
+end
+
 -- Fraction of the window in use, 0..1+. What the UI shows.
 function M.context_fraction(sess)
   sess = sess or bog.session
