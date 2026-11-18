@@ -64,7 +64,16 @@ function M.with_correlation(correlation,fn,...)
   if not result[1] then error(result[2],0) end
   return table.unpack(result,2,result.n)
 end
+local PERM_KEYS = {'mode','approve_all','tool_policy','rules','guards','agent_rules','headless'}
 -- Context handles are opaque; children retain every ancestor restriction.
+--
+-- options.follow (trusted host callback): a function returning the CURRENT
+-- permission state. A following context re-reads it at every admission instead
+-- of pinning the state it was created with. The session's own agent follows
+-- (lua/thread.lua session_agent): the human at the keyboard is that agent's
+-- authority, so "always allow" or a switch to Autonomous applies to the very
+-- next tool call, mid-turn. Spawned agents never follow: their authority stays
+-- the floor they were created with, and later grants never widen it.
 function M.context(options, parent)
   options = options or {}
   local handle = {}
@@ -79,7 +88,7 @@ function M.context(options, parent)
     policy, invalid = require('policy').compile(options.policy_scopes or st.policy_scopes)
   end
   contexts[handle] = {parent=parent or M.current(), state=legacy, policy=policy,
-    source=st, invalid=invalid, ledger=options.ledger or st.ledger, approve=options.approve,
+    source=st, follow=options.follow, invalid=invalid, ledger=options.ledger or st.ledger, approve=options.approve,
     allow=copy(options.allow), estimate=options.estimate, actual=options.actual}
   return handle
 end
@@ -268,6 +277,18 @@ function M.call(context, name, args, options)
     active[k]=joined
     events.emit('tool:before', {session=session_id, name=name, input=copy(args), invocation_id=id})
     states = chain(joined)
+    -- A following context (see M.context) is rebased on the live state before
+    -- anything is decided, so its snapshot is now, not when it was made.
+    for _,s in ipairs(states) do
+      if s.follow then
+        local cur=s.follow()
+        if type(cur)=='table' then
+          local snap={}
+          for _,k2 in ipairs(PERM_KEYS) do snap[k2]=copy(cur[k2]) end
+          s.state=snap; s.source=cur
+        end
+      end
+    end
     -- Surface-local state is never a substitute for current global restrictions.
     local global_state=perm.state()
     local has_global=false

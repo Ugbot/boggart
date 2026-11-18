@@ -51,7 +51,16 @@ function M.agent_opts(rec)
   local st={}
   for k,v in pairs(require("perm").state()) do st[k]=v end
   st.agent_rules=rec.perms
-  local context=invoke.context({state=st,
+  -- The session's own agent follows the live permission state (invoke.context
+  -- `follow`): a grant made mid-turn applies at once. Spawned agents keep the
+  -- snapshot they were created with.
+  local follow = rec.root and function()
+    local cur={}
+    for k,v in pairs(require("perm").state()) do cur[k]=v end
+    cur.agent_rules=rec.perms
+    return cur
+  end or nil
+  local context=invoke.context({state=st, follow=follow,
     allow=rec.allow and next(rec.allow) and rec.allow or nil,
     approve=bog.approve and function(name,input) return bog.approve(name,input,rec.id)==true end or nil},
     rec.invocation_context)
@@ -120,7 +129,7 @@ function M.session_agent(sess, skills, text)
   if M.live < 1 then M.live = 1 end
   local rec = {
     id = sess.id, skills = skills, allow = allow, instructions = instructions,
-    may_spawn = not M.at_capacity(), session = sess, routed = routed ~= nil,
+    may_spawn = not M.at_capacity(), session = sess, routed = routed ~= nil, root = true,
   }
   rec.opts = M.agent_opts(rec)
   sess.agent = rec

@@ -127,7 +127,7 @@ function AgentView:new()
   self.history, self.hpos = {}, 0
   self.docked = false
   self.mode_hit, self.model_hit = nil, nil
-  self:_load_history()
+  self:_sync_history()
 
   -- The composer's modal context, in the neovim sense -- distinct from
   -- self.mode above, which is the approval policy. "insert" is a text field
@@ -390,6 +390,7 @@ function AgentView:submit(text)
     self:push("error", "the agent harness is not available in this build")
     return
   end
+  self:_sync_history()
   self.history[#self.history + 1] = text
   self.hpos = 0
   self:_save_history()
@@ -1006,26 +1007,51 @@ function AgentView:voice_command(rest)
   core.redraw = true
 end
 
-function AgentView:_hist_path()
-  return (bog and bog.userdir or "") .. "/history"
+-- The composer's up/down history is PER CHAT: one JSON file per session
+-- under <userdir>/history.d/, so recalling a message never brings back one
+-- from a different conversation, and a multi-line message comes back whole.
+-- (It used to be one shared <userdir>/history file, which the TUI also writes.)
+function AgentView:_hist_sid()
+  return bog and bog.session and bog.session.id or nil
+end
+
+function AgentView:_hist_path(sid)
+  sid = sid or self:_hist_sid()
+  if sid == nil then return nil end
+  return (bog and bog.userdir or "") .. "/history.d/" .. tostring(sid):gsub("[^%w%-_]", "_") .. ".json"
+end
+
+-- Reload when the chat has changed under the view (new, resume, fork).
+function AgentView:_sync_history()
+  local sid = self:_hist_sid()
+  if self._hist_for == sid and self._hist_loaded then return end
+  self._hist_for, self._hist_loaded = sid, true
+  self.history, self.hpos = {}, 0
+  self:_load_history()
 end
 
 function AgentView:_load_history()
-  local f = io.open(self:_hist_path(), "r")
+  local p = self:_hist_path()
+  local f = p and io.open(p, "r")
   if not f then return end
-  for line in f:lines() do
-    if line ~= "" then self.history[#self.history + 1] = line end
+  local raw = f:read("a"); f:close()
+  local ok, list = pcall(bog.json.decode, raw)
+  if ok and type(list) == "table" then
+    for _, s in ipairs(list) do
+      if type(s) == "string" and s ~= "" then self.history[#self.history + 1] = s end
+    end
   end
-  f:close()
 end
 
 function AgentView:_save_history()
   local h = self.history
   while #h > 200 do table.remove(h, 1) end
-  local f = io.open(self:_hist_path(), "w")
+  local p = self:_hist_path()
+  if not p then return end
+  pcall(sys.mkdir_p, p:match("^(.*)/[^/]+$"))
+  local f = io.open(p, "w")
   if not f then return end
-  f:write(table.concat(h, "\n"))
-  if #h > 0 then f:write("\n") end
+  f:write(bog.json.encode(#h > 0 and h or bog.json.array or {}))
   f:close()
 end
 
@@ -1584,6 +1610,7 @@ function AgentView:on_key_pressed(key)
       core.redraw = true
       return true
     end
+    self:_sync_history()   -- the chat may have changed since the last recall
     if #self.history > 0 then
       self.hpos = math.min(self.hpos + 1, #self.history)
       self:set_input(self.history[#self.history - self.hpos + 1] or "")
