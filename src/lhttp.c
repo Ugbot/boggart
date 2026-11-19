@@ -533,8 +533,26 @@ static int l_http_begin(lua_State *L) {
   lua_pop(L, 1);
   if (r->hdrs) curl_easy_setopt(r->easy, CURLOPT_HTTPHEADER, r->hdrs);
 
+  /* timeout: the whole transfer, in seconds; 0 means no limit on the total.
+   * idle_timeout: abort only when no byte has arrived for this many seconds
+   * (curl's low-speed check at 1 byte/s), which also bounds the wait for the
+   * first byte. A model stream that keeps producing tokens can run as long as
+   * it needs; one that goes silent still ends. connect_timeout: TCP + TLS. */
   lua_getfield(L, 1, "timeout");
   curl_easy_setopt(r->easy, CURLOPT_TIMEOUT, (long)luaL_optinteger(L, -1, 600));
+  lua_pop(L, 1);
+  lua_getfield(L, 1, "idle_timeout");
+  if (!lua_isnil(L, -1)) {
+    lua_Integer idle = luaL_checkinteger(L, -1);
+    if (idle > 0) {
+      curl_easy_setopt(r->easy, CURLOPT_LOW_SPEED_LIMIT, 1L);
+      curl_easy_setopt(r->easy, CURLOPT_LOW_SPEED_TIME, (long)idle);
+    }
+  }
+  lua_pop(L, 1);
+  lua_getfield(L, 1, "connect_timeout");
+  if (!lua_isnil(L, -1))
+    curl_easy_setopt(r->easy, CURLOPT_CONNECTTIMEOUT, (long)luaL_checkinteger(L, -1));
   lua_pop(L, 1);
 
   curl_easy_setopt(r->easy, CURLOPT_WRITEFUNCTION, write_async);
