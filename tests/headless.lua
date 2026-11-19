@@ -8,6 +8,9 @@
 --   * gated tools in an unattended run resolve through BOGGART_HEADLESS_POLICY
 --     (allow runs them; unset refuses them, and the model is told so) rather
 --     than through a prompt read from a stdin nobody is typing at
+--   * a headless turn killed part way (a harness's time limit) leaves its
+--     transcript in the store up to the last checkpoint: the task, the tool
+--     call and the tool's result
 --
 -- Needs BOGGART_TEST_BIN (set by CMake), python3 and a POSIX shell, and says
 -- so when it skips.
@@ -152,8 +155,68 @@ for _, mode in ipairs({ { "headless", headless }, { "-p", oneshot } }) do
   sc.stop()
 end
 
+-- ---- a killed turn leaves its transcript ------------------------------------------
+do
+  -- The model calls bash, then never answers the next request. The run is
+  -- killed while it waits, the way a benchmark harness ends a run that is out
+  -- of time; the checkpoints taken before that must already be in the store.
+  local sc = scenario({ { tool_use = { id = "toolu_b1", name = "bash", input = { command = "echo hi" } } },
+                        { hang = true } })
+  local p = io.popen(string.format(
+    "cd %q && printf %%s %q | %s %q --headless --model %s >%q 2>&1 & echo $!",
+    sc.work, "say hi with bash", sc.env("BOGGART_HEADLESS_POLICY=allow"), bin, MODEL,
+    sc.dir .. "/out.txt"), "r")
+  local pid = tonumber(p:read("l")); p:close()
+  ck(pid ~= nil, "headless run started in the background")
+  -- the second request goes out only after the tool result is checkpointed
+  local waited = 0
+  while #sc.requests() < 2 and waited < 100 do os.execute("sleep 0.1"); waited = waited + 1 end
+  eq(#sc.requests(), 2, "the run sent the tool result back before it was killed")
+  os.execute("sleep 0.3")
+  os.execute(string.format("kill -TERM %d 2>/dev/null; sleep 0.5; kill -KILL %d 2>/dev/null", pid, pid))
+  sc.stop()
+
+  local probe = sc.dir .. "/probe.lua"
+  write_file(probe, [[
+    bog.store.open()
+    local json = require("json")
+    local list = bog.store.sess_list(10) or {}
+    local s = list[1] and bog.store.sess_load(list[1].id)
+    io.write(json.encode({ count = #list, messages = s and s.messages or json.null }), "\n")
+    return 0
+  ]])
+  local pp = io.popen(string.format("cd %q && env BOGGART_HOME=%q %q --eval %q 2>&1",
+    sc.work, sc.home, bin, probe), "r")
+  local raw = pp:read("a"); pp:close()
+  local ok, got = pcall(json.decode, raw:match("(%b{})%s*$") or "")
+  ck(ok and type(got) == "table", "read the store after the kill [" .. oneline(raw) .. "]")
+  got = ok and type(got) == "table" and got or {}
+  eq(got.count, 1, "the killed run left one session")
+  local msgs = type(got.messages) == "table" and got.messages or {}
+  local has_task, has_call, has_result = false, false, false
+  for _, m in ipairs(msgs) do
+    if m.role == "user" and type(m.content) == "string" and m.content:find("say hi with bash", 1, true) then
+      has_task = true
+    end
+    if type(m.content) == "table" then
+      for _, b in ipairs(m.content) do
+        if m.role == "user" and b.type == "text" and tostring(b.text):find("say hi with bash", 1, true) then
+          has_task = true
+        end
+        if b.type == "tool_use" and b.id == "toolu_b1" and b.name == "bash" then has_call = true end
+        if b.type == "tool_result" and b.tool_use_id == "toolu_b1"
+           and json.encode(b.content):find("hi", 1, true) then has_result = true end
+      end
+    end
+  end
+  local shown = oneline(json.encode(msgs))
+  ck(has_task, "the stored transcript holds the task (" .. shown .. ")")
+  ck(has_call, "the stored transcript holds the tool call")
+  ck(has_result, "the stored transcript holds the tool result")
+end
+
 if fails == 0 then
-  io.write("ok  headless: unattended runs gate tools by BOGGART_HEADLESS_POLICY\n")
+  io.write("ok  headless: unattended runs gate tools by BOGGART_HEADLESS_POLICY; a killed turn keeps its transcript\n")
 else
   io.write(string.format("FAIL headless: %d check(s) failed\n", fails))
   os.exit(1)

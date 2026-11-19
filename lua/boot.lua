@@ -1085,6 +1085,12 @@ local function run_one_turn(text)
   bog.activate_agents()
   local uv = require("uv")
   local tty = term and term.istty and term.istty()
+  -- The row first, before anything takes the session's id: the session's own
+  -- agent record and its checkpoint below, and the scheduler actor. Left to
+  -- api.run_on (which creates it lazily), a new conversation reached them with
+  -- no id, so the agent record could not be built, no checkpoint was set, and
+  -- a turn killed part way (a harness's time limit) left an empty transcript.
+  if bog.ensure_session then pcall(bog.ensure_session, S) end
   local myid = S.id or 1
 
   -- A single rewritable activity line at the cursor: "thinking" until the first
@@ -1204,6 +1210,8 @@ local function run_one_turn(text)
       if st.mode ~= "chat" and rec.opts.tools then opts.tools = rec.opts.tools end
     end
   end
+  -- No agent record (no store, or it failed): still checkpoint the session.
+  if opts.checkpoint == nil then opts.checkpoint = function() pcall(bog.save_session) end end
 
   local co = coroutine.create(function()
     local ok, e = pcall(bog.api.run_on, S, text, function(t)
