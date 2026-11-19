@@ -3,7 +3,9 @@
  * hook, then runs Lua: outer() -> deep() -> crash(), a C function that writes
  * to address 8. The parent checks the child still died of SIGSEGV (the default
  * action is preserved) and that the report names the signal, says near-NULL,
- * has C frames and the Lua frames with file:line, and that the hook ran. */
+ * has C frames and the Lua frames with file:line, and that the hook ran.
+ * On a libc without backtrace() (musl) the C stack is reported unavailable
+ * and every other part of the report must still be there. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,6 +55,13 @@ int main(void) {
   CHECK(strstr(err, "boggart crashed: SIGSEGV") != NULL, "stderr names the signal");
   CHECK(strstr(err, "near NULL") != NULL, "a near-NULL access is classified");
   CHECK(strstr(err, "C stack:") != NULL, "C frames are printed");
+#if defined(__has_include)
+#  if __has_include(<execinfo.h>)
+  CHECK(strstr(err, "(unavailable") == NULL, "backtrace() is used where the libc has it");
+#  else
+  CHECK(strstr(err, "(unavailable: this libc has no backtrace())") != NULL, "a libc without backtrace() says so");
+#  endif
+#endif
   CHECK(strstr(err, "crashtest.lua:1") != NULL && strstr(err, "crashtest.lua:2") != NULL, "Lua frames with file:line");
   CHECK(strstr(err, "HOOK-RAN") != NULL, "the fatal hook ran (the TUI's tty restore goes here)");
   /* the report file */

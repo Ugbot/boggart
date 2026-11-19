@@ -28,8 +28,14 @@ name: release
 #
 # What is still dynamic is the platform's own: libc, and on macOS the Cocoa /
 # Metal / Security frameworks. curl, ncurses, SDL, FreeType and mbedTLS are
-# fetched and linked statically. A fully static Linux binary (musl, no glibc)
-# is a different job and is not what these archives are.
+# fetched and linked statically.
+#
+# The `static` job adds a fully static Linux CLI (musl, no libc dependency at
+# all) for x86_64 and arm64: the glibc archive above runs only where glibc is
+# at least Ubuntu 22.04's, and the static one runs on any Linux of the same
+# architecture, Alpine and older distributions included. It is the CLI alone;
+# the studio needs the machine's display libraries. Each static archive gets a
+# .sha256 beside it, so a script can pin a download. See docs/static-build.md.
 
 on:
   push:
@@ -309,12 +315,83 @@ jobs:
           path: ${{ env.ARCHIVE }}
           if-no-files-found: error
 
+  # Fully static (musl) CLI, built in Alpine by tools/build_static.sh -- the
+  # same script anyone can run locally, so the release binary is reproducible
+  # off CI. The script runs Docker itself rather than this job using
+  # `container:`, because the runner's JavaScript actions (checkout, upload)
+  # do not run inside an arm64 Alpine container. Each architecture builds on
+  # its own native runner: arm64 under emulation is several times slower.
+  static:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64-static
+            os: ubuntu-24.04
+            platform: linux/amd64
+          - target: linux-arm64-static
+            os: ubuntu-24.04-arm
+            platform: linux/arm64
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Builds everything, runs ctest against the musl build, then strips the
+      # CLI into out/. The script fails if the binary has a program interpreter.
+      - name: Build and test (Alpine, musl)
+        run: tools/build_static.sh --platform ${{ matrix.platform }} --test --out out
+
+      # The point of the binary: it starts where the glibc one cannot. Debian 10
+      # has glibc 2.28, older than the 2.35 the linux-x86_64 archive needs, and
+      # Alpine 3.12 is an old musl. `file` must say it is statically linked.
+      - name: Smoke-test on old distributions
+        run: |
+          set -eu
+          file out/boggart
+          file out/boggart | grep -q 'statically linked'
+          cat > out/smoke.lua <<'LUA'
+          assert(sys.width("日本語") == 6, "width tables missing")
+          assert(bog.version, "the harness did not load")
+          io.write("static boggart ok, version ", bog.version, "\n")
+          LUA
+          for img in debian:10 alpine:3.12; do
+            echo "--- $img"
+            docker run --rm --platform ${{ matrix.platform }} -e HOME=/tmp \
+              -v "$PWD/out:/b:ro" "$img" sh -c '/b/boggart --version && /b/boggart --eval /b/smoke.lua'
+          done
+
+      - name: Package
+        run: |
+          set -eu
+          name="boggart-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp out/boggart "dist/$name/"
+          cp README.md docs/static-build.md "dist/$name/"
+          # BSL 1.1 requires the licence on every copy, as in the build job.
+          cp LICENSE "dist/$name/"
+          cp -R THIRD_PARTY "dist/$name/"
+          tar -C dist -czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          cat "$name.tar.gz.sha256"
+          echo "ARCHIVE=$name.tar.gz" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
+          if-no-files-found: error
+
   # Separate job so a release is only cut once every platform has built and
   # tested. A partial release -- Linux published, Windows still red -- is worse
   # than no release, because the tag looks done.
   publish:
     name: publish release
-    needs: build
+    needs: [build, static]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:

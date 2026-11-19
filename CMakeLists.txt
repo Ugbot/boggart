@@ -98,6 +98,37 @@ target_compile_options(boggart_quiet INTERFACE
   $<$<C_COMPILER_ID:MSVC>:/w>
   $<$<NOT:$<C_COMPILER_ID:MSVC>>:-w>)
 
+# ---- fully static build (Linux) ---------------------------------------------
+# BOGGART_STATIC=ON links the boggart CLI with -static, libc included, so the
+# binary runs on any Linux kernel of the same architecture whatever libc (or
+# none) the machine has. Meant for musl (Alpine): a static glibc binary still
+# dlopens NSS modules for getpwnam/getaddrinfo, and glibc warns about exactly
+# that at link time. See docs/static-build.md.
+#
+# The studio is not part of it: it needs the machine's X11/Wayland/GL, which
+# are dynamic by nature, so BOGGART_STATIC turns BOGGART_BUILD_APP off.
+# Only the boggart executable is linked statically; the C test programs keep
+# the default link, since ctest runs them on the build machine.
+option(BOGGART_STATIC "Link the boggart CLI fully statically, libc included (Linux, musl)" OFF)
+if(BOGGART_STATIC)
+  if(APPLE OR WIN32)
+    message(FATAL_ERROR "BOGGART_STATIC is Linux-only: macOS and Windows have no static libc to link")
+  endif()
+  set(BOGGART_BUILD_APP OFF CACHE BOOL "Build the boggart-studio desktop app" FORCE)
+  include(CheckCSourceCompiles)
+  check_c_source_compiles("#include <stddef.h>
+#include <limits.h>
+#ifdef __GLIBC__
+#error glibc
+#endif
+int main(void) { return 0; }" BOGGART_LIBC_NOT_GLIBC)
+  if(NOT BOGGART_LIBC_NOT_GLIBC)
+    message(WARNING "BOGGART_STATIC with glibc: the binary links, but user/host lookups "
+      "still need the build machine's glibc at run time. Build against musl (Alpine) instead.")
+  endif()
+  message(STATUS "boggart: fully static CLI (BOGGART_STATIC=ON), studio off")
+endif()
+
 # ---- libcurl ---------------------------------------------------------------
 # Built from source and linked statically on every platform, so neither
 # binary dlopens a Cellar or distro libcurl. Same FetchContent pin as SDL.
@@ -148,6 +179,14 @@ else()
   set(USE_STATIC_MBEDTLS_LIBRARY ON  CACHE BOOL "" FORCE)
   set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
   set(DISABLE_PACKAGE_CONFIG_AND_INSTALL ON CACHE BOOL "" FORCE)
+  # mbedTLS builds itself with -Werror. GCC 12 and later report a false
+  # -Warray-bounds in mbedtls_xor (library/common.h, inlined from ctr_drbg.c),
+  # which stops the build on newer distributions (Alpine 3.22 among them). The
+  # warning is in vendored code we do not patch, so on GCC its warnings stay
+  # warnings; clang (macOS, the release builds' other compilers) is unchanged.
+  if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
+  endif()
   FetchContent_Declare(mbedtls
     URL https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-${BOGGART_MBEDTLS_VERSION}/mbedtls-${BOGGART_MBEDTLS_VERSION}.tar.bz2
     URL_HASH SHA256=${BOGGART_MBEDTLS_SHA256}
@@ -564,6 +603,9 @@ if(BOGGART_VOICE OR BOGGART_STATION)
 endif()
 if(NOT WIN32)
   target_link_libraries(boggart PRIVATE mbedtls mbedx509 mbedcrypto)
+endif()
+if(BOGGART_STATIC)
+  target_link_options(boggart PRIVATE -static)
 endif()
 
 # Keep ./boggart at the repo root, as the README documents. The per-config
