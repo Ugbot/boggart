@@ -154,6 +154,19 @@ else
   ck(out:find("BOGGART_CONTEXT_WINDOW", 1, true) ~= nil, "and names the variable")
   eq(#requests(), 0, "no request was sent for a refused setting")
 
+  -- a turn that fails (the endpoint refuses the connection) exits non-zero, so
+  -- a script or a benchmark can tell a failed run from a finished one
+  local cmd = string.format(
+    "cd %q && printf %%s %q | env BOGGART_HOME=%q ANTHROPIC_API_KEY=test-key "
+    .. "ANTHROPIC_BASE_URL=http://127.0.0.1:9 %q --headless --model claude-test-local 2>&1; echo \"EXIT=$?\"",
+    tmp, "say done", tmp .. "/home-refused", bin)
+  local p = io.popen(cmd, "r"); out = p:read("a"); p:close()
+  code = tonumber(out:match("EXIT=(%d+)%s*$"))
+  eq(code, 1, "a headless turn whose request fails exits 1 [" .. out:gsub("\n", " | "):sub(1, 200) .. "]")
+  p = io.popen(cmd:gsub("%-%-headless", "-p 'say done'"):gsub("printf %%s [^|]*| ", ""), "r")
+  out = p:read("a"); p:close()
+  eq(tonumber(out:match("EXIT=(%d+)%s*$")), 1, "so does -p")
+
   -- --help documents them
   local hp = io.popen(string.format("%q --help 2>&1", bin), "r")
   local help = hp:read("a"); hp:close()
