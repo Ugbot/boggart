@@ -5,6 +5,7 @@ boggart-studio
 boggart-studio.exe
 build/
 build-*/
+dist-static/
 *.o
 *.a
 *.lib

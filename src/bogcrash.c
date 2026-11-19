@@ -8,7 +8,8 @@
  *
  *   * the signal, and for a bad memory access the address and whether it was
  *     near NULL (a missing check) or wild (corruption / use-after-free);
- *   * the C stack (backtrace_symbols_fd);
+ *   * the C stack (backtrace_symbols_fd), where the libc has one: glibc and
+ *     macOS do, musl does not, and a musl build says so in the report;
  *   * the Lua stack of the main interpreter -- source:line per frame, read
  *     with lua_getstack/lua_getinfo, which do not allocate;
  *
@@ -58,7 +59,20 @@ const char *bog_crash_dir(void) { return g_dir; }
 #include <fcntl.h>
 #include <time.h>
 #include <sys/stat.h>
+
+/* backtrace() is a glibc/BSD extension, not POSIX: musl has no <execinfo.h>.
+ * Without it the report says the C stack is unavailable and carries on, so the
+ * signal, fault address and Lua stack still reach stderr and the report file. */
+#if defined(__has_include)
+#  if __has_include(<execinfo.h>)
+#    define BOG_HAVE_BACKTRACE 1
+#  endif
+#elif defined(__GLIBC__) || defined(__APPLE__)
+#  define BOG_HAVE_BACKTRACE 1
+#endif
+#ifdef BOG_HAVE_BACKTRACE
 #include <execinfo.h>
+#endif
 
 static int g_fd = -1;
 
@@ -142,10 +156,14 @@ static void on_crash(int sig, siginfo_t *info, void *uctx) {
     out(a < 4096 ? "  (near NULL: a missing check)\n" : "  (wild: corruption or use-after-free)\n");
   }
   out("C stack:\n");
+#ifdef BOG_HAVE_BACKTRACE
   void *frames[64];
   int nf = backtrace(frames, 64);
   backtrace_symbols_fd(frames, nf, 2);
   if (g_fd >= 0) backtrace_symbols_fd(frames, nf, g_fd);
+#else
+  out("  (unavailable: this libc has no backtrace())\n");
+#endif
 
   signal(SIGALRM, on_alarm);
   alarm(2);
@@ -169,9 +187,11 @@ void bog_crash_install(void) {
     snprintf(g_dir, sizeof(g_dir), "%s/crashes", dir);
     boggart_mkdir_p(g_dir);
   }
+#ifdef BOG_HAVE_BACKTRACE
   /* backtrace() loads its unwinder lazily (malloc); do it now, not mid-crash */
   void *warm[2];
   (void)backtrace(warm, 2);
+#endif
 
   /* an alternate stack, so a stack overflow can still be reported */
   static char altstack[64 * 1024];
