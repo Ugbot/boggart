@@ -63,7 +63,8 @@ function M.agent_opts(rec)
     parent_id = rec.parent_id,
     system = function() return bog.prompt.agent_system(rec) end,
     tools = function()
-      if not rec.allow or next(rec.allow) == nil then return bog.tools.schemas() end
+      -- offered() is schemas() unless a tool profile (BOGGART_TOOLS) is on.
+      if not rec.allow or next(rec.allow) == nil then return bog.tools.offered(rec.session) end
       return bog.tools.schemas_for(rec.allow)
     end,
     run_tool = function(name, input)
