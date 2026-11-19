@@ -65,7 +65,8 @@ do
   local b = turn(sess, "next question")
   local newer = window.tokens(sess.messages[3])   -- the new user message
   local expect = 50000 - 45000 - math.ceil(newer * window.ESTIMATE_MARGIN)
-  ck(b.max_tokens == expect, string.format("room = window - measured - newer estimate (want %d, got %s)",
+    - window.framing_of(sess.messages, 3, 3) - window.reply_safety(50000)
+  ck(b.max_tokens == expect, string.format("room = window - measured - newer estimate - safety (want %d, got %s)",
     expect, tostring(b.max_tokens)))
   ck(45000 + newer + b.max_tokens <= 50000, "prompt + max_tokens fits the window")
 end
@@ -121,6 +122,42 @@ do
     run_tool = function() return filler end })
   ck(stop == "end_turn", "strict-window run completed (" .. tostring(stop) .. ")")
   ck(worst > 0 and worst <= WIN, "worst prompt + max_tokens " .. worst .. " <= " .. WIN)
+end
+
+-- ---- ...counting the wire framing, as a real endpoint does --------------------
+do
+  -- A real endpoint counts the whole request: roles, tool-call ids, the JSON
+  -- around every block. tokens_of() counts only the content, so after the
+  -- first measured call the estimate of newer messages ran low, and an
+  -- endpoint's own count put prompt + max_tokens tens of tokens over the
+  -- window (4531 + 35515 = 40046 > 40000 in the run that found it). Here the
+  -- mock counts chars/4 of the whole encoded body, framing included, reports
+  -- that as the measured input, and each round's tool result is short, so the
+  -- framing is most of what each round adds.
+  local WIN = 40000
+  local rounds, worst = 0, 0
+  local function framed(body, sink)
+    rounds = rounds + 1
+    local prompt = #json.encode(body) // 4
+    worst = math.max(worst, prompt + body.max_tokens)
+    ck(prompt + body.max_tokens <= WIN, string.format("framed round %d: %d + %d = %d > %d",
+      rounds, prompt, body.max_tokens, prompt + body.max_tokens, WIN))
+    if rounds >= 10 then
+      return { role = "assistant", content = { { type = "text", text = "done" } },
+               usage = { input_tokens = prompt, output_tokens = 2 } }, "end_turn"
+    end
+    return { role = "assistant", content = { { type = "tool_use",
+               id = string.format("toolu_01%022d", rounds), name = "bash",
+               input = { command = "ls" } } }, usage = { input_tokens = prompt, output_tokens = 9 } }, "tool_use"
+  end
+  local sess = { id = 809, model = "long-reply-model", context_limit = WIN, messages = {} }
+  local _, stop = bog.api.run_on(sess, "work", nil, {
+    stream = framed, system = function() return string.rep("system prompt ", 2000) end,
+    tools = function() return { { name = "bash", description = "run", input_schema = { type = "object" } } } end,
+    run_tool = function() return "ok" end })
+  ck(stop == "end_turn", "framed strict-window run completed (" .. tostring(stop) .. ")")
+  ck(rounds >= 10, "the framed run made every round (" .. rounds .. ")")
+  ck(worst > 0 and worst <= WIN, "framed: worst prompt + max_tokens " .. worst .. " <= " .. WIN)
 end
 
 if fails == 0 then

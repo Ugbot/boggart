@@ -31,6 +31,19 @@ M.REPLY_MIN = 1024         -- never ask for less than this, however full
 -- much: chars/4 runs low on code and JSON, and the cost of guessing low is a
 -- refused request rather than a slightly early compaction.
 M.ESTIMATE_MARGIN = 1.15
+-- tokens() counts a message's content, but the request also carries its
+-- framing: the role, each block's type and tool-call id, the JSON around it.
+-- For a round of short tool results that framing is most of what the round
+-- adds, and leaving it out of an estimate put a strict endpoint's own count
+-- of prompt + max_tokens some 50 tokens over the window. Counted per message
+-- and per content block (chars/4 of the JSON wrapping, rounded up).
+M.MESSAGE_OVERHEAD = 8
+M.BLOCK_OVERHEAD = 16
+-- And the reply limit leaves this much of the window unasked-for besides,
+-- for what no estimate sees (a tokenizer that counts differently, a field the
+-- wire adds): 1% of the window, at least 256 tokens.
+M.REPLY_SAFETY = 0.01
+M.REPLY_SAFETY_MIN = 256
 
 local function block_chars(b)
   if type(b) ~= "table" then return #tostring(b or "") end
@@ -73,6 +86,25 @@ function M.tokens_of(messages, from, to)
   return n
 end
 
+-- Estimated framing tokens around messages[from..to]: what the request spends
+-- on roles, block types, tool-call ids and JSON beyond tokens_of().
+function M.framing_of(messages, from, to)
+  local n = 0
+  for i = from or 1, to or #messages do
+    local m = messages[i]
+    n = n + M.MESSAGE_OVERHEAD
+    if type(m) == "table" and type(m.content) == "table" then
+      n = n + M.BLOCK_OVERHEAD * #m.content
+    end
+  end
+  return n
+end
+
+-- Tokens of a `limit`-token window that a request's reply limit leaves free.
+function M.reply_safety(limit)
+  return math.max(M.REPLY_SAFETY_MIN, math.ceil(limit * M.REPLY_SAFETY))
+end
+
 -- The token count at which a conversation is compacted, for a window of
 -- `limit` tokens. `ratio` (a session's explicit compact_ratio) overrides the
 -- buffer rule, so a test or a user can still say "compact at 30%".
@@ -110,13 +142,13 @@ function M.tail_start(messages, budget)
 end
 
 -- The reply limit for one request: the longest reply wanted, lowered to the
--- room left in a window of `limit` tokens when `used` are already taken, and
--- never below REPLY_MIN (unless the wanted length itself is smaller -- a
--- session that asks for 100 tokens gets 100).
+-- room left in a window of `limit` tokens when `used` are already taken (less
+-- reply_safety(limit)), and never below REPLY_MIN (unless the wanted length
+-- itself is smaller -- a session that asks for 100 tokens gets 100).
 function M.reply_tokens(want, limit, used)
   want = math.floor(want)
   if not (limit and used) then return want end
-  local room = math.max(M.REPLY_MIN, math.floor(limit - used))
+  local room = math.max(M.REPLY_MIN, math.floor(limit - used - M.reply_safety(limit)))
   return math.min(want, room)
 end
 

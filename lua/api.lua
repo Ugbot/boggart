@@ -1585,9 +1585,10 @@ end
 -- request produced and the tool results that answered it, which in an agent
 -- turn is most of the growth -- is estimated on top (last_input_n is how many
 -- messages the measured request carried), with a margin because chars/4 runs
--- low. Without it the size seen at the top of a round lags a whole round
--- behind, and one large tool result can push the next request over the window
--- before compaction ever fires.
+-- low, plus the framing those messages carry on the wire (window.framing_of).
+-- Without it the size seen at the top of a round lags a whole round behind,
+-- and one large tool result can push the next request over the window before
+-- compaction ever fires.
 function M.context_used(sess)
   sess = sess or bog.session
   local u = sess.usage
@@ -1597,7 +1598,8 @@ function M.context_used(sess)
     if not n then return u.last_input, "measured" end
     if n <= #msgs then
       local newer = window.tokens_of(msgs, n + 1, #msgs)
-      return u.last_input + math.ceil(newer * window.ESTIMATE_MARGIN), "measured"
+      return u.last_input + math.ceil(newer * window.ESTIMATE_MARGIN)
+        + window.framing_of(msgs, n + 1, #msgs), "measured"
     end
     -- messages were removed since the measurement (undo, rewind): it no
     -- longer describes this conversation, so fall through to the estimate
