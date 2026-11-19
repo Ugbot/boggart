@@ -1165,7 +1165,14 @@ local function run_one_turn(text)
 
   local perm = require("perm")
   local st = perm.state()
-  local opts = perm.turn_opts({}, {
+  -- Ask on the terminal only when there is someone at one. A headless run has
+  -- already read its task from stdin (now at EOF) and -p has nobody typing, so
+  -- a prompt there read EOF as "no" and refused every gated tool, whatever
+  -- BOGGART_HEADLESS_POLICY said. With no approver, gated tools resolve
+  -- through perm.headless_decision instead (default deny), the same governed
+  -- point serve and swarm use.
+  local ask_on_stdin = tty and bog.mode ~= "headless" and bog.mode ~= "oneshot"
+  local opts = perm.turn_opts({}, ask_on_stdin and {
     on_ask = function(rec)
       -- Blocking readline, same contract as bog.choose_ask: this runs from the
       -- turn coroutine, sets rec.decision, and wrap_run therefore never parks
@@ -1184,7 +1191,7 @@ local function run_one_turn(text)
         rec.decision = "approve"
       end
     end,
-  })
+  } or {})
   opts.on_tool = function(name, input)
     flush_render()           -- emit the round's prose before its tool marker
     bog.log_tool(name, input)
