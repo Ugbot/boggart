@@ -29,11 +29,19 @@ local presets = require "presets"
 -- The configured destination: what every request used before routes existed.
 function M.current()
   local api = require "api"
+  local model = (bog.session and bog.session.model) or auth.model()
+  -- The one per-model capability the configured endpoint still honours: a
+  -- catalogued model marked reasoning_echo = false keeps that on the default
+  -- route too (an uncatalogued one is nil, i.e. the default, unchanged).
+  local okc, row = pcall(function() return require("catalog").model(model) end)
+  local echo = nil
+  if okc and type(row) == "table" then echo = row.reasoning_echo end
   return {
-    model = (bog.session and bog.session.model) or auth.model(),
+    model = model,
     url   = auth.base_url(),
     wire  = api.wire(),
     name  = "current",
+    reasoning_echo = echo,
   }
 end
 
@@ -88,7 +96,7 @@ function M.resolve_chain(spec)
       url   = spec.url   or cur.url,
       wire  = spec.wire  or cur.wire,
       auth  = spec.auth, key_slot = spec.key_slot, headers = spec.headers,
-      name  = spec.name  or "inline",
+      name  = spec.name  or "inline", reasoning_echo = spec.reasoning_echo,
     } }
   end
 
@@ -120,7 +128,8 @@ function M.resolve_chain(spec)
   if presets_t[spec] then
     local p = presets_t[spec]
     return { { model = p.model or cur.model, url = p.url or cur.url,
-               wire = p.wire or cur.wire, name = spec, effort = p.effort } }
+               wire = p.wire or cur.wire, name = spec, effort = p.effort,
+               reasoning_echo = p.reasoning_echo } }
   end
 
   -- a catalogued model: the whole destination comes with it
@@ -134,7 +143,7 @@ function M.resolve_chain(spec)
     if presets_t[prefix] then
       local p = presets_t[prefix]
       return { { model = rest, url = p.url or cur.url, wire = p.wire or cur.wire,
-                 name = prefix } }
+                 name = prefix, reasoning_echo = p.reasoning_echo } }
     end
     local p = catalog.provider(prefix)
     if p then

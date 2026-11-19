@@ -256,7 +256,9 @@ end
 function bog.resume_session(id)
   local s = bog.store.sess_load(id)
   if not s then return false end
-  s.messages = require("transcript").reload(s.messages)
+  -- Same session, same model: keep the model's own unsigned reasoning so the
+  -- next request can send it back (lua/transcript.lua, keep_unsigned).
+  s.messages = require("transcript").reload(s.messages, { keep_unsigned = true })
   local function apply(S)
     if not S then return end
     S.id = s.id

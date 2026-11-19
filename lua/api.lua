@@ -607,7 +607,41 @@ local function sanitize_tool_schema(s)
   return out, suspect
 end
 
-local function to_openai_body(body)
+-- The assistant-message fields an OpenAI-compatible server reads a prior
+-- turn's reasoning from. `reasoning_content` is what the reasoning families'
+-- chat templates read (Qwen, DeepSeek, GLM: llama.cpp, SGLang, vLLM's older
+-- name); `reasoning` is vLLM's newer name and the routers' (Hugging Face,
+-- OpenRouter), which pair it with structured `reasoning_details`.
+local REASONING_FIELDS = { reasoning_content = true, reasoning = true }
+
+-- Reasoning to echo on one assistant message: the text, the field to send it
+-- in, and any reasoning_details (verbatim). Only UNSIGNED thinking blocks are
+-- echoed: a signed one is Anthropic-protocol reasoning, meaningful only to the
+-- model that signed it (the Anthropic wire returns it unchanged). A block with
+-- no recorded field (a legacy transcript, another unsigned wire) goes back as
+-- `reasoning_content`, the field the chat templates read -- unless it carried
+-- reasoning_details and no text field, in which case only the details go.
+local function openai_reasoning_of(content)
+  local parts, details, field = {}, {}, nil
+  for _, b in ipairs(content) do
+    if type(b) == "table" and b.type == "thinking"
+       and (b.signature == nil or b.signature == "") then
+      if type(b.thinking) == "string" and b.thinking ~= "" then parts[#parts + 1] = b.thinking end
+      if not field and REASONING_FIELDS[b.reasoning_field] then field = b.reasoning_field end
+      if type(b.reasoning_details) == "table" then
+        for _, d in ipairs(b.reasoning_details) do details[#details + 1] = d end
+      end
+    end
+  end
+  local text = table.concat(parts)
+  if text ~= "" and not field and #details == 0 then field = "reasoning_content" end
+  return text, field, details
+end
+
+-- opts.reasoning_echo == false withholds the reasoning fields (a route that
+-- rejects unknown message fields; see route.reasoning_echo in lua/catalog.lua).
+local function to_openai_body(body, opts)
+  local echo = not (opts and opts.reasoning_echo == false)
   local msgs = {}
   local systext = text_of(body.system)
   if systext ~= "" then msgs[#msgs + 1] = { role = "system", content = systext } end
@@ -632,11 +666,19 @@ local function to_openai_body(body)
             role = "tool", tool_call_id = b.tool_use_id, content = text_of(b.content),
           }
         end
-        -- `thinking` blocks are dropped: there is no assistant-reasoning input slot.
+        -- `thinking` blocks ride on the assistant message itself (below).
       end
       if m.role == "assistant" then
         local msg = { role = "assistant", content = table.concat(textparts) }
         if #tool_calls > 0 then msg.tool_calls = tool_calls end
+        -- The model's own earlier reasoning goes back to it, in the field it
+        -- arrived in: dropping it makes a reasoning model re-derive its plan on
+        -- every call of a tool loop.
+        if echo then
+          local rtext, rfield, rdetails = openai_reasoning_of(m.content)
+          if rfield and rtext ~= "" then msg[rfield] = rtext end
+          if #rdetails > 0 then msg.reasoning_details = rdetails end
+        end
         msgs[#msgs + 1] = msg
       else
         -- A user turn's tool_results answer the previous assistant's tool_calls,
@@ -682,14 +724,60 @@ local function to_openai_body(body)
   return out
 end
 
+-- Fold one streamed reasoning_details fragment into the accumulated list.
+-- Routers stream a detail in pieces sharing an `index` (text deltas, then a
+-- signature); pieces of the same index and type are one detail, their string
+-- fields concatenated. Identity fields are kept from the first piece. Anything
+-- without an index is its own detail.
+local DETAIL_ID = { type = true, id = true, format = true, index = true }
+local function merge_detail(acc, d)
+  if type(d) ~= "table" or d == json.null then return end
+  local into
+  if d.index ~= nil then
+    for i = #acc, 1, -1 do
+      if acc[i].index == d.index and acc[i].type == d.type then into = acc[i]; break end
+    end
+  end
+  if not into then
+    local copy = {}
+    for k, v in pairs(d) do copy[k] = v end
+    acc[#acc + 1] = copy
+    return
+  end
+  for k, v in pairs(d) do
+    if DETAIL_ID[k] then
+      if into[k] == nil then into[k] = v end
+    elseif type(v) == "string" and type(into[k]) == "string" then
+      into[k] = into[k] .. v
+    elseif v ~= json.null or into[k] == nil then
+      into[k] = v
+    end
+  end
+end
+
+-- Readable reasoning text carried only inside reasoning_details (a router that
+-- sends no plain-text field): the text or summary of each fragment.
+local function detail_text(d)
+  if type(d) ~= "table" then return "" end
+  if type(d.text) == "string" then return d.text end
+  if type(d.summary) == "string" then return d.summary end
+  return ""
+end
+
 -- Decode an OpenAI chat-completions SSE stream into the same (assistant_message,
--- stop_reason, stream_err) the Anthropic decoder returns. delta.content -> text,
--- delta.reasoning_content -> a thinking block (qwen3 streams its reasoning
--- separately), delta.tool_calls -> tool_use blocks (name + JSON args arrive in
--- fragments, accumulated by index).
+-- stop_reason, stream_err) the Anthropic decoder returns. delta.content -> text;
+-- reasoning -> a thinking block, from delta.reasoning_content (llama.cpp,
+-- SGLang, DeepInfra) or delta.reasoning (vLLM, the HF router, OpenRouter), with
+-- delta.reasoning_details accumulated alongside; the block records which field
+-- the text came in (`reasoning_field`) so to_openai_body can send it back
+-- there. delta.tool_calls -> tool_use blocks (name + JSON args arrive in
+-- fragments, accumulated by index). A server that ignores stream=true and
+-- answers with one chat.completion object is decoded the same way.
 local function new_openai_decoder(on_text, on_think)
   local text, thinking, tool_acc = "", "", {}
+  local reasoning_field, details = nil, {}
   local stop_reason, stream_err, buf = nil, nil, ""
+  local saw_data, whole = false, {}
   local usage = { input_tokens = 0, output_tokens = 0,
                   cache_read_input_tokens = 0, cache_creation_input_tokens = 0 }
   local FINISH = { stop = "end_turn", length = "max_tokens",
@@ -697,7 +785,7 @@ local function new_openai_decoder(on_text, on_think)
 
   local function handle(evt)
     if type(evt) ~= "table" then return end
-    if type(evt.usage) == "table" then
+    if type(evt.usage) == "table" and evt.usage ~= json.null then
       -- OpenAI reports cached (and, on ds4's OpenAI shape, written) tokens as a
       -- SUBSET of prompt_tokens. Split into the disjoint fresh/read/write buckets
       -- Anthropic already uses, so pricing (input @1x + read @0.1x + write @1.25x)
@@ -716,20 +804,45 @@ local function new_openai_decoder(on_text, on_think)
       stream_err = "api stream error: " .. (type(evt.error) == "table" and evt.error.message or tostring(evt.error))
       return
     end
-    local ch = evt.choices and evt.choices[1]
-    if not ch then return end
-    local d = ch.delta or {}
+    local ch = type(evt.choices) == "table" and evt.choices[1]
+    if type(ch) ~= "table" then return end
+    -- A whole (non-streamed) message carries complete values: its details are
+    -- taken verbatim rather than merged as fragments.
+    local whole_msg = type(ch.delta) ~= "table" and type(ch.message) == "table"
+    local d = (type(ch.delta) == "table" and ch.delta) or (whole_msg and ch.message) or {}
     if type(d.content) == "string" and d.content ~= "" then
       text = text .. d.content
       if on_text then on_text(d.content) end
     end
+    -- One delta's reasoning text, from whichever field this server uses. Some
+    -- servers send both names with the same text; take one, never both.
+    local piece, field = nil, nil
     if type(d.reasoning_content) == "string" and d.reasoning_content ~= "" then
-      thinking = thinking .. d.reasoning_content
-      if on_think then on_think(d.reasoning_content) end   -- live: reasoning models stream this first
+      piece, field = d.reasoning_content, "reasoning_content"
+    elseif type(d.reasoning) == "string" and d.reasoning ~= "" then
+      piece, field = d.reasoning, "reasoning"
+    end
+    if type(d.reasoning_details) == "table" and d.reasoning_details ~= json.null then
+      local from_details = {}
+      for _, rd in ipairs(d.reasoning_details) do
+        if whole_msg then details[#details + 1] = rd else merge_detail(details, rd) end
+        from_details[#from_details + 1] = detail_text(rd)
+      end
+      if not piece then
+        local t = table.concat(from_details)
+        if t ~= "" then piece = t end
+      end
+    end
+    if piece then
+      if field and not reasoning_field then reasoning_field = field end
+      thinking = thinking .. piece
+      if on_think then on_think(piece) end   -- live: reasoning models stream this first
     end
     if type(d.tool_calls) == "table" then
-      for _, tc in ipairs(d.tool_calls) do
-        local i = (tc.index or 0) + 1
+      for k, tc in ipairs(d.tool_calls) do
+        -- `index` is required in a stream; a whole message omits it, so fall
+        -- back to the call's position.
+        local i = (tonumber(tc.index) or (k - 1)) + 1
         local acc = tool_acc[i]
         if not acc then acc = { id = nil, name = "", args = "" }; tool_acc[i] = acc end
         if tc.id then acc.id = tc.id end
@@ -744,6 +857,7 @@ local function new_openai_decoder(on_text, on_think)
   end
 
   local function feed(chunk)
+    if not saw_data then whole[#whole + 1] = chunk end
     buf = buf .. chunk
     while true do
       local nl = buf:find("\n", 1, true)
@@ -751,6 +865,7 @@ local function new_openai_decoder(on_text, on_think)
       local line = buf:sub(1, nl - 1):gsub("\r$", "")
       buf = buf:sub(nl + 1)
       if line:sub(1, 6) == "data: " then
+        saw_data = true; whole = {}
         local data = line:sub(7)
         if data ~= "" and data ~= "[DONE]" then
           local ok, evt = pcall(json.decode, data)
@@ -761,8 +876,18 @@ local function new_openai_decoder(on_text, on_think)
   end
 
   local function finish()
+    -- No SSE frame at all: the body may be one chat.completion object.
+    if not saw_data and #whole > 0 then
+      local ok, evt = pcall(json.decode, table.concat(whole))
+      if ok and type(evt) == "table" and type(evt.choices) == "table" then handle(evt) end
+      whole = {}
+    end
     local content = {}
-    if thinking ~= "" then content[#content + 1] = { type = "thinking", thinking = thinking } end
+    if thinking ~= "" or #details > 0 then
+      local blk = { type = "thinking", thinking = thinking, reasoning_field = reasoning_field }
+      if #details > 0 then blk.reasoning_details = details end
+      content[#content + 1] = blk
+    end
     if text ~= "" then content[#content + 1] = { type = "text", text = text } end
     local maxi = 0; for i in pairs(tool_acc) do if i > maxi then maxi = i end end
     local had_tool = false
@@ -788,6 +913,7 @@ local function new_openai_decoder(on_text, on_think)
 
   return { feed = feed, finish = finish }
 end
+M._openai_decoder = new_openai_decoder -- test hook (tests/openai_reasoning.lua)
 
 -- ---- OpenAI Responses API adapter ------------------------------------------
 -- The modern OpenAI API (POST /v1/responses). Differs from chat-completions:
@@ -816,6 +942,9 @@ local function to_responses_body(body)
             call_id = b.tool_use_id, output = text_of(b.content) }
         end
         -- `thinking` blocks are dropped: no assistant-reasoning input item.
+        -- (A Responses reasoning item needs the server's own encrypted
+        -- content; a chat-completions block's text or reasoning_details is
+        -- not one, so a session that switches wire loses nothing it could send.)
       end
       -- Order within a turn: the message text, then this turn's function calls,
       -- then (next turn) their outputs. Cross-turn order is preserved by walking
@@ -1141,9 +1270,7 @@ local function stream_async(body_tbl, on_text, on_think, rt)
   -- provenance. It is a no-op (a single O(n) scan, no allocation) whenever the
   -- body is already valid, which after the ingest scrub is the normal case.
   local w = (rt and rt.wire) or wire()
-  local tbl = (w == "responses" and to_responses_body(body_tbl))
-    or (w == "openai" and to_openai_body(body_tbl))
-    or to_anthropic_body(body_tbl)
+  local tbl = M._body_for_wire(w, body_tbl, rt)
   local body = util.to_valid_utf8(json.encode(tbl))
   for attempt = 1, M.RETRY.attempts do
     local msg, stop, serr, status, terr, raw = stream_async_once(body, on_text, w, on_think, rt)
@@ -1168,10 +1295,12 @@ M.stream_async = stream_async
 
 -- Test hook: the exact wire-specific body a request would send, so the
 -- per-wire transforms (effort mapping, thinking-block cleanup, field renames)
--- are checkable offline without a live endpoint. See tests/wire.lua.
-function M._body_for_wire(w, body)
+-- are checkable offline without a live endpoint. See tests/wire.lua. `rt` is
+-- the route: its reasoning_echo = false withholds the OpenAI wire's reasoning
+-- fields (tests/openai_reasoning.lua).
+function M._body_for_wire(w, body, rt)
   return (w == "responses" and to_responses_body(body))
-    or (w == "openai" and to_openai_body(body))
+    or (w == "openai" and to_openai_body(body, { reasoning_echo = rt and rt.reasoning_echo }))
     or to_anthropic_body(body)
 end
 

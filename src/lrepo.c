@@ -397,25 +397,30 @@ static void bind_field(lua_State *L, sqlite3_stmt *st, int tbl, const char *col,
   lua_pop(L, 1);
 }
 
-/* r:model_put{ id=, provider=, context=, ... } -> true */
+/* r:model_put{ id=, provider=, context=, ... } -> true
+ *
+ * reasoning_echo is COALESCEd on conflict: no vendor catalog knows it, so a
+ * refresh (which never carries it) must not wipe a value someone set by hand. */
 static int sq_model_put(lua_State *L) {
   RepoSqlite *r = check_sqlite(L);
   luaL_checktype(L, 2, LUA_TTABLE);
   const char *sql =
     "INSERT INTO models(id,provider,label,context,max_output,tools,vision,effort,"
-    "input_price,output_price,source,updated) "
+    "reasoning_echo,input_price,output_price,source,updated) "
     "VALUES(:id,:provider,:label,:context,:max_output,:tools,:vision,:effort,"
-    ":input_price,:output_price,:source,:updated) "
+    ":reasoning_echo,:input_price,:output_price,:source,:updated) "
     "ON CONFLICT(id) DO UPDATE SET provider=excluded.provider, label=excluded.label, "
     "context=excluded.context, max_output=excluded.max_output, tools=excluded.tools, "
-    "vision=excluded.vision, effort=excluded.effort, input_price=excluded.input_price, "
+    "vision=excluded.vision, effort=excluded.effort, "
+    "reasoning_echo=COALESCE(excluded.reasoning_echo, models.reasoning_echo), "
+    "input_price=excluded.input_price, "
     "output_price=excluded.output_price, source=excluded.source, updated=excluded.updated";
   sqlite3_stmt *st = NULL;
   if (sqlite3_prepare_v2(r->h, sql, -1, &st, NULL) != SQLITE_OK)
     return rfail(L, r->h, "model_put prepare");
   static const char *cols[] = { "id", "provider", "label", "context", "max_output",
-                                "tools", "vision", "effort", "input_price",
-                                "output_price", "source", NULL };
+                                "tools", "vision", "effort", "reasoning_echo",
+                                "input_price", "output_price", "source", NULL };
   for (int i = 0; cols[i]; i++) {
     char param[24];
     snprintf(param, sizeof(param), ":%s", cols[i]);
