@@ -59,6 +59,26 @@ do
   refused({}, { BOGGART_CONTEXT_WINDOW = "" .. "1e6" }, "BOGGART_CONTEXT_WINDOW")
 end
 
+-- ---- BOGGART_TOOLS: a tool profile, refused when unknown ---------------------------
+do
+  -- An unknown profile used to be logged and ignored, so a run that asked for a
+  -- narrow tool set was quietly offered every tool. It is refused like the rest.
+  local s, err = RF.read({}, env{ BOGGART_TOOLS = "codign" })
+  ck(s == nil and type(err) == "string", "an unknown BOGGART_TOOLS is refused (got " .. tostring(err) .. ")")
+  err = tostring(err)
+  ck(err:find("BOGGART_TOOLS", 1, true) ~= nil, "the refusal names BOGGART_TOOLS")
+  ck(err:find("codign", 1, true) ~= nil, "the refusal names the bad value")
+  local profiles = RF.tool_profiles and RF.tool_profiles() or {}
+  ck(RF.tool_profiles ~= nil, "runflags.tool_profiles() lists the known profiles")
+  for name in pairs(profiles) do
+    ck(err:find(name, 1, true) ~= nil, "the refusal lists the known profile " .. name)
+  end
+  ck(profiles.coding, "coding is a known profile")
+  for _, ok in ipairs({ "coding", "full", "all", "default", "none", "" }) do
+    ck(RF.read({}, env{ BOGGART_TOOLS = ok }) ~= nil, "BOGGART_TOOLS=" .. ok .. " is accepted")
+  end
+end
+
 -- ---- applying -----------------------------------------------------------------------
 do
   local sess = { model = "m", messages = {} }
@@ -103,6 +123,15 @@ else
       "cd %q && printf %%s %q | env BOGGART_HOME=%q ANTHROPIC_API_KEY=test-key "
       .. "ANTHROPIC_BASE_URL=http://127.0.0.1:%d %s %q --headless %s 2>&1; echo \"EXIT=$?\"",
       tmp, stdin or "", tmp .. "/home", port or 0, envs or "", bin, args)
+    local p = io.popen(cmd, "r")
+    local out = p:read("a"); p:close()
+    return out, tonumber(out:match("EXIT=(%d+)%s*$"))
+  end
+  local function run_p(args, envs)
+    local cmd = string.format(
+      "cd %q && env BOGGART_HOME=%q ANTHROPIC_API_KEY=test-key "
+      .. "ANTHROPIC_BASE_URL=http://127.0.0.1:%d %s %q -p 'say done' %s </dev/null 2>&1; echo \"EXIT=$?\"",
+      tmp, tmp .. "/home", port or 0, envs or "", bin, args)
     local p = io.popen(cmd, "r")
     local out = p:read("a"); p:close()
     return out, tonumber(out:match("EXIT=(%d+)%s*$"))
@@ -152,6 +181,12 @@ else
   out, code = run("--model claude-test-local", "BOGGART_CONTEXT_WINDOW=big", "say done")
   eq(code, 2, "a bad BOGGART_CONTEXT_WINDOW exits 2")
   ck(out:find("BOGGART_CONTEXT_WINDOW", 1, true) ~= nil, "and names the variable")
+  out, code = run("--model claude-test-local", "BOGGART_TOOLS=nonsense", "say done")
+  eq(code, 2, "an unknown BOGGART_TOOLS exits 2")
+  ck(out:find("BOGGART_TOOLS", 1, true) ~= nil and out:find("coding", 1, true) ~= nil,
+     "and names the variable and the known profiles [" .. out:gsub("\n", " | "):sub(1, 200) .. "]")
+  local _, pcode = run_p("--model claude-test-local", "BOGGART_TOOLS=nonsense")
+  eq(pcode, 2, "so does -p")
   eq(#requests(), 0, "no request was sent for a refused setting")
 
   -- a turn that fails (the endpoint refuses the connection) exits non-zero, so

@@ -14,6 +14,11 @@
 -- A flag beats the environment. A bad value is an error, not a silent
 -- default: a benchmark run that quietly ignored its settings would measure the
 -- wrong thing and nobody would know.
+--
+-- BOGGART_TOOLS (environment only) names a tool profile, a narrower set of
+-- tools to offer. It is checked here for the same reason: an unknown name used
+-- to be logged and ignored, so a run that asked for a narrow set was offered
+-- every tool.
 local M = {}
 
 -- The levels /effort accepts (lua/boot.lua). xhigh and max are Anthropic
@@ -26,6 +31,31 @@ M.SETTINGS = {
   { key = "context_window", flag = "--context-window", env = "BOGGART_CONTEXT_WINDOW" },
   { key = "max_output",     flag = "--max-output",     env = "BOGGART_MAX_OUTPUT" },
 }
+
+-- Values of BOGGART_TOOLS that mean "no profile": every tool is offered.
+M.TOOLS_OFF = { full = true, all = true, default = true, none = true }
+
+-- The tool profiles BOGGART_TOOLS may name, as a set. The tools module's own
+-- list when it has one (tools.PROFILES), so the two cannot disagree; otherwise
+-- the profiles this release documents.
+function M.tool_profiles()
+  local ok, tools = pcall(require, "tools")
+  if ok and type(tools) == "table" and type(tools.PROFILES) == "table" then
+    local set = {}
+    for name in pairs(tools.PROFILES) do set[name] = true end
+    return set
+  end
+  return { coding = true }
+end
+
+local function check_tools(raw)
+  if raw == nil or raw == "" or M.TOOLS_OFF[raw] or M.tool_profiles()[raw] then return true end
+  local names = {}
+  for name in pairs(M.tool_profiles()) do names[#names + 1] = name end
+  table.sort(names)
+  return nil, string.format("BOGGART_TOOLS: %q is not a tool profile (%s, or full for every tool)",
+    raw, table.concat(names, "|"))
+end
 
 local function positive_int(s)
   s = tostring(s):gsub("^%s+", ""):gsub("%s+$", "")
@@ -45,6 +75,8 @@ function M.read(flags, getenv)
   flags = flags or {}
   getenv = getenv or os.getenv
   local out = {}
+  local okt, terr = check_tools(getenv("BOGGART_TOOLS"))
+  if not okt then return nil, terr end
   for _, s in ipairs(M.SETTINGS) do
     local raw, from = flags[s.key], s.flag
     if raw == nil or raw == "" then raw, from = getenv(s.env), s.env end
