@@ -111,15 +111,6 @@ function M.new_agent(p)
   p = p or {}
   local spec = p.agent and (bog.agents.load(p.agent) or {}) or {}
   local skills = p.skills or spec.skills or {}
-  -- every agent is an actor: guarantee it can communicate on the bus
-  local has_comms = false
-  for _, s in ipairs(skills) do if s == "comms" then has_comms = true end end
-  if not has_comms then
-    local t = {}
-    for _, s in ipairs(skills) do t[#t + 1] = s end
-    t[#t + 1] = "comms"
-    skills = t
-  end
 
   -- A misspelled skill name used to vanish here: the agent started without the
   -- tools it asked for and nothing said so. Refuse instead -- spawning an agent
@@ -128,6 +119,27 @@ function M.new_agent(p)
   if #unknown > 0 then
     error("unknown skill(s): " .. table.concat(unknown, ", ")
       .. " (see the `skills` tool for what exists)", 0)
+  end
+
+  -- Every agent is an actor: guarantee it can communicate on the bus. This grant
+  -- ADDS the comms tools; it must never narrow. An empty allow set means "the
+  -- whole registry" (agent_opts), so folding comms into an empty set would leave
+  -- a plain `spawn` with only send/publish/subscribe/inbox. Only skills the
+  -- caller named narrow, and then comms joins whatever they granted.
+  local has_comms = false
+  for _, s in ipairs(skills) do if s == "comms" then has_comms = true end end
+  if not has_comms then
+    local t = {}
+    for _, s in ipairs(skills) do t[#t + 1] = s end
+    t[#t + 1] = "comms"
+    skills = t
+    local comms_instr, comms_allow = bog.skills.resolve({ "comms" })
+    if comms_instr ~= "" then
+      instructions = (instructions ~= "" and (instructions .. "\n\n") or "") .. comms_instr
+    end
+    if next(allow) ~= nil then
+      for t_name in pairs(comms_allow) do allow[t_name] = true end
+    end
   end
   -- WHICH MODEL THIS AGENT USES.
   --
