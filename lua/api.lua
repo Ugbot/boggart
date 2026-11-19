@@ -1081,6 +1081,30 @@ local function utf8_carry(fn)
 end
 M._utf8_carry = utf8_carry
 
+-- How long a model request may take. A model stream is not bounded in total: a
+-- slow local model, or a long reasoning phase, can stream for many minutes and
+-- every token proves it is alive. What ends a request is silence: no byte for
+-- `idle` seconds, which also bounds the wait for the first byte (prompt
+-- processing on a large context). BOGGART_REQUEST_TIMEOUT (total seconds, 0 =
+-- none), BOGGART_IDLE_TIMEOUT and BOGGART_CONNECT_TIMEOUT override.
+M.REQUEST_TIMEOUTS = { total = 0, idle = 600, connect = 30 }
+local function env_seconds(name, default)
+  local v = os.getenv(name)
+  if v == nil or v == "" then return default end
+  local n = math.tointeger(tonumber(v))
+  if not n or n < 0 then
+    bog.log(string.format("%s=%q is not a whole number of seconds; using %d", name, v, default))
+    return default
+  end
+  return n
+end
+function M.request_timeouts()
+  local d = M.REQUEST_TIMEOUTS
+  return { total = env_seconds("BOGGART_REQUEST_TIMEOUT", d.total),
+           idle = env_seconds("BOGGART_IDLE_TIMEOUT", d.idle),
+           connect = env_seconds("BOGGART_CONNECT_TIMEOUT", d.connect) }
+end
+
 local function stream_async_once(body, on_text, w, on_think, rt)
   local flush_text, flush_think
   on_text, flush_text = utf8_carry(on_text)
@@ -1102,6 +1126,7 @@ local function stream_async_once(body, on_text, w, on_think, rt)
     end
     hdrs = extra
   end
+  local tmo = M.request_timeouts()
   local req = http.begin{
     url = url, method = "POST",
     headers = hdrs, auth = true,
@@ -1112,7 +1137,8 @@ local function stream_async_once(body, on_text, w, on_think, rt)
     wire = rt and rt.wire or nil,
     key_slot = rt and rt.key_slot or nil,
     auth_style = rt and rt.auth or nil,
-    body = body, timeout = 600,
+    body = body, timeout = tmo.total, idle_timeout = tmo.idle,
+    connect_timeout = tmo.connect,
   }
   local status, err
   while true do

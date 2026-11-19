@@ -187,6 +187,13 @@ turn's fleet is running you keep the foreground: **Ctrl-C** cancels the turn, **
 pauses and resumes the whole fleet, **k** kills the newest sub-agent — the same
 scheduler primitives the cTUI's agents pane draws.
 
+A model request has no limit on its total length: a slow local model or a long
+reasoning phase may stream for as long as it keeps producing. It ends when the
+endpoint goes silent for `BOGGART_IDLE_TIMEOUT` seconds (default 600, and this
+includes the wait for the first byte while a large prompt is processed).
+`BOGGART_REQUEST_TIMEOUT` sets a total limit in seconds (default 0, none) and
+`BOGGART_CONNECT_TIMEOUT` the connection limit (default 30).
+
 On a new install the studio opens on a welcome screen rather than an empty
 conversation it has no credentials to run: paste an API key, or point it at a
 local server (`http://127.0.0.1:8000` speaks the Messages API), pick a model
