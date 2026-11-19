@@ -347,6 +347,59 @@ Anthropic-shaped server now goes to Anthropic rather than staying local. The
 escape hatch is a preset, which outranks the catalog by design, and
 `tests/route.lua` pins both halves.
 
+### 3.10 Forked children — Lua (`lua/fork.lua`)
+
+A fresh child starts with its task text and nothing else, so it re-reads files
+the parent already read, and none of its requests share a prefix with the
+parent's. `spawn{ fork = true }` starts the child from a copy of the parent's
+conversation instead:
+
+```lua
+spawn{ task = "check the error paths in the parser you just read", fork = true }
+```
+
+- **Same head, by construction.** The fork takes the parent's prompt fields
+  (so `agent_system` returns the same blocks), its tool allow-set, its route,
+  effort and limits (`max_tokens`, `compact_at`, the learned context window).
+  Its first request is the parent's last request with the fork's turn appended,
+  so a provider that caches by exact prefix (OpenAI-compatible servers,
+  llama.cpp slots, Anthropic breakpoints) serves the whole parent prefix from
+  cache. `tests/forkspawn.lua` compares the two request bodies, and their
+  OpenAI-wire encodings, byte for byte.
+- **The in-flight call.** At spawn time the parent's transcript ends with the
+  assistant message holding the `spawn` call, which has no result yet. The fork
+  keeps that message (it holds the parent's reasoning up to the spawn) and
+  answers every unfinished call in it: the fork's own spawn with a constant
+  `[forked]` result, any other unfinished call with `[not run]`, and calls that
+  already finished keep their real results. The fork's task follows as a text
+  block in that same user turn, after a short directive saying it is a forked
+  sub-agent doing one slice of the work. The results are constants rather than
+  per-child text so sibling forks spawned from one message share that prefix too.
+- **A copy, not a view.** The transcript is deep-copied at the spawn call; the
+  parent's own messages are never modified, and later turns of either side do
+  not reach the other.
+- **Narrowing only.** `model`, `effort` and `budget` may still be given. A
+  `budget` can only tighten the parent's ceiling; a parent with none (the
+  interactive root) gives its fork the per-worker default. A different `model`
+  works but forfeits the cache. `agent` and `skills` are refused with `fork`,
+  since either would replace the prompt the fork exists to share. A fork runs
+  under its parent's permission profile (a read-only reviewer cannot fork a
+  copy that writes); `perms` on the spawn narrows the fork of an unprofiled
+  parent and is refused when the parent already has one, because one agent
+  carries one profile. `schema`, `deliverables` and `verify` work exactly as
+  for a fresh child: the exit contract, the retry and the `await` verdict are
+  the same code path.
+- **No fork bombs.** The agent cap applies to a fork like any spawn, and a
+  forked child cannot fork again (it may still spawn fresh children if the cap
+  allows). Each fork holds a full transcript copy, so depth is held at one.
+  A fork keeps the parent's swarm preamble even at the cap, because changing
+  it would change the prefix; the spawn tool still refuses at the cap.
+
+Fresh spawn is unchanged and stays the default: fork when the child needs what
+the parent has read, spawn fresh when it does not: a fork carries the whole
+copied history on every request it makes, which the cache makes cheap only
+while the fork stays on the parent's model and endpoint.
+
 ---
 
 ## 4. Gates
