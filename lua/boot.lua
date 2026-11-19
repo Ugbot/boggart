@@ -1074,6 +1074,11 @@ end
 -- termrender stays wired into the cTUI, which repaints each frame.
 -- text == nil resumes an interrupted turn (finish its tool round, then run on)
 -- rather than starting a new one.
+-- Whether the last run_one_turn ended in an error (the request failed, the
+-- turn raised, the scheduler broke) or was cancelled. Headless and -p exit
+-- non-zero on it, so a script can tell a failed run from a finished one.
+local last_turn_failed = false
+
 local function run_one_turn(text)
   local S = bog.active_session()
   if text and (not S.title or S.title == "") then S.title = text:gsub("%s+", " "):sub(1, 60) end
@@ -1281,6 +1286,7 @@ local function run_one_turn(text)
   end
   if tty then io.write(CURSOR_SHOW); io.flush() end -- restore the cursor for the prompt
   print_turn_error(ok and turn_err == nil, turn_err or (not ok and "scheduler error") or nil)
+  last_turn_failed = abort or not ok or turn_err ~= nil
   bog.save_session() -- persist transcript for /resume and crash recovery
   if not abort then
     return require("choose").capture_after_turn(S)
@@ -1843,12 +1849,12 @@ elseif bog.mode == "headless" then
   local input = io.read("*a") or ""
   input = input:gsub("%s+$", "")
   if input ~= "" then run_one_turn(input) end
-  return 0
+  return last_turn_failed and 1 or 0
 
 elseif bog.mode == "oneshot" then
   bog.new_session()
   run_one_turn(boggart.prompt or "")
-  return 0
+  return last_turn_failed and 1 or 0
 
 else
   -- `boggart --tui` (no subcommand) opens the full-screen chat cTUI. It manages
