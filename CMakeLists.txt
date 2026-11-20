@@ -968,6 +968,8 @@ add_test(NAME effort_plumbing COMMAND ${CMAKE_COMMAND} -E env HOME=${CMAKE_CURRE
 set_tests_properties(effort_plumbing PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} TIMEOUT 120)
 add_test(NAME no_color COMMAND ${CMAKE_COMMAND} -E env HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/no_color BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/no_color BOGGART_TEST_BIN=$<TARGET_FILE:boggart> $<TARGET_FILE:boggart> --eval ${CMAKE_CURRENT_SOURCE_DIR}/tests/no_color.lua)
 set_tests_properties(no_color PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} TIMEOUT 180)
+add_test(NAME help COMMAND ${CMAKE_COMMAND} -E env HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/help BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/help BOGGART_TEST_BIN=$<TARGET_FILE:boggart> $<TARGET_FILE:boggart> --eval ${CMAKE_CURRENT_SOURCE_DIR}/tests/help.lua)
+set_tests_properties(help PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_library(boggart_unicode STATIC src/bunicode.c)
 target_include_directories(boggart_unicode PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_executable(unicode_test tests/c/unicode.c)
