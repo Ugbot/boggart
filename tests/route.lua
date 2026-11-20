@@ -55,17 +55,20 @@ eq(m.name, "model", "labelled as a bare model")
 
 -- ---- a CATALOGUED model id brings its own endpoint -----------------------
 -- The point of the catalog: naming a model is enough, because the catalog
--- knows where it lives, what it speaks and how it authenticates.
+-- knows where it lives, what it speaks and how it authenticates -- when no
+-- endpoint is configured. A configured one (ANTHROPIC_BASE_URL, a stored
+-- base_url) wins over the catalog's; tests/route_override.lua covers that, so
+-- it is cleared here.
+pcall(auth.clear, "base_url")
 local catalogued = route.resolve("grok-4.6")
 eq(catalogued.model, "grok-4.6", "a catalogued id keeps its name")
 eq(catalogued.url, "https://api.x.ai/v1", "and arrives with its endpoint")
 eq(catalogued.wire, "openai", "its wire")
 eq(catalogued.auth, "bearer", "and its auth style")
 
--- ...which is a behaviour change worth being explicit about: naming a model
--- the catalog knows REDIRECTS away from the configured endpoint. The escape
--- hatch is a preset, which outranks the catalog precisely so that someone
--- pointed at a local server can stay there.
+-- ...so with no endpoint configured, naming a model the catalog knows
+-- REDIRECTS away from the default one. A preset outranks the catalog, so a
+-- named destination stays where it was put.
 presets.save{
   mylocal = { url = "http://127.0.0.1:9999", wire = "anthropic", model = "claude-opus-5" },
 }

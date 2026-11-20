@@ -94,6 +94,22 @@ do
 
   local s2, err = RF.setup({ messages = {} }, { context_window = "8000", max_output = "8000" }, env{})
   ck(s2 == nil and tostring(err):find("smaller", 1, true), "a reply limit that fills the window is refused")
+  eq(err, "--max-output (8000) must be smaller than --context-window (8000)",
+     "flags: the refusal names the flags")
+
+  -- The refusal names where each value came from, so someone who set only
+  -- environment variables is not sent looking for flags they never passed.
+  local _, eerr = RF.setup({ messages = {} }, {},
+    env{ BOGGART_CONTEXT_WINDOW = "4096", BOGGART_MAX_OUTPUT = "8192" })
+  eq(eerr, "BOGGART_MAX_OUTPUT (8192) must be smaller than BOGGART_CONTEXT_WINDOW (4096)",
+     "environment: the refusal names the variables")
+  local _, merr = RF.setup({ messages = {} }, { max_output = "9000" },
+    env{ BOGGART_CONTEXT_WINDOW = "4096" })
+  eq(merr, "--max-output (9000) must be smaller than BOGGART_CONTEXT_WINDOW (4096)",
+     "mixed: each value is named by its own source")
+  local _, aerr = RF.apply({ messages = {} }, { context_limit = 10, max_tokens = 20 })
+  eq(aerr, "--max-output (20) must be smaller than --context-window (10)",
+     "apply with no sources names the flags")
 end
 
 -- ---- the real binary, headless -----------------------------------------------------

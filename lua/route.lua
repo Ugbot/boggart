@@ -57,6 +57,35 @@ local function known_prefix(name)
   return catalog.provider(name) ~= nil
 end
 
+-- The endpoint the user named, if any: ANTHROPIC_BASE_URL or a stored base_url
+-- (auth.base_url() applies the environment-wins rule). nil means "no endpoint
+-- configured", the only case in which the catalog may say where a model lives.
+local function explicit_base()
+  local ok, base = pcall(auth.base_url)
+  if ok and type(base) == "string" and base ~= "" then return base end
+  return nil
+end
+
+-- A catalog destination with the configured endpoint put in place of the
+-- catalog's. Everything that describes the ENDPOINT (url, wire, auth style,
+-- key slot, headers, provider) comes from the configuration; everything that
+-- describes the MODEL (window, longest reply, effort/tools/vision) stays.
+--
+-- Why the configured endpoint wins: a run pointed at a local server or a proxy
+-- with ANTHROPIC_BASE_URL used to leave it the moment its model id was one the
+-- catalog knew -- `--model claude-opus-5` went to api.anthropic.com with
+-- whatever key was in the environment. A setting that only holds for model
+-- names the catalog has never heard of is not a setting anyone can rely on, and
+-- the failure is the expensive kind: requests to a vendor nobody meant to call.
+local function on_configured_endpoint(dest, cur)
+  local out = {}
+  for k, v in pairs(dest) do out[k] = v end
+  out.url, out.wire = cur.url, cur.wire
+  out.auth, out.key_slot, out.headers, out.provider = nil, nil, nil, nil
+  out.name = "model"
+  return out
+end
+
 -- Resolve a spec to a complete route. Never errors: an unknown name is treated
 -- as a model id on the current endpoint, because that is what it usually is,
 -- and because failing a turn over a typo in a model name is worse than sending
@@ -66,9 +95,16 @@ end
 --   a table          as written
 --   role:name / @name  the user's binding for that role
 --   a preset name    user config outranks catalog knowledge
---   a catalog model  its provider's url, wire, auth, headers
---   prefix/rest      only when `prefix` is a known provider or preset
+--   a catalog model  its provider's url, wire, auth, headers -- unless an
+--                    endpoint is configured (ANTHROPIC_BASE_URL or a stored
+--                    base_url): then that endpoint, with the catalog's
+--                    knowledge of the model kept
+--   prefix/rest      only when `prefix` is a known provider or preset (a
+--                    catalog provider yields to a configured endpoint too)
 --   anything else    a bare model id on the current endpoint
+--
+-- Presets and spelled-out tables keep their own url: each is a destination
+-- someone wrote down on purpose, not the catalog's default for a model name.
 function M.resolve(spec)
   local chain = M.resolve_chain(spec)
   return chain[1] or M.current()
@@ -135,7 +171,11 @@ function M.resolve_chain(spec)
   -- a catalogued model: the whole destination comes with it
   local catalog = require "catalog"
   local dest = catalog.destination(spec)
-  if dest then return { dest } end
+  local configured = explicit_base()
+  if dest then
+    if configured then return { on_configured_endpoint(dest, cur) } end
+    return { dest }
+  end
 
   -- prefix/rest, only when the prefix is something we know
   local prefix, rest = spec:match("^([^/]+)/(.+)$")
@@ -146,6 +186,9 @@ function M.resolve_chain(spec)
                  name = prefix, reasoning_echo = p.reasoning_echo } }
     end
     local p = catalog.provider(prefix)
+    if p and configured then
+      return { { model = rest, url = cur.url, wire = cur.wire, name = "model" } }
+    end
     if p then
       return { { model = rest, url = p.url, wire = p.wire, auth = p.auth,
                  key_slot = p.key_slot or p.name, headers = p.headers,

@@ -10,6 +10,9 @@
 #                                                     a tool call, stop tool_use
 #   {"hang": true}                                    never answer (the client
 #                                                     is expected to be killed)
+#   {"status": 400, "message": "..."}                 an error reply: that HTTP
+#                                                     status, an Anthropic-shaped
+#                                                     error body
 # Once the script runs out (or with no script) every POST gets the text "done".
 #
 # A GET /quit stops it; any other GET (a /props probe) is a 404. Exits on its
@@ -83,6 +86,17 @@ class H(http.server.BaseHTTPRequestHandler):
         step = SCRIPT[i] if i < len(SCRIPT) else None
         if step and step.get("hang"):
             STOP.wait(LIFE)
+            return
+        if step and "status" in step:
+            err = json.dumps({"type": "error", "error": {
+                "type": "invalid_request_error",
+                "message": step.get("message", "scripted error")}}).encode()
+            self.send_response(int(step["status"]))
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(err)))
+            self.end_headers()
+            self.wfile.write(err)
+            self.wfile.flush()
             return
         if step and "tool_use" in step:
             reply = tool_reply(step["tool_use"])

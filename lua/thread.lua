@@ -77,8 +77,23 @@ function M.agent_opts(rec)
     checkpoint = function()
       pcall(bog.store.thread_save, rec.id,
         { messages = rec.session.messages, status = "running" })
+      rec.marked_running = true
     end,
   }
+end
+
+-- The end of a turn of the session's OWN agent (the REPL, --headless, -p,
+-- api.run_turn): record how it ended -- "done", "error", or "killed" for a
+-- cancelled turn. A spawned child's run ends in _run with its own status;
+-- nothing ended the root's, so the "running" its checkpoints set stayed for
+-- good and store.thread_list() listed every past conversation as live. Only a
+-- row this turn marked running is touched: a conversation that never reached a
+-- checkpoint keeps its plain session row.
+function M.session_finished(sess, outcome)
+  local rec = sess and sess.agent
+  if not (sess.id and rec and rec.id == sess.id and rec.marked_running) then return end
+  rec.marked_running = nil
+  pcall(bog.store.thread_set_status, sess.id, outcome or "done")
 end
 
 -- Build the record for the session's own agent (the lone one, or a swarm's
