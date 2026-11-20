@@ -1303,6 +1303,10 @@ local function run_one_turn(text)
   if tty then io.write(CURSOR_SHOW); io.flush() end -- restore the cursor for the prompt
   print_turn_error(ok and turn_err == nil, turn_err or (not ok and "scheduler error") or nil)
   last_turn_failed = abort or not ok or turn_err ~= nil
+  if bog.thread and bog.thread.session_finished then
+    pcall(bog.thread.session_finished, S,
+      abort and "killed" or (last_turn_failed and "error" or "done"))
+  end
   bog.save_session() -- persist transcript for /resume and crash recovery
   if not abort then
     return require("choose").capture_after_turn(S)

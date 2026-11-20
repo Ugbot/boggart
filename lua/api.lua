@@ -2310,7 +2310,12 @@ function M.run_turn(user_text, on_text)
     setmetatable(merged, { __index = opts })
     opts = merged
   end
-  return M.run_on(sess, user_text, on_text, opts)
+  local res = table.pack(pcall(M.run_on, sess, user_text, on_text, opts))
+  if bog.thread and bog.thread.session_finished then
+    pcall(bog.thread.session_finished, sess, res[1] and "done" or "error")
+  end
+  if not res[1] then error(res[2], 0) end
+  return table.unpack(res, 2, res.n)
 end
 
 -- Continue a turn that was interrupted mid-tool (no new prompt): finish the
