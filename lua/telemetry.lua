@@ -47,6 +47,11 @@ function M.decision(ctx, d) emit("decision", ctx, d) end
 function M.ladder(ctx, d) emit("ladder", ctx, d) end
 -- An agent's exit-contract outcome: { delivered, verified, checker, reason, stop }.
 function M.agent_exit(ctx, d) emit("agent:exit", ctx, d) end
+-- Graph memory (lua/ctxgraph.lua): { event = compacted|expand|recall|note, ... }.
+-- compacted: compaction, steps, spans, records, outline_bytes, outline_lines,
+-- dropped; expand: id, by = model|harness, bytes; recall: query_bytes, hits;
+-- note: id, about.
+function M.graph(ctx, d) emit("graph", ctx, d) end
 
 local function decode(s)
   if not s or s == "" then return {} end

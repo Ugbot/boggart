@@ -692,6 +692,32 @@ do
   eq(comp and comp.session, bog.session.id, "...against the session it compacted")
 end
 
+-- ---- graph memory: graph:compacted / expand / recall / note -----------------
+-- Through the real paths: a compaction on the `local` tier, then the model's
+-- three tools against what it collapsed.
+do
+  reset()
+  local got = {}
+  events.on("graph:*", function(name, d) got[name] = d end)
+  local saved = bog.session
+  local s = { id = 9301, model = "mock", memory = "local", compact_ratio = 0.00001, messages = {
+    { role = "user", content = "Fix the build." },
+    { role = "assistant", content = { { type = "tool_use", id = "g1", name = "read", input = { path = "src/main.c" } } } },
+    { role = "user", content = { { type = "tool_result", tool_use_id = "g1", content = "src/main.c lines 1-1 of 1\n1\tint main;" } } },
+    { role = "assistant", content = { { type = "text", text = "done" } } },
+  } }
+  bog.session = s
+  eq(bog.api.compact(s, {}), true, "graph compaction ran")
+  ok(got["graph:compacted"] and got["graph:compacted"].outline_bytes > 0, "graph:compacted carries the outline size")
+  bog.tools.run("expand", { id = "file/src/main.c" })
+  ok(got["graph:expand"] and got["graph:expand"].by == "model", "graph:expand says who expanded")
+  bog.tools.run("graph_recall", { query = "main" })
+  ok(got["graph:recall"] and got["graph:recall"].hits >= 1, "graph:recall reports hits")
+  bog.tools.run("note", { text = "main.c is generated" })
+  ok(got["graph:note"] ~= nil, "graph:note fires")
+  bog.session = saved
+end
+
 -- ---- swarm actors ----------------------------------------------------------
 do
   reset()
@@ -752,7 +778,7 @@ do
   end
   ok(#missing == 0, "every documented event is emitted by a real code path"
     .. (#missing > 0 and (" -- never saw: " .. table.concat(missing, ", ")) or ""))
-  eq(#names, 20, "the documented event list is the one this suite drove")
+  eq(#names, 24, "the documented event list is the one this suite drove")
 end
 
 -- ---- the fabric bridge (events -> src/lbus.c `bus`) ------------------------

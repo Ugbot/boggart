@@ -1351,6 +1351,9 @@ local COMPACT_CONTINUES = "[Recent conversation continues below.]"
 -- or, for the first message of an earlier compaction, the request it carried
 -- (nil when it carried none -- its summary already covers it).
 function M.compaction_request(text)
+  -- a graph-memory outline (lua/ctxgraph/outline.lua) carries it the same way
+  local outline = require("ctxgraph.outline")
+  if outline.is_outline(text) then return outline.request_of(text) end
   if text:sub(1, #COMPACT_PREAMBLE) ~= COMPACT_PREAMBLE then return text end
   local at = text:find("\n" .. COMPACT_REQUEST .. "\n", 1, true)
   if at then
@@ -1671,6 +1674,9 @@ function M.inherit_limits(parent, child_model, narrow)
   out.context_limit = lower(same and tonumber(parent.context_limit) or nil, narrow.context_limit)
   out.max_tokens = lower(same and tonumber(parent.max_tokens) or nil, narrow.max_tokens)
   out.effort = parent.effort
+  -- The memory tier is a property of the run, not of the model: a child of a
+  -- graph-memory session compacts into its own graph too.
+  out.memory = parent.memory
   return out
 end
 
@@ -1771,30 +1777,37 @@ function M.compact(sess, opts)
   for _, m in ipairs(sess.messages) do total = total + #msg_text(m) end
 
   bog.log(string.format("compacting context (~%d chars)...", total))
-  -- The summary request: the whole conversation, then the compaction prompt as
-  -- the final user turn. When the conversation already ends on a user message
-  -- (an agent turn always does: the tool results), the prompt joins THAT
-  -- message rather than following it, so the request never has two user
-  -- messages in a row. The Messages API tolerates that, but servers behind the
-  -- same wire that apply a strict chat template refuse it, and on the OpenAI
-  -- wire the tool results still come first and the prompt last either way.
-  local copy = {}
-  for i = 1, #sess.messages - 1 do copy[i] = sess.messages[i] end
-  local last = sess.messages[#sess.messages]
-  if last and last.role == "user" and type(last.content) == "string" then
-    copy[#copy + 1] = { role = "user", content = last.content .. "\n\n" .. COMPACT_PROMPT }
-  elseif last and last.role == "user" and type(last.content) == "table" then
-    local blocks = {}
-    for i, b in ipairs(last.content) do blocks[i] = b end
-    blocks[#blocks + 1] = { type = "text", text = COMPACT_PROMPT }
-    copy[#copy + 1] = { role = "user", content = blocks }
-  else
-    copy[#copy + 1] = last
-    copy[#copy + 1] = { role = "user", content = COMPACT_PROMPT }
+  -- Graph memory (BOGGART_MEMORY=local or an extension's tier) collapses the
+  -- old part into records and an outline of stubs instead: no model call.
+  local cg = require("ctxgraph")
+  local graph = cg.enabled(sess)
+  local summary
+  if not graph then
+    -- The summary request: the whole conversation, then the compaction prompt as
+    -- the final user turn. When the conversation already ends on a user message
+    -- (an agent turn always does: the tool results), the prompt joins THAT
+    -- message rather than following it, so the request never has two user
+    -- messages in a row. The Messages API tolerates that, but servers behind the
+    -- same wire that apply a strict chat template refuse it, and on the OpenAI
+    -- wire the tool results still come first and the prompt last either way.
+    local copy = {}
+    for i = 1, #sess.messages - 1 do copy[i] = sess.messages[i] end
+    local last = sess.messages[#sess.messages]
+    if last and last.role == "user" and type(last.content) == "string" then
+      copy[#copy + 1] = { role = "user", content = last.content .. "\n\n" .. COMPACT_PROMPT }
+    elseif last and last.role == "user" and type(last.content) == "table" then
+      local blocks = {}
+      for i, b in ipairs(last.content) do blocks[i] = b end
+      blocks[#blocks + 1] = { type = "text", text = COMPACT_PROMPT }
+      copy[#copy + 1] = { role = "user", content = blocks }
+    else
+      copy[#copy + 1] = last
+      copy[#copy + 1] = { role = "user", content = COMPACT_PROMPT }
+    end
+    local msg = stream({ model = route.model or sess.model, max_tokens = 4096, system = system(),
+      messages = copy, stream = true }, nil)
+    summary = msg_text(msg)
   end
-  local msg = stream({ model = route.model or sess.model, max_tokens = 4096, system = system(),
-    messages = copy, stream = true }, nil)
-  local summary = msg_text(msg)
 
   -- What survives verbatim: the most recent messages, up to a token budget,
   -- starting at a message boundary that keeps every tool call with its result
@@ -1828,10 +1841,16 @@ function M.compact(sess, opts)
     task = task:sub(1, keep * 4) .. "\n[... request truncated at compaction ...]"
   end
 
-  local parts = { COMPACT_PREAMBLE, summary }
-  if task and task ~= "" then parts[#parts + 1] = "\n" .. COMPACT_REQUEST .. "\n" .. task end
-  if start <= #msgs then parts[#parts + 1] = "\n" .. COMPACT_CONTINUES end
-  local newmsgs = { { role = "user", content = table.concat(parts, "\n") } }
+  local first, gstats
+  if graph then
+    first, gstats = cg.compact(sess, msgs, start, task, { threshold = M.compact_threshold(sess) })
+  else
+    local parts = { COMPACT_PREAMBLE, summary }
+    if task and task ~= "" then parts[#parts + 1] = "\n" .. COMPACT_REQUEST .. "\n" .. task end
+    if start <= #msgs then parts[#parts + 1] = "\n" .. COMPACT_CONTINUES end
+    first = table.concat(parts, "\n")
+  end
+  local newmsgs = { { role = "user", content = first } }
   for i = start, #msgs do newmsgs[#newmsgs + 1] = msgs[i] end
   sess.messages = newmsgs
   sess._compacted_n = #newmsgs
@@ -1847,11 +1866,12 @@ function M.compact(sess, opts)
   end
   local after = 0
   for _, m in ipairs(newmsgs) do after = after + #msg_text(m) end
-  if opts.on_compact then opts.on_compact(summary) end
+  if opts.on_compact then opts.on_compact(summary or first) end
   -- Sizes, not text: a handler that wants the summary can read the first
   -- message, and shipping it on the event would put a few thousand tokens on
   -- the bus every time.
-  events.emit("context:compacted", { session = sess.id, before = total, after = after })
+  events.emit("context:compacted", { session = sess.id, before = total, after = after,
+    mode = graph and "graph" or "summary", outline_bytes = gstats and gstats.outline_bytes or nil })
   return true
 end
 
@@ -2411,6 +2431,16 @@ function M.run_on(sess, user_text, on_text, opts)
     -- so this is still the single ingest point for tool output.
     local had_tools = run_tool_round(sess, msg, #sess.messages, run_tool, on_tool, checkpoint)
     if had_tools then sess._tools = (sess._tools or 0) + 1 end
+    -- Graph memory: file digests for versions, and the harness's own expansion
+    -- of collapsed records this round names (lua/ctxgraph/tools.lua).
+    if had_tools and require("ctxgraph").enabled(sess) then
+      local amsg = sess.messages[#sess.messages - 1]
+      if amsg == msg then
+        local okx, n = pcall(require("ctxgraph.tools").after_round, sess, msg, sess.messages[#sess.messages])
+        if not okx then bog.log("graph auto-expand failed: " .. tostring(n))
+        elseif n > 0 then checkpoint() end
+      end
+    end
 
     if had_tools then
       if stop ~= "tool_use" then return msg, stop end

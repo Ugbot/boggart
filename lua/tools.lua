@@ -1087,7 +1087,8 @@ function M.schemas()
   local out = {}
   local profile_only = not M.profile() and PROFILE_ONLY or {}
   for _, name in ipairs(M.names()) do
-    if name:sub(1, #SKILL_PREFIX) ~= SKILL_PREFIX and not profile_only[name] then
+    if name:sub(1, #SKILL_PREFIX) ~= SKILL_PREFIX and not profile_only[name]
+       and not M.registry[name].graph_only then
       local d = M.registry[name]
       out[#out + 1] = {
         name = name,
@@ -1212,9 +1213,31 @@ end
 
 -- The tool list an agent with no skill allow set is offered on this turn.
 -- `sess` holds what load_tools has added (sess.loaded_tools, in load order).
+--
+-- The graph-memory tools (expand/graph_recall/note) are offered only when the
+-- session's memory tier is a graph (lua/ctxgraph.lua), and come straight after
+-- the base list -- the profile's tools, or every tool -- so they sit in the
+-- fixed part of the prompt from the first request on, and tools loaded later
+-- still only append.
+local function graph_tools(sess, out, seen)
+  local okc, cg = pcall(require, "ctxgraph")
+  if not (okc and sess and cg.enabled(sess)) then return end
+  for _, name in ipairs(require("ctxgraph.tools").NAMES) do
+    if M.registry[name] and not seen[name] then
+      out[#out + 1] = schema_of(name)
+      seen[name] = true
+    end
+  end
+end
+
 function M.offered(sess)
   local prof = M.profile()
-  if not prof then return M.schemas() end
+  if not prof then
+    local out, seen = M.schemas(), {}
+    for _, s in ipairs(out) do seen[s.name] = true end
+    graph_tools(sess, out, seen)
+    return out
+  end
   local out, seen = {}, {}
   for _, name in ipairs(M.names()) do
     if prof.set[name] then
@@ -1222,6 +1245,7 @@ function M.offered(sess)
       seen[name] = true
     end
   end
+  graph_tools(sess, out, seen)
   for _, name in ipairs(sess and sess.loaded_tools or {}) do
     if not seen[name] and M.registry[name] then
       out[#out + 1] = schema_of(name)
@@ -1258,7 +1282,8 @@ function M.load_for(sess, input)
                   or "No tool profile is active: every tool is already offered." }
     if prof then
       for _, name in ipairs(M.names()) do
-        if not offered[name] and name:sub(1, #SKILL_PREFIX) ~= SKILL_PREFIX then
+        if not offered[name] and name:sub(1, #SKILL_PREFIX) ~= SKILL_PREFIX
+           and not M.registry[name].graph_only then
           local desc = (M.registry[name].description or ""):match("^[^\n]*") or ""
           local first = desc:match("^(.-[%.%?!])%s") or desc
           if #first > 100 then first = first:sub(1, 97) .. "..." end
@@ -1285,13 +1310,14 @@ function M.load_for(sess, input)
     if pat:sub(-1) == "*" then
       local pre, any = pat:sub(1, -2), false
       for _, name in ipairs(M.names()) do
-        if name:sub(1, #pre) == pre and name:sub(1, #SKILL_PREFIX) ~= SKILL_PREFIX then
+        if name:sub(1, #pre) == pre and name:sub(1, #SKILL_PREFIX) ~= SKILL_PREFIX
+           and not M.registry[name].graph_only then
           any = true
           add(name)
         end
       end
       if not any then unknown[#unknown + 1] = pat end
-    elseif M.registry[pat] then
+    elseif M.registry[pat] and not M.registry[pat].graph_only then
       add(pat)
     else
       unknown[#unknown + 1] = pat
@@ -1853,6 +1879,10 @@ M.register("tools", {
     properties = { name = { type = "string", description = "show this tool's body" } } },
   run = tool_tools,
 })
+
+-- Graph memory (lua/ctxgraph/tools.lua): expand / recall / note. Registered
+-- always, offered only on a graph tier (graph_only; see M.offered).
+require("ctxgraph.tools").register_into(M.register, calling_session)
 
 -- load_tools: the profile's way to the rest of the registry (see M.offered).
 M.register("load_tools", {
