@@ -974,6 +974,8 @@ add_test(NAME run_turn_session COMMAND ${CMAKE_COMMAND} -E env HOME=${CMAKE_CURR
 set_tests_properties(run_turn_session PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME session_status COMMAND ${CMAKE_COMMAND} -E env HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/session_status BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/session_status BOGGART_TEST_BIN=$<TARGET_FILE:boggart> $<TARGET_FILE:boggart> --eval ${CMAKE_CURRENT_SOURCE_DIR}/tests/session_status.lua)
 set_tests_properties(session_status PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} TIMEOUT 180)
+add_test(NAME fork_repl COMMAND ${CMAKE_COMMAND} -E env HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/fork_repl BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/fork_repl BOGGART_TEST_BIN=$<TARGET_FILE:boggart> $<TARGET_FILE:boggart> --eval ${CMAKE_CURRENT_SOURCE_DIR}/tests/fork_repl.lua)
+set_tests_properties(fork_repl PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} TIMEOUT 120)
 add_library(boggart_unicode STATIC src/bunicode.c)
 target_include_directories(boggart_unicode PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_executable(unicode_test tests/c/unicode.c)
