@@ -22,6 +22,7 @@
 -- calls only that port.
 local port = require("ctxgraph.backend")
 local events = require("events")
+local json = require("json")
 
 local M = {}
 
@@ -189,6 +190,68 @@ function M.rt(sess)
   return sess._ctxg
 end
 
+-- ---- the read view: this conversation's graph, then the ones it forked from ------
+--
+-- A forked child (spawn{ fork = true }, lua/fork.lua) starts from a copy of its
+-- parent's transcript, outline included, so the ids in that outline name
+-- records in the PARENT's graph. The child reads through to the parent's graph
+-- for ids it does not hold, read-only and as of the fork: a parent record put
+-- after the fork (a higher seq) is not visible. Every write still goes to the
+-- child's own graph (M.sid). The chain is kept in the child's own graph meta
+-- (key "parent_graph", JSON [{sid, seq}...], nearest parent first), so it
+-- survives a resume.
+M.PARENT_KEY = "parent_graph"
+
+-- Record that `csess` was forked from `psess`. Called by fork.adopt once the
+-- child's tier is set. Nothing to do when either side is not on a graph tier,
+-- or when they are on different backends (one cannot read the other).
+function M.on_fork(psess, csess)
+  if not (psess and csess and M.enabled(psess) and M.enabled(csess)) then return false end
+  local pbe, be = M.backend(psess), M.backend(csess)
+  if pbe ~= be then return false end
+  local psid = M.sid(psess)
+  local chain = { { sid = psid, seq = tonumber(pbe.meta(psid, "seq") or "0") or 0 } }
+  for _, a in ipairs(M.parents(psess)) do chain[#chain + 1] = { sid = a.sid, seq = a.seq } end
+  be.meta(M.sid(csess), M.PARENT_KEY, json.encode(chain))
+  M.rt(csess).parents = chain
+  return true
+end
+
+-- The graphs this conversation was forked from, nearest first: { {sid, seq} }.
+function M.parents(sess)
+  local rt = M.rt(sess)
+  if rt.parents == nil then
+    local raw = M.backend(sess).meta(M.sid(sess), M.PARENT_KEY)
+    local ok, t = pcall(json.decode, raw or "")
+    rt.parents = (ok and type(t) == "table") and t or {}
+  end
+  return rt.parents
+end
+
+-- Where reads look, in order: { { sid, max_seq? } }. The first is the
+-- conversation's own graph (no limit); the rest are read-only parents.
+function M.sources(sess)
+  local out = { { sid = M.sid(sess) } }
+  for _, p in ipairs(M.parents(sess)) do out[#out + 1] = { sid = p.sid, max_seq = tonumber(p.seq), parent = true } end
+  return out
+end
+
+-- Is record (or search hit) `r` visible from source `src`?
+function M.visible(r, src)
+  return r ~= nil and (src.max_seq == nil or (tonumber(r.seq) or 0) <= src.max_seq)
+end
+
+-- The record `id` as this conversation sees it: its own first, then its
+-- parents' as of the fork. -> record, source | nil
+function M.locate(sess, id)
+  local be = M.backend(sess)
+  for _, src in ipairs(M.sources(sess)) do
+    local r = be.get(src.sid, id)
+    if M.visible(r, src) then return r, src end
+  end
+  return nil
+end
+
 -- ---- telemetry ----------------------------------------------------------------
 -- Counters on sess.usage.graph (beside usage.compactions), a `graph:<what>`
 -- event, and a `graph` record row (bog.store.records) for the bench export.
@@ -254,7 +317,9 @@ function M.compact(sess, msgs, start, task, opts)
   be.put_edges(sid, got.edges)
 
   local cap = math.max(1000, math.min(M.OUTLINE_MAX_TOKENS, math.floor((opts.threshold or 100000) * M.OUTLINE_SHARE)))
-  local text, ost = outline.render(be, sid, task, { cap_tokens = cap })
+  local inherit = {}
+  for i, src in ipairs(M.sources(sess)) do if i > 1 then inherit[#inherit + 1] = src end end
+  local text, ost = outline.render(be, sid, task, { cap_tokens = cap, inherit = inherit })
   if start <= #msgs then text = text .. "\n\n" .. outline.CONTINUES end
   -- the outline changed: everything is collapsed again
   rt.expanded, rt.digests = {}, {}

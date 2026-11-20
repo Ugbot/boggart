@@ -165,6 +165,10 @@ function M.adopt(rec, parent, p, default_budget)
   s.compact_at = ps.compact_at or s.compact_at
   s.compact_ratio = ps.compact_ratio
   s.memory = ps.memory
+  -- Graph memory: the copied outline names records in the parent's graph, so
+  -- the child reads through to it (read-only, as of now); lua/ctxgraph.lua.
+  local okg, gerr = pcall(require("ctxgraph").on_fork, ps, s)
+  if not okg and rawget(_G, "bog") and bog.log then bog.log("graph memory: fork view not set: " .. tostring(gerr)) end
   -- The parent's effort unless the spawn names one; nil stays nil (the parent
   -- sends no effort, so neither does the fork).
   s.effort = p.effort or ps.effort

@@ -72,6 +72,19 @@ newest step names (an exact repeated error first, then a file path, then a
 package), within about 4k tokens, as a marked `[harness: auto-expanded ...]`
 text block on that round's results.
 
+## Forks
+
+A forked child (`spawn{fork=true}`) starts with its parent's outline, whose ids
+name records in the parent's graph. The child reads through to the parent's
+graph for ids it does not hold itself: `expand`, `graph_recall`, auto-expand and
+the child's own later outlines see the parent's records as they were at the
+fork (records the parent puts afterwards are not visible). The view is
+read-only: the child's notes and compactions go to its own graph, and a note
+about a parent record names it in its frontmatter (`subject`, `subject_graph`)
+without a link. The chain is stored in the child's graph meta
+(`parent_graph`), so it survives a resume; a child on a different backend
+from its parent gets no view.
+
 ## Backends
 
 Storage sits behind a port, `lua/ctxgraph/backend.lua`: `put_nodes`,

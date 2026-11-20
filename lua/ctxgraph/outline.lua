@@ -53,6 +53,10 @@ end
 
 -- render(be, sid, task, opts) -> text, stats
 -- opts.cap_tokens bounds the outline (the request is bounded by the caller).
+-- opts.inherit = { { sid, max_seq } }: read-only parent graphs (a fork's,
+-- lua/ctxgraph.lua M.sources), nearest first. Their records as of the fork are
+-- listed before the conversation's own, oldest ancestor first; an id the
+-- conversation holds itself is listed once, as its own.
 function M.render(be, sid, task, opts)
   opts = opts or {}
   local cap = (opts.cap_tokens or 8000) * 4
@@ -61,7 +65,22 @@ function M.render(be, sid, task, opts)
   table.sort(types)
   local by = {}
   for i = 1, #SECTIONS do by[i] = {} end
-  for _, r in ipairs(be.scan(sid, types)) do
+  local own = be.scan(sid, types)
+  local seen = {}
+  for _, r in ipairs(own) do seen[r.id] = true end
+  local rows = {}
+  local inherit = opts.inherit or {}
+  for k = #inherit, 1, -1 do
+    local src = inherit[k]
+    for _, r in ipairs(be.scan(src.sid, types)) do
+      if not seen[r.id] and (src.max_seq == nil or (r.seq or 0) <= src.max_seq) then
+        seen[r.id] = true
+        rows[#rows + 1] = r
+      end
+    end
+  end
+  for _, r in ipairs(own) do rows[#rows + 1] = r end
+  for _, r in ipairs(rows) do
     if listed(r) then
       for i, s in ipairs(SECTIONS) do
         if s.types[r.type] then by[i][#by[i] + 1] = "- " .. r.id .. "  " .. (r.stub ~= "" and r.stub or r.title) end
@@ -154,14 +173,23 @@ end
 -- expand(be, sid, id, opts) -> text | nil, err. Bounded by EXPAND_BYTES (or
 -- opts.max_bytes): what does not fit is saved to a file and pointed at, the
 -- same shape every large tool result has.
+-- opts.max_seq: records put after it are left out of the lists (a fork reading
+-- its parent's graph sees it as it was at the fork).
 function M.expand(be, sid, id, opts)
   opts = opts or {}
   local max = opts.max_bytes or M.EXPAND_BYTES
   local r = be.get(sid, id)
+  if r and opts.max_seq and (r.seq or 0) > opts.max_seq then r = nil end
   if not r then return nil, "no record " .. tostring(id) .. " in this conversation's graph" end
+  local function vis(rs)
+    if not opts.max_seq then return rs end
+    local out = {}
+    for _, x in ipairs(rs) do if (x.seq or 0) <= opts.max_seq then out[#out + 1] = x end end
+    return out
+  end
   local out = { header(r) }
   if r.type == "span" then
-    for _, st in ipairs(be.children(sid, id, "contains")) do
+    for _, st in ipairs(vis(be.children(sid, id, "contains"))) do
       out[#out + 1] = "\n## " .. st.id .. "  " .. st.stub
       -- a taste of each step; expand the step for all of it
       local b = st.body or ""
@@ -174,19 +202,19 @@ function M.expand(be, sid, id, opts)
     end
   elseif r.type == "step" then
     out[#out + 1] = r.body or ""
-    for _, c in ipairs(be.children(sid, id, "has_reasoning")) do
+    for _, c in ipairs(vis(be.children(sid, id, "has_reasoning"))) do
       out[#out + 1] = "(reasoning collapsed: expand{id=\"" .. c.id .. "\"})"
     end
     if r.body_ref then out[#out + 1] = read_ref(r.body_ref, r.body or "", max) end
   elseif r.type == "file" or r.type == "package" or r.type == "command" or r.type == "test" or r.type == "error" then
-    local vs = be.versions(sid, id)
+    local vs = vis(be.versions(sid, id))
     if #vs > 0 then out[#out + 1] = "versions:\n" .. list(vs) end
-    local steps = be.referrers(sid, id)
+    local steps = vis(be.referrers(sid, id))
     local touching = {}
     for _, s in ipairs(steps) do if s.type == "step" then touching[#touching + 1] = s end end
     if #touching > 0 then out[#out + 1] = "steps:\n" .. list(touching) end
     local claims = {}
-    for _, c in ipairs(be.referrers(sid, id, "about")) do claims[#claims + 1] = c end
+    for _, c in ipairs(vis(be.referrers(sid, id, "about"))) do claims[#claims + 1] = c end
     if #claims > 0 then out[#out + 1] = "claims:\n" .. list(claims) end
   else
     if r.body and r.body ~= "" then out[#out + 1] = r.body end

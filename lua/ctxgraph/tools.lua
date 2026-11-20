@@ -24,7 +24,11 @@ function M.expand(sess, a, by)
   if not be then return err end
   local id = type(a) == "table" and a.id
   if type(id) ~= "string" or id == "" then return "Tool error: expand requires 'id' (a record id from the outline)" end
-  local text, why = outline.expand(be, cg.sid(sess), id)
+  -- its own graph first, then (a fork) its parent's as of the fork
+  local _, src = cg.locate(sess, id)
+  local text, why
+  if src then text, why = outline.expand(be, src.sid, id, { max_seq = src.max_seq })
+  else why = "no record " .. id .. " in this conversation's graph" end
   if not text then return "Tool error: " .. why .. ". graph_recall{query} finds ids." end
   cg.rt(sess).expanded[id] = true
   cg.count(sess, "expand", { id = id, by = by or "model", bytes = #text })
@@ -36,7 +40,17 @@ function M.recall(sess, a)
   if not be then return err end
   local q = type(a) == "table" and a.query
   if type(q) ~= "string" or q == "" then return "Tool error: graph_recall requires 'query'" end
-  local hits = be.search(cg.sid(sess), q, { limit = tonumber(a.limit) or 8 })
+  local limit = math.max(1, math.min(tonumber(a.limit) or 8, 50))
+  -- own records first, then a fork's parent's (as of the fork), each newest
+  -- first; an id held by both is the conversation's own
+  local hits, seen = {}, {}
+  for _, src in ipairs(cg.sources(sess)) do
+    if #hits >= limit then break end
+    for _, h in ipairs(be.search(src.sid, q, { limit = limit })) do
+      if #hits >= limit then break end
+      if not seen[h.id] and cg.visible(h, src) then seen[h.id] = true; hits[#hits + 1] = h end
+    end
+  end
   cg.count(sess, "recall", { query_bytes = #q, hits = #hits })
   if #hits == 0 then return "No records match \"" .. stubs.line(q, 80) .. "\"." end
   local out = { string.format("%d record%s (newest first; expand{id} for one in full):", #hits, #hits == 1 and "" or "s") }
@@ -51,21 +65,24 @@ function M.note(sess, a)
   if type(text) ~= "string" or text == "" then return "Tool error: note requires 'text'" end
   local sid = cg.sid(sess)
   local about = type(a.about) == "string" and a.about ~= "" and a.about or nil
-  local subject
+  -- The subject may be a parent's record (a fork): the claim then names it
+  -- in frontmatter but carries no link, since a link must resolve inside the
+  -- graph that holds it and the claim lives in this conversation's graph.
+  local subject, subject_graph
   if about then
-    if be.get(sid, about) then subject = about
-    else
-      local p = "file/" .. ex.relpath(about, nil)
-      if be.get(sid, p) then subject = p end
+    for _, cand in ipairs({ about, "file/" .. ex.relpath(about, nil) }) do
+      local r, src = cg.locate(sess, cand)
+      if r then subject = cand; subject_graph = src.parent and src.sid or nil; break end
     end
   end
   local seq = tonumber(be.meta(sid, "seq") or "0") + 1
   be.meta(sid, "seq", tostring(seq))
   local id = "claim/" .. ex.sha((subject or about or "") .. "\0note:" .. text .. "\0" .. sid):sub(1, 16)
   local links = {}
-  if subject then links[1] = { type = "about", dst = subject } end
+  if subject and not subject_graph then links[1] = { type = "about", dst = subject } end
   local rec = { id = id, type = "claim", title = text, state = "unverified", seq = seq, links = links,
-    frontmatter = { subject = subject or about, predicate = "note", origin = sid, by = "model" },
+    frontmatter = { subject = subject or about, subject_graph = subject_graph, predicate = "note", origin = sid,
+                    by = "model" },
     body = text, digest = ex.sha(text), tokens = (#text + 3) // 4 }
   rec.stub = stubs.claim(rec)
   local _, created = be.record_claim(sid, rec)
@@ -117,11 +134,16 @@ end
 local function index(sess, be)
   local rt = cg.rt(sess)
   if rt.index then return rt.index end
-  local idx = {}
-  for _, r in ipairs(be.scan(cg.sid(sess), { "error", "file", "package" })) do
-    local f = r.frontmatter or {}
-    local key = r.type == "file" and f.path or (r.type == "package" and f.name) or f.line
-    if key and #key >= 3 then idx[#idx + 1] = { id = r.id, type = r.type, key = key } end
+  local idx, seen = {}, {}
+  for _, src in ipairs(cg.sources(sess)) do
+    for _, r in ipairs(be.scan(src.sid, { "error", "file", "package" })) do
+      local f = r.frontmatter or {}
+      local key = r.type == "file" and f.path or (r.type == "package" and f.name) or f.line
+      if key and #key >= 3 and not seen[r.id] and cg.visible(r, src) then
+        seen[r.id] = true
+        idx[#idx + 1] = { id = r.id, type = r.type, key = key, src = src }
+      end
+    end
   end
   -- errors first (seeing the same failure again is the costliest repeat), then
   -- files, then packages; most recent first within a kind
@@ -198,7 +220,8 @@ function M.after_round(sess, msg, rmsg)
   for _, e in ipairs(picked) do
     local room = budget - 200
     if room < 400 then break end
-    local text = outline.expand(be, cg.sid(sess), e.id, { max_bytes = math.min(room, outline.EXPAND_BYTES) })
+    local text = outline.expand(be, e.src.sid, e.id, { max_bytes = math.min(room, outline.EXPAND_BYTES),
+                                                      max_seq = e.src.max_seq })
     if text then
       local block = "[harness: auto-expanded " .. e.id .. ", which this step names; it was collapsed at an "
         .. "earlier compaction. Read-only view.]\n" .. text
