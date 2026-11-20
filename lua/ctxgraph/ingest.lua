@@ -157,6 +157,27 @@ function M.spans_of(steps)
   return spans
 end
 
+-- The agent id a spawn's result names ({"spawned":N}, lua/tools_swarm.lua).
+function M.spawned_id(result)
+  return tonumber(tostring(result or ""):match('^%s*{%s*"spawned"%s*:%s*(%d+)%s*}'))
+end
+
+-- The children's answers in an await's result: after the verdict, one
+-- "### agent N (name)[ [error]]" section per child. -> { {agent, ok, text} }
+function M.returns_of(result)
+  local text = tostring(result or "")
+  local heads = {}
+  for at, id, rest, body_at in text:gmatch("()\n\n### agent (%d+) %(([^\n]*)\n()") do
+    heads[#heads + 1] = { at = at, agent = tonumber(id), ok = not rest:find("%) %[error%]$"), body_at = body_at }
+  end
+  local out = {}
+  for i, h in ipairs(heads) do
+    local stop = heads[i + 1] and heads[i + 1].at - 1 or #text
+    out[#out + 1] = { agent = h.agent, ok = h.ok, text = text:sub(h.body_at, stop) }
+  end
+  return out
+end
+
 local function digest_of(body, extra) return ex.sha((body or "") .. "\0" .. (extra or "")) end
 
 -- ingest(be, sid, msgs, from, to, ctx) -> { steps, spans, records, edges, span_ids }
@@ -193,7 +214,11 @@ function M.run(be, sid, msgs, from, to, ctx)
     for _, c in ipairs(st.calls) do
       local got = ex.call(c, ctx.root)
       if got.failed then st.failed = true end
-      if c.name == "spawn" then st.spawn = c end
+      if c.name == "spawn" then
+        st.spawn = st.spawn or c
+        st.spawns = st.spawns or {}
+        st.spawns[#st.spawns + 1] = c
+      end
       for _, e in ipairs(got.entities) do
         e.call = c
         st.entities[#st.entities + 1] = e
@@ -225,15 +250,42 @@ function M.run(be, sid, msgs, from, to, ctx)
         body = st.reasoning, seq = nextseq(), frontmatter = { step = st.n } })
       srec.links[#srec.links + 1] = { type = "has_reasoning", dst = rid }
     end
-    if st.spawn then
+    for _, sp in ipairs(st.spawns or {}) do
       local tn = counter(be, sid, "threads", 1)
       local tid = string.format("s/%s/thread/%d", sid, tn)
-      local tf = { task = st.spawn.input.task, step = st.n, fork = st.spawn.input.fork and true or nil,
-                   result = stubs.line(st.spawn.result, 80) }
-      local tr = put({ id = tid, type = "thread", title = stubs.line(tf.task, 80), body = st.spawn.result,
+      local agent = M.spawned_id(sp.result)
+      local tf = { task = sp.input.task, step = st.n, fork = sp.input.fork and true or nil,
+                   result = stubs.line(sp.result, 80), agent = agent }
+      local tr = put({ id = tid, type = "thread", title = stubs.line(tf.task, 80), body = sp.result,
         seq = nextseq(), frontmatter = tf })
       tr.stub = stubs.entity(tr)
       srec.links[#srec.links + 1] = { type = "spawned", dst = tid }
+      if agent then be.meta(sid, "thread_agent/" .. agent, tid) end
+    end
+    -- what a child returned: fold it into its thread (spawned in this batch
+    -- or collapsed at an earlier compaction)
+    for _, c in ipairs(st.calls) do
+      if c.name == "await" and not c.is_error then
+        for _, ret in ipairs(M.returns_of(c.result)) do
+          local tid = be.meta(sid, "thread_agent/" .. ret.agent)
+          local tr = tid and load(tid)
+          if tr then
+            local f = tr.frontmatter or {}
+            tr.frontmatter = f
+            f.returned = stubs.line(ret.text, 100)
+            f.returned_ok = ret.ok
+            f.returned_step = st.n
+            tr.body = (f.spawn_result or tr.body or "") .. string.format("\n\n[agent %d returned at step %d%s]\n",
+              ret.agent, st.n, ret.ok and "" or ", failed") .. ret.text
+            f.spawn_result = f.spawn_result or f.result
+            tr.stub = stubs.entity(tr)
+            tr.digest = digest_of(tr.body, tr.id .. "\0" .. (tr.title or ""))
+            tr.tokens = (#tr.body + 3) // 4
+            put(tr)
+            edge(st.id, "collects", tid)
+          end
+        end
+      end
     end
     for _, e in ipairs(st.entities) do
       local r = load(e.id)

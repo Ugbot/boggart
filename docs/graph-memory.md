@@ -42,7 +42,12 @@ The trigger and the kept tail are the same as summary compaction
 - an install's or a test's outcome and every exit status → a **claim** in
   state `reproduced` (the harness saw it); `note` adds `unverified` claims;
 - reasoning → its own record under its step, never shown unless expanded;
-- `spawn` → a **thread**.
+- `spawn` → a **thread**, one per spawn call, keyed to the child's agent id;
+  when an `await` result carries that child's answer, the thread is updated
+  with it (its stub reads `-> agent N returned at step M: <first line>`, or
+  `failed`, and `expand` shows the whole answer), even when the spawn was
+  collapsed at an earlier compaction. A child's answer read only through
+  `inbox` is not folded in.
 
 Steps are cut into **spans** at a shift in the entities being touched, at the
 end of a retry run, at a spawn, at a new request, or at 12 steps / 8k tokens.

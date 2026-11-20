@@ -37,7 +37,10 @@
 --   seq         integer, ingest order within the session (recency)
 --   tokens      integer estimate of the body's size
 --
--- Events (step, reasoning, span, thread, compaction) never change once put.
+-- Events (step, reasoning, span, thread, compaction) never change once put,
+-- with one exception: a thread is put again when its child's answer is seen
+-- (an await's result), with the answer folded into its body, stub and
+-- frontmatter (returned, returned_ok, returned_step). Its id and seq stay.
 -- Entities (file, package, command, test, error) are replaced in place as new
 -- versions or observations arrive; their history is in version records and
 -- links. Claims only add; set_claim_state is the one mutation they allow.

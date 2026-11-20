@@ -116,6 +116,10 @@ function M.entity(r)
   elseif r.type == "error" then
     return string.format("\"%s\" x%d, last at step %d", M.line(f.line, 120), f.count or 1, f.last_step or 0)
   elseif r.type == "thread" then
+    if f.returned then
+      return string.format("spawned: %s -> agent %s %s at step %d: %s", M.line(f.task, 80), tostring(f.agent or "?"),
+        f.returned_ok == false and "failed" or "returned", f.returned_step or 0, M.line(f.returned, 100))
+    end
     return "spawned: " .. M.line(f.task, 80) .. (f.result and (" -> " .. M.line(f.result, 60)) or "")
   elseif r.type == "version" then
     return string.format("%s v%d by %s at step %d", f.path, f.v or 0, f.op or "edit", f.step or 0)
