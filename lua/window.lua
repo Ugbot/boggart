@@ -100,6 +100,20 @@ function M.framing_of(messages, from, to)
   return n
 end
 
+-- Estimated prompt tokens of a request carrying `messages` (and, optionally, a
+-- `system` prompt, a string or a list of blocks): content with
+-- ESTIMATE_MARGIN, plus framing.
+function M.request_tokens(messages, system)
+  local sys = 0
+  if type(system) == "string" then sys = #system
+  elseif type(system) == "table" then
+    local ok, s = pcall(json.encode, system)
+    sys = ok and #s or 0
+  end
+  return math.ceil(M.tokens_of(messages) * M.ESTIMATE_MARGIN) + M.framing_of(messages)
+    + math.ceil(sys / 4 * M.ESTIMATE_MARGIN)
+end
+
 -- Tokens of a `limit`-token window that a request's reply limit leaves free.
 function M.reply_safety(limit)
   return math.max(M.REPLY_SAFETY_MIN, math.ceil(limit * M.REPLY_SAFETY))

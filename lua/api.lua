@@ -1274,6 +1274,18 @@ include raw file contents, and do not call tools. Output only the summary.
 -- again (M.compaction_request).
 local COMPACT_PREAMBLE = "[Earlier conversation compacted. Durable summary follows.]"
 local COMPACT_REQUEST = "[The request being worked on:]"
+-- The summary's reply limit, at most: a durable summary is a page or two.
+-- Lowered further by the session's / route's reply limit and the room the
+-- summary request leaves in the summary route's window.
+M.COMPACT_REPLY = 4096
+-- The summary call's reasoning effort when the session has one set:
+-- summarising is bookkeeping, and on a reasoning model every reasoning token
+-- comes out of the summary's short reply limit -- at a high effort the whole
+-- limit can go on thinking and the summary come back empty. A session with
+-- no effort sends none (the endpoint's default, as for its turns), and a
+-- route that withholds effort (catalog effort=false) gets none.
+-- sess.compact_effort overrides.
+M.COMPACT_EFFORT = "low"
 local COMPACT_CONTINUES = "[Recent conversation continues below.]"
 
 -- The user's request inside a plain-text user message: the message itself,
@@ -1748,8 +1760,24 @@ function M.compact(sess, opts)
     copy[#copy + 1] = last
     copy[#copy + 1] = { role = "user", content = COMPACT_PROMPT }
   end
-  local msg = stream({ model = route.model or sess.model, max_tokens = 4096, system = system(),
-    messages = copy, stream = true }, nil)
+  local sys = system()
+  local want = math.min(M.COMPACT_REPLY, M.reply_limit(sess, route))
+  local est = window.request_tokens(copy, sys)
+  local effort = sess.compact_effort or (sess.effort and M.COMPACT_EFFORT) or nil
+  if route.effort == false then effort = nil end
+  local model = route.model or sess.model
+  local msg, stop = stream({ model = model,
+    max_tokens = window.reply_tokens(want, M.context_limit(sess, route), est),
+    reasoning_effort = effort, system = sys, messages = copy, stream = true }, nil)
+  -- A model call like any other: one span:turn record, marked as compaction,
+  -- and its tokens on sess.usage. Not the conversation's measured size,
+  -- though (that is reset below), and not one of its turns.
+  local tel = bog.telemetry
+  record_call(tel, { run_id = opts.run_id or sess.id, agent_id = sess.id,
+                     parent_id = opts.parent_id or sess.parent_id },
+              model, msg, stop, nil, { compaction = true })
+  add_usage(sess, msg, stop)
+  msg.usage, msg.cut = nil, nil
   local summary = msg_text(msg)
 
   -- What survives verbatim: the most recent messages, up to a token budget,
