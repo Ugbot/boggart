@@ -1004,6 +1004,12 @@ add_test(NAME runflags COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURR
 set_tests_properties(runflags PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} TIMEOUT 120)
 add_test(NAME headless COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/headless BOGGART_TEST_BIN=$<TARGET_FILE:boggart> $<TARGET_FILE:boggart> --eval ${CMAKE_CURRENT_SOURCE_DIR}/tests/headless.lua)
 set_tests_properties(headless PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} TIMEOUT 120)
+# Graph memory: these two run the binary again (the export helper, a headless
+# run that must stop on an uninstalled memory backend), so they get its path.
+foreach(suite ctxgraph_export ctxgraph_memory)
+  add_test(NAME ${suite} COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite} BOGGART_TEST_BIN=$<TARGET_FILE:boggart> $<TARGET_FILE:boggart> --eval ${CMAKE_CURRENT_SOURCE_DIR}/tests/${suite}.lua)
+  set_tests_properties(${suite} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} TIMEOUT 120)
+endforeach()
 add_library(boggart_unicode STATIC src/bunicode.c)
 target_include_directories(boggart_unicode PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_executable(unicode_test tests/c/unicode.c)
@@ -1310,7 +1316,7 @@ add_custom_target(ghostty-oracle
   COMMENT "Building the pinned test oracle and verifying resize fixtures"
   USES_TERMINAL)
 
-foreach(suite test integration swarm spawntools forkspawn mcp ltui sysfs bus fabric trace supervisor wire openai_reasoning jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt tools toolprofile skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents agentbridge agentcontrol fleetworkers grapheme_edit vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable typesafe judge ladder toolroute ladder_sites harden policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast mining_recognition mining_compile mining_jobs learning_evaluate learning_promote learning_route learning_monitor workflow_slack workflow_novel workflow_triggers searchroute tracker story story_model story_geo story_geosql story_style story_kb auth_file looplag http_body stream_timeouts json_c store_save hash_c fileview termbench terminal terminal_input_route terminal_process terminal_process_shutdown terminal_graphemes terminal_resize terminal_resize_cached terminal_resize_api terminal_resize_large ghostty_page_growth ghostty_bitmap)
+foreach(suite test integration swarm ctxgraph_ingest ctxgraph_compact ctxgraph_tools ctxgraph_backend spawntools forkspawn mcp ltui sysfs bus fabric trace supervisor wire openai_reasoning jwriter worker proc sandbox scopes errors studio events lifecycle plan goap plansup claims prompt tools toolprofile skills agentmodel skillrouter complete termrender goal loop tui_input tui_agents agentbridge agentcontrol fleetworkers grapheme_edit vim luatool llmstation dispatch gitcmd choose front voice codesearch perm control triggers structured route catalog roles sessions projects station callable typesafe judge ladder toolroute ladder_sites harden policy quota invoke capability context workflow evidence runstore imports evidence_retention aibywire memory mining_ast mining_recognition mining_compile mining_jobs learning_evaluate learning_promote learning_route learning_monitor workflow_slack workflow_novel workflow_triggers searchroute tracker story story_model story_geo story_geosql story_style story_kb auth_file looplag http_body stream_timeouts json_c store_save hash_c fileview termbench terminal terminal_input_route terminal_process terminal_process_shutdown terminal_graphemes terminal_resize terminal_resize_cached terminal_resize_api terminal_resize_large ghostty_page_growth ghostty_bitmap)
   set(_home ${CMAKE_CURRENT_BINARY_DIR}/testhome/${suite})
   if(WIN32)
     set(_home_env HOME=${_home} USERPROFILE=${_home}

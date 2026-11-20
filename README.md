@@ -184,12 +184,26 @@ BOGGART_EFFORT=high BOGGART_CONTEXT_WINDOW=131072 BOGGART_MAX_OUTPUT=32000 ./bog
 | `--effort <level>` | `BOGGART_EFFORT` | reasoning effort: `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `--context-window <n>` | `BOGGART_CONTEXT_WINDOW` | the model's window in tokens; compaction runs at the window minus 15% (at least 16k tokens) |
 | `--max-output <n>` | `BOGGART_MAX_OUTPUT` | longest reply in tokens; default the catalog's figure for the model, else 16,000 |
+| `--memory <tier>` | `BOGGART_MEMORY` | how a long conversation is compacted: `summary` (default), `local`, or a registered backend's name |
 
 Each request's reply limit is lowered to the room the prompt leaves in the
 window (never below 1,024), so a provider that enforces prompt + reply <=
 window is never sent a request it must refuse. Sub-agents inherit all three.
 A value that is not a known level or a positive whole number stops the run
 with exit status 2 before any request is sent.
+
+**Memory tiers.** `BOGGART_MEMORY` (or `--memory`) picks what happens when the
+conversation reaches the compaction threshold. `summary` asks the model for a
+prose summary of everything but the recent tail. `local` makes no model call:
+the old part is collapsed into a graph in the local store (steps, spans,
+files with their versions, packages, commands, tests, errors, claims) and
+replaced by an outline of one-line stubs with ids; the model gets `expand`,
+`graph_recall` and `note` to bring records back, search them and add facts,
+and the harness expands a collapsed file, package or error itself when a new
+step names it (`BOGGART_GRAPH_AUTOEXPAND=0` turns that off). Any other value
+names a graph backend an extension registered at runtime; asking for one that
+is not installed stops a headless run with exit 2 (the REPL stays on
+`summary`). See [docs/graph-memory.md](docs/graph-memory.md).
 
 Bmux's [terminal client](docs/bmux-ctui.md) and Studio **Join layout** share a
 server's panes and PTYs. Press Ctrl-B then `?` for terminal workspace controls.
@@ -447,7 +461,8 @@ Patterns are **globs, not Lua patterns**: `*` is the only metacharacter
 | `turn:end` / `turn:error` | `{ session, stop }` / `{ session, message, kind }` |
 | `tool:before` / `tool:after` | `{ name, input }` / `{ name, error, bytes }` |
 | `tool:refused` | `{ name, reason }` — a permission gate stopped it |
-| `context:compacted` | `{ session, before, after }` (chars) |
+| `context:compacted` | `{ session, before, after, mode, outline_bytes }` (chars) |
+| `graph:compacted` / `graph:expand` / `graph:recall` / `graph:note` | graph memory; see [docs/graph-memory.md](docs/graph-memory.md) |
 | `file:write` / `file:edit` | `{ path, bytes, lines }` |
 | `swarm:actor_started` / `swarm:actor_stopped` | `{ id }` / `{ id, reason }` |
 | `notify` | `{ msg, level }` |
