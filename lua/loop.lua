@@ -34,6 +34,7 @@ local function sub_session(spec)
     messages = {},
     context_limit = inherited.context_limit, max_tokens = inherited.max_tokens,
     effort = spec.effort or inherited.effort, token_budget = spec.token_budget,
+    memory = inherited.memory,
   }
 end
 

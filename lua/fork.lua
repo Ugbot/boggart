@@ -164,6 +164,7 @@ function M.adopt(rec, parent, p, default_budget)
   s.max_rounds = ps.max_rounds
   s.compact_at = ps.compact_at or s.compact_at
   s.compact_ratio = ps.compact_ratio
+  s.memory = ps.memory
   -- The parent's effort unless the spawn names one; nil stays nil (the parent
   -- sends no effort, so neither does the fork).
   s.effort = p.effort or ps.effort

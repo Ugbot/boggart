@@ -19,6 +19,15 @@
 -- tools to offer. It is checked here for the same reason: an unknown name used
 -- to be logged and ignored, so a run that asked for a narrow set was offered
 -- every tool.
+--
+--   --memory <tier>          BOGGART_MEMORY          summary|local|<backend>
+--
+-- picks how a long conversation is compacted (lua/ctxgraph.lua): `summary`
+-- (the default) writes a prose summary; `local` collapses it into a graph in
+-- the local store; any other name is a graph backend an extension registered
+-- (`gestalt` is the one this release expects to be provided that way). A
+-- backend that is not installed stops a headless or one-shot run with exit 2
+-- before any request; the REPL says so and stays on `summary`.
 local M = {}
 
 -- The levels /effort accepts (lua/boot.lua). xhigh and max are Anthropic
@@ -57,6 +66,15 @@ local function check_tools(raw)
     raw, table.concat(names, "|"))
 end
 
+-- -> tier | nil, err, kind  (kind: "unknown" | "not_installed")
+local function check_memory(flags, getenv)
+  local raw = flags.memory
+  if raw == "" then raw = nil end
+  local okc, cg = pcall(require, "ctxgraph")
+  if not okc then return nil, "memory tiers unavailable: " .. tostring(cg), "unknown" end
+  return cg.resolve(raw, getenv)
+end
+
 local function positive_int(s)
   s = tostring(s):gsub("^%s+", ""):gsub("%s+$", "")
   if not s:match("^%d+$") then return nil end
@@ -71,12 +89,26 @@ end
 --   getenv  os.getenv, or a stub in a test
 -- settings is { effort?, context_limit?, max_tokens? }, using the session's
 -- field names.
-function M.read(flags, getenv)
+function M.read(flags, getenv, mode)
   flags = flags or {}
   getenv = getenv or os.getenv
+  mode = mode or (rawget(_G, "bog") and bog.mode)
   local out = {}
   local okt, terr = check_tools(getenv("BOGGART_TOOLS"))
   if not okt then return nil, terr end
+  local tier, merr, mkind = check_memory(flags, getenv)
+  if not tier then
+    -- Interactive: say so plainly and carry on with prose summaries. An
+    -- unattended run has nobody to read that, so it stops instead.
+    if mkind == "not_installed" and mode == "repl" then
+      io.stderr:write("boggart: ", merr, "; using memory tier 'summary'\n")
+      out.memory = "summary"
+    else
+      return nil, merr
+    end
+  elseif (flags.memory and flags.memory ~= "") or (getenv("BOGGART_MEMORY") or "") ~= "" then
+    out.memory = tier.memory
+  end
   for _, s in ipairs(M.SETTINGS) do
     local raw, from = flags[s.key], s.flag
     if raw == nil or raw == "" then raw, from = getenv(s.env), s.env end
@@ -108,14 +140,15 @@ function M.apply(sess, settings)
       settings.max_tokens, settings.context_limit)
   end
   if settings.effort then sess.effort = settings.effort end
+  if settings.memory then sess.memory = settings.memory end
   if settings.context_limit then sess.context_limit = settings.context_limit end
   if settings.max_tokens then sess.max_tokens = settings.max_tokens end
   return sess
 end
 
 -- read + apply, for boot.lua: returns the session or nil, err.
-function M.setup(sess, flags, getenv)
-  local settings, err = M.read(flags, getenv)
+function M.setup(sess, flags, getenv, mode)
+  local settings, err = M.read(flags, getenv, mode)
   if not settings then return nil, err end
   return M.apply(sess, settings)
 end

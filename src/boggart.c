@@ -142,12 +142,13 @@ static void configure(lua_State *L, int argc, char **argv) {
     } else if (strcmp(a, "--model") == 0 && i + 1 < argc) {
       model = argv[++i];
     } else if ((strcmp(a, "--effort") == 0 || strcmp(a, "--context-window") == 0
-                || strcmp(a, "--max-output") == 0) && i + 1 < argc) {
+                || strcmp(a, "--max-output") == 0 || strcmp(a, "--memory") == 0) && i + 1 < argc) {
       /* Session settings for a run with nobody to type /effort: set as raw
-       * strings on boggart.effort / .context_window / .max_output.
+       * strings on boggart.effort / .context_window / .max_output / .memory.
        * lua/runflags.lua validates them and owns what they mean. */
       const char *field = strcmp(a, "--effort") == 0 ? "effort"
                         : strcmp(a, "--context-window") == 0 ? "context_window"
+                        : strcmp(a, "--memory") == 0 ? "memory"
                         : "max_output";
       lua_pushstring(L, argv[++i]);
       lua_setfield(L, -2, field);
@@ -294,6 +295,8 @@ static int early_exit_flags(int argc, char **argv) {
         "      --effort <level>       reasoning effort: minimal|low|medium|high|xhigh|max\n"
         "      --context-window <n>   context window in tokens (compaction, reply room)\n"
         "      --max-output <n>       longest reply in tokens (default: the model's, else 16000)\n"
+        "      --memory <tier>        compaction memory: summary (default) | local (graph in the\n"
+        "                             local store) | <name> (a graph backend an extension installs)\n"
         "      --resume [id]          resume a saved session\n"
         "      --eval <file.lua>      run a Lua file in the harness\n"
         "      --tui                  full-screen UI (chat cTUI; swarm dashboard with swarm)\n"
@@ -309,6 +312,8 @@ static int early_exit_flags(int argc, char **argv) {
         "  BOGGART_EFFORT             as --effort (the flag wins over the variable)\n"
         "  BOGGART_CONTEXT_WINDOW     as --context-window\n"
         "  BOGGART_MAX_OUTPUT         as --max-output\n"
+        "  BOGGART_MEMORY             as --memory\n"
+        "  BOGGART_GRAPH_AUTOEXPAND   0 stops graph memory expanding records on its own\n"
         "  BOGGART_SERVE_PORT/_HOST/_TOKEN   serve defaults\n"
         "  ANTHROPIC_API_KEY          API key; overrides the stored credential\n"
         "  ANTHROPIC_BASE_URL         endpoint, e.g. a local server\n",

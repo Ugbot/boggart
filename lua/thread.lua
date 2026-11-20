@@ -221,6 +221,7 @@ function M.new_agent(p)
                 messages = resumed_messages or {},
                 context_limit = inherited.context_limit,
                 max_tokens = inherited.max_tokens,
+                memory = inherited.memory,
                 -- a per-child budget when the coordinator set one; the turn
                 -- loop in api.lua already enforces token_budget and reports
                 -- stop="token_budget", which the exit contract treats as failure
