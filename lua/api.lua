@@ -2290,7 +2290,14 @@ function M.run_turn(user_text, on_text)
     local ok, s = pcall(bog.active_session)
     if ok and s then sess = s end
   end
-  local opts = sess.agent and sess.agent.opts
+  -- The row first, as run_one_turn does: session_agent keys the record by the
+  -- session's id, so for a new conversation it used to raise (inside the
+  -- pcall), and the first turn ran with neither the record's system prompt nor
+  -- its tools. A record left from another conversation (before /new) names
+  -- that conversation's row, so it is not reused either.
+  if bog.ensure_session then pcall(bog.ensure_session, sess) end
+  local opts = sess.agent and sess.agent.id ~= nil and sess.agent.id == sess.id
+    and sess.agent.opts or nil
   if not opts and bog.thread and bog.thread.session_agent then
     local ok, rec = pcall(bog.thread.session_agent, sess)
     if ok then opts = rec.opts end
