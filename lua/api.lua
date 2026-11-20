@@ -1661,12 +1661,103 @@ end
 -- not in sess.messages and can be tens of thousands of tokens on their own.
 function M.request_max_tokens(sess, route, body)
   local want = M.reply_limit(sess, route)
+  return window.reply_tokens(want, M.context_limit(sess), M.request_prompt_tokens(sess, body))
+end
+
+-- The estimated prompt of the request `body` for `sess`: the measured size of
+-- the last request plus an estimate of what is newer, or, before anything is
+-- measured, an estimate of the whole body (system prompt and tools included).
+function M.request_prompt_tokens(sess, body)
   local used, how = M.context_used(sess)
   if how ~= "measured" and body then
     local ok, s = pcall(json.encode, { system = body.system, messages = body.messages, tools = body.tools })
     if ok then used = math.ceil(#s / 4 * window.ESTIMATE_MARGIN) end
   end
-  return window.reply_tokens(want, M.context_limit(sess), used)
+  return used
+end
+
+-- A tool result over this many bytes may be shrunk to a shaped head (the
+-- whole output saved to a file the model can read) when a request would
+-- otherwise not fit the window. The same shape bash and MCP results get at
+-- ingest (lua/tools.lua).
+M.SHRINK_BYTES = 6000
+M.SHRINK_LINES = 100
+
+-- Shrink the largest tool results in sess.messages, biggest first, to their
+-- shaped head until fits() says the request fits. Returns how many were
+-- shrunk. The measured prompt size is forgotten once anything changes: it
+-- described the messages before they were shrunk.
+local function shrink_tool_results(sess, fits)
+  local found = {}
+  for i, m in ipairs(sess.messages) do
+    if type(m.content) == "table" then
+      for k, b in ipairs(m.content) do
+        if type(b) == "table" and b.type == "tool_result" then
+          local text = b.content
+          if type(text) == "table" then
+            local t = {}
+            for _, x in ipairs(text) do
+              if type(x) == "table" and x.type == "text" then t[#t + 1] = x.text or "" end
+            end
+            text = table.concat(t, "\n")
+          end
+          if type(text) == "string" and #text > M.SHRINK_BYTES then
+            found[#found + 1] = { m = m, k = k, b = b, text = text }
+          end
+        end
+      end
+    end
+  end
+  table.sort(found, function(a, b) return #a.text > #b.text end)
+  local n = 0
+  for _, f in ipairs(found) do
+    if fits() then break end
+    local nb = {}
+    for key, v in pairs(f.b) do nb[key] = v end
+    nb.content = util.shape_result(f.text, { max_bytes = M.SHRINK_BYTES, head_lines = M.SHRINK_LINES })
+    f.m.content[f.k] = nb
+    n = n + 1
+    if sess.usage then sess.usage.last_input, sess.usage.last_input_n = nil, nil end
+  end
+  return n
+end
+
+-- Make the request `body` fit the session's context window before it is
+-- sent, or refuse to send it. A request over the window is one the endpoint
+-- must refuse (HTTP 400), and the turn dies there with nothing learned; a
+-- benchmark run sent one at 327k tokens to a 131k window after one tool
+-- result. In order:
+--   1. compact (unless nothing has been added since the last compaction --
+--      compacting a compacted conversation only summarises the summary);
+--   2. shrink the largest tool results to their shaped head, the whole
+--      output saved to a file the model can read (also when compaction
+--      failed: its summary request can be refused too);
+--   3. end the turn with a context_window error, naming the sizes.
+-- body.messages is updated in place to the session's (possibly new) list.
+local function fit_window(sess, body, opts)
+  local limit = M.context_limit(sess)
+  local function prompt() return M.request_prompt_tokens(sess, body) end
+  local function fits() return prompt() + window.reply_safety(limit) <= limit end
+  if fits() then return end
+  local first = prompt()
+  bog.log(string.format("request ~%d tokens is over the %d-token context window -- compacting before sending",
+    first, limit))
+  if not (sess._compacted_n and #sess.messages <= sess._compacted_n) then
+    local ok, err = pcall(M.compact, sess, opts)
+    if not ok then bog.log("compaction failed: " .. tostring(err)) end
+    body.messages = sess.messages
+    if fits() then return end
+  end
+  local n = shrink_tool_results(sess, fits)
+  body.messages = sess.messages
+  if n > 0 then
+    bog.log(string.format("shrank %d tool result(s) to their head to fit the context window", n))
+  end
+  if fits() then return end
+  fail(M.ERR.context_window, string.format(
+    "not sent: the request is about %d tokens, over the %d-token context window of %s, "
+    .. "even after compacting and shrinking tool results", prompt(), limit, tostring(body.model)),
+    { hint = "Set a larger window if the model has one (--context-window), or start a fresh session." })
 end
 
 -- The limits a sub-agent starts with, from the session that spawned it.
@@ -2377,6 +2468,7 @@ function M.run_on(sess, user_text, on_text, opts)
       end
     end
     if #tools > 0 then body.tools = tools end
+    fit_window(sess, body, opts)
     body.max_tokens = M.request_max_tokens(sess, route, body)
 
     ttfb_t0 = tel and tel.now_ms() or nil; ttfb_ms = nil
