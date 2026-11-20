@@ -18,6 +18,42 @@ local function base(extra)
   return b
 end
 
+-- ---- Anthropic: forced tool_choice, only where the model accepts it ---------------
+-- Opus 5.5, Sonnet 5.5, Fable 5.1/5.2 and Mythos 5.1/5.2 400 on {type="tool"}.
+do
+  local tools = { { name = "read", description = "r", input_schema = { type = "object" } } }
+  local out = api._body_for_wire("anthropic", base{ tools = tools, tool_choice = { name = "read" } })
+  ok(type(out.tool_choice) == "table" and out.tool_choice.type == "tool" and out.tool_choice.name == "read",
+    "anthropic: Sonnet 5 still gets the forced tool")
+  for _, m in ipairs{ "claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-2", "claude-fable-5-1",
+                      "claude-mythos-5-2" } do
+    out = api._body_for_wire("anthropic", base{ model = m, tools = tools, tool_choice = { name = "read" } })
+    ok(out.tool_choice == nil, "anthropic: no forced tool_choice for " .. m .. " (it 400s)")
+    ok(api.rejects_forced_tool(m), "rejects_forced_tool(" .. m .. ")")
+  end
+  ok(not api.rejects_forced_tool("claude-opus-5") and not api.rejects_forced_tool(nil),
+    "rejects_forced_tool: Opus 5 and no model are fine")
+end
+-- ---- Anthropic: effort on Haiku 5.5, not on Haiku 4.5 ------------------------------------
+do
+  local out = api._body_for_wire("anthropic", base{ model = "claude-haiku-5-5", reasoning_effort = "low" })
+  eq(out.output_config and out.output_config.effort, "low", "anthropic: Haiku 5.5 takes effort")
+  out = api._body_for_wire("anthropic", base{ model = "claude-haiku-4-5-20251001", reasoning_effort = "low" })
+  ok(out.output_config == nil, "anthropic: Haiku 4.5 gets no effort (it 400s)")
+end
+-- ---- pricing rows for the current generation (first substring hit wins) -------------------
+do
+  local function price(m)
+    for _, row in ipairs(api.PRICING) do if m:find(row[1], 1, true) then return row[2], row[3] end end
+  end
+  local i, o = price("claude-opus-5-5"); ok(i == 4.0 and o == 20.0, "pricing: Opus 5.5 is 4/20")
+  i, o = price("claude-opus-5"); ok(i == 5.0 and o == 25.0, "pricing: Opus 5 is 5/25")
+  i, o = price("claude-sonnet-5-5"); ok(i == 2.0 and o == 10.0, "pricing: Sonnet 5.5 is 2/10")
+  i, o = price("claude-fable-5-2"); ok(i == 8.0 and o == 40.0, "pricing: Fable 5.2 is 8/40")
+  i, o = price("claude-haiku-5-5"); ok(i == 0.10 and o == 0.50, "pricing: Haiku 5.5 is 0.10/0.50")
+  i, o = price("claude-haiku-4-5-20251001"); ok(i == 1.0 and o == 5.0, "pricing: Haiku 4.5 is 1/5")
+end
+
 -- ---- Anthropic: effort -> output_config.effort, NEVER reasoning_effort or
 -- ---- thinking.budget_tokens (both 400 on the 4.7+/5 family) -----------------
 do

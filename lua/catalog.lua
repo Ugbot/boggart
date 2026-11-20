@@ -254,11 +254,14 @@ function M.parse_openai_models(text, provider, prefix)
       local params = m.supported_parameters or {}
       local pricing = m.pricing or {}
       local id = prefix and (prefix .. "/" .. m.id) or m.id
+      -- Anthropic's /v1/models says display_name, max_input_tokens and
+      -- max_tokens where OpenAI-shaped lists say name, context_length and
+      -- top_provider.max_completion_tokens; read either.
       out[id] = {
         provider = provider,
-        label = m.name,
-        context = tonumber(m.context_length or m.context_window),
-        max_output = tonumber(m.top_provider and m.top_provider.max_completion_tokens),
+        label = m.name or m.display_name,
+        context = tonumber(m.context_length or m.context_window or m.max_input_tokens),
+        max_output = tonumber((m.top_provider and m.top_provider.max_completion_tokens) or m.max_tokens),
         vision = has(arch.input_modalities, "image") or nil,
         tools = has(params, "tools") or nil,
         effort = (has(params, "reasoning") or has(params, "reasoning_effort")) or nil,
@@ -281,8 +284,11 @@ function M.refresh(name)
   if not p.catalog_url or p.catalog_url == "" then
     return nil, name .. " does not publish a catalog"
   end
+  -- The Messages API's own catalog wants its version header like every other
+  -- call on that wire (src/lauth.c adds the key, not this).
+  local headers = (p.wire == "anthropic") and { "anthropic-version: 2023-06-01" } or nil
   local okr, status, body = pcall(http.request, {
-    url = p.catalog_url, method = "GET", timeout = 30,
+    url = p.catalog_url, method = "GET", timeout = 30, headers = headers,
     -- Some catalogs are public; sending the key when we have one is harmless
     -- and required by the ones that are not. C decides whether a key exists
     -- and whether it may go to this host.
@@ -308,6 +314,75 @@ end
 -- silent and idempotent, so a user who has curated their own catalog is never
 -- re-seeded over, and an install with neither seed nor tables simply behaves
 -- as boggart did before a catalog existed.
+-- Merge the baked catalog into a store that already has one. Without this a
+-- catalog seeded once never learns about a model that shipped later: the
+-- seed only ever ran on an empty store. Rules, so nothing anyone chose is
+-- overwritten:
+--   * a provider or model the store does not have is added (source 'seed');
+--   * a row whose source is still 'seed' is updated to the new seed;
+--   * a row from import, refresh or the user is left exactly as it is;
+--   * a role is rebound only while it is still bound to a PREVIOUS seed's
+--     choice (M.PRIOR_SEED_ROLES) -- a role someone rebound stays theirs.
+-- Cheap (dozens of rows) and idempotent, so boot runs it every time.
+M.PRIOR_SEED_ROLES = { default = { ["claude-opus-5"] = true } }
+
+function M.merge_seed(text)
+  if not bog.db then return false end
+  text = text or boggart.embedded(M.SEED)
+  if not text or text == "" then return false end
+  local ok, seed = pcall(json.decode, text)
+  if not ok or type(seed) ~= "table" then return false, "the baked catalog is not valid JSON" end
+  local add = { providers = {}, models = {}, roles = {} }
+  for name, p in pairs(seed.providers or {}) do
+    local have = M.provider(name)
+    if not have or have.source == "seed" then add.providers[name] = p end
+  end
+  for id, m in pairs(seed.models or {}) do
+    local have = M.model(id)
+    if not have or have.source == "seed" then add.models[id] = m end
+  end
+  for name, spec in pairs(seed.roles or {}) do
+    local cur = M.role(name)
+    local want = type(spec) == "table" and spec[1] or spec
+    if not cur then add.roles[name] = spec
+    elseif cur[1] ~= want and M.PRIOR_SEED_ROLES[name] and M.PRIOR_SEED_ROLES[name][cur[1]] then
+      add.roles[name] = spec
+    end
+  end
+  return M.import(add, "seed")
+end
+
+-- sync() -> { seed = counts, refreshed = { name = counts | err } }. The
+-- "Sync models" action: merge the baked catalog, then ask every provider that
+-- publishes a catalog AND has a key what it serves now. Network; call it from
+-- a command or a button, not a turn.
+function M.sync()
+  local out = { seed = M.merge_seed() or nil, refreshed = {} }
+  local has_key = rawget(_G, "auth") and auth.has_key
+  for _, p in ipairs(M.providers()) do
+    if p.catalog_url and p.catalog_url ~= "" and (not has_key or has_key(p.key_slot or p.name)) then
+      local n, err = M.refresh(p.name)
+      out.refreshed[p.name] = n or tostring(err)
+    end
+  end
+  return out
+end
+
+-- One line for a person: what sync did.
+function M.sync_summary(r)
+  local parts = {}
+  if r and r.seed then parts[#parts + 1] = string.format("built-in: %d models", r.seed.models or 0) end
+  local names = {}
+  for name in pairs((r and r.refreshed) or {}) do names[#names + 1] = name end
+  table.sort(names)
+  for _, name in ipairs(names) do
+    local v = r.refreshed[name]
+    parts[#parts + 1] = type(v) == "table" and string.format("%s: %d models", name, v.models or 0)
+      or (name .. ": " .. tostring(v))
+  end
+  return #parts > 0 and table.concat(parts, "; ") or "nothing to sync"
+end
+
 function M.seed_if_empty()
   if not bog.db then return false end
   local have = M.providers()

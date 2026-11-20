@@ -999,6 +999,21 @@ command.add(nil, {
     -- these two: the search, for when a refresh has pulled in hundreds, and the
     -- text entry, for a model the catalog has never heard of.
     local actions = {
+      -- Sync: the built-in catalog merged in (models shipped since this
+      -- install was seeded) and every keyed provider's live list
+      -- (catalog.sync). Network, so it runs on a core thread.
+      { label = "Sync models", hint = "built-in + providers",
+        action = function()
+          core.log("models: syncing ...")
+          local run = function()
+            local okc2, cat2 = pcall(require, "catalog")
+            if not okc2 then core.log("models: no catalog"); return end
+            local okr, r = pcall(cat2.sync)
+            core.log("models: %s", okr and cat2.sync_summary(r) or ("sync failed: " .. tostring(r)))
+            core.redraw = true
+          end
+          if core.add_thread then core.add_thread(run) else run() end
+        end },
       { label = "Search all models…", hint = "fuzzy find",
         action = function() command.perform("agent:models") end },
       { label = "Enter model…", hint = "type an id",

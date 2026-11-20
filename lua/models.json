@@ -31,7 +31,8 @@
       "label": "Anthropic",
       "url": "https://api.anthropic.com",
       "wire": "anthropic", "auth": "x-api-key",
-      "key_slot": "anthropic", "env": "ANTHROPIC_API_KEY"
+      "key_slot": "anthropic", "env": "ANTHROPIC_API_KEY",
+      "catalog_url": "https://api.anthropic.com/v1/models"
     },
     "openai": {
       "label": "OpenAI",
@@ -137,6 +138,10 @@
   "models": {
     "claude-opus-5":   { "provider": "anthropic", "label": "Claude Opus 5",   "context": 1000000, "tools": true, "vision": true, "effort": true },
     "claude-sonnet-5": { "provider": "anthropic", "label": "Claude Sonnet 5", "context": 1000000, "tools": true, "vision": true, "effort": true },
+    "claude-opus-5-5":   { "provider": "anthropic", "label": "Claude Opus 5.5",   "context": 1000000, "tools": true, "vision": true, "effort": true },
+    "claude-sonnet-5-5": { "provider": "anthropic", "label": "Claude Sonnet 5.5", "context": 1000000, "tools": true, "vision": true, "effort": true },
+    "claude-fable-5-2":  { "provider": "anthropic", "label": "Claude Fable 5.2",  "context": 1000000, "tools": true, "vision": true, "effort": true },
+    "claude-haiku-5-5":  { "provider": "anthropic", "label": "Claude Haiku 5.5",  "context": 1000000, "tools": true, "vision": true, "effort": true },
     "claude-haiku-4-5-20251001": { "provider": "anthropic", "label": "Claude Haiku 4.5", "context": 200000, "tools": true, "vision": true },
 
     "grok-4.6":      { "provider": "xai", "label": "Grok 4.6",      "context": 2000000, "tools": true, "vision": true },
@@ -163,6 +168,6 @@
   },
 
   "roles": {
-    "default": "claude-opus-5"
+    "default": "claude-opus-5-5"
   }
 }

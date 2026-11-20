@@ -139,7 +139,7 @@ function SettingsView:fields()
       -- the next request will actually use; the stored value is only where a
       -- fresh session starts from.
       value = (bog.session and bog.session.model) or auth.model() or NOT_SET,
-      hint = "claude-opus-5, or whatever your endpoint serves",
+      hint = "claude-opus-5-5, or whatever your endpoint serves",
       set = function(v)
         local model, err = require("core.settings").set("model", v)
         if not model then return nil, err end

@@ -38,7 +38,7 @@ local DEFAULT_LOCAL = "http://127.0.0.1:8000"
 
 -- Offered as buttons on the Anthropic route. A local endpoint gets its list
 -- from the server instead (fetch_models), which is better than a guess.
-local ANTHROPIC_MODELS = { "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001" }
+local ANTHROPIC_MODELS = { "claude-opus-5-5", "claude-fable-5-2", "claude-sonnet-5-5", "claude-haiku-5-5" }
 
 local NOT_SET = "not set"
 
@@ -490,7 +490,7 @@ function WelcomeView:fetch_models()
     if ok and #found > 0 then
       self.models = found
       -- The list from the server outranks anything nobody chose. On a fresh
-      -- install the model is "claude-opus-5" -- the harness default, and a name
+      -- install the model is "claude-opus-5-5" -- the harness default, and a name
       -- a local server has never heard of -- so leaving it alone means the
       -- first test fails on a model name the person never typed. An explicit
       -- choice (a click, or a name typed into the field) is never overruled,
