@@ -189,10 +189,26 @@ function M.shape_result(text, opts)
   local tmp = M.tmpname()
   M.write_file(tmp, text)
 
-  -- collect the first head_lines lines (or first max_bytes, whichever is less)
+  -- The head is the first head_lines lines, and never more than max_bytes: a
+  -- single huge line (a JSON dump, a minified file, a list printed on one line)
+  -- is cut at the byte limit rather than passed through whole, which is what
+  -- the limit is for. The cut lands on a UTF-8 character boundary.
   local lines, count, bytes = {}, 0, 0
   for line in (text .. "\n"):gmatch("(.-)\n") do
     count = count + 1
+    local room = max_bytes - bytes
+    if #line + 1 > room then
+      local cut = line:sub(1, math.max(room, 0))
+      -- back off any partial multibyte character at the end of the cut
+      local i = #cut
+      while i > 0 and (cut:byte(i) & 0xC0) == 0x80 do i = i - 1 end
+      if i > 0 and cut:byte(i) >= 0xC0 then
+        local need = cut:byte(i) >= 0xF0 and 4 or cut:byte(i) >= 0xE0 and 3 or 2
+        if #cut - i + 1 < need then cut = cut:sub(1, i - 1) end
+      end
+      lines[#lines + 1] = cut .. " [...line cut]"
+      break
+    end
     bytes = bytes + #line + 1
     lines[#lines + 1] = line
     if count >= head_lines or bytes >= max_bytes then break end
