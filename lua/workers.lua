@@ -158,9 +158,10 @@ end
 -- HTTP concurrently, so this mainly helps when the sub-agents also do CPU-bound
 -- work; for pure model calls the swarm's cooperative fan-out is just as parallel.
 --
--- opts.model (default: resolved per-worker via auth), opts.effort,
--- opts.max_tokens, opts.slots, opts.timeout. Prompts and texts cross as strings;
--- a per-turn error comes back in errors[i].
+-- opts.model (default: resolved per-worker via auth), opts.effort (a run
+-- option run_on honours; `none` sends no effort), opts.max_tokens, opts.slots,
+-- opts.timeout. Prompts and texts cross as strings; a per-turn error comes back
+-- in errors[i].
 function M.agents(prompts, opts)
   opts = opts or {}
   assert(type(prompts) == "table", "workers.agents: prompts must be a list of strings")

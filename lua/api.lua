@@ -1915,7 +1915,10 @@ end
 M.MAX_ROUNDS = 80
 
 -- run_on(sess, user_text, on_text, opts): run one user turn to completion.
--- opts: { async, system=fn, tools=fn, run_tool=fn(name,input), on_tool=fn(name,input) }
+-- opts: { async, system=fn, tools=fn, run_tool=fn(name,input), on_tool=fn(name,input),
+--         model=, route=, effort= }
+-- effort follows the same precedence as the model: this call's opts.effort,
+-- then the agent's sess.effort. `none` means "send no effort setting".
 function M.run_on(sess, user_text, on_text, opts)
   opts = opts or {}
   -- Learn a local server's real context window / slot count once (a fast
@@ -1935,6 +1938,13 @@ function M.run_on(sess, user_text, on_text, opts)
   local route = require("route").resolve(
     opts.route or opts.model or sess.route or sess.model)
   sess.resolved_route = route   -- so a status line can say where a turn went
+  -- The effort this turn asks for. A caller that passes it as a run option
+  -- (workers.agents, loop) used to be ignored -- only sess.effort was read --
+  -- so worker turns went out with no effort at all. `none` is the spawn tool's
+  -- and /effort's "no setting": it must never reach the wire as a level.
+  local effort = opts.effort
+  if effort == nil or effort == "" then effort = sess.effort end
+  if effort == "none" or effort == "" then effort = nil end
   -- A turn is the thing that makes a conversation worth storing, so this is
   -- where the row is created (bog.new_session deliberately does not). Sessions
   -- that already have an id -- resumed ones, and every spawned agent, whose row
@@ -2138,7 +2148,7 @@ function M.run_on(sess, user_text, on_text, opts)
       -- ones that REJECT it, which is why the catalog records the capability:
       -- `effort = false` on a model means the field is withheld rather than
       -- sent and 400'd. An uncatalogued model is unchanged (sent as before).
-      reasoning_effort = (route.effort ~= false) and sess.effort or nil,
+      reasoning_effort = (route.effort ~= false) and effort or nil,
     }
     local tools = tools_fn()
     -- Tool routing (lua/toolroute.lua, every site opt-in): may narrow the offer,
