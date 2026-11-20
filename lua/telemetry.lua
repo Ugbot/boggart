@@ -35,7 +35,8 @@ local function emit(kind, ctx, payload)
   })
 end
 
--- One model round: { model, provider, ttfb_ms, in_tokens, out_tokens,
+-- One model call: { model, provider, ttfb_ms, in_tokens, out_tokens, cache_read,
+-- cache_write, reasoning_tokens, cut, usage_reported, compaction,
 -- tool_calls, think_chars, text_chars, stop }.
 function M.turn(ctx, d) emit("span:turn", ctx, d) end
 -- One tool invocation: { name, ok, ms }.

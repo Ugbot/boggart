@@ -393,10 +393,13 @@ local function new_decoder(on_text, on_think)
   -- message_delta the final output count.
   local usage = { input_tokens = 0, output_tokens = 0,
                   cache_read_input_tokens = 0, cache_creation_input_tokens = 0 }
+  -- Whether the server reported any usage at all: a stream with none (some
+  -- local servers behind this wire) is "not reported", not zero tokens.
+  local reported = false
   local function take_usage(u)
     if type(u) ~= "table" then return end
     for k in pairs(usage) do
-      if type(u[k]) == "number" then usage[k] = u[k] end
+      if type(u[k]) == "number" then usage[k] = u[k]; reported = true end
     end
   end
 
@@ -466,7 +469,8 @@ local function new_decoder(on_text, on_think)
     if #content == 0 then content[1] = { type = "text", text = "" } end
     -- usage rides on the message but is not part of the wire format we send
     -- back, so api.run_on strips it before the message joins the transcript.
-    return { role = "assistant", content = content, usage = usage },
+    -- nil when the server reported none.
+    return { role = "assistant", content = content, usage = reported and usage or nil },
            stop_reason, stream_err
   end
 
@@ -692,12 +696,14 @@ local function new_openai_decoder(on_text, on_think)
   local stop_reason, stream_err, buf = nil, nil, ""
   local usage = { input_tokens = 0, output_tokens = 0,
                   cache_read_input_tokens = 0, cache_creation_input_tokens = 0 }
+  local reported = false   -- see the Anthropic decoder: none reported is not zero
   local FINISH = { stop = "end_turn", length = "max_tokens",
                    tool_calls = "tool_use", content_filter = "end_turn" }
 
   local function handle(evt)
     if type(evt) ~= "table" then return end
     if type(evt.usage) == "table" then
+      reported = true
       -- OpenAI reports cached (and, on ds4's OpenAI shape, written) tokens as a
       -- SUBSET of prompt_tokens. Split into the disjoint fresh/read/write buckets
       -- Anthropic already uses, so pricing (input @1x + read @0.1x + write @1.25x)
@@ -711,6 +717,13 @@ local function new_openai_decoder(on_text, on_think)
         usage.input_tokens = math.max(0, evt.usage.prompt_tokens - cached - written)
       end
       if type(evt.usage.completion_tokens) == "number" then usage.output_tokens = evt.usage.completion_tokens end
+      -- Reasoning tokens are a SUBSET of completion_tokens (already counted
+      -- in output_tokens); recorded separately so a report can say how much
+      -- of the output was thinking.
+      local cd = evt.usage.completion_tokens_details
+      if type(cd) == "table" and type(cd.reasoning_tokens) == "number" then
+        usage.reasoning_tokens = cd.reasoning_tokens
+      end
     end
     if evt.error then
       stream_err = "api stream error: " .. (type(evt.error) == "table" and evt.error.message or tostring(evt.error))
@@ -781,9 +794,13 @@ local function new_openai_decoder(on_text, on_think)
     -- If the model emitted tool calls, the Anthropic-side stop_reason MUST be
     -- tool_use or run_tool_round never fires -- force it regardless of what
     -- finish_reason the server sent (some send "stop" alongside tool_calls).
+    -- A reply cut at the limit keeps that fact as `cut` (stripped, like
+    -- usage, before the message joins the transcript).
+    local cut = stop_reason == "max_tokens" or nil
     if had_tool then stop_reason = "tool_use" end
     if not stop_reason then stop_reason = "end_turn" end
-    return { role = "assistant", content = content, usage = usage }, stop_reason, stream_err
+    return { role = "assistant", content = content, usage = reported and usage or nil, cut = cut },
+           stop_reason, stream_err
   end
 
   return { feed = feed, finish = finish }
@@ -861,6 +878,7 @@ local function new_responses_decoder(on_text, on_think)
   local stop_reason, stream_err, buf = nil, nil, ""
   local usage = { input_tokens = 0, output_tokens = 0,
                   cache_read_input_tokens = 0, cache_creation_input_tokens = 0 }
+  local reported = false
 
   local function handle(evt)
     local t = evt.type
@@ -890,8 +908,16 @@ local function new_responses_decoder(on_text, on_think)
         end
       end
     elseif t == "response.completed" or t == "response.incomplete" then
+      -- An incomplete response that ran out of output tokens is a reply cut
+      -- at the limit; any other reason (a content filter) ends the turn.
+      if t == "response.incomplete" then
+        local why = evt.response and evt.response.incomplete_details
+        why = type(why) == "table" and why.reason or nil
+        stop_reason = (why == "max_output_tokens") and "max_tokens" or "end_turn"
+      end
       local u = evt.response and evt.response.usage
       if type(u) == "table" then
+        reported = true
         -- Responses reports cached tokens as a SUBSET of input_tokens; split into
         -- disjoint fresh/read/write buckets (see the chat decoder note).
         local d = u.input_tokens_details
@@ -903,6 +929,10 @@ local function new_responses_decoder(on_text, on_think)
           usage.input_tokens = math.max(0, u.input_tokens - cached - written)
         end
         if type(u.output_tokens) == "number" then usage.output_tokens = u.output_tokens end
+        local od = u.output_tokens_details   -- a subset of output_tokens, as on chat
+        if type(od) == "table" and type(od.reasoning_tokens) == "number" then
+          usage.reasoning_tokens = od.reasoning_tokens
+        end
       end
     elseif t == "response.failed" or t == "response.error" or t == "error" then
       local msg = (evt.response and evt.response.error and evt.response.error.message)
@@ -943,8 +973,10 @@ local function new_responses_decoder(on_text, on_think)
       end
     end
     if #content == 0 then content[1] = { type = "text", text = "" } end
+    local cut = stop_reason == "max_tokens" or nil
     if had_tool then stop_reason = "tool_use" elseif not stop_reason then stop_reason = "end_turn" end
-    return { role = "assistant", content = content, usage = usage }, stop_reason, stream_err
+    return { role = "assistant", content = content, usage = reported and usage or nil, cut = cut },
+           stop_reason, stream_err
   end
 
   return { feed = feed, finish = finish }
@@ -1173,6 +1205,58 @@ function M._body_for_wire(w, body)
   return (w == "responses" and to_responses_body(body))
     or (w == "openai" and to_openai_body(body))
     or to_anthropic_body(body)
+end
+
+-- ---- accounting ------------------------------------------------------------
+-- Every model call -- a turn's round or a compaction summary -- writes one
+-- span:turn record and adds its tokens to sess.usage, through these two.
+
+-- The span:turn record for one call: model, TTFB, tokens, tool calls,
+-- think-vs-output, stop. Token fields are left out (not zero) when the
+-- endpoint reported no usage, and usage_reported=false says so. `cut` keeps a
+-- reply that hit the reply limit visible even when the stop is tool_use.
+-- `extra` adds fields (compaction=true for a summary call).
+local function record_call(tel, tctx, model, msg, stop, ttfb_ms, extra)
+  if not tel then return end
+  local tc, think_c, text_c = 0, 0, 0
+  for _, b in ipairs(msg.content or {}) do
+    if b.type == "tool_use" then tc = tc + 1
+    elseif b.type == "thinking" then think_c = think_c + #(b.thinking or "")
+    elseif b.type == "text" then text_c = text_c + #(b.text or "") end
+  end
+  local u = msg.usage
+  local d = {
+    model = model, ttfb_ms = ttfb_ms,
+    in_tokens = u and (u.input_tokens or 0) or nil,
+    out_tokens = u and (u.output_tokens or 0) or nil,
+    cache_read = u and (u.cache_read_input_tokens or 0) or nil,
+    cache_write = u and (u.cache_creation_input_tokens or 0) or nil,
+    reasoning_tokens = u and u.reasoning_tokens or nil,
+    cut = (msg.cut or stop == "max_tokens") and true or nil,
+    tool_calls = tc, think_chars = think_c, text_chars = text_c, stop = stop,
+  }
+  if not u then d.usage_reported = false end
+  for k, v in pairs(extra or {}) do d[k] = v end
+  tel.turn(tctx, d)
+end
+
+-- Add one call's usage to sess.usage. Returns the table, or nil when the
+-- call reported none (counted in sess.usage.unreported instead).
+local function add_usage(sess, msg, stop)
+  sess.usage = sess.usage or { input = 0, output = 0, cached = 0, cache_write = 0, turns = 0 }
+  local su = sess.usage
+  if msg.cut or stop == "max_tokens" then su.cuts = (su.cuts or 0) + 1 end
+  local u = msg.usage
+  if not u then
+    su.unreported = (su.unreported or 0) + 1
+    return nil
+  end
+  su.input  = (su.input or 0) + (u.input_tokens or 0)
+  su.output = (su.output or 0) + (u.output_tokens or 0)
+  su.cached = (su.cached or 0) + (u.cache_read_input_tokens or 0)
+  su.cache_write = (su.cache_write or 0) + (u.cache_creation_input_tokens or 0)
+  if u.reasoning_tokens then su.reasoning = (su.reasoning or 0) + u.reasoning_tokens end
+  return u
 end
 
 -- ---- compaction ------------------------------------------------------------
@@ -2214,34 +2298,19 @@ function M.run_on(sess, user_text, on_text, opts)
     -- One turn span: model / TTFB / tokens / tool-calls / think-vs-output.
     -- Emitted before usage is scrubbed off msg, counted from the blocks the
     -- model produced this round.
-    if tel then
-      local tc, think_c, text_c = 0, 0, 0
-      for _, b in ipairs(msg.content or {}) do
-        if b.type == "tool_use" then tc = tc + 1
-        elseif b.type == "thinking" then think_c = think_c + #(b.thinking or "")
-        elseif b.type == "text" then text_c = text_c + #(b.text or "") end
-      end
-      tel.turn(tctx, {
-        model = sess.model, ttfb_ms = ttfb_ms,
-        in_tokens = (msg.usage and msg.usage.input_tokens) or 0,
-        out_tokens = (msg.usage and msg.usage.output_tokens) or 0,
-        cache_read = (msg.usage and msg.usage.cache_read_input_tokens) or 0,
-        cache_write = (msg.usage and msg.usage.cache_creation_input_tokens) or 0,
-        tool_calls = tc, think_chars = think_c, text_chars = text_c, stop = stop,
-      })
-    end
+    record_call(tel, tctx, sess.model, msg, stop, ttfb_ms)
     -- Live progress counters the watchdog reads: turns taken vs tool rounds run.
     sess._turns = (sess._turns or 0) + 1
-    -- Account before the message joins the transcript: `usage` is our own
-    -- annotation, and sending it back to the API on the next turn would be a
-    -- wire-shape error.
-    if msg.usage then
-      sess.usage = sess.usage or { input = 0, output = 0, cached = 0, cache_write = 0, turns = 0 }
-      sess.usage.input  = sess.usage.input  + (msg.usage.input_tokens or 0)
-      sess.usage.output = sess.usage.output + (msg.usage.output_tokens or 0)
-      sess.usage.cached = sess.usage.cached + (msg.usage.cache_read_input_tokens or 0)
-      sess.usage.cache_write = (sess.usage.cache_write or 0) + (msg.usage.cache_creation_input_tokens or 0)
-      sess.usage.turns  = sess.usage.turns + 1
+    -- Account before the message joins the transcript: `usage` and `cut` are
+    -- our own annotations, and sending them back to the API on the next turn
+    -- would be a wire-shape error. A call that reported no usage is counted
+    -- as a turn but leaves the last measured prompt size alone: zero would
+    -- read as "the conversation is empty", and the estimate of everything
+    -- newer than the last measurement is the better figure.
+    local u = add_usage(sess, msg, stop)
+    sess.usage.turns = (sess.usage.turns or 0) + 1
+    msg.cut = nil
+    if u then
       -- The whole prompt, not just the uncached part. This is the number that
       -- says how close the conversation is to the context window, and with
       -- prompt caching on, input_tokens alone reads as near-zero on exactly
@@ -2335,6 +2404,8 @@ end
 -- nothing in the agent loop calls them by these names.
 M._to_responses_body = to_responses_body
 M._new_responses_decoder = new_responses_decoder
+M._new_openai_decoder = new_openai_decoder
+M._new_decoder = new_decoder
 M._to_openai_body = to_openai_body
 M._to_anthropic_body = to_anthropic_body
 
