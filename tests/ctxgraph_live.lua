@@ -9,7 +9,7 @@
 -- tail are not listed in the outline or auto-expanded: they are not collapsed.
 -- Run: boggart --eval tests/ctxgraph_live.lua
 bog.store.open()
-dofile("tests/ctxgraph_fresh.lua")({ 701, 702 })
+dofile("tests/ctxgraph_fresh.lua")({ 701, 702, 703, 704 })
 local json = require("json")
 local cg = require("ctxgraph")
 local fails = 0
@@ -19,11 +19,22 @@ local function eq(a, b, msg) ck(a == b, string.format("%s (got %s, want %s)", ms
 local s = { id = 701, model = "mock", context_limit = 200000, memory = "local", messages = {} }
 local be = cg.backend(s)
 
--- count port calls per round
+-- count port calls per round (meta split into reads and writes: on a remote
+-- backend each is a round trip)
 local calls, per_round = {}, {}
+local meta_writes = {}   -- { sid, key, bytes } of every meta write
 for _, op in ipairs({ "put_nodes", "put_edges", "get", "meta", "search", "scan" }) do
   local real = be[op]
-  be[op] = function(...) calls[op] = (calls[op] or 0) + 1; return real(...) end
+  be[op] = function(...)
+    calls[op] = (calls[op] or 0) + 1
+    if op == "meta" then
+      local sid, key, value = ...
+      local rw = value ~= nil and "meta_w" or "meta_r"
+      calls[rw] = (calls[rw] or 0) + 1
+      if value ~= nil then meta_writes[#meta_writes + 1] = { sid = sid, key = key, bytes = #tostring(value) } end
+    end
+    return real(...)
+  end
 end
 
 local script = {
@@ -38,7 +49,8 @@ local function model(body)
   rounds = rounds + 1
   -- what the previous round cost through the port
   per_round[#per_round + 1] = { put_nodes = calls.put_nodes or 0, put_edges = calls.put_edges or 0,
-                                get = calls.get or 0, meta = calls.meta or 0 }
+                                get = calls.get or 0, meta = calls.meta or 0,
+                                meta_r = calls.meta_r or 0, meta_w = calls.meta_w or 0 }
   calls = {}
   local last = body.messages[#body.messages]
   if rounds > 1 and script[rounds - 1][1] == "graph_recall" then
@@ -75,10 +87,19 @@ for k = 1, #script do
   eq(c.put_nodes, 1, "round " .. k .. ": one batched put_nodes")
   eq(c.put_edges, 0, "round " .. k .. ": no separate put_edges")
 end
+-- graph meta: the first round reads the graph's state once per process (a
+-- graph with no state key yet costs one more read, the probe for an older
+-- layout); after that a round reads nothing and writes the state at most once
 for k = 1, #script do
   local c = per_round[k + 1] or {}
-  io.write(string.format("  round %d (%s) through the port: put_nodes=%d put_edges=%d get=%d meta=%d\n",
-    k, script[k][1], c.put_nodes or 0, c.put_edges or 0, c.get or 0, c.meta or 0))
+  ck((c.meta_r or 0) <= (k == 1 and 2 or 0), string.format("round %d: %s meta read(s) (want <= %d)", k,
+    tostring(c.meta_r), k == 1 and 2 or 0))
+  ck((c.meta_w or 0) <= 1, string.format("round %d: %s meta write(s) (want <= 1)", k, tostring(c.meta_w)))
+end
+for k = 1, #script do
+  local c = per_round[k + 1] or {}
+  io.write(string.format("  round %d (%s) through the port: put_nodes=%d put_edges=%d get=%d meta=%d (r=%d w=%d)\n",
+    k, script[k][1], c.put_nodes or 0, c.put_edges or 0, c.get or 0, c.meta or 0, c.meta_r or 0, c.meta_w or 0))
 end
 
 -- ---- the compaction that follows -------------------------------------------------------
@@ -170,6 +191,61 @@ do
   ck(bog.api.compact(r, { stream = function() error("no model call") end, system = function() return "" end }), "compacted")
   eq(#be.scan("702", { "step" }), 4, "the compaction reused all four")
   eq(be.get("702", "cmd/" .. require("ctxgraph.extract").sha("ls"):sub(1, 12)).frontmatter.runs, 3, "the command ran three times, counted once each")
+end
+
+-- ---- what a round writes to meta does not grow with the steps since a compaction --------
+-- (the live list is a range of step numbers, not a list re-encoded every round)
+do
+  local r = { id = 703, model = "mock", memory = "local", messages = { { role = "user", content = "loop" } } }
+  local sizes = {}
+  for i = 1, 40 do
+    r.messages[#r.messages + 1] = { role = "assistant", content = { { type = "tool_use", id = "l" .. i, name = "bash", input = { command = "step " .. i } } } }
+    r.messages[#r.messages + 1] = { role = "user", content = { { type = "tool_result", tool_use_id = "l" .. i, content = "[exit=0]" } } }
+    local from = #meta_writes
+    calls = {}
+    cg.ingest_live(r)
+    ck((calls.meta_r or 0) == 0 or i == 1, "loop round " .. i .. ": no meta read after the first")
+    eq(calls.meta_w or 0, 1, "loop round " .. i .. ": one meta write")
+    local b = 0
+    for j = from + 1, #meta_writes do b = b + meta_writes[j].bytes end
+    sizes[i] = b
+  end
+  ck(sizes[40] - sizes[5] <= 8, string.format("the per-round meta write stays the same size (round 5: %d bytes, round 40: %d)",
+    sizes[5], sizes[40]))
+
+  -- a resumed conversation (a new process: nothing cached) matches its live
+  -- steps instead of ingesting them again, and its compaction reuses them
+  local again = { id = 703, model = "mock", memory = "local", messages = r.messages }
+  eq(cg.ingest_live(again), 0, "a resume ingests no step twice")
+  eq(#be.scan("703", { "step" }), 41, "41 steps in the graph")
+  again.context_limit, again.compact_ratio = 100000, 0.0001
+  ck(bog.api.compact(again, { stream = function() error("no model call") end, system = function() return "" end }), "the resumed conversation compacted")
+  eq(#be.scan("703", { "step" }), 41, "...reusing the live steps")
+  local cmd = be.get("703", "cmd/" .. require("ctxgraph.extract").sha("step 7"):sub(1, 12))
+  eq(cmd and cmd.frontmatter.runs, 1, "...each folded in once")
+end
+
+-- ---- a graph written before the state key (separate meta keys) still loads ---------------
+do
+  local sq = require("ctxgraph.sqlite")
+  local msgs = { { role = "user", content = "old graph" },
+    { role = "assistant", content = { { type = "tool_use", id = "o1", name = "bash", input = { command = "old 1" } } } },
+    { role = "user", content = { { type = "tool_result", tool_use_id = "o1", content = "[exit=0]" } } } }
+  local ingest = require("ctxgraph.ingest")
+  local steps = ingest.steps_of(msgs, 1, #msgs)
+  local live = {}
+  for i, st in ipairs(steps) do
+    live[i] = { k = ingest.step_key(st), n = i }
+    sq.put_nodes("704", { { id = "s/704/step/" .. i, type = "step", title = "step " .. i, stub = "old", seq = i,
+      frontmatter = { n = i }, digest = string.rep("0", 64), links = {} } })
+  end
+  sq.meta("704", "seq", "2"); sq.meta("704", "steps", "2"); sq.meta("704", "live", json.encode(live))
+  local o = { id = 704, model = "mock", memory = "local", messages = msgs }
+  eq(cg.ingest_live(o), 0, "an old-format graph: its live steps are matched, not ingested again")
+  msgs[#msgs + 1] = { role = "assistant", content = { { type = "tool_use", id = "o2", name = "bash", input = { command = "old 2" } } } }
+  msgs[#msgs + 1] = { role = "user", content = { { type = "tool_result", tool_use_id = "o2", content = "[exit=0]" } } }
+  eq(cg.ingest_live(o), 1, "...and the next round is step 3")
+  ck(be.get("704", "s/704/step/3"), "s/704/step/3 exists")
 end
 
 if fails == 0 then io.write("ok  ctxgraph_live: the live tail is searchable, one put per round, no duplicates\n")

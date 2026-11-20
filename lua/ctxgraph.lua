@@ -190,6 +190,19 @@ function M.rt(sess)
   return sess._ctxg
 end
 
+-- The graph's state (counters, live steps, fork chain; lua/ctxgraph/ingest.lua
+-- load_state), read through the port once per session per process and kept
+-- here; save_state writes it back with one meta call, only when it changed.
+function M.gstate(sess)
+  local rt = M.rt(sess)
+  if not rt.state then rt.state = require("ctxgraph.ingest").load_state(M.backend(sess), M.sid(sess)) end
+  return rt.state
+end
+
+function M.save_state(sess)
+  require("ctxgraph.ingest").save_state(M.backend(sess), M.sid(sess), M.gstate(sess))
+end
+
 -- ---- the read view: this conversation's graph, then the ones it forked from ------
 --
 -- A forked child (spawn{ fork = true }, lua/fork.lua) starts from a copy of its
@@ -197,10 +210,9 @@ end
 -- records in the PARENT's graph. The child reads through to the parent's graph
 -- for ids it does not hold, read-only and as of the fork: a parent record put
 -- after the fork (a higher seq) is not visible. Every write still goes to the
--- child's own graph (M.sid). The chain is kept in the child's own graph meta
--- (key "parent_graph", JSON [{sid, seq}...], nearest parent first), so it
--- survives a resume.
-M.PARENT_KEY = "parent_graph"
+-- child's own graph (M.sid). The chain is kept in the child's own graph state
+-- (`parents`, [{sid, seq, live}...], nearest parent first; lua/ctxgraph/
+-- ingest.lua load_state), so it survives a resume.
 
 -- Record that `csess` was forked from `psess`. Called by fork.adopt once the
 -- child's tier is set. Nothing to do when either side is not on a graph tier,
@@ -212,25 +224,20 @@ function M.on_fork(psess, csess)
   local psid = M.sid(psess)
   -- the parent's live steps (lua/ctxgraph/ingest.lua) are not collapsed: the
   -- child has them in full in its copied transcript
-  local live = {}
-  for _, e in ipairs(require("ctxgraph.ingest").live_list(pbe, psid)) do live[#live + 1] = tonumber(e.n) end
-  local chain = { { sid = psid, seq = tonumber(pbe.meta(psid, "seq") or "0") or 0, live = live } }
+  local pst = M.gstate(psess)
+  local chain = { { sid = psid, seq = pst.seq, live = pst.live } }
   for _, a in ipairs(M.parents(psess)) do chain[#chain + 1] = { sid = a.sid, seq = a.seq, live = a.live } end
-  be.meta(M.sid(csess), M.PARENT_KEY, json.encode(chain))
-  M.rt(csess).parents = chain
+  local cst = M.gstate(csess)
+  cst.parents = json.decode(json.encode(chain))   -- a copy: the parent's ranges keep moving
+  M.save_state(csess)
   return true
 end
 
 -- The graphs this conversation was forked from, nearest first:
--- { {sid, seq, live = {step n...}} }.
+-- { {sid, seq, live = {{lo, hi}...}} } (live: the parent's live step numbers
+-- at the fork, as ranges; an older chain holds plain numbers).
 function M.parents(sess)
-  local rt = M.rt(sess)
-  if rt.parents == nil then
-    local raw = M.backend(sess).meta(M.sid(sess), M.PARENT_KEY)
-    local ok, t = pcall(json.decode, raw or "")
-    rt.parents = (ok and type(t) == "table") and t or {}
-  end
-  return rt.parents
+  return M.gstate(sess).parents or {}
 end
 
 -- Where reads look, in order: { { sid, max_seq?, live } }. The first is the
@@ -239,10 +246,10 @@ end
 -- for a parent): their records are searchable but not outline lines.
 function M.sources(sess)
   local ingest = require("ctxgraph.ingest")
-  local out = { { sid = M.sid(sess), live = ingest.live_set(M.backend(sess), M.sid(sess)) } }
+  local out = { { sid = M.sid(sess), live = ingest.live_set(M.gstate(sess)) } }
   for _, p in ipairs(M.parents(sess)) do
     local live = {}
-    for _, n in ipairs(p.live or {}) do live[tonumber(n)] = true end
+    for _, n in ipairs(ingest.ranges_numbers(p.live)) do live[n] = true end
     out[#out + 1] = { sid = p.sid, max_seq = tonumber(p.seq), parent = true, live = live }
   end
   return out
@@ -310,24 +317,29 @@ function M.compact(sess, msgs, start, task, opts)
     root = ok and r or (sys and sys.cwd and sys.cwd()) or nil
   end
   local rt = M.rt(sess)
-  local got = ingest.run(be, sid, msgs, from, start - 1, { root = root, digests = rt.digests, now = opts.now })
+  local gs = M.gstate(sess)
+  local got = ingest.run(be, sid, msgs, from, start - 1, { root = root, digests = rt.digests, now = opts.now,
+                                                          state = gs })
   -- the live-ingest cursor follows the kept tail to its new place (after the
   -- outline): msgs[i] for i >= start becomes message i - start + 2
   if rt.cursor then rt.cursor = math.max(2, rt.cursor - start + 2) end
-  local k = ingest.counter(be, sid, "compactions", 1)
+  gs.compactions = gs.compactions + 1
+  local k = gs.compactions
   local cid = string.format("s/%s/compaction/%d", sid, k)
   local links = {}
   for _, id in ipairs(got.span_ids) do links[#links + 1] = { type = "collapsed", dst = id } end
   local steps = got.steps
   local crec = { id = cid, type = "compaction", title = "compaction " .. k, links = links,
-    seq = tonumber(be.meta(sid, "seq") or "0") + 1, created = opts.now,
+    seq = gs.seq + 1, created = opts.now,
     frontmatter = { n = k, first_step = steps[1] and steps[1].n or nil, last_step = steps[#steps] and steps[#steps].n or nil,
                     steps = #steps, spans = #got.span_ids } }
   crec.stub = string.format("compaction %d: %d steps into %d spans", k, #steps, #got.span_ids)
   crec.digest = require("ctxgraph.extract").sha(cid .. "\0" .. crec.stub)
   crec.tokens = 0
-  be.meta(sid, "seq", tostring(crec.seq))
+  gs.seq = crec.seq
   got.records[#got.records + 1] = crec
+  -- the state first: a crash after it leaves unused numbers, never reused ones
+  M.save_state(sess)
   be.put_nodes(sid, got.records)
   if #got.edges > 0 then be.put_edges(sid, got.edges) end
 
@@ -374,7 +386,9 @@ function M.ingest_live(sess)
     root = ok and r or (sys and sys.cwd and sys.cwd()) or nil
   end
   local got = require("ctxgraph.ingest").run(be, sid, msgs, from, #msgs,
-    { root = root, digests = rt.digests, live = true, match = rt.cursor == nil })
+    { root = root, digests = rt.digests, live = true, match = rt.cursor == nil, state = M.gstate(sess) })
+  -- the state first: a crash after it leaves unused numbers, never reused ones
+  M.save_state(sess)
   if #got.records > 0 then be.put_nodes(sid, got.records) end
   if #got.edges > 0 then be.put_edges(sid, got.edges) end
   rt.cursor = #msgs + 1

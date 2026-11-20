@@ -54,7 +54,10 @@
 --                                       Core calls it once per compaction and
 --                                       once per tool round (live ingest), with
 --                                       a batch's edges carried as links, so
---                                       put_edges is rarely needed
+--                                       put_edges is rarely needed. A tool
+--                                       round's port traffic in steady state:
+--                                       one put_nodes, one meta write ("graph"),
+--                                       a get per entity the round touches
 --   put_edges(sid, edges)              add { src, type, dst } links (idempotent)
 --   get(sid, id) -> record | nil       with its links
 --   children(sid, id, type?) -> {record}   records `id` links to (by edge type),
@@ -69,11 +72,26 @@
 --   record_claim(sid, claim) -> id, created   add a claim record unless one with
 --                                       its id exists (claims only add)
 --   set_claim_state(sid, id, state) -> true | nil, err
---   meta(sid, key, value?) -> value    small per-session counters/state (keys
---                                       core uses: seq, steps, spans, threads,
---                                       compactions, live, parent_graph,
---                                       thread_agent/<id>); with a
---                                       value, stores it (strings only)
+--   meta(sid, key, value?) -> value    small per-session state; with a value,
+--                                       stores it (strings only). Values are
+--                                       opaque to a backend. Keys core uses:
+--                                       "graph"  the graph's state, one JSON
+--                                         value (counters, live step ranges,
+--                                         a fork's parent chain); read once
+--                                         per session per process, written at
+--                                         most once per tool round and once
+--                                         per compaction or note. Its size does
+--                                         not grow with the conversation.
+--                                       "thread_agent/<agent id>"  a spawned
+--                                         child's thread record id; written
+--                                         when a spawn is ingested, read when
+--                                         its answer is seen.
+--                                       Older graphs used "seq", "steps",
+--                                       "spans", "threads", "compactions",
+--                                       "live" and "parent_graph"; core reads
+--                                       them only when "graph" is missing (and
+--                                       probes "seq" once to find out), and
+--                                       never writes them again.
 --   export_bundle(sid) -> { records = {record...} }   the whole graph, for a
 --                                       LOKF bundle (lua/ctxgraph/export.lua)
 --

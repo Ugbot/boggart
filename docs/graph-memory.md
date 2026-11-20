@@ -70,8 +70,12 @@ anything has been compacted. Live records are not collapsed: the outline does
 not list them and auto-expand does not pick them (they are in full in the
 tail), and the outline itself is not touched between compactions. The
 compaction that later collapses those steps reuses their records rather than
-ingesting the messages again; the graph meta key `live` lists the live steps
-(step key and number, in order) so this also holds after a resume.
+ingesting the messages again. The live steps are kept as ranges of step
+numbers in the graph's state (one JSON value under the meta key `graph`, with
+the graph's counters and a fork's parent chain), and each step record carries
+its step key, so this also holds after a resume. Core reads that state once
+per process and writes it at most once per round, so a round costs one
+`put_nodes` and one `meta` write, whatever the conversation's length.
 
 ## Tools
 
@@ -99,8 +103,8 @@ the child's own later outlines see the parent's records as they were at the
 fork (records the parent puts afterwards are not visible). The view is
 read-only: the child's notes and compactions go to its own graph, and a note
 about a parent record names it in its frontmatter (`subject`, `subject_graph`)
-without a link. The chain is stored in the child's graph meta
-(`parent_graph`), so it survives a resume; a child on a different backend
+without a link. The chain is stored in the child's graph state
+(meta key `graph`), so it survives a resume; a child on a different backend
 from its parent gets no view.
 
 ## Backends

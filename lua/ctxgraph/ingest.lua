@@ -97,12 +97,6 @@ local function render(st)
   return table.concat(out, "\n")
 end
 
-local function counter(be, sid, key, add)
-  local n = tonumber(be.meta(sid, key) or "0") or 0
-  if add then n = n + add; be.meta(sid, key, tostring(n)) end
-  return n
-end
-M.counter = counter
 
 local function overlap(a, set)
   if #a == 0 then return 1 end
@@ -180,16 +174,120 @@ end
 
 local function digest_of(body, extra) return ex.sha((body or "") .. "\0" .. (extra or "")) end
 
+-- ---- the graph's state ------------------------------------------------------------
+-- A graph's counters (seq, steps, spans, threads, compactions), its live steps
+-- and, for a fork, the graphs it reads through to are one small JSON value
+-- under the meta key "graph". Core reads it once per process (the caller
+-- caches the table) and writes it at most once per tool round and once per
+-- compaction, so a remote backend sees one meta round trip per round, not one
+-- per counter. Its size does not grow with the conversation: the live steps
+-- are kept as ranges of step numbers.
+--
+--   { v = 1, seq, steps, spans, threads, compactions,
+--     live = { {lo, hi}... },          -- live (not yet collapsed) step numbers
+--     parents = { {sid, seq, live = { {lo, hi}... }}... } }   -- a fork's chain
+--
+-- Graphs written before this key existed kept each counter, the live list
+-- (JSON [{k, n}]) and the fork chain under their own keys; load_state reads
+-- those once when "graph" is missing, and the next save writes "graph". The
+-- old keys are left as they are and never read again.
+M.STATE_KEY = "graph"
+local COUNTERS = { "seq", "steps", "spans", "threads", "compactions" }
+
+-- Ranges of integers, ascending and disjoint: { {lo, hi}... }.
+local function ranges_add(rs, n)
+  local last = rs[#rs]
+  if last and n == last[2] + 1 then last[2] = n
+  elseif last and n <= last[2] then
+    -- out of order: rebuild (never expected; kept correct anyway)
+    local set = {}
+    for _, r in ipairs(rs) do for i = r[1], r[2] do set[i] = true end end
+    set[n] = true
+    local nums = {}
+    for i in pairs(set) do nums[#nums + 1] = i end
+    table.sort(nums)
+    for i = #rs, 1, -1 do rs[i] = nil end
+    for _, i in ipairs(nums) do
+      local l = rs[#rs]
+      if l and i == l[2] + 1 then l[2] = i else rs[#rs + 1] = { i, i } end
+    end
+  else rs[#rs + 1] = { n, n } end
+end
+
+local function ranges_numbers(rs)
+  local out = {}
+  for _, r in ipairs(rs or {}) do
+    if type(r) == "table" then
+      for i = tonumber(r[1]) or 1, tonumber(r[2]) or 0 do out[#out + 1] = i end
+    elseif tonumber(r) then
+      out[#out + 1] = tonumber(r)   -- an older chain: plain step numbers
+    end
+  end
+  return out
+end
+M.ranges_numbers = ranges_numbers
+
+function M.ranges_of(nums)
+  local sorted = {}
+  for _, n in ipairs(nums) do sorted[#sorted + 1] = tonumber(n) end
+  table.sort(sorted)
+  local rs = {}
+  for _, n in ipairs(sorted) do ranges_add(rs, n) end
+  return rs
+end
+
+-- load_state(be, sid) -> state. One meta read for a graph that has the
+-- state key; a graph without one costs one more (the "seq" probe), and an
+-- older-layout graph a few more, once.
+function M.load_state(be, sid)
+  local raw = be.meta(sid, M.STATE_KEY)
+  local ok, t = pcall(json.decode, raw or "")
+  local st
+  if ok and type(t) == "table" then
+    st = t
+    st._saved = raw
+  else
+    st = { _keys = {} }
+    if be.meta(sid, "seq") ~= nil then
+      for _, k in ipairs(COUNTERS) do st[k] = be.meta(sid, k) end
+      local okl, l = pcall(json.decode, be.meta(sid, "live") or "")
+      st.live = {}
+      for _, e in ipairs((okl and type(l) == "table") and l or {}) do
+        local n = tonumber(e.n)
+        if n then ranges_add(st.live, n); st._keys[n] = e.k end
+      end
+      local okp, p = pcall(json.decode, be.meta(sid, "parent_graph") or "")
+      if okp and type(p) == "table" and #p > 0 then st.parents = p end
+    end
+  end
+  for _, k in ipairs(COUNTERS) do st[k] = tonumber(st[k]) or 0 end
+  st.live = st.live or {}
+  st._keys = st._keys or {}
+  return st
+end
+
+-- save_state(be, sid, state): one meta write, skipped when nothing changed.
+function M.save_state(be, sid, st)
+  local out = { v = 1, live = st.live, parents = st.parents }
+  for _, k in ipairs(COUNTERS) do out[k] = st[k] end
+  local enc = json.encode(out)
+  if enc ~= st._saved then
+    be.meta(sid, M.STATE_KEY, enc)
+    st._saved = enc
+  end
+end
+
 -- ---- live steps ------------------------------------------------------------------
 -- Steps are ingested as their tool round completes (ctx.live), not only at a
 -- compaction, so the live tail is searchable. Those steps are "live": in the
--- graph but not collapsed. The graph meta key "live" lists them in
--- conversation order, as JSON [{k = step key, n = step number}]. A later
--- ingest of the same messages (the compaction that collapses them, or a live
--- ingest after a resume) matches its steps against that list in order and
--- reuses their records instead of ingesting them twice. A compaction drops the
--- steps it collapses from the list; what is left is the kept tail.
-M.LIVE_KEY = "live"
+-- graph but not collapsed; the state's `live` ranges hold their numbers. A
+-- later ingest of the same messages (the compaction that collapses them, or a
+-- live ingest after a resume) matches its steps against the live steps in
+-- order, by step key, and reuses their records instead of ingesting them
+-- twice. A compaction drops the steps it collapses from the live ranges; what
+-- is left is the kept tail. A step's key is in its record's frontmatter
+-- (`key`) and cached in the state table (`_keys`, not saved), so matching
+-- costs a get per live step only after a resume.
 
 -- A step's identity across ingests: its opening message, which is never
 -- changed once the next request has been sent.
@@ -198,16 +296,25 @@ function M.step_key(st)
   return ex.sha(ok and enc or tostring(st.text)):sub(1, 32)
 end
 
-function M.live_list(be, sid)
-  local raw = be.meta(sid, M.LIVE_KEY)
-  local ok, t = pcall(json.decode, raw or "")
-  return (ok and type(t) == "table") and t or {}
+-- The live steps in conversation order: { {k = step key, n = step number} }.
+function M.live_entries(be, sid, st)
+  local out = {}
+  for _, n in ipairs(ranges_numbers(st.live)) do
+    local k = st._keys[n]
+    if k == nil then
+      local r = be.get(sid, string.format("s/%s/step/%d", sid, n))
+      k = r and r.frontmatter and r.frontmatter.key or false
+      st._keys[n] = k
+    end
+    out[#out + 1] = { k = k or nil, n = n }
+  end
+  return out
 end
 
 -- The step numbers of the live (not yet collapsed) steps, as a set.
-function M.live_set(be, sid)
+function M.live_set(st)
   local set = {}
-  for _, e in ipairs(M.live_list(be, sid)) do if tonumber(e.n) then set[tonumber(e.n)] = true end end
+  for _, n in ipairs(ranges_numbers(st.live)) do set[n] = true end
   return set
 end
 
@@ -231,23 +338,26 @@ function M.collapsed(r, live)
 end
 
 -- ingest(be, sid, msgs, from, to, ctx) -> { steps, spans, records, edges, span_ids }
--- ctx = { root, digests = { [tool_use_id] = content sha256 }, now, live, match }
+-- ctx = { root, digests = { [tool_use_id] = content sha256 }, now, live, match, state }
 -- ctx.live: a live ingest (after a tool round): steps only, no spans, and the
--- new steps are added to the live list; with ctx.match (no cursor: a resume)
--- its steps are matched against the live list first. Otherwise a compaction: the steps are
--- collapsed into spans and leave the live list. Steps already on the live list
--- are reused, never ingested again. Edges from records in the batch are
--- carried as their links, so a batch is normally one put_nodes; `edges` holds
--- only those whose source is not in it (normally none).
+-- new steps are added to the live steps; with ctx.match (no cursor: a resume)
+-- its steps are matched against the live steps first. Otherwise a compaction: the steps are
+-- collapsed into spans and leave the live steps. Live steps are reused, never
+-- ingested again. Edges from records in the batch are carried as their links,
+-- so a batch is normally one put_nodes; `edges` holds only those whose source
+-- is not in it (normally none).
+-- ctx.state: the graph's state (load_state), updated in place; the caller
+-- saves it (save_state). Without it the state is loaded and saved here.
 function M.run(be, sid, msgs, from, to, ctx)
   ctx = ctx or {}
+  local gs = ctx.state or M.load_state(be, sid)
   local steps = M.steps_of(msgs, from, to)
-  local live = M.live_list(be, sid)
-  local matched, last_matched = {}, 0
   -- A live ingest from a known cursor covers only messages never ingested,
   -- so it does not match: two rounds can be byte-identical (servers that
   -- number calls per response reuse call_0) and must stay two steps.
   local match = not ctx.live or ctx.match
+  local live = match and M.live_entries(be, sid, gs) or {}
+  local matched, last_matched = {}, 0
   do
     local p = 1
     for _, st in ipairs(steps) do
@@ -263,7 +373,7 @@ function M.run(be, sid, msgs, from, to, ctx)
     end
   end
   local recs, edges, cache = {}, {}, {}
-  local seq = counter(be, sid, "seq")
+  local seq = gs.seq
   local function nextseq() seq = seq + 1; return seq end
   local function load(id)
     if cache[id] == nil then cache[id] = be.get(sid, id) or false end
@@ -281,7 +391,7 @@ function M.run(be, sid, msgs, from, to, ctx)
   end
   local function edge(src, t, dst) edges[#edges + 1] = { src = src, type = t, dst = dst } end
 
-  local step_n = counter(be, sid, "steps")
+  local step_n = gs.steps
   local fresh = {}
   for _, st in ipairs(steps) do
     if st.done then
@@ -312,7 +422,7 @@ function M.run(be, sid, msgs, from, to, ctx)
     end
     st.stub = stubs.step(st, ex)
   end
-  if #fresh > 0 then counter(be, sid, "steps", #fresh) end
+  gs.steps = step_n
 
   -- entities and claims, in step order so counts and versions accumulate
   -- (only for steps not already in the graph)
@@ -322,7 +432,7 @@ function M.run(be, sid, msgs, from, to, ctx)
     local okr, raw = pcall(json.encode, st.messages)
     local srec = put({ id = st.id, type = "step", title = "step " .. st.n, stub = st.stub, body = body,
       body_ref = ref, raw = okr and raw or nil, seq = nextseq(),
-      frontmatter = { n = st.n, kind = st.kind, outcome = st.failed and "failed" or "ok",
+      frontmatter = { n = st.n, kind = st.kind, key = st.key, outcome = st.failed and "failed" or "ok",
                       tools = #st.calls > 0 and (function()
                         local ns = {}
                         for _, c in ipairs(st.calls) do ns[#ns + 1] = c.name end
@@ -335,7 +445,8 @@ function M.run(be, sid, msgs, from, to, ctx)
       srec.links[#srec.links + 1] = { type = "has_reasoning", dst = rid }
     end
     for _, sp in ipairs(st.spawns or {}) do
-      local tn = counter(be, sid, "threads", 1)
+      gs.threads = gs.threads + 1
+      local tn = gs.threads
       local tid = string.format("s/%s/thread/%d", sid, tn)
       local agent = M.spawned_id(sp.result)
       local tf = { task = sp.input.task, step = st.n, fork = sp.input.fork and true or nil,
@@ -448,17 +559,14 @@ function M.run(be, sid, msgs, from, to, ctx)
     end
   end
 
-  -- the live list: a live ingest appends its new steps; a compaction drops
+  -- the live steps: a live ingest adds its new steps; a compaction drops
   -- what it collapses (and anything listed before it, which is stale)
-  local keep = {}
   if ctx.live then
-    for _, e in ipairs(live) do keep[#keep + 1] = e end
-    for _, st in ipairs(fresh) do keep[#keep + 1] = { k = st.key, n = st.n } end
+    for _, st in ipairs(fresh) do ranges_add(gs.live, st.n); gs._keys[st.n] = st.key end
   else
-    for j = last_matched + 1, #live do if not matched[j] then keep[#keep + 1] = live[j] end end
-  end
-  if (ctx.live and #fresh > 0) or (not ctx.live and #keep ~= #live) then
-    be.meta(sid, M.LIVE_KEY, #keep > 0 and json.encode(keep) or "[]")
+    local keep = {}
+    for j = last_matched + 1, #live do if not matched[j] then keep[#keep + 1] = live[j].n end end
+    gs.live = M.ranges_of(keep)
   end
 
   local function finish(spans, span_ids)
@@ -471,7 +579,8 @@ function M.run(be, sid, msgs, from, to, ctx)
     local list = {}
     for _, r in pairs(recs) do list[#list + 1] = r end
     table.sort(list, function(a, b) return (a.seq or 0) < (b.seq or 0) end)
-    be.meta(sid, "seq", tostring(seq))
+    gs.seq = seq
+    if not ctx.state then M.save_state(be, sid, gs) end
     return { steps = steps, fresh = fresh, spans = spans, records = list, edges = rest, span_ids = span_ids }
   end
   if ctx.live then return finish({}, {}) end
@@ -479,7 +588,7 @@ function M.run(be, sid, msgs, from, to, ctx)
   -- spans
   local spans = M.spans_of(steps)
   local span_ids = {}
-  local span_n = counter(be, sid, "spans")
+  local span_n = gs.spans
   for _, sp in ipairs(spans) do
     span_n = span_n + 1
     local touched, seen, cmds = {}, {}, {}
@@ -515,7 +624,7 @@ function M.run(be, sid, msgs, from, to, ctx)
                       tokens = sp.tokens, closed_by = sp.closed_by } })
     span_ids[#span_ids + 1] = id
   end
-  counter(be, sid, "spans", #spans)
+  gs.spans = span_n
   return finish(spans, span_ids)
 end
 

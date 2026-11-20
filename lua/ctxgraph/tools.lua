@@ -76,8 +76,10 @@ function M.note(sess, a)
       if r then subject = cand; subject_graph = src.parent and src.sid or nil; break end
     end
   end
-  local seq = tonumber(be.meta(sid, "seq") or "0") + 1
-  be.meta(sid, "seq", tostring(seq))
+  local gs = cg.gstate(sess)
+  gs.seq = gs.seq + 1
+  local seq = gs.seq
+  cg.save_state(sess)
   local id = "claim/" .. ex.sha((subject or about or "") .. "\0note:" .. text .. "\0" .. sid):sub(1, 16)
   local links = {}
   if subject and not subject_graph then links[1] = { type = "about", dst = subject } end
