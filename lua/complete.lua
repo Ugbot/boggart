@@ -145,6 +145,8 @@ M.commands = {
                        args = { "auto", "smart", "manual", "chat" } },
   { name = "dispatch", help = "optional auto-routing: hand different-enough requests to a specialist",
                        args = { "on", "off" } },
+  { name = "autoskills", help = "pick each turn's skills by what it asks (BM25 over the skills)",
+                       args = { "on", "off" } },
   -- common git tasks: run directly, fall back to the model on failure
   { name = "status",   help = "git status (short)" },
   { name = "diff",     help = "git diff of the working tree" },
@@ -180,7 +182,7 @@ M.GROUPS = {
   { title = "what it may do",
     names = { "mode", "trust", "tools" } },
   { title = "running work",
-    names = { "until", "react", "agents", "dispatch", "kpis", "trace", "judge", "ladder", "harden", "station", "tracker", "story", "perf" } },
+    names = { "until", "react", "agents", "dispatch", "autoskills", "kpis", "trace", "judge", "ladder", "harden", "station", "tracker", "story", "perf" } },
   { title = "git",
     names = { "status", "diff", "commit", "push", "sync" } },
   { title = "the harness itself",

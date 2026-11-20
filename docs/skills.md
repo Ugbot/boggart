@@ -20,6 +20,38 @@ Optional **`invocation`**: `"model"` (default — `find_skill` / auto-dispatch m
 surface it) or `"user"` (only when explicitly granted; hidden from default
 `find_skill`). Markdown imports map `disable-model-invocation: true` → `"user"`.
 
+Optional **`keywords`**: a list of extra routing words (`{ "story", "chapter",
+"scene" }`), indexed with the tool names so a request phrased one way meets a skill
+described another.
+
+## Auto-routing the session's own agent (`/autoskills`)
+
+Off by default; `/autoskills on` (persisted as `config.skills.auto`) or
+`BOGGART_SKILL_ROUTE=1` turns it on. While on, each new user turn of a session with
+**no skills set** picks its skills by BM25 over that turn's text (the same FTS5 index
+as `find_skill`, `lua/skillrouter.lua`), so a story request loads the writing skills
+and offers only their tools and instructions instead of the whole registry. No model
+call is involved.
+
+- Picked: hits with a positive score, at least 80% of the best, at most 3; `core` and
+  `comms` are never picked (core is always added).
+- The agent also always gets `core` (read, write, edit, bash, list) and the meta tools
+  `find_skill`, `skills`, `remember`, `recall`, `forget`, so it can still reach a
+  skill the router missed.
+- Function words ("the", "next", "where", "please", ...) are dropped before the
+  search, so "draft the next chapter" is not matched to a skill that says "what to
+  do next".
+- A turn under three content words ("yes", "keep going") or with no match keeps the
+  current set. While the best hit is already loaded the set is kept as is, so the
+  tool list at the head of the prompt cache does not change turn to turn.
+- Skills set on the session (or an agent spec) always win: routing never replaces a
+  choice someone made.
+- Each change is recorded on `sess.routed` (`/autoskills` shows it), logged, and
+  emitted as `skills:routed { session, skills, why }`.
+
+The REPL, the cTUI and Studio all build the session's agent through
+`thread.session_agent(sess, skills, text)`, which is where routing happens.
+
 ## `provides` — a table keyed by tool name
 
 `provides` maps a tool name to its described definition. Each value has an optional

@@ -937,6 +937,17 @@ local function handle_command(line)
     if rest == "on" or rest == "off" then bog.dispatch.set(rest == "on") end
     io.write("auto-dispatch = ", bog.dispatch.enabled() and "on" or "off",
       "   (/dispatch on | /dispatch off)\n")
+  elseif cmd == "autoskills" then
+    -- /autoskills [on|off] -- pick each turn's skills by BM25 over its text
+    -- when the session has none set (lua/skillrouter.lua). Persists.
+    if rest == "on" or rest == "off" then bog.skillrouter.set_auto(rest == "on") end
+    local S = bog.active_session and bog.active_session()
+    local r = S and S.routed
+    io.write("skill auto-routing = ", bog.skillrouter.auto_enabled() and "on" or "off",
+      "   (/autoskills on | /autoskills off)\n")
+    if r and r.skills then
+      io.write("  this session: ", table.concat(r.skills, ", "), "  (", tostring(r.why), ")\n")
+    end
   elseif cmd == "new" then
     bog.new_session()
     if bog.clear_ui then pcall(bog.clear_ui) end
@@ -1208,7 +1219,7 @@ local function run_one_turn(text)
     bog.log_tool(name, input)
   end
   if bog.thread and bog.thread.session_agent then
-    local okrec, rec = pcall(bog.thread.session_agent, S)
+    local okrec, rec = pcall(bog.thread.session_agent, S, nil, text)
     if okrec and rec and rec.opts then
       if opts.system == nil then opts.system = rec.opts.system end
       if opts.checkpoint == nil then opts.checkpoint = rec.opts.checkpoint end

@@ -10,6 +10,8 @@ return {
   invocation = "model",
   fallback = { "core" },
   tools = { "story", "read" },
+  keywords = { "story", "book", "novel", "chapter", "scene", "character", "plot", "canon",
+               "lore", "notes", "draft", "prose", "manuscript", "worldbuilding" },
 
   before = function(ctx)
     local ok_b, sb = pcall(require, "story.book")

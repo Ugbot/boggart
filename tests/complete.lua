@@ -41,7 +41,7 @@ local want = { help = true, tools = true, auth = true, doctor = true,
   trust = true, model = true, models = true, project = true, endpoint = true, effort = true, agents = true, kpis = true, fork = true,
   trace = true, judge = true, ladder = true, harden = true, station = true, tracker = true, story = true, perf = true,
   ["until"] = true, react = true, new = true, clear = true, compact = true,
-  cost = true, copy = true, mode = true, dispatch = true,
+  cost = true, copy = true, mode = true, dispatch = true, autoskills = true,
   status = true, diff = true, commit = true, push = true, sync = true, quit = true, wq = true }
 for _, c in ipairs(C.commands) do
   check(want[c.name], "unexpected command in registry: /" .. c.name)

@@ -9,6 +9,8 @@ return {
   invocation = "model",
   fallback = { "core" },
   tools = { "story", "read" },
+  keywords = { "story", "book", "world", "place", "map", "city", "location", "canon", "lore",
+               "character", "alive", "item" },
 
   -- The map of the world, so the model picks real place names, not plausible ones.
   before = function(ctx)

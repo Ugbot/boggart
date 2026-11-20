@@ -2820,8 +2820,12 @@ function M.run_turn(user_text, on_text)
   if bog.ensure_session then pcall(bog.ensure_session, sess) end
   local opts = sess.agent and sess.agent.id ~= nil and sess.agent.id == sess.id
     and sess.agent.opts or nil
-  if not opts and bog.thread and bog.thread.session_agent then
-    local ok, rec = pcall(bog.thread.session_agent, sess)
+  -- With skill auto-routing on, the agent is rebuilt for every new turn: its
+  -- skills (and so its tools and prompt) follow what this turn asks for.
+  local reroute = user_text ~= nil and bog.skillrouter and bog.skillrouter.auto_enabled
+    and bog.skillrouter.auto_enabled()
+  if (not opts or reroute) and bog.thread and bog.thread.session_agent then
+    local ok, rec = pcall(bog.thread.session_agent, sess, nil, user_text)
     if ok then opts = rec.opts end
   end
   -- Checkpoint the default session to the store after each assistant message /
