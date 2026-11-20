@@ -392,6 +392,13 @@ function M._run(rec, task)
   end
   bog.store.thread_save(rec.id, { messages = rec.session.messages, status = status })
   if rec.parent_id then
+    -- Graph memory: the parent's thread record for this child gets the answer
+    -- here, whether the parent reads it through await, through inbox, or never.
+    local prec = M.fork_parent(rec.parent_id)
+    if prec and prec.session then
+      local okg, gerr = pcall(require("ctxgraph").record_return, prec.session, rec.id, ok, text)
+      if not okg then bog.log("graph memory: child answer not recorded: " .. tostring(gerr)) end
+    end
     swarm.send(rec.id, rec.parent_id, bog.json.encode{
       kind = "result", from = rec.id, agent = rec.spec_name or "agent", ok = ok, text = text,
       -- the parsed object when the child was spawned with a schema, so the
@@ -421,6 +428,10 @@ function M.kill(id)
     pcall(swarm.send, id, parent, bog.json.encode{
       kind = "result", from = id, agent = "agent", ok = false, text = "(killed by operator)",
     })
+    local prec = M.fork_parent(parent)
+    if prec and prec.session then
+      pcall(require("ctxgraph").record_return, prec.session, id, false, "(killed by operator)")
+    end
   end
   return bog.sched.kill(id)
 end

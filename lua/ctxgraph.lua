@@ -332,7 +332,7 @@ function M.compact(sess, msgs, start, task, opts)
   local rt = M.rt(sess)
   local gs = M.gstate(sess)
   local got = ingest.run(be, sid, msgs, from, start - 1, { root = root, digests = rt.digests, now = opts.now,
-                                                          state = gs })
+                                                          state = gs, returns = rt.returns })
   -- the live-ingest cursor follows the kept tail to its new place (after the
   -- outline): msgs[i] for i >= start becomes message i - start + 2
   if rt.cursor then rt.cursor = math.max(2, rt.cursor - start + 2) end
@@ -375,6 +375,42 @@ function M.compact(sess, msgs, start, task, opts)
   return text, stats
 end
 
+-- ---- a child's answer, however it arrives -------------------------------------------
+-- A spawned child reports once, when it exits (lua/thread.lua _run). The
+-- parent may read that report through `await` (ingest folds it in at that
+-- step), only through `inbox`, or never. So the exit records it in the parent's
+-- graph directly: record_return(parent session, child agent id, ok, text).
+-- When the spawn is not in the graph yet (the child finished before the
+-- parent's round was ingested), the answer waits in the session's runtime state
+-- and is folded in when the spawn is ingested. -> true when the thread was
+-- updated now
+function M.record_return(sess, agent, ok, text)
+  agent = tonumber(agent)
+  if not (sess and agent and M.enabled(sess)) then return false end
+  local ingest = require("ctxgraph.ingest")
+  local be, sid = M.backend(sess), M.sid(sess)
+  local ret = { agent = agent, ok = ok and true or false, text = tostring(text or "") }
+  local tid = be.meta(sid, "thread_agent/" .. agent)
+  local tr = tid and be.get(sid, tid)
+  if not tr then
+    local rt = M.rt(sess)
+    rt.returns = rt.returns or {}
+    rt.returns[agent] = ret
+    return false
+  end
+  local gs = M.gstate(sess)
+  local prior = gs.forks and #gs.forks > 0 and ingest.snapshot(tr)
+  ingest.fold_return(tr, ret, nil)
+  if prior then
+    -- a change in place after a fork: it takes a seq of its own
+    gs.seq = gs.seq + 1
+    ingest.keep_for_forks(gs, prior, tr, gs.seq)
+    M.save_state(sess)
+  end
+  be.put_nodes(sid, { tr })
+  return true
+end
+
 -- ---- live ingest ------------------------------------------------------------------
 
 -- After a tool round: ingest the messages not yet in the graph (from the
@@ -411,7 +447,7 @@ function M.ingest_live(sess)
   end
   local got = require("ctxgraph.ingest").run(be, sid, msgs, from, #msgs,
     { root = root, digests = rt.digests, live = true, match = rt.cursor == nil, state = M.gstate(sess),
-      prev = prev })
+      prev = prev, returns = rt.returns })
   -- the state first: a crash after it leaves unused numbers, never reused ones
   M.save_state(sess)
   if #got.records > 0 then be.put_nodes(sid, got.records) end

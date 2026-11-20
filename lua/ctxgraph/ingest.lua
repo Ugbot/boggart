@@ -297,6 +297,40 @@ function M.snapshot(r)
   return { v = tonumber(f.useq) or tonumber(r.seq) or 0, title = r.title, stub = r.stub, body = r.body, fm = fm }
 end
 
+-- keep_for_forks(state, prior, r, useq): r was `prior` (M.snapshot) before
+-- a change at seq `useq`; keep that state in r if a fork saw it.
+function M.keep_for_forks(gs, p, r, useq)
+  local last_fork = 0
+  for _, f in ipairs(gs.forks or {}) do last_fork = math.max(last_fork, tonumber(f) or 0) end
+  r.frontmatter = r.frontmatter or {}
+  local ok, hist = pcall(json.decode, r.frontmatter.asof or "")
+  hist = (ok and type(hist) == "table") and hist or {}
+  if last_fork >= p.v then hist[#hist + 1] = p end
+  r.frontmatter.asof = #hist > 0 and json.encode(hist) or nil
+  r.frontmatter.useq = useq
+end
+
+-- ---- what a child returned ----------------------------------------------------------
+-- fold_return(thread record, { agent, ok, text }, step?) -- the child's answer
+-- into its thread: frontmatter returned, returned_ok, returned_step (the step
+-- that read it, from an await; nil when it was recorded at the child's exit),
+-- the body, stub, digest and tokens.
+function M.fold_return(tr, ret, step_n)
+  local f = tr.frontmatter or {}
+  tr.frontmatter = f
+  f.returned = stubs.line(ret.text, 100)
+  f.returned_ok = ret.ok and true or false
+  f.returned_step = step_n
+  local where = step_n and string.format(" at step %d", step_n) or ""
+  tr.body = (f.spawn_result or tr.body or "") .. string.format("\n\n[agent %d returned%s%s]\n",
+    ret.agent, where, ret.ok and "" or ", failed") .. tostring(ret.text or "")
+  f.spawn_result = f.spawn_result or f.result
+  tr.stub = stubs.entity(tr)
+  tr.digest = digest_of(tr.body, tr.id .. "\0" .. (tr.title or ""))
+  tr.tokens = (#tr.body + 3) // 4
+  return tr
+end
+
 -- ---- live steps ------------------------------------------------------------------
 -- Steps are ingested as their tool round completes (ctx.live), not only at a
 -- compaction, so the live tail is searchable. Those steps are "live": in the
@@ -566,6 +600,9 @@ function M.run(be, sid, msgs, from, to, ctx)
       local tr = put({ id = tid, type = "thread", title = stubs.line(tf.task, 80), body = sp.result,
         seq = nextseq(), frontmatter = tf })
       tr.stub = stubs.entity(tr)
+      -- the child already reported (its exit came before this spawn was ingested)
+      local early = agent and ctx.returns and ctx.returns[agent]
+      if early then M.fold_return(tr, early, nil); ctx.returns[agent] = nil end
       srec.links[#srec.links + 1] = { type = "spawned", dst = tid }
       if agent then be.meta(sid, "thread_agent/" .. agent, tid) end
     end
@@ -577,17 +614,7 @@ function M.run(be, sid, msgs, from, to, ctx)
           local tid = be.meta(sid, "thread_agent/" .. ret.agent)
           local tr = tid and load(tid)
           if tr then
-            local f = tr.frontmatter or {}
-            tr.frontmatter = f
-            f.returned = stubs.line(ret.text, 100)
-            f.returned_ok = ret.ok
-            f.returned_step = st.n
-            tr.body = (f.spawn_result or tr.body or "") .. string.format("\n\n[agent %d returned at step %d%s]\n",
-              ret.agent, st.n, ret.ok and "" or ", failed") .. ret.text
-            f.spawn_result = f.spawn_result or f.result
-            tr.stub = stubs.entity(tr)
-            tr.digest = digest_of(tr.body, tr.id .. "\0" .. (tr.title or ""))
-            tr.tokens = (#tr.body + 3) // 4
+            M.fold_return(tr, ret, st.n)
             put(tr)
             edge(st.id, "collects", tid)
           end
@@ -696,18 +723,12 @@ function M.run(be, sid, msgs, from, to, ctx)
   local function finish(spans, span_ids)
     -- records changed in place after a fork keep the state each fork saw
     if forked then
-      local last_fork = 0
-      for _, f in ipairs(gs.forks) do last_fork = math.max(last_fork, tonumber(f) or 0) end
+      local any = false
       for id, r in pairs(recs) do
-        local p = prior[id]
-        if p then
-          local ok, hist = pcall(json.decode, r.frontmatter.asof or "")
-          hist = (ok and type(hist) == "table") and hist or {}
-          if last_fork >= p.v then hist[#hist + 1] = p end
-          r.frontmatter.asof = #hist > 0 and json.encode(hist) or nil
-          r.frontmatter.useq = seq0 + 1
-        end
+        if prior[id] then M.keep_for_forks(gs, prior[id], r, seq0 + 1); any = true end
       end
+      -- the change's seq is used up, so a fork taken after this batch is later
+      if any and seq < seq0 + 1 then seq = seq0 + 1 end
     end
     -- carry edges as links of their source record when it is in the batch
     local rest = {}

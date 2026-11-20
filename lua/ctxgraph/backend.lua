@@ -39,8 +39,11 @@
 --
 -- Events (step, reasoning, span, thread, compaction) never change once put,
 -- with two exceptions, both put again with the same id and seq:
--- - a thread, when its child's answer is seen, with the answer folded into its
---   body, stub and frontmatter (returned, returned_ok, returned_step);
+-- - a thread, when its child's answer is seen (an await's result, or the
+--   child's exit report), with the answer folded into its body, stub and
+--   frontmatter (returned, returned_ok, returned_step: nil when it came from
+--   the exit report). The exit report is put on its own: one put_nodes of the
+--   thread record, from the child's coroutine, into the parent's graph;
 -- - a step, when user text joins its messages after it was ingested (steering
 --   merged into its trailing tool-results message): body, raw, digest, tokens
 --   and frontmatter.h (the hash of its messages) change, nothing else.

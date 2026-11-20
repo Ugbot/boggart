@@ -7,7 +7,7 @@
 -- await fall in different compactions. A failed child is marked as failed.
 -- Run: boggart --eval tests/ctxgraph_threads.lua
 bog.store.open()
-dofile("tests/ctxgraph_fresh.lua")({ 601, 602 })
+dofile("tests/ctxgraph_fresh.lua")({ 601, 602, 603, 604, 605 })
 local cg = require("ctxgraph")
 local gtools = require("ctxgraph.tools")
 local fails = 0
@@ -79,6 +79,73 @@ ck(t77 and t77.stub:find("unindexed join", 1, true), "the thread collapsed earli
   .. tostring(t77 and t77.stub))
 ck(s2.messages[1].content:find("unindexed join", 1, true), "the rebuilt outline shows it")
 eq(#be.scan("602", { "thread" }), 1, "still one thread record")
+
+-- ---- an answer that never comes through await -----------------------------------------
+-- A child reports when it exits (lua/thread.lua _run). The parent may read the
+-- report only through `inbox`, or never read it; the thread record still gets
+-- the answer, because it is recorded at the child's exit.
+local function thread_of(sid, task) return threads(be, sid)[task] end
+local function record_return(...) return cg.record_return ~= nil and cg.record_return(...) end
+
+-- (1) the parent reads the report through inbox
+n = 200
+local m3 = { { role = "user", content = "Third task." } }
+step(m3, "spawn", { task = "Map the lexer states" }, '{"spawned":91}')
+local s3 = { id = 603, model = "mock", memory = "local", messages = m3, context_limit = 8000, compact_ratio = 0.01 }
+cg.ingest_live(s3)
+ck(thread_of("603", "Map the lexer states"), "the spawn's thread is in the graph")
+-- the child exits: what the actor exit does for graph memory
+ck(record_return(s3, 91, true, "The lexer has four states: start, ident, number, string."),
+  "the child's exit report is recorded in the parent's graph")
+step(m3, "inbox", {}, "from 91: The lexer has four states: start, ident, number, string.")
+cg.ingest_live(s3)
+local t91 = thread_of("603", "Map the lexer states")
+ck(t91 and t91.stub:find("four states", 1, true), "a report read only through inbox is in the thread: " .. tostring(t91 and t91.stub))
+eq(t91 and t91.frontmatter.returned_ok, true, "...marked ok")
+ck(gtools.expand(s3, { id = t91 and t91.id or "?" }):find("start, ident, number, string", 1, true), "expand shows the answer")
+filler(m3, 3)
+ck(bog.api.compact(s3, no_model), "compacted")
+ck(s3.messages[1].content:find("four states", 1, true), "the outline's thread line carries it after a compaction")
+
+-- (2) the parent never reads it; and the child returns before the parent's
+-- spawn round is in the graph
+n = 300
+local m4 = { { role = "user", content = "Fourth task." } }
+step(m4, "spawn", { task = "Check the build flags" }, '{"spawned":92}')
+local s4 = { id = 604, model = "mock", memory = "local", messages = m4, context_limit = 8000, compact_ratio = 0.01 }
+record_return(s4, 92, false, "budget exhausted before checking")
+cg.ingest_live(s4)
+local t92 = thread_of("604", "Check the build flags")
+ck(t92 and t92.stub:find("failed", 1, true) and t92.stub:find("budget exhausted", 1, true),
+  "a child that returned before its spawn was ingested, and was never awaited: " .. tostring(t92 and t92.stub))
+eq(t92 and t92.frontmatter.returned_ok, false, "...marked failed")
+
+-- (3) through the real actor exit: thread._run reports to the parent's graph
+do
+  bog.thread = bog.thread or require("thread")
+  if swarm and swarm.attach then pcall(swarm.attach, bog.db) end
+  n = 400
+  local m5 = { { role = "user", content = "Fifth task." } }
+  step(m5, "spawn", { task = "Summarise the README" }, '{"spawned":95}')
+  local s5 = { id = 605, model = "mock", memory = "local", messages = m5, context_limit = 8000, compact_ratio = 0.01 }
+  cg.ingest_live(s5)
+  bog.thread.live_recs[605] = { id = 605, session = s5 }
+  local child = { id = 95, parent_id = 605, spawned = true, spec_name = "agent",
+    session = { id = 95, model = "mock", messages = {} },
+    opts = { stream = function(_, sink)
+      local said = "The README says: run make, then make test."
+      if sink then sink(said) end   -- what streaming does; _run reports the streamed text
+      return { role = "assistant", content = { { type = "text", text = said } },
+               usage = { input_tokens = 1, output_tokens = 1 } }, "end_turn"
+    end, system = function() return "" end, tools = function() return {} end } }
+  bog.thread.live_recs[95] = child
+  local okr, err = pcall(bog.thread._run, child, "Summarise the README")
+  ck(okr, "the child ran: " .. tostring(err))
+  local t95 = thread_of("605", "Summarise the README")
+  ck(t95 and t95.stub:find("run make, then make test", 1, true),
+    "the actor exit put the child's answer in the parent's thread: " .. tostring(t95 and t95.stub))
+  bog.thread.live_recs[605] = nil
+end
 
 if fails == 0 then io.write("ok  ctxgraph_threads: a thread record holds what its child returned\n")
 else io.write(string.format("FAIL ctxgraph_threads: %d check(s) failed\n", fails)); os.exit(1) end

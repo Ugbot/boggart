@@ -46,8 +46,10 @@ The trigger and the kept tail are the same as summary compaction
   when an `await` result carries that child's answer, the thread is updated
   with it (its stub reads `-> agent N returned at step M: <first line>`, or
   `failed`, and `expand` shows the whole answer), even when the spawn was
-  collapsed at an earlier compaction. A child's answer read only through
-  `inbox` is not folded in.
+  collapsed at an earlier compaction. A child's report is also recorded when
+  the child exits, so its answer reaches the thread when the parent reads it
+  only through `inbox` or never reads it (the stub then has no step:
+  `-> agent N returned: ...`).
 
 Steps are cut into **spans** at a shift in the entities being touched, at the
 end of a retry run, at a spawn, at a new request, or at 12 steps / 8k tokens.
