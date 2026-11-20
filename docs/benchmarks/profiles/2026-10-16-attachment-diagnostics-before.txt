@@ -1,4 +1,4 @@
-Test project /Users/bengamble/boggart/build-asan
+Test project ~/boggart/build-asan
     Start 38: termbench_system
 1/1 Test #38: termbench_system .................***Failed   41.98 sec
 system termbench: startup 0/1
@@ -14,12 +14,12 @@ BMUX_STARTUP {"phase":"assets_registered","ns":108829455749041}
 BMUX_STARTUP {"phase":"core_required","ns":108829462557041}
 BMUX_STARTUP {"phase":"core_initialized","ns":108829735964000}
 BMUX_STARTUP {"phase":"run_enter","ns":108829736005458}
-/Users/bengamble/boggart/tools/termbench/studio_system.lua:163: system benchmark Studio readiness deadline; {"errors":[{"error":{"kind":"timeout","message":"control request deadline exceeded"},"id":"term-eb094c950867b76b05e16a78-27","status":"closed"},{"error":{"kind":"timeout","message":"control request deadline exceeded"},"id":"term-eb094c950867b76b05e16a78-41","status":"disconnected"},{"error":{"kind":"timeout","message":"control request deadline exceeded"},"id":"term-eb094c950867b76b05e16a78-83","status":"disconnected"},{"error":{"kind":"timeout","message":"control request deadline exceeded"},"id":"term-eb094c950867b76b05e16a78-97","status":"closed"}],"frame":{"backend":"software","enabled":false,"ns":0,"readback_ns":0,"rgba":[0,0,0,0],"serial":0,"valid":false,"x":0,"y":0},"live":8,"total":100}
+~/boggart/tools/termbench/studio_system.lua:163: system benchmark Studio readiness deadline; {"errors":[{"error":{"kind":"timeout","message":"control request deadline exceeded"},"id":"term-eb094c950867b76b05e16a78-27","status":"closed"},{"error":{"kind":"timeout","message":"control request deadline exceeded"},"id":"term-eb094c950867b76b05e16a78-41","status":"disconnected"},{"error":{"kind":"timeout","message":"control request deadline exceeded"},"id":"term-eb094c950867b76b05e16a78-83","status":"disconnected"},{"error":{"kind":"timeout","message":"control request deadline exceeded"},"id":"term-eb094c950867b76b05e16a78-97","status":"closed"}],"frame":{"backend":"software","enabled":false,"ns":0,"readback_ns":0,"rgba":[0,0,0,0],"serial":0,"valid":false,"x":0,"y":0},"live":8,"total":100}
 stack traceback:
 	[C]: in global 'error'
-	/Users/bengamble/boggart/tools/termbench/studio_system.lua:163: in function </Users/bengamble/boggart/tools/termbench/studio_system.lua:100>
+	~/boggart/tools/termbench/studio_system.lua:163: in function <~/boggart/tools/termbench/studio_system.lua:100>
 	[C]: in global 'xpcall'
-	/Users/bengamble/boggart/tools/termbench/studio_system.lua:100: in function </Users/bengamble/boggart/tools/termbench/studio_system.lua:99>
+	~/boggart/tools/termbench/studio_system.lua:100: in function <~/boggart/tools/termbench/studio_system.lua:99>
 	[C]: in global 'xpcall'
 	@assets/core/init.lua:920: in function 'core.try'
 	(...tail calls...)

@@ -4,10 +4,9 @@
 --   local     graph memory, minimal SQLite backend
 --   <name>    graph memory on a backend an extension registered as <name>
 --
--- Each value; an unknown one refused with the accepted list; `gestalt` when
--- nothing registered it refused as not installed (headless exits 2 before any
--- request, the REPL falls back to summary); a fake registered as `gestalt`
--- selected and actually used; a backend module loaded from the Lua path at
+-- Each value; a name nothing registered refused as not built in and not
+-- installed (headless exits 2 before any request, the REPL falls back to
+-- summary); a fake registered as `example` selected and actually used; a backend module loaded from the Lua path at
 -- runtime; and the lower-level switches losing to BOGGART_MEMORY.
 -- Run: boggart --eval tests/ctxgraph_memory.lua
 bog.store.open()
@@ -34,34 +33,37 @@ local t = cg.resolve("local", env{})
 ck(t.mode == "graph" and t.backend == "sqlite", "local is graph memory on sqlite")
 
 local _, err = RF.read({}, env{ BOGGART_MEMORY = "bogus" }, "headless")
-ck(err and err:find("BOGGART_MEMORY", 1, true) and err:find("summary|local|gestalt", 1, true),
-  "an unknown tier is refused with the accepted values: " .. tostring(err))
-_, err = RF.read({}, env{ BOGGART_MEMORY = "bogus" }, "repl")
-ck(err, "...in the REPL too")
+ck(err and err:find("BOGGART_MEMORY", 1, true) and err:find("is not built in (summary, local)", 1, true)
+  and err:find("no backend named 'bogus' is installed", 1, true),
+  "a tier that is neither built in nor installed is refused, naming the built-in ones: " .. tostring(err))
+-- core names no extension tier: nothing is special about any other name
+ck(cg.EXTENSION_TIERS == nil, "core keeps no list of extension tier names")
 
--- ---- gestalt, not installed ----------------------------------------------------------
-cg.unregister_backend("gestalt")
-_, err = RF.read({}, env{ BOGGART_MEMORY = "gestalt" }, "headless")
-ck(err and err:find("gestalt", 1, true) and err:find("none is installed", 1, true),
-  "gestalt with no backend: not installed: " .. tostring(err))
-s = assert(RF.read({}, env{ BOGGART_MEMORY = "gestalt" }, "repl"))
+-- ---- example, not installed ----------------------------------------------------------
+cg.unregister_backend("example")
+_, err = RF.read({}, env{ BOGGART_MEMORY = "example" }, "headless")
+ck(err and err:find("example", 1, true) and err:find("no backend named 'example' is installed", 1, true),
+  "example with no backend: not installed: " .. tostring(err))
+s = assert(RF.read({}, env{ BOGGART_MEMORY = "example" }, "repl"))
 eq(s.memory, "summary", "the REPL says so and stays on summary")
+s = assert(RF.read({}, env{ BOGGART_MEMORY = "bogus" }, "repl"))
+eq(s.memory, "summary", "...for any name it cannot find")
 
 -- ...and a headless run stops with exit 2 before any request (the endpoint is
 -- a closed port: had a request been made, the error would be a different one)
 local bin = os.getenv("BOGGART_TEST_BIN") or "./boggart"
 local home = bog.userdir .. "/headless-home"
-local r = sys.exec(string.format("BOGGART_HOME=%q BOGGART_MEMORY=gestalt ANTHROPIC_BASE_URL=http://127.0.0.1:9 "
+local r = sys.exec(string.format("BOGGART_HOME=%q BOGGART_MEMORY=example ANTHROPIC_BASE_URL=http://127.0.0.1:9 "
   .. "ANTHROPIC_API_KEY=x %q -p hello 2>&1", home, bin), 60)
-eq(r.code, 2, "headless -p with BOGGART_MEMORY=gestalt exits 2")
-ck(r.out:find("BOGGART_MEMORY", 1, true) and r.out:find("gestalt", 1, true), "...naming the setting: " .. r.out:sub(1, 200))
+eq(r.code, 2, "headless -p with BOGGART_MEMORY=example exits 2")
+ck(r.out:find("BOGGART_MEMORY", 1, true) and r.out:find("example", 1, true), "...naming the setting: " .. r.out:sub(1, 200))
 
--- ---- a fake registered as gestalt is selected and used ------------------------------------
+-- ---- a fake registered as example is selected and used ------------------------------------
 local g = fake()
-ck(cg.register_backend("gestalt", g), "an extension registers a backend under gestalt")
-s = assert(RF.read({}, env{ BOGGART_MEMORY = "gestalt" }, "headless"))
-eq(s.memory, "gestalt", "gestalt is now accepted")
-local sess = { id = 601, model = "mock", memory = "gestalt", messages = dofile("tests/ctxgraph_fixture.lua")(),
+ck(cg.register_backend("example", g), "an extension registers a backend under example")
+s = assert(RF.read({}, env{ BOGGART_MEMORY = "example" }, "headless"))
+eq(s.memory, "example", "example is now accepted")
+local sess = { id = 601, model = "mock", memory = "example", messages = dofile("tests/ctxgraph_fixture.lua")(),
                context_limit = 8000, compact_ratio = 0.01 }
 ck(cg.enabled(sess), "the session is on graph memory")
 ck(bog.api.compact(sess, { stream = function() error("no model call") end, system = function() return "" end }), "compacted")
@@ -69,7 +71,7 @@ eq(g.calls.put_nodes, 1, "the registered backend got the compaction's records, i
 eq(g.calls.put_edges, nil, "...its edges carried as the records' links, no separate put_edges")
 eq(#require("ctxgraph.sqlite").scan("601"), 0, "nothing went to the sqlite backend")
 ck(#g.scan("601", { "span" }) > 0, "spans are in the registered backend")
-cg.unregister_backend("gestalt")
+cg.unregister_backend("example")
 
 -- ---- a backend module loaded at runtime from the Lua path --------------------------------
 local dir = bog.userdir .. "/extlua"

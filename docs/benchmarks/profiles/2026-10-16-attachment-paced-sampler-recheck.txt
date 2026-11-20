@@ -1,4 +1,4 @@
-Test project /Users/bengamble/boggart/build-asan
+Test project ~/boggart/build-asan
     Start 39: termbench_attach_burst
 1/1 Test #39: termbench_attach_burst ...........***Failed   46.79 sec
 system termbench: startup 0/1

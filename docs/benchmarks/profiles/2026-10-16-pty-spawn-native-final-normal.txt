@@ -1,4 +1,4 @@
-Test project /Users/bengamble/boggart/build
+Test project ~/boggart/build
     Start 5: pty_transport
 1/1 Test #5: pty_transport ....................   Passed    3.55 sec
 

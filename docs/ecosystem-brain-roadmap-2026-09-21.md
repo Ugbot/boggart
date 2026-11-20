@@ -31,14 +31,14 @@ The reviewed source contains a direct precursor of the intended process-learning
 
 | Existing part | Actual role visible in source |
 |---|---|
-| [ActionCapture](/Users/bengamble/llm-station/src/forge/ActionCapture.cpp) | Records per-session tool calls and results and flushes an ActionTrace |
-| [Forger](/Users/bengamble/llm-station/src/forge/Forger.cpp) | Extracts candidate parameters, creates action templates, groups traces and refines templates |
-| [ForgeTypes](/Users/bengamble/llm-station/src/forge/ForgeTypes.h) | Models parameters, steps, preconditions, effects, provenance, status and execution statistics |
-| [ForgeExecutor](/Users/bengamble/llm-station/src/forge/ForgeExecutor.cpp) | Validates parameters, checks preconditions, renders arguments and runs tools through the registry |
-| [Ralph execution](/Users/bengamble/llm-station/src/ralph/RalphExecutionActions.cpp) | Wires capture callbacks and has an opt-in template-first path with historical/judge selection and LLM fallback |
-| [Ralph verification](/Users/bengamble/llm-station/src/ralph/RalphVerificationActions.cpp) | Crystallizes a captured trace after task verification passes |
-| [Recipes](/Users/bengamble/llm-station/src/recipe/RecipeExecutor.cpp) | Provides a parameterized pre-step → agent → verification execution form |
-| [StepExecutor](/Users/bengamble/llm-station/src/agent/StepExecutor.h) | Encodes a deterministic coding pipeline with focused model generation and verification |
+| [ActionCapture](~/llm-station/src/forge/ActionCapture.cpp) | Records per-session tool calls and results and flushes an ActionTrace |
+| [Forger](~/llm-station/src/forge/Forger.cpp) | Extracts candidate parameters, creates action templates, groups traces and refines templates |
+| [ForgeTypes](~/llm-station/src/forge/ForgeTypes.h) | Models parameters, steps, preconditions, effects, provenance, status and execution statistics |
+| [ForgeExecutor](~/llm-station/src/forge/ForgeExecutor.cpp) | Validates parameters, checks preconditions, renders arguments and runs tools through the registry |
+| [Ralph execution](~/llm-station/src/ralph/RalphExecutionActions.cpp) | Wires capture callbacks and has an opt-in template-first path with historical/judge selection and LLM fallback |
+| [Ralph verification](~/llm-station/src/ralph/RalphVerificationActions.cpp) | Crystallizes a captured trace after task verification passes |
+| [Recipes](~/llm-station/src/recipe/RecipeExecutor.cpp) | Provides a parameterized pre-step → agent → verification execution form |
+| [StepExecutor](~/llm-station/src/agent/StepExecutor.h) | Encodes a deterministic coding pipeline with focused model generation and verification |
 
 The forge subsystem is not just curated scaffolding, though it also includes that. There are implemented capture, crystallization, storage and execution paths, and tests for parts of the lifecycle. The reviewed tests include trace-to-search discovery; that does not establish faithful replay of arbitrary captured actions.
 
@@ -48,12 +48,12 @@ Boggart already has a Station integration seam: [stationlink.lua](../lua/station
 
 The current root README describes an embeddable toolkit and wire protocol, rather than requiring a monolithic hosted platform. The implementation offers useful building blocks:
 
-- [ToolSchema](/Users/bengamble/aibywire/taskengine/tools/schema.py): input/output schemas, preconditions, effects, approvals, capabilities, cost and compensation.
-- [DAG model](/Users/bengamble/aibywire/taskengine/dag/model.py): dependencies, input references, retries, timeouts, approval state, idempotency keys, placement and dynamic steps.
-- [DAG executor](/Users/bengamble/aibywire/taskengine/dag/executor.py): ready-node dispatch, result propagation, checkpoints, approval handling, dynamic-step injection and compensation.
-- [HTN decomposer](/Users/bengamble/aibywire/taskengine/htn/decomposer.py): turns higher-level tasks and methods into a DAG.
-- [DurableRuntime](/Users/bengamble/aibywire/taskengine/durable/runtime.py): an existing interface for runtime choice and advertised execution capabilities.
-- [LearningModule](/Users/bengamble/aibywire/taskengine/agentic/learning.py): experience records, success statistics, utility adjustment and action-cost estimates.
+- [ToolSchema](~/aibywire/taskengine/tools/schema.py): input/output schemas, preconditions, effects, approvals, capabilities, cost and compensation.
+- [DAG model](~/aibywire/taskengine/dag/model.py): dependencies, input references, retries, timeouts, approval state, idempotency keys, placement and dynamic steps.
+- [DAG executor](~/aibywire/taskengine/dag/executor.py): ready-node dispatch, result propagation, checkpoints, approval handling, dynamic-step injection and compensation.
+- [HTN decomposer](~/aibywire/taskengine/htn/decomposer.py): turns higher-level tasks and methods into a DAG.
+- [DurableRuntime](~/aibywire/taskengine/durable/runtime.py): an existing interface for runtime choice and advertised execution capabilities.
+- [LearningModule](~/aibywire/taskengine/agentic/learning.py): experience records, success statistics, utility adjustment and action-cost estimates.
 - Polyglot worker/controller implementations and gateways; capability parity must be verified per chosen backend.
 
 That LearningModule is relevant to selecting among known actions, but it is **not by itself a trace-to-code compiler**. Its “experience replay” means learning from buffered experiences; distinguish that from executing a learned procedure again.

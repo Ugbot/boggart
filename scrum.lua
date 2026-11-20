@@ -1,1 +1,1 @@
-return require "/Users/bengamble/.boggart/lua/scrum"
+return dofile((os.getenv("HOME") or "") .. "/.boggart/lua/scrum.lua")

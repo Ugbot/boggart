@@ -25,8 +25,8 @@
 -- picks how a long conversation is compacted (lua/ctxgraph.lua): `summary`
 -- (the default) writes a prose summary; `local` collapses it into a graph in
 -- the local store; any other name is a graph backend an extension registered
--- (`gestalt` is the one this release expects to be provided that way). A
--- backend that is not installed stops a headless or one-shot run with exit 2
+-- (or a module ctxgraph.backends.<name> on the Lua path). A name that is
+-- neither built in nor installed stops a headless or one-shot run with exit 2
 -- before any request; the REPL says so and stays on `summary`.
 local M = {}
 

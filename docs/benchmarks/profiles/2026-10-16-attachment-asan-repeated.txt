@@ -1,4 +1,4 @@
-Test project /Users/bengamble/boggart/build-asan
+Test project ~/boggart/build-asan
     Start  38: termbench_system
     Test  #38: termbench_system .................   Passed   35.58 sec
     Start  38: termbench_system

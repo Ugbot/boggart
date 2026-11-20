@@ -26,10 +26,9 @@ local json = require("json")
 
 local M = {}
 
+-- The built-in tiers. Any other value names a graph backend: one registered
+-- with register_backend, or a module ctxgraph.backends.<name> on the Lua path.
 M.TIERS = { summary = true, ["local"] = true }
--- Tiers this release knows will be provided by an extension, so asking for one
--- that is not installed says "not installed" rather than "unknown value".
-M.EXTENSION_TIERS = { gestalt = true }
 M.BUILTIN_BACKENDS = { sqlite = "ctxgraph.sqlite" }
 
 M.AUTOEXPAND_MAX = 2          -- nodes per step (assumption 15)
@@ -123,22 +122,12 @@ function M.resolve(value, getenv)
   local out
   if v == "summary" then out = { memory = "summary", mode = "summary" }
   elseif v == "local" then out = { memory = "local", mode = "graph", backend = "sqlite" }
-  elseif M.get_backend(v) and not M.BUILTIN_BACKENDS[v] then out = { memory = v, mode = "graph", backend = v }
-  elseif M.EXTENSION_TIERS[v] then
-    return nil, string.format("%s: memory tier '%s' needs a graph backend named '%s', and none is installed "
-      .. "(an extension registers it; see lua/ctxgraph/backend.lua)", from, v, v), "not_installed"
+  elseif not M.BUILTIN_BACKENDS[v] and v:match("^[%w_%-]+$") and M.get_backend(v) then
+    out = { memory = v, mode = "graph", backend = v }
   else
-    local accepted = { "summary", "local" }
-    for n in pairs(M.EXTENSION_TIERS) do accepted[#accepted + 1] = n end
-    for _, n in ipairs(M.backend_names()) do
-      if not M.BUILTIN_BACKENDS[n] and not M.EXTENSION_TIERS[n] then accepted[#accepted + 1] = n end
-    end
-    table.sort(accepted, function(a, b)
-      local order = { summary = 1, ["local"] = 2 }
-      return (order[a] or 3) < (order[b] or 3) or ((order[a] or 3) == (order[b] or 3) and a < b)
-    end)
-    return nil, string.format("%s: %q is not a memory tier (%s, or the name of a registered graph backend)",
-      from, value, table.concat(accepted, "|")), "unknown"
+    return nil, string.format("%s: memory tier '%s' is not built in (summary, local) and no backend "
+      .. "named '%s' is installed (an extension registers one; see lua/ctxgraph/backend.lua)",
+      from, tostring(value), tostring(value)), "not_installed"
   end
   local impl = M.get_backend(out.backend or "")
   if out.backend and impl and impl.available then

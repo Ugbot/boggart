@@ -40,7 +40,7 @@ constraint.
 
 ## Promising SE3 capabilities
 
-Reviewed local source in `/Users/bengamble/Story-engine-3` (read-only; no tests
+Reviewed local source in `~/Story-engine-3` (read-only; no tests
 were run). Strong ideas worth preserving:
 
 - Live scene play: author chooses a viewpoint character; AI plays the rest;

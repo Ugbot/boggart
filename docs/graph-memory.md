@@ -16,10 +16,11 @@ BOGGART_MEMORY=local ./boggart --headless < task.txt
 |---|---|
 | `summary` | the prose-summary compaction (the default) |
 | `local` | graph memory on the minimal SQLite backend: one graph per conversation in the local store, text search ranked by recency, no cross-session reads |
-| `<name>` | graph memory on a backend an extension registered as `<name>` (`gestalt` is the name this release expects an extension to provide) |
+| `<name>` | graph memory on a backend an extension registered as `<name>` (`register_backend`), or a module `ctxgraph.backends.<name>` on the Lua path, e.g. `example` |
 
-An unknown value, or a backend that is not installed, stops a headless or
-one-shot run with exit 2 before any request. The REPL prints why and stays on
+A value that is neither built in nor an installed backend ("memory tier
+'<x>' is not built in (summary, local) and no backend named '<x>' is
+installed") stops a headless or one-shot run with exit 2 before any request. The REPL prints why and stays on
 `summary`. `BOGGART_COMPACT=summary|graph` and `BOGGART_GRAPH_BACKEND=<name>`
 are lower-level overrides for experiments; `BOGGART_MEMORY` wins when they
 disagree, and the conflict is logged. Sub-agents and forks inherit the tier.
