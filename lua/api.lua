@@ -129,6 +129,8 @@ M.ERR = {
   overloaded  = "overloaded",
   server      = "server",
   stream      = "stream",
+  -- a request that cannot be made to fit the model's context window
+  context_window = "context_window",
 }
 
 local ERRMT = {
@@ -393,10 +395,13 @@ local function new_decoder(on_text, on_think)
   -- message_delta the final output count.
   local usage = { input_tokens = 0, output_tokens = 0,
                   cache_read_input_tokens = 0, cache_creation_input_tokens = 0 }
+  -- Whether the server reported any usage at all: a stream with none (some
+  -- local servers behind this wire) is "not reported", not zero tokens.
+  local reported = false
   local function take_usage(u)
     if type(u) ~= "table" then return end
     for k in pairs(usage) do
-      if type(u[k]) == "number" then usage[k] = u[k] end
+      if type(u[k]) == "number" then usage[k] = u[k]; reported = true end
     end
   end
 
@@ -466,7 +471,8 @@ local function new_decoder(on_text, on_think)
     if #content == 0 then content[1] = { type = "text", text = "" } end
     -- usage rides on the message but is not part of the wire format we send
     -- back, so api.run_on strips it before the message joins the transcript.
-    return { role = "assistant", content = content, usage = usage },
+    -- nil when the server reported none.
+    return { role = "assistant", content = content, usage = reported and usage or nil },
            stop_reason, stream_err
   end
 
@@ -780,12 +786,14 @@ local function new_openai_decoder(on_text, on_think)
   local saw_data, whole = false, {}
   local usage = { input_tokens = 0, output_tokens = 0,
                   cache_read_input_tokens = 0, cache_creation_input_tokens = 0 }
+  local reported = false   -- see the Anthropic decoder: none reported is not zero
   local FINISH = { stop = "end_turn", length = "max_tokens",
                    tool_calls = "tool_use", content_filter = "end_turn" }
 
   local function handle(evt)
     if type(evt) ~= "table" then return end
     if type(evt.usage) == "table" and evt.usage ~= json.null then
+      reported = true
       -- OpenAI reports cached (and, on ds4's OpenAI shape, written) tokens as a
       -- SUBSET of prompt_tokens. Split into the disjoint fresh/read/write buckets
       -- Anthropic already uses, so pricing (input @1x + read @0.1x + write @1.25x)
@@ -799,6 +807,13 @@ local function new_openai_decoder(on_text, on_think)
         usage.input_tokens = math.max(0, evt.usage.prompt_tokens - cached - written)
       end
       if type(evt.usage.completion_tokens) == "number" then usage.output_tokens = evt.usage.completion_tokens end
+      -- Reasoning tokens are a SUBSET of completion_tokens (already counted
+      -- in output_tokens); recorded separately so a report can say how much
+      -- of the output was thinking.
+      local cd = evt.usage.completion_tokens_details
+      if type(cd) == "table" and type(cd.reasoning_tokens) == "number" then
+        usage.reasoning_tokens = cd.reasoning_tokens
+      end
     end
     if evt.error then
       stream_err = "api stream error: " .. (type(evt.error) == "table" and evt.error.message or tostring(evt.error))
@@ -906,9 +921,13 @@ local function new_openai_decoder(on_text, on_think)
     -- If the model emitted tool calls, the Anthropic-side stop_reason MUST be
     -- tool_use or run_tool_round never fires -- force it regardless of what
     -- finish_reason the server sent (some send "stop" alongside tool_calls).
+    -- A reply cut at the limit keeps that fact as `cut` (stripped, like
+    -- usage, before the message joins the transcript).
+    local cut = stop_reason == "max_tokens" or nil
     if had_tool then stop_reason = "tool_use" end
     if not stop_reason then stop_reason = "end_turn" end
-    return { role = "assistant", content = content, usage = usage }, stop_reason, stream_err
+    return { role = "assistant", content = content, usage = reported and usage or nil, cut = cut },
+           stop_reason, stream_err
   end
 
   return { feed = feed, finish = finish }
@@ -990,6 +1009,7 @@ local function new_responses_decoder(on_text, on_think)
   local stop_reason, stream_err, buf = nil, nil, ""
   local usage = { input_tokens = 0, output_tokens = 0,
                   cache_read_input_tokens = 0, cache_creation_input_tokens = 0 }
+  local reported = false
 
   local function handle(evt)
     local t = evt.type
@@ -1019,8 +1039,16 @@ local function new_responses_decoder(on_text, on_think)
         end
       end
     elseif t == "response.completed" or t == "response.incomplete" then
+      -- An incomplete response that ran out of output tokens is a reply cut
+      -- at the limit; any other reason (a content filter) ends the turn.
+      if t == "response.incomplete" then
+        local why = evt.response and evt.response.incomplete_details
+        why = type(why) == "table" and why.reason or nil
+        stop_reason = (why == "max_output_tokens") and "max_tokens" or "end_turn"
+      end
       local u = evt.response and evt.response.usage
       if type(u) == "table" then
+        reported = true
         -- Responses reports cached tokens as a SUBSET of input_tokens; split into
         -- disjoint fresh/read/write buckets (see the chat decoder note).
         local d = u.input_tokens_details
@@ -1032,6 +1060,10 @@ local function new_responses_decoder(on_text, on_think)
           usage.input_tokens = math.max(0, u.input_tokens - cached - written)
         end
         if type(u.output_tokens) == "number" then usage.output_tokens = u.output_tokens end
+        local od = u.output_tokens_details   -- a subset of output_tokens, as on chat
+        if type(od) == "table" and type(od.reasoning_tokens) == "number" then
+          usage.reasoning_tokens = od.reasoning_tokens
+        end
       end
     elseif t == "response.failed" or t == "response.error" or t == "error" then
       local msg = (evt.response and evt.response.error and evt.response.error.message)
@@ -1072,8 +1104,10 @@ local function new_responses_decoder(on_text, on_think)
       end
     end
     if #content == 0 then content[1] = { type = "text", text = "" } end
+    local cut = stop_reason == "max_tokens" or nil
     if had_tool then stop_reason = "tool_use" elseif not stop_reason then stop_reason = "end_turn" end
-    return { role = "assistant", content = content, usage = usage }, stop_reason, stream_err
+    return { role = "assistant", content = content, usage = reported and usage or nil, cut = cut },
+           stop_reason, stream_err
   end
 
   return { feed = feed, finish = finish }
@@ -1330,6 +1364,58 @@ function M._body_for_wire(w, body, rt)
     or to_anthropic_body(body)
 end
 
+-- ---- accounting ------------------------------------------------------------
+-- Every model call -- a turn's round or a compaction summary -- writes one
+-- span:turn record and adds its tokens to sess.usage, through these two.
+
+-- The span:turn record for one call: model, TTFB, tokens, tool calls,
+-- think-vs-output, stop. Token fields are left out (not zero) when the
+-- endpoint reported no usage, and usage_reported=false says so. `cut` keeps a
+-- reply that hit the reply limit visible even when the stop is tool_use.
+-- `extra` adds fields (compaction=true for a summary call).
+local function record_call(tel, tctx, model, msg, stop, ttfb_ms, extra)
+  if not tel then return end
+  local tc, think_c, text_c = 0, 0, 0
+  for _, b in ipairs(msg.content or {}) do
+    if b.type == "tool_use" then tc = tc + 1
+    elseif b.type == "thinking" then think_c = think_c + #(b.thinking or "")
+    elseif b.type == "text" then text_c = text_c + #(b.text or "") end
+  end
+  local u = msg.usage
+  local d = {
+    model = model, ttfb_ms = ttfb_ms,
+    in_tokens = u and (u.input_tokens or 0) or nil,
+    out_tokens = u and (u.output_tokens or 0) or nil,
+    cache_read = u and (u.cache_read_input_tokens or 0) or nil,
+    cache_write = u and (u.cache_creation_input_tokens or 0) or nil,
+    reasoning_tokens = u and u.reasoning_tokens or nil,
+    cut = (msg.cut or stop == "max_tokens") and true or nil,
+    tool_calls = tc, think_chars = think_c, text_chars = text_c, stop = stop,
+  }
+  if not u then d.usage_reported = false end
+  for k, v in pairs(extra or {}) do d[k] = v end
+  tel.turn(tctx, d)
+end
+
+-- Add one call's usage to sess.usage. Returns the table, or nil when the
+-- call reported none (counted in sess.usage.unreported instead).
+local function add_usage(sess, msg, stop)
+  sess.usage = sess.usage or { input = 0, output = 0, cached = 0, cache_write = 0, turns = 0 }
+  local su = sess.usage
+  if msg.cut or stop == "max_tokens" then su.cuts = (su.cuts or 0) + 1 end
+  local u = msg.usage
+  if not u then
+    su.unreported = (su.unreported or 0) + 1
+    return nil
+  end
+  su.input  = (su.input or 0) + (u.input_tokens or 0)
+  su.output = (su.output or 0) + (u.output_tokens or 0)
+  su.cached = (su.cached or 0) + (u.cache_read_input_tokens or 0)
+  su.cache_write = (su.cache_write or 0) + (u.cache_creation_input_tokens or 0)
+  if u.reasoning_tokens then su.reasoning = (su.reasoning or 0) + u.reasoning_tokens end
+  return u
+end
+
 -- ---- compaction ------------------------------------------------------------
 local COMPACT_PROMPT = [[
 Internal boggart context-compaction request. This is not a user request.
@@ -1345,6 +1431,72 @@ include raw file contents, and do not call tools. Output only the summary.
 -- again (M.compaction_request).
 local COMPACT_PREAMBLE = "[Earlier conversation compacted. Durable summary follows.]"
 local COMPACT_REQUEST = "[The request being worked on:]"
+-- The summary's reply limit, at most: a durable summary is a page or two.
+-- Lowered further by the session's / route's reply limit and the room the
+-- summary request leaves in the summary route's window.
+M.COMPACT_REPLY = 4096
+-- The summary call's reasoning effort when the session has one set:
+-- summarising is bookkeeping, and on a reasoning model every reasoning token
+-- comes out of the summary's short reply limit -- at a high effort the whole
+-- limit can go on thinking and the summary come back empty. A session with
+-- no effort sends none (the endpoint's default, as for its turns), and a
+-- route that withholds effort (catalog effort=false) gets none.
+-- sess.compact_effort overrides.
+M.COMPACT_EFFORT = "low"
+-- When the conversation is too big for one summary request, its largest
+-- parts are cut to this many bytes in the request (the transcript itself is
+-- untouched), and if that is not enough the oldest messages are left out.
+M.COMPACT_HEAD = 2000
+local COMPACT_OMITTED = "[%d earlier messages left out: the conversation was larger than the "
+  .. "summary model's context window.]"
+
+-- The conversation `msgs`, made to fit a summary request of at most `budget`
+-- tokens alongside the system prompt `sys`. Returns the list to send (the
+-- original when it fits, otherwise a copy: sess.messages is never edited),
+-- the number of parts cut and of messages left out; nil when nothing fits.
+--
+-- First the largest parts (tool results, text, tool inputs) are cut to a
+-- head, biggest first, until it fits: what is left still shows what each
+-- step did. If it still does not fit -- many messages, none of them large --
+-- the oldest are left out: the first message (the request, or an earlier
+-- compaction's summary) is kept as text, shortened if need be, then as many
+-- recent messages as fit, starting at an assistant message so no tool call is
+-- separated from its result.
+local function fit_for_summary(msgs, sys, budget)
+  local function est(l) return window.request_tokens(l, sys) end
+  if est(msgs) <= budget then return msgs, 0, 0 end
+  local out = {}
+  for i, m in ipairs(msgs) do out[i] = m end
+  local cut = 0
+  local content = window.tokens_of(out)
+  local fixed = est(out) - math.ceil(content * window.ESTIMATE_MARGIN)
+  for _, part in ipairs(window.large_parts(out, M.COMPACT_HEAD)) do
+    if math.ceil(content * window.ESTIMATE_MARGIN) + fixed <= budget then break end
+    local before = window.tokens(out[part.i])
+    part.cut(out, "cut to fit the summary request")
+    content = content - before + window.tokens(out[part.i])
+    cut = cut + 1
+  end
+  if est(out) <= budget then return out, cut, 0 end
+
+  local text = out[1] and msg_text(out[1]) or ""
+  local share = math.floor(budget * 0.25) * 4
+  if #text > share then text = window.head(text, share) .. "\n[... cut to fit the summary request ...]" end
+  local function opener(dropped)
+    return { role = "user", content = text .. "\n\n" .. string.format(COMPACT_OMITTED, dropped) }
+  end
+  local room = budget - est({ opener(#out) })
+  local start, used = #out + 1, 0
+  for i = #out, 2, -1 do
+    used = used + math.ceil(window.tokens(out[i]) * window.ESTIMATE_MARGIN) + window.framing_of(out, i, i)
+    if used > room then break end
+    if out[i].role == "assistant" then start = i end
+  end
+  local fitted = { opener(start - 2) }
+  for i = start, #out do fitted[#fitted + 1] = out[i] end
+  if est(fitted) > budget then return nil end
+  return fitted, cut, start - 2
+end
 local COMPACT_CONTINUES = "[Recent conversation continues below.]"
 
 -- The user's request inside a plain-text user message: the message itself,
@@ -1366,9 +1518,10 @@ function M.compaction_request(text)
   return old and text:sub(old + #COMPACT_CONTINUES + 2) or nil
 end
 
--- Context windows, by model. Only used to decide when to compact, so being
--- approximately right is enough; sess.context_limit overrides for anything not
--- listed, and a local server can be told its own number.
+-- Context windows, by model: the fallback for a model the catalog has no
+-- window for (M.context_limit has the whole precedence). Used to decide when
+-- to compact and how long a reply may be; sess.context_limit overrides for
+-- anything not listed, and a local server can be told its own number.
 M.CONTEXT = {
   default = 200000,
   ["claude-opus-5"] = 200000,
@@ -1565,13 +1718,39 @@ function M.warm_local() pcall(fetch_props) end
 function M.local_context() local p = local_props(); return p and p.n_ctx end
 function M.local_slots()   local p = local_props(); return p and p.slots end
 
-function M.context_limit(sess)
+-- The catalog's context window for a model id, or nil when the model is not
+-- catalogued or its row carries no window.
+local function catalog_context(model)
+  if not model then return nil end
+  local ok, row = pcall(function() return require("catalog").model(model) end)
+  local n = ok and row and tonumber(row.context) or nil
+  return (n and n > 0) and math.floor(n) or nil
+end
+
+-- The context window, in tokens, for a session's requests -- or, given
+-- `route`, for requests to that route's model (the compaction summary may go
+-- to another model). Precedence:
+--   1. the session's own setting (--context-window, a parent agent's, or a
+--      window raised by a served request -- see run_on); it describes the
+--      session's model, so it applies only to that model;
+--   2. config.context in the store, for the model (the user's own table);
+--   3. a local server's self-reported window (llama.cpp /props);
+--   4. the model catalog's window for the model;
+--   5. M.CONTEXT, the built-in fallback table;
+--   6. config.context.default, then M.CONTEXT.default.
+-- The session's model is the one its turns resolved to (sess.resolved_route),
+-- else sess.model.
+function M.context_limit(sess, route)
   sess = sess or bog.session
+  local own = (sess.resolved_route and sess.resolved_route.model) or sess.model
+  local model = (route and route.model) or own
   local cfg = M.context_config()
-  return sess.context_limit                 -- an explicit user override always wins
-    or (cfg and cfg[sess.model])
+  local same = model == own or model == sess.model
+  return (same and sess.context_limit)      -- an explicit user override always wins
+    or (cfg and cfg[model])
     or M.local_context()                    -- a local server's real, self-reported window
-    or M.CONTEXT[sess.model]
+    or catalog_context(model)
+    or M.CONTEXT[model]
     or (cfg and cfg.default)
     or M.CONTEXT.default
 end
@@ -1640,12 +1819,115 @@ end
 -- not in sess.messages and can be tens of thousands of tokens on their own.
 function M.request_max_tokens(sess, route, body)
   local want = M.reply_limit(sess, route)
+  return window.reply_tokens(want, M.context_limit(sess), M.request_prompt_tokens(sess, body))
+end
+
+-- The estimated prompt of the request `body` for `sess`: the measured size of
+-- the last request plus an estimate of what is newer, or, before anything is
+-- measured, an estimate of the whole body (system prompt and tools included).
+function M.request_prompt_tokens(sess, body)
   local used, how = M.context_used(sess)
   if how ~= "measured" and body then
     local ok, s = pcall(json.encode, { system = body.system, messages = body.messages, tools = body.tools })
     if ok then used = math.ceil(#s / 4 * window.ESTIMATE_MARGIN) end
   end
-  return window.reply_tokens(want, M.context_limit(sess), used)
+  return used
+end
+
+-- A tool result over this many bytes may be shrunk to a shaped head (the
+-- whole output saved to a file the model can read) when a request would
+-- otherwise not fit the window. The same shape bash and MCP results get at
+-- ingest (lua/tools.lua).
+M.SHRINK_BYTES = 6000
+M.SHRINK_LINES = 100
+
+-- Shrink the largest tool results in sess.messages, biggest first, to their
+-- shaped head until fits() says the request fits. Returns how many were
+-- shrunk. The measured prompt size is forgotten once anything changes: it
+-- described the messages before they were shrunk.
+local function shrink_tool_results(sess, fits)
+  local found = {}
+  for i, m in ipairs(sess.messages) do
+    if type(m.content) == "table" then
+      for k, b in ipairs(m.content) do
+        if type(b) == "table" and b.type == "tool_result" then
+          local text = b.content
+          if type(text) == "table" then
+            local t = {}
+            for _, x in ipairs(text) do
+              if type(x) == "table" and x.type == "text" then t[#t + 1] = x.text or "" end
+            end
+            text = table.concat(t, "\n")
+          end
+          if type(text) == "string" and #text > M.SHRINK_BYTES then
+            found[#found + 1] = { m = m, k = k, b = b, text = text }
+          end
+        end
+      end
+    end
+  end
+  table.sort(found, function(a, b) return #a.text > #b.text end)
+  local n = 0
+  for _, f in ipairs(found) do
+    if fits() then break end
+    local nb = {}
+    for key, v in pairs(f.b) do nb[key] = v end
+    nb.content = util.shape_result(f.text, { max_bytes = M.SHRINK_BYTES, head_lines = M.SHRINK_LINES })
+    f.m.content[f.k] = nb
+    n = n + 1
+    if sess.usage then sess.usage.last_input, sess.usage.last_input_n = nil, nil end
+  end
+  return n
+end
+
+-- Make the request `body` fit the session's context window before it is
+-- sent, or refuse to send it. A request over the window is one the endpoint
+-- must refuse (HTTP 400), and the turn dies there with nothing learned; a
+-- benchmark run sent one at 327k tokens to a 131k window after one tool
+-- result. In order:
+--   1. compact (unless nothing has been added since the last compaction --
+--      compacting a compacted conversation only summarises the summary);
+--   2. shrink the largest tool results to their shaped head, the whole
+--      output saved to a file the model can read (also when compaction
+--      failed: its summary request can be refused too);
+--   3. end the turn with a context_window error, naming the sizes.
+-- "Fits" means room for the prompt, the reply-limit safety margin and the
+-- reply floor (window.REPLY_MIN, or the reply limit when that is smaller):
+-- the reply limit is lowered to the room left but never below the floor, so
+-- with less room than that the floor itself would push prompt + max_tokens
+-- over the window.
+-- body.messages is updated in place to the session's (possibly new) list.
+local function fit_window(sess, route, body, opts)
+  local limit = M.context_limit(sess)
+  local floor = math.min(M.reply_limit(sess, route), window.REPLY_MIN)
+  local function prompt() return M.request_prompt_tokens(sess, body) end
+  local function fits() return prompt() + window.reply_safety(limit) + floor <= limit end
+  if fits() then return end
+  local first = prompt()
+  bog.log(string.format("request ~%d tokens leaves under %d tokens for the reply in the %d-token "
+    .. "context window -- compacting before sending", first, floor, limit))
+  local compact_err
+  if not (sess._compacted_n and #sess.messages <= sess._compacted_n) then
+    local ok, err = pcall(M.compact, sess, opts)
+    if not ok then
+      compact_err = tostring(err)
+      bog.log("compaction failed: " .. compact_err)
+    end
+    body.messages = sess.messages
+    if fits() then return end
+  end
+  local n = shrink_tool_results(sess, fits)
+  body.messages = sess.messages
+  if n > 0 then
+    bog.log(string.format("shrank %d tool result(s) to their head to fit the context window", n))
+  end
+  if fits() then return end
+  fail(M.ERR.context_window, string.format(
+    "not sent: the request is about %d tokens, which with a %d-token reply does not fit the "
+    .. "%d-token context window of %s, even after compacting and shrinking tool results",
+    prompt(), floor, limit, tostring(body.model))
+    .. (compact_err and (" (compaction failed: " .. compact_err .. ")") or ""),
+    { hint = "Set a larger window if the model has one (--context-window), or start a fresh session." })
 end
 
 -- The limits a sub-agent starts with, from the session that spawned it.
@@ -1762,10 +2044,15 @@ function M.compact(sess, opts)
   -- need the model doing the work. If a `cheap` (or `fast`) preset exists, the
   -- summary goes there and the conversation stays where it is -- the one place
   -- a per-call model change is worth it on every long session. With no such
-  -- preset, route.utility() returns the current route and nothing changes.
-  local route = opts.compact_route and require("route").resolve(opts.compact_route)
-    or (sess.compact_route and require("route").resolve(sess.compact_route))
-    or require("route").utility()
+  -- preset, the summary goes to the session's own route (the one its turns
+  -- resolved to): not route.current(), which is bog.session's and so the
+  -- wrong model -- and the wrong window -- for a sub-agent on another model.
+  local R = require("route")
+  local route = opts.compact_route and R.resolve(opts.compact_route)
+    or (sess.compact_route and R.resolve(sess.compact_route))
+    or R.utility_configured()
+    or sess.resolved_route
+    or R.resolve(sess.route or sess.model)
   local stream_impl = opts.stream or stream_async
   local stream = function(body, sink, think_sink)
     return stream_impl(body, sink, think_sink, route)
@@ -1778,7 +2065,8 @@ function M.compact(sess, opts)
 
   bog.log(string.format("compacting context (~%d chars)...", total))
   -- Graph memory (BOGGART_MEMORY=local or an extension's tier) collapses the
-  -- old part into records and an outline of stubs instead: no model call.
+  -- old part into records and an outline of stubs instead: no model call, so
+  -- no summary request to fit to a window either.
   local cg = require("ctxgraph")
   local graph = cg.enabled(sess)
   local summary
@@ -1790,9 +2078,31 @@ function M.compact(sess, opts)
     -- messages in a row. The Messages API tolerates that, but servers behind the
     -- same wire that apply a strict chat template refuse it, and on the OpenAI
     -- wire the tool results still come first and the prompt last either way.
+    --
+    -- The request has to fit the summary route's window, with room for at
+    -- least a short summary: a conversation already over the window (resumed,
+    -- or grown by one huge tool result) or a utility model with a smaller
+    -- window than the session's would otherwise be refused right here.
+    local sys = system()
+    local limit = M.context_limit(sess, route)
+    local want = math.min(M.COMPACT_REPLY, M.reply_limit(sess, route))
+    local prompt_cost = window.request_tokens({ { role = "user", content = COMPACT_PROMPT } })
+    local budget = limit - window.reply_safety(limit) - math.min(want, window.REPLY_MIN) - prompt_cost
+    local base, n_cut, n_left = fit_for_summary(sess.messages, sys, budget)
+    if not base then
+      fail(M.ERR.context_window, string.format(
+        "cannot compact: even a shortened summary request does not fit the %d-token context "
+        .. "window of %s (the system prompt alone is about %d tokens)",
+        limit, tostring(route.model or sess.model), window.request_tokens({}, sys)))
+    end
+    if n_cut > 0 or n_left > 0 then
+      bog.log(string.format("compaction: the conversation is larger than the summary model's "
+        .. "%d-token window; %d large part(s) cut, %d earlier message(s) left out of the request",
+        limit, n_cut, n_left))
+    end
     local copy = {}
-    for i = 1, #sess.messages - 1 do copy[i] = sess.messages[i] end
-    local last = sess.messages[#sess.messages]
+    for i = 1, #base - 1 do copy[i] = base[i] end
+    local last = base[#base]
     if last and last.role == "user" and type(last.content) == "string" then
       copy[#copy + 1] = { role = "user", content = last.content .. "\n\n" .. COMPACT_PROMPT }
     elseif last and last.role == "user" and type(last.content) == "table" then
@@ -1804,8 +2114,22 @@ function M.compact(sess, opts)
       copy[#copy + 1] = last
       copy[#copy + 1] = { role = "user", content = COMPACT_PROMPT }
     end
-    local msg = stream({ model = route.model or sess.model, max_tokens = 4096, system = system(),
-      messages = copy, stream = true }, nil)
+    local est = window.request_tokens(copy, sys)
+    local effort = sess.compact_effort or (sess.effort and M.COMPACT_EFFORT) or nil
+    if route.effort == false then effort = nil end
+    local model = route.model or sess.model
+    local msg, stop = stream({ model = model,
+      max_tokens = window.reply_tokens(want, limit, est),
+      reasoning_effort = effort, system = sys, messages = copy, stream = true }, nil)
+    -- A model call like any other: one span:turn record, marked as compaction,
+    -- and its tokens on sess.usage. Not the conversation's measured size,
+    -- though (that is reset below), and not one of its turns.
+    local tel = bog.telemetry
+    record_call(tel, { run_id = opts.run_id or sess.id, agent_id = sess.id,
+                       parent_id = opts.parent_id or sess.parent_id },
+                model, msg, stop, nil, { compaction = true })
+    add_usage(sess, msg, stop)
+    msg.usage, msg.cut = nil, nil
     summary = msg_text(msg)
   end
 
@@ -2332,6 +2656,7 @@ function M.run_on(sess, user_text, on_text, opts)
       end
     end
     if #tools > 0 then body.tools = tools end
+    fit_window(sess, route, body, opts)
     body.max_tokens = M.request_max_tokens(sess, route, body)
 
     ttfb_t0 = tel and tel.now_ms() or nil; ttfb_ms = nil
@@ -2362,34 +2687,19 @@ function M.run_on(sess, user_text, on_text, opts)
     -- One turn span: model / TTFB / tokens / tool-calls / think-vs-output.
     -- Emitted before usage is scrubbed off msg, counted from the blocks the
     -- model produced this round.
-    if tel then
-      local tc, think_c, text_c = 0, 0, 0
-      for _, b in ipairs(msg.content or {}) do
-        if b.type == "tool_use" then tc = tc + 1
-        elseif b.type == "thinking" then think_c = think_c + #(b.thinking or "")
-        elseif b.type == "text" then text_c = text_c + #(b.text or "") end
-      end
-      tel.turn(tctx, {
-        model = sess.model, ttfb_ms = ttfb_ms,
-        in_tokens = (msg.usage and msg.usage.input_tokens) or 0,
-        out_tokens = (msg.usage and msg.usage.output_tokens) or 0,
-        cache_read = (msg.usage and msg.usage.cache_read_input_tokens) or 0,
-        cache_write = (msg.usage and msg.usage.cache_creation_input_tokens) or 0,
-        tool_calls = tc, think_chars = think_c, text_chars = text_c, stop = stop,
-      })
-    end
+    record_call(tel, tctx, sess.model, msg, stop, ttfb_ms)
     -- Live progress counters the watchdog reads: turns taken vs tool rounds run.
     sess._turns = (sess._turns or 0) + 1
-    -- Account before the message joins the transcript: `usage` is our own
-    -- annotation, and sending it back to the API on the next turn would be a
-    -- wire-shape error.
-    if msg.usage then
-      sess.usage = sess.usage or { input = 0, output = 0, cached = 0, cache_write = 0, turns = 0 }
-      sess.usage.input  = sess.usage.input  + (msg.usage.input_tokens or 0)
-      sess.usage.output = sess.usage.output + (msg.usage.output_tokens or 0)
-      sess.usage.cached = sess.usage.cached + (msg.usage.cache_read_input_tokens or 0)
-      sess.usage.cache_write = (sess.usage.cache_write or 0) + (msg.usage.cache_creation_input_tokens or 0)
-      sess.usage.turns  = sess.usage.turns + 1
+    -- Account before the message joins the transcript: `usage` and `cut` are
+    -- our own annotations, and sending them back to the API on the next turn
+    -- would be a wire-shape error. A call that reported no usage is counted
+    -- as a turn but leaves the last measured prompt size alone: zero would
+    -- read as "the conversation is empty", and the estimate of everything
+    -- newer than the last measurement is the better figure.
+    local u = add_usage(sess, msg, stop)
+    sess.usage.turns = (sess.usage.turns or 0) + 1
+    msg.cut = nil
+    if u then
       -- The whole prompt, not just the uncached part. This is the number that
       -- says how close the conversation is to the context window, and with
       -- prompt caching on, input_tokens alone reads as near-zero on exactly
@@ -2497,6 +2807,8 @@ end
 -- nothing in the agent loop calls them by these names.
 M._to_responses_body = to_responses_body
 M._new_responses_decoder = new_responses_decoder
+M._new_openai_decoder = new_openai_decoder
+M._new_decoder = new_decoder
 M._to_openai_body = to_openai_body
 M._to_anthropic_body = to_anthropic_body
 

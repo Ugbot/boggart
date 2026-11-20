@@ -19,11 +19,13 @@ local function mock(_body, sink)
            usage = { output_tokens = 3 } }, "end_turn"
 end
 
--- Force compaction on the first round (tiny limit + several messages) so the
--- compaction call fires. If M.compact honoured only stream_async, that call
--- would go to the live endpoint and `calls` would be short by one.
+-- Force compaction on the first round (tiny threshold + several messages) so
+-- the compaction call fires. If M.compact honoured only stream_async, that call
+-- would go to the live endpoint and `calls` would be short by one. The window
+-- itself has to hold the summary request (a 1-token window is refused before
+-- anything is sent), so it is small but real and the ratio forces compaction.
 local sess = { id = 5, model = "mock", messages = {},
-               max_tokens = 100, context_limit = 1, compact_ratio = 0.00001 }
+               max_tokens = 100, context_limit = 2000, compact_ratio = 0.00001 }
 for i = 1, 6 do
   sess.messages[i] = { role = (i % 2 == 1) and "user" or "assistant",
                        content = "lorem ipsum text number " .. i }

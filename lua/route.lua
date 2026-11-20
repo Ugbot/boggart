@@ -201,9 +201,17 @@ function M.utility()
   -- the bookkeeping" -- then the older cheap/fast presets, then whatever the
   -- session is on. Nothing is required: with none of them configured this is
   -- the current route and compaction happens exactly where it used to.
+  return M.utility_configured() or M.current()
+end
+
+-- The configured bookkeeping route (the `utility` role, else a `cheap` or
+-- `fast` preset), or nil when there is none -- for a caller whose fallback is
+-- not the current route but its own (api.compact falls back to the route of
+-- the session being compacted, which for a sub-agent is not bog.session's).
+function M.utility_configured()
   local role = require("catalog").role("utility")
   if role then return M.resolve(role) end
-  return M.alias("cheap") or M.alias("fast") or M.current()
+  return M.alias("cheap") or M.alias("fast")
 end
 
 -- Model endpoint resolution above remains independent of learned execution.

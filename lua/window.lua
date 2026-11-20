@@ -100,6 +100,98 @@ function M.framing_of(messages, from, to)
   return n
 end
 
+-- Estimated prompt tokens of a request carrying `messages` (and, optionally, a
+-- `system` prompt, a string or a list of blocks): content with
+-- ESTIMATE_MARGIN, plus framing.
+function M.request_tokens(messages, system)
+  local sys = 0
+  if type(system) == "string" then sys = #system
+  elseif type(system) == "table" then
+    local ok, s = pcall(json.encode, system)
+    sys = ok and #s or 0
+  end
+  return math.ceil(M.tokens_of(messages) * M.ESTIMATE_MARGIN) + M.framing_of(messages)
+    + math.ceil(sys / 4 * M.ESTIMATE_MARGIN)
+end
+
+-- The first `n` bytes of `s`, cut back to a UTF-8 character boundary.
+function M.head(s, n)
+  if #s <= n then return s end
+  local cut = s:sub(1, math.max(n, 0))
+  local i = #cut
+  while i > 0 and (cut:byte(i) & 0xC0) == 0x80 do i = i - 1 end
+  if i > 0 and cut:byte(i) >= 0xC0 then
+    local need = cut:byte(i) >= 0xF0 and 4 or cut:byte(i) >= 0xE0 and 3 or 2
+    if #cut - i + 1 < need then cut = cut:sub(1, i - 1) end
+  end
+  return cut
+end
+
+-- The large parts of a message list, biggest first: every text-bearing piece
+-- longer than `head` bytes, as { i = message index, size = bytes, cut = fn }
+-- where cut(msgs, note) puts a shortened copy of that piece into
+-- msgs[i] (copying the message and its content, never touching the original).
+-- Text, tool results and tool inputs are candidates; thinking blocks are not
+-- (a signed thinking block that has been edited is refused).
+function M.large_parts(messages, head)
+  local parts = {}
+  local function shortened(text, note)
+    return M.head(text, head) .. "\n[... " .. (#text - head) .. " more bytes " .. note .. "]"
+  end
+  local function own(msgs, i)
+    local m = msgs[i]
+    local c = {}
+    if type(m.content) == "table" then for k, b in ipairs(m.content) do c[k] = b end end
+    msgs[i] = { role = m.role, content = type(m.content) == "table" and c or m.content }
+    return msgs[i]
+  end
+  for i, m in ipairs(messages) do
+    if type(m) == "table" and type(m.content) == "string" and #m.content > head then
+      parts[#parts + 1] = { i = i, size = #m.content, cut = function(msgs, note)
+        local o = own(msgs, i); o.content = shortened(o.content, note) end }
+    elseif type(m) == "table" and type(m.content) == "table" then
+      for k, b in ipairs(m.content) do
+        if type(b) == "table" and b.type == "text" and #(b.text or "") > head then
+          parts[#parts + 1] = { i = i, size = #b.text, cut = function(msgs, note)
+            local o = own(msgs, i)
+            o.content[k] = { type = "text", text = shortened(b.text, note) } end }
+        elseif type(b) == "table" and b.type == "tool_result" then
+          local text = b.content
+          if type(text) == "table" then
+            local t = {}
+            for _, x in ipairs(text) do
+              if type(x) == "table" and x.type == "text" then t[#t + 1] = x.text or "" end
+            end
+            text = table.concat(t, "\n")
+          end
+          if type(text) == "string" and #text > head then
+            parts[#parts + 1] = { i = i, size = #text, cut = function(msgs, note)
+              local o = own(msgs, i)
+              local nb = {}
+              for kk, vv in pairs(b) do nb[kk] = vv end
+              nb.content = shortened(text, note)
+              o.content[k] = nb
+            end }
+          end
+        elseif type(b) == "table" and b.type == "tool_use" then
+          local ok, s = pcall(json.encode, b.input or {})
+          if ok and #s > head then
+            parts[#parts + 1] = { i = i, size = #s, cut = function(msgs, note)
+              local o = own(msgs, i)
+              local nb = {}
+              for kk, vv in pairs(b) do nb[kk] = vv end
+              nb.input = { truncated_input = shortened(s, note) }
+              o.content[k] = nb
+            end }
+          end
+        end
+      end
+    end
+  end
+  table.sort(parts, function(a, b) return a.size > b.size end)
+  return parts
+end
+
 -- Tokens of a `limit`-token window that a request's reply limit leaves free.
 function M.reply_safety(limit)
   return math.max(M.REPLY_SAFETY_MIN, math.ceil(limit * M.REPLY_SAFETY))
@@ -144,7 +236,10 @@ end
 -- The reply limit for one request: the longest reply wanted, lowered to the
 -- room left in a window of `limit` tokens when `used` are already taken (less
 -- reply_safety(limit)), and never below REPLY_MIN (unless the wanted length
--- itself is smaller -- a session that asks for 100 tokens gets 100).
+-- itself is smaller -- a session that asks for 100 tokens gets 100). The
+-- floor can exceed the room left; api.run_on compacts (or shrinks, or
+-- refuses) before a request gets that full, so a request it sends never
+-- overshoots.
 function M.reply_tokens(want, limit, used)
   want = math.floor(want)
   if not (limit and used) then return want end
