@@ -42,7 +42,7 @@ function M.steps_of(msgs, from, to)
   while i <= to do
     local m = msgs[i]
     if m.role == "assistant" then
-      local st = { kind = "model", calls = {}, messages = { m }, text = "", reasoning = nil }
+      local st = { kind = "model", calls = {}, messages = { m }, text = "", reasoning = nil, at = i }
       local content = type(m.content) == "table" and m.content or { { type = "text", text = tostring(m.content or "") } }
       local by_id, think = {}, {}
       st.text = text_of_blocks(content)
@@ -76,7 +76,7 @@ function M.steps_of(msgs, from, to)
     else
       local t = type(m.content) == "string" and m.content
         or (type(m.content) == "table" and text_of_blocks(m.content) or "")
-      steps[#steps + 1] = { kind = "prompt", calls = {}, messages = { m }, text = t }
+      steps[#steps + 1] = { kind = "prompt", calls = {}, messages = { m }, text = t, at = i }
       i = i + 1
     end
   end
@@ -264,6 +264,7 @@ function M.load_state(be, sid)
   for _, k in ipairs(COUNTERS) do st[k] = tonumber(st[k]) or 0 end
   st.live = st.live or {}
   st._keys = st._keys or {}
+  st._hash = st._hash or {}
   return st
 end
 
@@ -325,13 +326,15 @@ function M.key_of_record(r)
   return nil
 end
 
-local function entries(be, sid, ranges, keys, src)
+local function entries(be, sid, ranges, keys, src, hashes)
   local out = {}
   for _, n in ipairs(ranges_numbers(ranges)) do
     local k = keys[n]
     if k == nil then
-      k = M.key_of_record(be.get(sid, string.format("s/%s/step/%d", sid, n))) or false
+      local r = be.get(sid, string.format("s/%s/step/%d", sid, n))
+      k = M.key_of_record(r) or false
       keys[n] = k
+      if hashes and r and r.frontmatter and r.frontmatter.h then hashes[n] = r.frontmatter.h end
     end
     out[#out + 1] = { k = k or nil, n = n, src = src }
   end
@@ -340,7 +343,16 @@ end
 
 -- The live steps in conversation order: { {k = step key, n = step number} }.
 function M.live_entries(be, sid, st)
-  return entries(be, sid, st.live, st._keys)
+  return entries(be, sid, st.live, st._keys, nil, st._hash)
+end
+
+-- A step's content hash: all its messages. It changes when text joins the
+-- step after it was ingested (mid-turn steering, or a prompt, merged into its
+-- trailing tool-results message; lua/api.lua append_user). The step's record
+-- carries it (frontmatter.h) and the state table caches it (_hash).
+function M.step_hash(st)
+  local ok, raw = pcall(json.encode, st.messages)
+  return ex.sha(ok and raw or tostring(st.text)):sub(1, 16), ok and raw or nil
 end
 
 -- A fork's transcript starts with a copy of its parent's, so its first steps
@@ -427,6 +439,12 @@ function M.run(be, sid, msgs, from, to, ctx)
         end
       end
     end
+    -- ctx.prev = { at, n }: the step starting at message `at` is step n, already
+    -- in the graph (a live ingest re-reading the last step because it changed)
+    local pv = ctx.prev
+    if pv and steps[1] and steps[1].at == pv.at and not steps[1].done and gs._keys[pv.n] == steps[1].key then
+      steps[1].done = pv.n
+    end
     local own = {}
     for _, st in ipairs(steps) do if not st.inherited then own[#own + 1] = st end end
     steps = own
@@ -494,13 +512,39 @@ function M.run(be, sid, msgs, from, to, ctx)
 
   -- entities and claims, in step order so counts and versions accumulate
   -- (only for steps not already in the graph)
+  -- a step already in the graph whose messages gained text since: its record
+  -- is updated in place (same id and seq); nothing else about it is re-derived,
+  -- since the text that joins a step is user text, not calls or results
+  for _, st in ipairs(steps) do
+    if st.done then
+      local h, raw = M.step_hash(st)
+      local known = gs._hash[st.n]
+      if known and known ~= h then
+        local r = load(st.id)
+        if r then
+          r.body = render(st)
+          r.body_ref = r.body:match("Full output saved to (%S+) %-%-") or r.body_ref
+          r.raw = raw or r.raw
+          r.frontmatter = r.frontmatter or {}
+          r.frontmatter.h = h
+          r.digest = digest_of(r.body, r.id .. "\0" .. (r.title or ""))
+          r.tokens = (#r.body + 3) // 4
+          put(r)
+        end
+      end
+      if known then gs._hash[st.n] = h end
+    end
+  end
+
   for _, st in ipairs(fresh) do
     local body = render(st)
     local ref = body:match("Full output saved to (%S+) %-%-")
-    local okr, raw = pcall(json.encode, st.messages)
+    local h, raw = M.step_hash(st)
+    gs._hash[st.n] = h
+    local okr = raw ~= nil
     local srec = put({ id = st.id, type = "step", title = "step " .. st.n, stub = st.stub, body = body,
       body_ref = ref, raw = okr and raw or nil, seq = nextseq(),
-      frontmatter = { n = st.n, kind = st.kind, key = st.key, outcome = st.failed and "failed" or "ok",
+      frontmatter = { n = st.n, kind = st.kind, key = st.key, h = h, outcome = st.failed and "failed" or "ok",
                       tools = #st.calls > 0 and (function()
                         local ns = {}
                         for _, c in ipairs(st.calls) do ns[#ns + 1] = c.name end

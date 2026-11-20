@@ -38,9 +38,12 @@
 --   tokens      integer estimate of the body's size
 --
 -- Events (step, reasoning, span, thread, compaction) never change once put,
--- with one exception: a thread is put again when its child's answer is seen
--- (an await's result), with the answer folded into its body, stub and
--- frontmatter (returned, returned_ok, returned_step). Its id and seq stay.
+-- with two exceptions, both put again with the same id and seq:
+-- - a thread, when its child's answer is seen, with the answer folded into its
+--   body, stub and frontmatter (returned, returned_ok, returned_step);
+-- - a step, when user text joins its messages after it was ingested (steering
+--   merged into its trailing tool-results message): body, raw, digest, tokens
+--   and frontmatter.h (the hash of its messages) change, nothing else.
 -- Entities (file, package, command, test, error) are replaced in place as new
 -- versions or observations arrive; their history is in version records and
 -- links. Claims only add; set_claim_state is the one mutation they allow.

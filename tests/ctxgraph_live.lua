@@ -9,7 +9,7 @@
 -- tail are not listed in the outline or auto-expanded: they are not collapsed.
 -- Run: boggart --eval tests/ctxgraph_live.lua
 bog.store.open()
-dofile("tests/ctxgraph_fresh.lua")({ 701, 702, 703, 704 })
+dofile("tests/ctxgraph_fresh.lua")({ 701, 702, 703, 704, 705, 706 })
 local json = require("json")
 local cg = require("ctxgraph")
 local fails = 0
@@ -246,6 +246,59 @@ do
   msgs[#msgs + 1] = { role = "user", content = { { type = "tool_result", tool_use_id = "o2", content = "[exit=0]" } } }
   eq(cg.ingest_live(o), 1, "...and the next round is step 3")
   ck(be.get("704", "s/704/step/3"), "s/704/step/3 exists")
+end
+
+-- ---- text that joins a step after its round was ingested --------------------------------
+-- Mid-turn steering is merged into the trailing tool-results message after
+-- that round went into the graph; the step's record is updated in place.
+do
+  local t = { id = 705, model = "mock", context_limit = 200000, memory = "local", messages = {} }
+  local k = 0
+  local function mdl()
+    k = k + 1
+    if k > 3 then return { role = "assistant", content = { { type = "text", text = "done" } }, usage = { input_tokens = 1, output_tokens = 1 } }, "end_turn" end
+    return { role = "assistant", content = { { type = "tool_use", id = "sv" .. k, name = "bash", input = { command = "steer " .. k } } },
+             usage = { input_tokens = 1, output_tokens = 1 } }, "tool_use"
+  end
+  local saved2 = bog.session
+  bog.session = t
+  bog.api.run_on(t, "Steer me.", nil, { stream = mdl, system = function() return "" end,
+    tools = function() return bog.tools.offered(t) end,
+    run_tool = function(name, input)
+      if input.command == "steer 1" then t.inbox = { "also check the quixotic lexer" } end
+      return "[exit=0]"
+    end })
+  bog.session = saved2
+  local st1
+  for _, r in ipairs(be.scan("705", { "step" })) do if (r.body or ""):find("steer 1", 1, true) then st1 = r end end
+  ck(st1 and st1.body:find("also check the quixotic lexer", 1, true),
+    "a step's record holds steering text merged after its round was ingested: " .. tostring(st1 and st1.body))
+  ck(st1 and (st1.raw or ""):find("quixotic lexer", 1, true), "...in its raw messages too")
+  local hits = be.search("705", "quixotic", { limit = 5 })
+  ck(#hits > 0 and hits[1].id == (st1 and st1.id), "graph_recall finds the step by the steering text")
+  local n = 0
+  for _ in ipairs(be.scan("705", { "step" })) do n = n + 1 end
+  eq(n, 4, "still one record per step (the prompt and three rounds)")
+
+  -- the same when the text arrives and a compaction collapses the step before
+  -- any later round is ingested
+  local u = { id = 706, model = "mock", memory = "local", messages = { { role = "user", content = "go" } } }
+  for i = 1, 2 do
+    u.messages[#u.messages + 1] = { role = "assistant", content = { { type = "tool_use", id = "x" .. i, name = "bash", input = { command = "late " .. i } } } }
+    u.messages[#u.messages + 1] = { role = "user", content = { { type = "tool_result", tool_use_id = "x" .. i, content = "[exit=0]" } } }
+    cg.ingest_live(u)
+  end
+  bog.api.append_user(u, "a zoophyte note added late")
+  u.messages[#u.messages + 1] = { role = "assistant", content = { { type = "text", text = "ok" } } }
+  u.context_limit, u.compact_ratio = 100000, 0.0001
+  ck(bog.api.compact(u, { stream = function() error("no model call") end, system = function() return "" end }), "compacted")
+  local late, nlate = nil, 0
+  for _, r in ipairs(be.scan("706", { "step" })) do
+    if (r.body or ""):find("late 2", 1, true) then late = r; nlate = nlate + 1 end
+  end
+  ck(late and late.body:find("zoophyte note added late", 1, true), "...and when a compaction collapses it: "
+    .. tostring(late and late.body))
+  eq(nlate, 1, "...without a second record for it")
 end
 
 if fails == 0 then io.write("ok  ctxgraph_live: the live tail is searchable, one put per round, no duplicates\n")

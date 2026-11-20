@@ -77,6 +77,13 @@ its step key, so this also holds after a resume. Core reads that state once
 per process and writes it at most once per round, so a round costs one
 `put_nodes` and one `meta` write, whatever the conversation's length.
 
+Text that joins a step after its round was ingested (mid-turn steering, or
+a prompt, merged into the round's tool-results message) is not lost: the next
+live ingest, or the compaction that collapses the step, puts the step's record
+again with the text in its body (`user (mid-turn):`) and raw messages, same id
+and seq. The text stays with the step it was merged into, which is where the
+transcript has it.
+
 ## Tools
 
 | tool | does |

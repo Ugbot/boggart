@@ -336,6 +336,9 @@ function M.compact(sess, msgs, start, task, opts)
   -- the live-ingest cursor follows the kept tail to its new place (after the
   -- outline): msgs[i] for i >= start becomes message i - start + 2
   if rt.cursor then rt.cursor = math.max(2, rt.cursor - start + 2) end
+  if rt.last then
+    if rt.last.at >= start then rt.last.at = rt.last.at - start + 2 else rt.last = nil end
+  end
   gs.compactions = gs.compactions + 1
   local k = gs.compactions
   local cid = string.format("s/%s/compaction/%d", sid, k)
@@ -390,6 +393,14 @@ function M.ingest_live(sess)
     -- already in the graph are matched and skipped (ingest's live list)
     from = (msgs[1] and msgs[1].role == "user" and require("ctxgraph.outline").is_outline(msgs[1].content)) and 2 or 1
   end
+  -- the last step ingested may have gained text since (mid-turn steering or
+  -- a prompt merged into its trailing tool-results message): take it again
+  -- from its first message, and ingest updates its record in place
+  local prev
+  local last = rt.last
+  if rt.cursor and last and last.at < from and M.fingerprint(msgs[from - 1]) ~= last.fp then
+    from, prev = last.at, last
+  end
   if from > #msgs then return 0 end
   local be = M.backend(sess)
   local sid = M.sid(sess)
@@ -399,13 +410,25 @@ function M.ingest_live(sess)
     root = ok and r or (sys and sys.cwd and sys.cwd()) or nil
   end
   local got = require("ctxgraph.ingest").run(be, sid, msgs, from, #msgs,
-    { root = root, digests = rt.digests, live = true, match = rt.cursor == nil, state = M.gstate(sess) })
+    { root = root, digests = rt.digests, live = true, match = rt.cursor == nil, state = M.gstate(sess),
+      prev = prev })
   -- the state first: a crash after it leaves unused numbers, never reused ones
   M.save_state(sess)
   if #got.records > 0 then be.put_nodes(sid, got.records) end
   if #got.edges > 0 then be.put_edges(sid, got.edges) end
   rt.cursor = #msgs + 1
+  local tail = got.steps[#got.steps]
+  rt.last = tail and { at = tail.at, n = tail.n, fp = M.fingerprint(msgs[#msgs]) } or rt.last
   return #got.fresh
+end
+
+-- A cheap check that a message gained content: append_user adds a text block
+-- to a block list or text to a string.
+function M.fingerprint(m)
+  if not m then return "" end
+  local c = m.content
+  if type(c) == "table" then return "t" .. #c end
+  return "s" .. #tostring(c or "")
 end
 
 return M
