@@ -508,6 +508,51 @@ if loaded then
   v:on_key_pressed("down"); v:on_key_pressed("down")
   ok(v:input_text() == "", "down walks back out to an empty input")
 
+  -- History is per chat: a message sent in one chat is never recalled in another,
+  -- and a multi-line message comes back whole.
+  do
+    local sess = bog.session
+    local sid0 = sess.id
+    local A, B = "hist-a-" .. tostring(os.time()), "hist-b-" .. tostring(os.time())
+    sess.id = A
+    v:_sync_history()
+    v.history = { "from A\nsecond line" }
+    v:_save_history()
+    sess.id = B
+    v:set_input("")
+    v:on_key_pressed("up")
+    ok(v:input_text() == "", "history: another chat does not recall chat A's message")
+    sess.id = A
+    v:set_input("")
+    v:on_key_pressed("up")
+    ok(v:input_text() == "from A\nsecond line", "history: chat A's message comes back, multi-line intact -- got "
+      .. v:input_text())
+    local p = v:_hist_path()
+    ok(p and p:find("/history.d/", 1, true), "history: stored per session under history.d")
+    sess.id = sid0
+    v:_sync_history()
+  end
+
+  -- The last conversation is remembered per project / folder, not globally.
+  do
+    local okst, st = pcall(require, "core.studio")
+    if okst and type(st) == "table" and st.last_key then
+      local k1 = st.last_key()
+      ok(k1:find("^studio%.last_session:"), "resume: the key is scoped -- got " .. k1)
+      local real_cwd = sys.cwd
+      sys.cwd = function() return "/books/other" end
+      local k2 = st.last_key()
+      sys.cwd = real_cwd
+      ok(require("project").is_global() and k1 ~= k2 or not require("project").is_global(),
+        "resume: another folder has another key")
+    else
+      io.write("  (resume key: core.studio not loadable headless, checked at source level)\n")
+      local fsrc = io.open(root .. "/studio/data/core/studio.lua"); local src = fsrc and fsrc:read("a") or ""; if fsrc then fsrc:close() end
+      ok(src:find("kv_get(studio.last_key())", 1, true) ~= nil,
+        "resume: the studio reads its last chat through the scoped key")
+    end
+  end
+
   v:set_input("hello")
   v:on_key_pressed("ctrl+j")
   ok(v:input_text() == "hello\n",

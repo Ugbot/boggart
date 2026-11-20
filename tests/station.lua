@@ -304,5 +304,84 @@ do
   os.remove(trace)
 end
 
+
+-- ---- the live DEALER against a fake daemon (a -DBOGGART_STATION=ON build) ----
+-- The socket now rides the shared ZMQ plumbing (src/lzmq.c, src/bzmq.h); this
+-- pins that the refactor changed no behaviour: discovery through config.db,
+-- the 4-frame envelope, the two-phase cmd channel (ack, then result), the query
+-- channel, event frames re-emitted on the bus from the loop watch, deadlines.
+if station.built() and zmq and zmq.built() then
+  local uv = require "uv"
+  local home = assert(uv.fs_mkdtemp((os.getenv("HOME") or "/tmp") .. "/station-live-XXXXXX"))
+  local ws = assert(uv.fs_mkdtemp(home .. "/ws-XXXXXX"))
+  local router = assert(zmq.socket("ROUTER"))
+  assert(router:bind("tcp://127.0.0.1:*"))
+  local port = tonumber(router:endpoint():match(":(%d+)$"))
+  local cdb = assert(db.open(home .. "/config.db"))
+  cdb:exec("CREATE TABLE projects (path TEXT PRIMARY KEY, port INTEGER)")
+  local canon = uv.fs_realpath(ws)
+  cdb:run("INSERT INTO projects(path, port) VALUES (?, ?)", { canon, port })
+  cdb:close()
+  local saved = os.getenv("LLM_STATION_HOME")
+  uv.os_setenv("LLM_STATION_HOME", home)
+  local ep = station.endpoint(ws)
+  ok(ep == "tcp://127.0.0.1:" .. port, "discovery finds the fake daemon (" .. tostring(ep) .. ")")
+  local seen = {}
+  router:on_message(function(f)
+    -- [identity][empty][channel][corr][payload]
+    local id, channel, corr, payload = f[1], f[3], f[4], f[5]
+    local mt, tool, p = station._decode(payload)
+    seen[#seen + 1] = { channel = channel, mt = mt, tool = tool, p = p }
+    if channel == "cmd" then
+      router:send({ id, "", "result", corr, station._encode("ack", tool, {}) })
+      router:send({ id, "", "result", corr, station._encode("result", tool, { ok = "true", out = "done:" .. tostring(p.x) }) })
+    elseif channel == "query" and mt == "ping" then
+      router:send({ id, "", "result", corr, station._encode("pong", "", { version = "fake" }) })
+    elseif channel == "sub" then
+      router:send({ id, "", "event", p.topic, station._encode("event", "", { msg = "hello " .. p.topic }) })
+    end
+  end)
+  -- The fake daemon lives on this loop, so a wait must let the loop turn:
+  -- run it as a coroutine (wait yields "io" when yieldable) and spin between.
+  local function drive(fn)
+    local co = coroutine.create(fn)
+    local res = table.pack(coroutine.resume(co))
+    while coroutine.status(co) ~= "dead" do
+      uv.run("nowait")
+      res = table.pack(coroutine.resume(co))
+    end
+    return table.unpack(res, 2, res.n)
+  end
+  local conn, why = station.connect(ws)
+  ok(conn ~= nil, "connect to the fake daemon: " .. tostring(why))
+  if conn then
+    local h = conn:request("query", "ping", "", {}, 3000)
+    local pl, mt, ch = drive(function() return h:wait() end)
+    ok(mt == "pong" and ch == "result" and pl and pl.version == "fake", "query channel round trip")
+    local h2 = conn:request("cmd", "tool_exec", "code_search", { x = 5 }, 3000)
+    local p2, mt2 = drive(function() return h2:wait() end)
+    ok(mt2 == "result" and p2 and p2.out == "done:5", "cmd channel: ack then result under one handle")
+    local got
+    pcall(bus.attach_main)   -- C bus_emit dispatches on the main state once attached
+    local sub = bus.subscribe("station.index", function(_, data) got = data end)
+    ok(conn:subscribe("index") == true, "subscribe sent")
+    local deadline = uv.now() + 3000
+    local t = uv.new_timer(); t:start(10, 10, function() end)
+    while not got and uv.now() < deadline do uv.run("once"); uv.update_time() end
+    t:stop(); t:close()
+    ok(type(got) == "string" and got:find("hello index", 1, true), "an event frame reaches the bus from the loop watch")
+    if sub then bus.unsubscribe(sub) end
+    local h3 = conn:request("query", "never_answered", "", {}, 150)
+    local p3, err3 = drive(function() return h3:wait() end)
+    ok(p3 == nil and err3 == "station call timed out", "a silent daemon costs one deadline")
+    conn:close()
+    local okc = pcall(conn.request, conn, "query", "ping")
+    ok(not okc, "request on a closed connection raises")
+  end
+  router:close()
+  uv.os_setenv("LLM_STATION_HOME", saved or "")
+  if not saved then uv.os_unsetenv("LLM_STATION_HOME") end
+end
+
 io.write(string.format("station: %d passed, %d failed\n", passed, failed))
 if failed > 0 then os.exit(1) end

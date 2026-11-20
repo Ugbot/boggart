@@ -2388,7 +2388,7 @@ local function run_tool_round(sess, msg, idx, run_tool, on_tool, checkpoint)
       content = util.to_valid_utf8(content)
       if events.any("tool:refused")
           and content:find("^Tool error: %[permission_error%]") then
-        events.emit("tool:refused", { name = b.name, reason = content })
+        events.emit("tool:refused", { session = sess.id, name = b.name, reason = content })
       end
       -- result checkpoint: finalise the marker in place
       block.content = content
@@ -2472,6 +2472,13 @@ function M.run_on(sess, user_text, on_text, opts)
   -- that already have an id -- resumed ones, and every spawned agent, whose row
   -- comes from thread_create -- pass straight through.
   if bog.ensure_session then pcall(bog.ensure_session, sess) end
+  -- Bind this coroutine to the session for the whole turn, so tool and
+  -- permission events emitted deep in invoke/perm can say whose turn they
+  -- belong to (events.session_id). Restored on every exit path.
+  local prev_session = events.bind_session(sess.id)
+  local session_binding <close> = setmetatable({}, { __close = function()
+    events.bind_session(prev_session)
+  end })
   local stream_impl = opts.stream or stream_async
   local stream = function(body, sink, think_sink)
     return stream_impl(body, sink, think_sink, route)
@@ -2697,11 +2704,16 @@ function M.run_on(sess, user_text, on_text, opts)
     -- reasoning phase before any answer -- without this the UI is silent the
     -- whole time and looks hung). ttfb counts the first *reasoning* token too, so
     -- "time to first output" reflects when the model actually started talking.
-    local think_sink = on_think and function(chunk)
+    -- Also built when only an observer wants turn:thinking (a remote console),
+    -- so reasoning streams over the bus even with no front-end sink.
+    local think_sink = (on_think or events.any("turn:thinking")) and function(chunk)
       if ttfb_t0 and not ttfb_ms and chunk and chunk ~= "" then
         ttfb_ms = tel and (tel.now_ms() - ttfb_t0) or nil
       end
-      on_think(chunk)
+      if on_think then on_think(chunk) end
+      if chunk and chunk ~= "" and events.any("turn:thinking") then
+        events.emit("turn:thinking", { session = sess.id, text = chunk })
+      end
     end
     local msg, stop = stream(body, sink, think_sink)
     -- A forced tool some models then ignore (constraint suppression): ask once

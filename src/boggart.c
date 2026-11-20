@@ -33,6 +33,8 @@ void boggart_channel_shutdown(lua_State *L);
 void boggart_channel_quiesce(lua_State *L);
 int luaopen_boggart_channel(lua_State *L);
 void boggart_station_shutdown(lua_State *L); /* src/lstation.c: same doctrine for the ZMQ polls */
+void boggart_zmq_shutdown(lua_State *L); /* src/lzmq.c: every ZMQ watch (station included) */
+int luaopen_boggart_zmq(lua_State *L); /* src/lzmq.c: ZeroMQ sockets + msgpack */
 int luaopen_boggart_sys(lua_State *L);
 int luaopen_boggart_db(lua_State *L);
 int luaopen_boggart_mining_parser(lua_State *L);
@@ -221,6 +223,8 @@ static void register_boggart(lua_State *L, int argc, char **argv) {
   luaL_requiref(L, "fileview", luaopen_boggart_fileview, 0); lua_pop(L, 1);   /* src/lview.c: lazy file views */
   luaL_requiref(L, "terminal", luaopen_boggart_terminal, 0); lua_pop(L, 1);
   luaL_requiref(L, "agent_channel", luaopen_boggart_channel, 0); lua_pop(L, 1);
+  luaL_requiref(L, "zmq", luaopen_boggart_zmq, 0);
+  lua_setglobal(L, "zmq");
   luaL_requiref(L, "station", luaopen_boggart_station, 0);
   lua_setglobal(L, "station");
   luaL_requiref(L, "typesafe_core", luaopen_boggart_typesafe, 0); /* package.loaded name differs so require("typesafe") reaches lua/typesafe.lua */
@@ -395,6 +399,7 @@ int main(int argc, char **argv) {
   boggart_serve_shutdown(L);
   boggart_http_shutdown(L);
   boggart_station_shutdown(L);
+  boggart_zmq_shutdown(L);
   boggart_terminal_shutdown(L);
   boggart_channel_shutdown(L);
   /* Free the warm whisper context before GGML's Metal device destructors run at

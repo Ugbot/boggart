@@ -10,6 +10,7 @@ local blocked_ledgers=setmetatable({}, {__mode="k"})
 local resolver_depth=setmetatable({}, {__mode="k"})
 local serial = 0
 local prefix = tostring({}):gsub('table: ', '') .. ':' .. tostring(os.time())
+local result_preview -- defined below M.call
 local function key() return coroutine.running() end
 local function copy(t, seen)
   if type(t) ~= 'table' then return t end
@@ -63,7 +64,16 @@ function M.with_correlation(correlation,fn,...)
   if not result[1] then error(result[2],0) end
   return table.unpack(result,2,result.n)
 end
+local PERM_KEYS = {'mode','approve_all','tool_policy','rules','guards','agent_rules','headless'}
 -- Context handles are opaque; children retain every ancestor restriction.
+--
+-- options.follow (trusted host callback): a function returning the CURRENT
+-- permission state. A following context re-reads it at every admission instead
+-- of pinning the state it was created with. The session's own agent follows
+-- (lua/thread.lua session_agent): the human at the keyboard is that agent's
+-- authority, so "always allow" or a switch to Autonomous applies to the very
+-- next tool call, mid-turn. Spawned agents never follow: their authority stays
+-- the floor they were created with, and later grants never widen it.
 function M.context(options, parent)
   options = options or {}
   local handle = {}
@@ -78,7 +88,7 @@ function M.context(options, parent)
     policy, invalid = require('policy').compile(options.policy_scopes or st.policy_scopes)
   end
   contexts[handle] = {parent=parent or M.current(), state=legacy, policy=policy,
-    source=st, invalid=invalid, ledger=options.ledger or st.ledger, approve=options.approve,
+    source=st, follow=options.follow, invalid=invalid, ledger=options.ledger or st.ledger, approve=options.approve,
     allow=copy(options.allow), estimate=options.estimate, actual=options.actual}
   return handle
 end
@@ -241,6 +251,7 @@ function M.call(context, name, args, options)
   serial = serial + 1
   local id = evidence.id('invocation')
   local events, perm = require('events'), require('perm')
+  local session_id = events.session_id()
   local reservations = {}
   local revisions = {}
   local old, k = M.current(), key()
@@ -264,8 +275,20 @@ function M.call(context, name, args, options)
     if not span.event_id and span.error~="evidence_disabled" and evidence.status().failure_policy=='stop' then return nil,failure("evidence_unavailable","Durable invocation start could not be recorded") end
     local joined={}; contexts[joined]={parent=context,extra=old,state={mode="auto",guards=false,rules={}}}
     active[k]=joined
-    events.emit('tool:before', {name=name, input=copy(args), invocation_id=id})
+    events.emit('tool:before', {session=session_id, name=name, input=copy(args), invocation_id=id})
     states = chain(joined)
+    -- A following context (see M.context) is rebased on the live state before
+    -- anything is decided, so its snapshot is now, not when it was made.
+    for _,s in ipairs(states) do
+      if s.follow then
+        local cur=s.follow()
+        if type(cur)=='table' then
+          local snap={}
+          for _,k2 in ipairs(PERM_KEYS) do snap[k2]=copy(cur[k2]) end
+          s.state=snap; s.source=cur
+        end
+      end
+    end
     -- Surface-local state is never a substitute for current global restrictions.
     local global_state=perm.state()
     local has_global=false
@@ -338,7 +361,7 @@ function M.call(context, name, args, options)
     end
     local has_live=false;for _,s in ipairs(states) do if s.live then has_live=true;break end end
     local live_signature=has_live and admission_signature(chain(joined))
-    local veto = events.ask('tool:authorize',{name=name,tool=name,input=copy(args),invocation_id=id},{fail_closed=true})
+    local veto = events.ask('tool:authorize',{session=session_id,name=name,tool=name,input=copy(args),invocation_id=id},{fail_closed=true})
     if veto == 'deny' or type(veto)=='table' and veto.deny then
       return nil,failure('permission_error',type(veto)=='table' and veto.reason or 'authorization hook refused call')
     end
@@ -548,7 +571,16 @@ function M.call(context, name, args, options)
   active[k]=terminal
   if not err then debug.sethook(hook,mask,count) end
   local observed, observation_error = pcall(events.emit,'tool:after',
-    {name=name,invocation_id=id,policy_revisions=revisions,error=err~=nil,code=err and err.code,status=receipt.status,dispatched=receipt.dispatched,bytes=type(result)=='string' and #result or 0})
+    {session=session_id,name=name,invocation_id=id,policy_revisions=revisions,error=err~=nil,code=err and err.code,status=receipt.status,dispatched=receipt.dispatched,bytes=type(result)=='string' and #result or 0})
+  -- The result itself, bounded, for observers that show it (a remote console).
+  -- Only tool registry calls: control-route invocations ride the same gate but
+  -- are not tool results. Built only when someone is subscribed.
+  if observed and (options.registry==nil or options.registry==loaded_tools) and events.any('tool:result') then
+    observed, observation_error = pcall(events.emit,'tool:result',function()
+      local preview,bytes,truncated=result_preview(result,err)
+      return {session=session_id,invocation_id=id,name=name,ok=err==nil,preview=preview,bytes=bytes,truncated=truncated}
+    end)
+  end
   debug.sethook()
   active[k]=old
   debug.sethook(hook,mask,count)
@@ -562,6 +594,24 @@ function M.call(context, name, args, options)
   if not observed then error(observation_error,0) end
   return result,err,receipt
 end
+-- A <=2KB, UTF-8-safe preview of a result (or the failure), plus its full size.
+local PREVIEW_MAX=2048
+result_preview=function(result,err)
+  local text
+  if err then text=tostring(err.message or err.code or 'error')
+  elseif type(result)=='string' then text=result
+  elseif result==nil then text=''
+  else
+    local ok,encoded=pcall(require('json').encode,result)
+    text=ok and encoded or tostring(result)
+  end
+  local bytes=#text
+  if bytes<=PREVIEW_MAX then return text,bytes,false end
+  local stop=PREVIEW_MAX+1
+  while stop>1 and (text:byte(stop) or 0)>=128 and text:byte(stop)<192 do stop=stop-1 end
+  return text:sub(1,stop-1),bytes,true
+end
+M.result_preview=result_preview
 function M.string(context,name,args,options)
   local legacy={}; for k,v in pairs(options or {}) do legacy[k]=v end
   legacy.legacy_string=true

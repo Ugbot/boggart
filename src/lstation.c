@@ -47,6 +47,8 @@
 #include "bogassert.h"
 #include "sqlite3.h"
 #include "cJSON.h"
+#include "bmsgpack.h"
+#include "bzmq.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -59,8 +61,6 @@
 
 #ifdef BOGGART_STATION
 #include <zmq.h>
-#include <uv.h>
-extern uv_loop_t *luv_loop(lua_State *L); /* the interpreter's one loop (luv) */
 #endif
 
 void bus_emit(const char *topic, const char *data, size_t len); /* src/lbus.c */
@@ -150,56 +150,9 @@ static int l_endpoint(lua_State *L) {
 
 /* ---- msgpack envelope codec (no libzmq needed) ---------------------------
  * The subset the wire uses: maps and strings. Decoding also skips other
- * well-formed values, so a new non-string field degrades to "key ignored". */
-
-/* The encoder's own growable byte buffer. NOT a luaL_Buffer: the payload walk
- * below pushes and pops the Lua stack (lua_next, lua_pushvalue) while bytes are
- * being appended, and a luaL_Buffer that has outgrown its inline space keeps
- * its storage in a box ON the stack -- so the first large request (a big code
- * search) appended through a box that was no longer on top and segfaulted in
- * resizebox (studio crash reports 2026-09-28, lstation.c envelope_encode). */
-typedef struct { char *p; size_t n, cap; int oom; lua_State *L; } stbuf;
-
-static void mp_bytes(stbuf *o, const void *p, size_t n) {
-  if (o->oom) return;
-  if (o->n + n > o->cap) {
-    size_t cap = o->cap ? o->cap : 256;
-    while (cap < o->n + n) cap *= 2;
-    char *np = (char *)realloc(o->p, cap);
-    if (!np) { o->oom = 1; return; }
-    o->p = np; o->cap = cap;
-  }
-  memcpy(o->p + o->n, p, n);
-  o->n += n;
-}
-static void mp_u8(stbuf *o, unsigned char c) { mp_bytes(o, &c, 1); }
-
-static void mp_str(stbuf *o, const char *s, size_t n) {
-  if (n < 32) {
-    mp_u8(o, (unsigned char)(0xa0 | n));
-  } else if (n < 256) {
-    mp_u8(o, 0xd9); mp_u8(o, (unsigned char)n);
-  } else if (n < 65536) {
-    mp_u8(o, 0xda); mp_u8(o, (unsigned char)(n >> 8)); mp_u8(o, (unsigned char)n);
-  } else {
-    mp_u8(o, 0xdb);
-    mp_u8(o, (unsigned char)(n >> 24)); mp_u8(o, (unsigned char)(n >> 16));
-    mp_u8(o, (unsigned char)(n >> 8));  mp_u8(o, (unsigned char)n);
-  }
-  mp_bytes(o, s, n);
-}
-
-static void mp_map_header(stbuf *o, size_t n) {
-  if (n < 16) {
-    mp_u8(o, (unsigned char)(0x80 | n));
-  } else if (n < 65536) {
-    mp_u8(o, 0xde); mp_u8(o, (unsigned char)(n >> 8)); mp_u8(o, (unsigned char)n);
-  } else {
-    mp_u8(o, 0xdf);
-    mp_u8(o, (unsigned char)(n >> 24)); mp_u8(o, (unsigned char)(n >> 16));
-    mp_u8(o, (unsigned char)(n >> 8));  mp_u8(o, (unsigned char)n);
-  }
-}
+ * well-formed values, so a new non-string field degrades to "key ignored".
+ * The primitives (byte buffer, headers, read cursor) are src/bmsgpack.c,
+ * shared with the generic codec src/lzmq.c exposes. */
 
 /* Encode {msg_type, tool, payload} from stack slots base..base+2, leaving
  * the bytes on top. String keys, string-or-number values; numbers are
@@ -211,12 +164,12 @@ static int envelope_encode(lua_State *L, int base) {
   int has_payload = !lua_isnoneornil(L, base + 2);
   if (has_payload) luaL_checktype(L, base + 2, LUA_TTABLE);
 
-  stbuf o = { NULL, 0, 0, 0, L };
+  bmp_buf o = { NULL, 0, 0, 0 };
   BOG_STACK_GUARD(L);   /* the payload walk below must leave the stack as it found it */
-  mp_map_header(&o, 3);
-  mp_str(&o, "msg_type", 8); mp_str(&o, mt, mtn);
-  mp_str(&o, "tool", 4);     mp_str(&o, tool, tooln);
-  mp_str(&o, "payload", 7);
+  bmp_map_header(&o, 3);
+  bmp_str(&o, "msg_type", 8); bmp_str(&o, mt, mtn);
+  bmp_str(&o, "tool", 4);     bmp_str(&o, tool, tooln);
+  bmp_str(&o, "payload", 7);
 
   size_t count = 0;
   if (has_payload) {
@@ -228,7 +181,7 @@ static int envelope_encode(lua_State *L, int base) {
       lua_pop(L, 1);
     }
   }
-  mp_map_header(&o, count);
+  bmp_map_header(&o, count);
   if (has_payload) {
     lua_pushnil(L);
     while (lua_next(L, base + 2)) {
@@ -251,8 +204,8 @@ static int envelope_encode(lua_State *L, int base) {
           }
           v = num; vn = strlen(num);
         }
-        mp_str(&o, k, kn);
-        mp_str(&o, v, vn);
+        bmp_str(&o, k, kn);
+        bmp_str(&o, v, vn);
       }
       lua_pop(L, 1);
     }
@@ -269,86 +222,12 @@ static int envelope_encode(lua_State *L, int base) {
 
 static int l_encode(lua_State *L) { return envelope_encode(L, 1); }
 
-/* -- decoding -- */
-
-typedef struct { const unsigned char *p, *end; } stcur;
-
-static int rd_need(stcur *c, size_t n) { return (size_t)(c->end - c->p) >= n; }
-
-static int rd_str(stcur *c, const char **s, size_t *n) {
-  if (!rd_need(c, 1)) return 0;
-  unsigned char t = *c->p;
-  size_t len;
-  if ((t & 0xe0) == 0xa0)      { len = t & 0x1f; c->p += 1; }
-  else if (t == 0xd9) { if (!rd_need(c, 2)) return 0; len = c->p[1]; c->p += 2; }
-  else if (t == 0xda) { if (!rd_need(c, 3)) return 0; len = ((size_t)c->p[1] << 8) | c->p[2]; c->p += 3; }
-  else if (t == 0xdb) { if (!rd_need(c, 5)) return 0;
-    len = ((size_t)c->p[1] << 24) | ((size_t)c->p[2] << 16) |
-          ((size_t)c->p[3] << 8) | c->p[4]; c->p += 5; }
-  else return 0;
-  if (!rd_need(c, len)) return 0;
-  *s = (const char *)c->p; *n = len; c->p += len;
-  return 1;
-}
-
-static int rd_map_header(stcur *c, size_t *n) {
-  if (!rd_need(c, 1)) return 0;
-  unsigned char t = *c->p;
-  if ((t & 0xf0) == 0x80)      { *n = t & 0x0f; c->p += 1; return 1; }
-  if (t == 0xde) { if (!rd_need(c, 3)) return 0; *n = ((size_t)c->p[1] << 8) | c->p[2]; c->p += 3; return 1; }
-  if (t == 0xdf) { if (!rd_need(c, 5)) return 0;
-    *n = ((size_t)c->p[1] << 24) | ((size_t)c->p[2] << 16) |
-         ((size_t)c->p[3] << 8) | c->p[4]; c->p += 5; return 1; }
-  return 0;
-}
-
-/* Skip one well-formed value, so unknown fields are ignored not fatal.
- * Depth-capped: the wire is flat, deep nesting is garbage. */
-static int rd_skip(stcur *c, int depth) {
-  if (depth > 8 || !rd_need(c, 1)) return 0;
-  unsigned char t = *c->p;
-  const char *s; size_t n;
-  if ((t & 0xe0) == 0xa0 || t == 0xd9 || t == 0xda || t == 0xdb)
-    return rd_str(c, &s, &n);
-  if ((t & 0xf0) == 0x80 || t == 0xde || t == 0xdf) {
-    if (!rd_map_header(c, &n)) return 0;
-    for (size_t i = 0; i < n * 2; i++)
-      if (!rd_skip(c, depth + 1)) return 0;
-    return 1;
-  }
-  if ((t & 0xf0) == 0x90 || t == 0xdc || t == 0xdd) { /* arrays */
-    size_t cnt;
-    if ((t & 0xf0) == 0x90) { cnt = t & 0x0f; c->p += 1; }
-    else if (t == 0xdc) { if (!rd_need(c, 3)) return 0; cnt = ((size_t)c->p[1] << 8) | c->p[2]; c->p += 3; }
-    else { if (!rd_need(c, 5)) return 0;
-      cnt = ((size_t)c->p[1] << 24) | ((size_t)c->p[2] << 16) |
-            ((size_t)c->p[3] << 8) | c->p[4]; c->p += 5; }
-    for (size_t i = 0; i < cnt; i++)
-      if (!rd_skip(c, depth + 1)) return 0;
-    return 1;
-  }
-  if (t <= 0x7f || t >= 0xe0) { c->p += 1; return 1; }         /* fixint */
-  if (t == 0xc0 || t == 0xc2 || t == 0xc3) { c->p += 1; return 1; } /* nil/bool */
-  switch (t) { /* sized scalars and bins */
-    case 0xcc: case 0xd0: n = 2; break;
-    case 0xcd: case 0xd1: n = 3; break;
-    case 0xce: case 0xd2: case 0xca: n = 5; break;
-    case 0xcf: case 0xd3: case 0xcb: n = 9; break;
-    case 0xc4: if (!rd_need(c, 2)) return 0; n = 2 + c->p[1]; break;
-    case 0xc5: if (!rd_need(c, 3)) return 0; n = 3 + (((size_t)c->p[1] << 8) | c->p[2]); break;
-    default: return 0;
-  }
-  if (!rd_need(c, n)) return 0;
-  c->p += n;
-  return 1;
-}
-
 /* Decode an envelope into (msg_type, tool, payload_table); pushes those three
  * onto the stack and returns 3, or pushes nil + error and returns 2. */
 static int envelope_decode(lua_State *L, const unsigned char *data, size_t len) {
-  stcur c = { data, data + len };
+  bmp_cur c = { data, data + len };
   size_t fields;
-  if (!rd_map_header(&c, &fields)) {
+  if (!bmp_rd_map_header(&c, &fields)) {
     lua_pushnil(L); lua_pushliteral(L, "not a msgpack map");
     return 2;
   }
@@ -359,34 +238,34 @@ static int envelope_decode(lua_State *L, const unsigned char *data, size_t len) 
 
   for (size_t i = 0; i < fields; i++) {
     const char *k; size_t kn;
-    if (!rd_str(&c, &k, &kn)) goto bad;
+    if (!bmp_rd_str(&c, &k, &kn)) goto bad;
     if (kn == 8 && memcmp(k, "msg_type", 8) == 0) {
       const char *v; size_t vn;
-      if (!rd_str(&c, &v, &vn)) goto bad;
+      if (!bmp_rd_str(&c, &v, &vn)) goto bad;
       lua_pushlstring(L, v, vn); lua_replace(L, base);
     } else if (kn == 4 && memcmp(k, "tool", 4) == 0) {
       const char *v; size_t vn;
-      if (!rd_str(&c, &v, &vn)) goto bad;
+      if (!bmp_rd_str(&c, &v, &vn)) goto bad;
       lua_pushlstring(L, v, vn); lua_replace(L, base + 1);
     } else if (kn == 7 && memcmp(k, "payload", 7) == 0) {
       size_t pairs;
-      if (!rd_map_header(&c, &pairs)) goto bad;
+      if (!bmp_rd_map_header(&c, &pairs)) goto bad;
       for (size_t j = 0; j < pairs; j++) {
         const char *pk; size_t pkn;
-        if (!rd_str(&c, &pk, &pkn)) goto bad;
+        if (!bmp_rd_str(&c, &pk, &pkn)) goto bad;
         const char *pv; size_t pvn;
-        stcur save = c;
-        if (rd_str(&c, &pv, &pvn)) {
+        bmp_cur save = c;
+        if (bmp_rd_str(&c, &pv, &pvn)) {
           lua_pushlstring(L, pk, pkn);
           lua_pushlstring(L, pv, pvn);
           lua_rawset(L, base + 2);
         } else {
           c = save;
-          if (!rd_skip(&c, 0)) goto bad; /* non-string value: key ignored */
+          if (!bmp_rd_skip(&c, 0)) goto bad; /* non-string value: key ignored */
         }
       }
     } else {
-      if (!rd_skip(&c, 0)) goto bad;
+      if (!bmp_rd_skip(&c, 0)) goto bad;
     }
   }
   return 3;
@@ -461,31 +340,19 @@ typedef struct stcall {
   uint64_t deadline;
 } stcall;
 
-/* The uv_poll handle, malloc'd apart from the conn userdata: libuv needs the
- * memory valid until the close callback, and the userdata belongs to the GC. */
-typedef struct pollbox {
-  uv_poll_t p;
-  struct stconn *conn;      /* NULL once the conn is gone; late cbs no-op */
-} pollbox;
-
 struct stconn {
   void *sock;               /* NULL after close */
   int dead;
   char endpoint[64];
   stcall *pending[ST_MAX_PENDING];
-  struct zctxbox *box;
-  pollbox *pb;              /* NULL when no loop integration (or after close) */
+  lua_State *L;             /* for untrack; NULL once untracked */
+  bzmq_watch *w;            /* NULL when no loop integration (or after close) */
 };
 
-/* One zmq context per interpreter, in the registry. Its __gc closes leftover
- * sockets before zmq_ctx_term: term blocks until all sockets close, and __gc
- * order is undefined. This is what keeps lua_close from hanging. */
-typedef struct zctxbox {
-  void *ctx;
-  stconn *conns[ST_MAX_CONNS];
-} zctxbox;
-
-static char g_zctx_key;
+/* The zmq context, the loop watch and the close-before-term ordering are the
+ * shared plumbing in src/lzmq.c (src/bzmq.h): one context per interpreter,
+ * whose __gc closes every tracked socket -- this one included -- before
+ * zmq_ctx_term, which is what keeps lua_close from hanging. */
 
 static void conn_fail_pending(stconn *c, const char *why) {
   for (int i = 0; i < ST_MAX_PENDING; i++) {
@@ -496,54 +363,19 @@ static void conn_fail_pending(stconn *c, const char *why) {
   }
 }
 
-static void pollbox_close_cb(uv_handle_t *h) {
-  free((pollbox *)h->data);
-}
-
 static void conn_close(stconn *c) {
-  if (c->pb) {
-    c->pb->conn = NULL;
-    uv_poll_stop(&c->pb->p);
-    /* data points at the box itself so the close cb can free it; if the
-     * process is tearing down instead, boggart_station_shutdown() has
-     * already NULLed data and detached pb, and we never get here. */
-    c->pb->p.data = c->pb;
-    uv_close((uv_handle_t *)&c->pb->p, pollbox_close_cb);
-    c->pb = NULL;
-  }
+  if (c->w) { bzmq_watch_stop(c->w); c->w = NULL; }
   if (c->sock) { zmq_close(c->sock); c->sock = NULL; }
   c->dead = 1;
   conn_fail_pending(c, "station connection closed");
-  if (c->box) {
-    for (int i = 0; i < ST_MAX_CONNS; i++)
-      if (c->box->conns[i] == c) c->box->conns[i] = NULL;
-    c->box = NULL;
-  }
+  if (c->L) { lua_State *L = c->L; c->L = NULL; bzmq_untrack(L, c); }
 }
 
-static int zctx_gc(lua_State *L) {
-  zctxbox *b = (zctxbox *)lua_touserdata(L, 1);
-  for (int i = 0; i < ST_MAX_CONNS; i++)
-    if (b->conns[i]) conn_close(b->conns[i]);
-  if (b->ctx) { zmq_ctx_term(b->ctx); b->ctx = NULL; }
-  return 0;
-}
-
-static zctxbox *get_ctx(lua_State *L) {
-  lua_rawgetp(L, LUA_REGISTRYINDEX, &g_zctx_key);
-  zctxbox *b = (zctxbox *)lua_touserdata(L, -1);
-  lua_pop(L, 1);
-  if (b) return b;
-  b = (zctxbox *)lua_newuserdatauv(L, sizeof(zctxbox), 0);
-  memset(b, 0, sizeof(*b));
-  b->ctx = zmq_ctx_new();
-  if (luaL_newmetatable(L, "boggart.stationctx")) {
-    lua_pushcfunction(L, zctx_gc);
-    lua_setfield(L, -2, "__gc");
-  }
-  lua_setmetatable(L, -2);
-  lua_rawsetp(L, LUA_REGISTRYINDEX, &g_zctx_key);
-  return b;
+/* the context's __gc closes leftovers; it has already dropped the entry */
+static void conn_closer(void *owner) {
+  stconn *c = (stconn *)owner;
+  c->L = NULL;
+  conn_close(c);
 }
 
 /* Deliver one inbound message: [0] empty, [1] channel, [2] corr id or
@@ -554,18 +386,18 @@ static void route_message(stconn *c, char frames[][256], size_t lens[],
   const char *channel = frames[1];
   if (strcmp(channel, "event") == 0) {
     /* Re-emit on the bus as station.<topic>, envelope flattened to JSON. */
-    stcur cur = { payload, payload + payload_n };
+    bmp_cur cur = { payload, payload + payload_n };
     size_t fields;
     cJSON *o = cJSON_CreateObject();
-    if (rd_map_header(&cur, &fields)) {
+    if (bmp_rd_map_header(&cur, &fields)) {
       for (size_t i = 0; i < fields; i++) {
         const char *k; size_t kn;
-        if (!rd_str(&cur, &k, &kn)) break;
+        if (!bmp_rd_str(&cur, &k, &kn)) break;
         char key[64];
         snprintf(key, sizeof key, "%.*s", (int)(kn < 63 ? kn : 63), k);
         const char *v; size_t vn;
-        stcur save = cur;
-        if (rd_str(&cur, &v, &vn)) {
+        bmp_cur save = cur;
+        if (bmp_rd_str(&cur, &v, &vn)) {
           cJSON_AddItemToObject(o, key, cJSON_CreateString(""));
           /* replace with a bounded copy (cJSON needs a NUL-terminated str) */
           char *vs = (char *)malloc(vn + 1);
@@ -576,12 +408,12 @@ static void route_message(stconn *c, char frames[][256], size_t lens[],
           }
         } else if (kn == 7 && memcmp(k, "payload", 7) == 0) {
           size_t pairs;
-          if (!rd_map_header(&cur, &pairs)) break;
+          if (!bmp_rd_map_header(&cur, &pairs)) break;
           for (size_t j = 0; j < pairs; j++) {
             const char *pk; size_t pkn, pvn; const char *pv;
-            if (!rd_str(&cur, &pk, &pkn)) { j = pairs; break; }
-            stcur ps = cur;
-            if (rd_str(&cur, &pv, &pvn)) {
+            if (!bmp_rd_str(&cur, &pk, &pkn)) { j = pairs; break; }
+            bmp_cur ps = cur;
+            if (bmp_rd_str(&cur, &pv, &pvn)) {
               char pkey[64];
               snprintf(pkey, sizeof pkey, "%.*s", (int)(pkn < 63 ? pkn : 63), pk);
               char *pvs = (char *)malloc(pvn + 1);
@@ -590,11 +422,11 @@ static void route_message(stconn *c, char frames[][256], size_t lens[],
                 cJSON_AddItemToObject(o, pkey, cJSON_CreateString(pvs));
                 free(pvs);
               }
-            } else { cur = ps; if (!rd_skip(&cur, 0)) { j = pairs; } }
+            } else { cur = ps; if (!bmp_rd_skip(&cur, 0)) { j = pairs; } }
           }
         } else {
           cur = save;
-          if (!rd_skip(&cur, 0)) break;
+          if (!bmp_rd_skip(&cur, 0)) break;
         }
       }
     }
@@ -614,20 +446,20 @@ static void route_message(stconn *c, char frames[][256], size_t lens[],
   for (int i = 0; i < ST_MAX_PENDING; i++) {
     stcall *h = c->pending[i];
     if (h && !h->done && strcmp(h->corr, frames[2]) == 0) {
-      stcur mc = { payload, payload + payload_n };
+      bmp_cur mc = { payload, payload + payload_n };
       size_t fields;
       int is_ack = 0;
-      if (rd_map_header(&mc, &fields)) {
+      if (bmp_rd_map_header(&mc, &fields)) {
         for (size_t f = 0; f < fields; f++) {
           const char *k; size_t kn;
-          if (!rd_str(&mc, &k, &kn)) break;
+          if (!bmp_rd_str(&mc, &k, &kn)) break;
           if (kn == 8 && memcmp(k, "msg_type", 8) == 0) {
             const char *v; size_t vn;
-            if (rd_str(&mc, &v, &vn) && vn == 3 && memcmp(v, "ack", 3) == 0)
+            if (bmp_rd_str(&mc, &v, &vn) && vn == 3 && memcmp(v, "ack", 3) == 0)
               is_ack = 1;
             break;
           }
-          if (!rd_skip(&mc, 0)) break;
+          if (!bmp_rd_skip(&mc, 0)) break;
         }
       }
       if (is_ack) { h->acked = 1; return; }
@@ -942,18 +774,17 @@ static int l_connect(lua_State *L) {
     return 2;
   }
 
-  zctxbox *box = get_ctx(L);
-  if (!box->ctx) { lua_pushnil(L); lua_pushliteral(L, "zmq context failed"); return 2; }
-  int slot = -1;
-  for (int i = 0; i < ST_MAX_CONNS; i++)
-    if (!box->conns[i]) { slot = i; break; }
-  if (slot < 0) { lua_pushnil(L); lua_pushliteral(L, "too many station connections"); return 2; }
+  void *ctx = bzmq_context(L);
+  if (!ctx) { lua_pushnil(L); lua_pushliteral(L, "zmq context failed"); return 2; }
+  if (bzmq_count(L, BZMQ_TAG_STATION) >= ST_MAX_CONNS) {
+    lua_pushnil(L); lua_pushliteral(L, "too many station connections"); return 2;
+  }
 
   stconn *c = (stconn *)lua_newuserdatauv(L, sizeof(stconn), 0);
   memset(c, 0, sizeof(*c));
   luaL_setmetatable(L, API_TYPE_STATION);
 
-  c->sock = zmq_socket(box->ctx, ZMQ_DEALER);
+  c->sock = zmq_socket(ctx, ZMQ_DEALER);
   if (!c->sock) {
     c->dead = 1;
     lua_pushnil(L); lua_pushliteral(L, "zmq socket failed");
@@ -977,55 +808,34 @@ static int l_connect(lua_State *L) {
     lua_pushnil(L); lua_pushliteral(L, "zmq connect failed");
     return 2;
   }
-  c->box = box;
-  box->conns[slot] = c;
+  if (!bzmq_track(L, c, conn_closer, BZMQ_TAG_STATION)) {
+    conn_close(c);
+    lua_pushnil(L); lua_pushliteral(L, "out of memory");
+    return 2;
+  }
+  lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_MAINTHREAD); /* a coroutine L can die first */
+  c->L = lua_tothread(L, -1);
+  lua_pop(L, 1);
   conn_watch(L, c);
   return 1;
 }
 
-/* Loop-side delivery (BSTAT-9). After every wake: drain, then re-check
- * ZMQ_EVENTS until no POLLIN. ZMQ_FD readiness does not imply a message and
- * a message does not always re-edge the fd; wrong here means intermittent
- * hangs (the docs/async.md bug class). The handle is uv_unref'd so an idle
- * connection never holds the loop open. */
-static void station_poll_cb(uv_poll_t *h, int status, int events) {
-  (void)status; (void)events;
-  pollbox *pb = (pollbox *)h->data;
-  stconn *c = pb ? pb->conn : NULL;
-  if (!c || !c->sock) return;
-  for (;;) {
-    conn_drain(c, NULL);
-    int ev = 0;
-    size_t sz = sizeof ev;
-    if (zmq_getsockopt(c->sock, ZMQ_EVENTS, &ev, &sz) != 0) break;
-    if (!(ev & ZMQ_POLLIN)) break;
-  }
+/* Loop-side delivery (BSTAT-9). After every wake the shared watch drains,
+ * then re-checks ZMQ_EVENTS until no POLLIN (src/lzmq.c watch_run). ZMQ_FD
+ * readiness does not imply a message and a message does not always re-edge
+ * the fd; wrong here means intermittent hangs (the docs/async.md bug class).
+ * The watch is unref'd so an idle connection never holds the loop open. */
+static int station_ready(void *ud) {
+  stconn *c = (stconn *)ud;
+  if (c && c->sock) conn_drain(c, NULL);
+  return 0;
 }
 
 /* Park ZMQ_FD on the interpreter's uv loop, so subscribed events arrive
- * while the program sits in uv.run. Best-effort: on failure pb stays NULL
+ * while the program sits in uv.run. Best-effort: on failure w stays NULL
  * and the slice-poll waits still work. */
 static void conn_watch(lua_State *L, stconn *c) {
-  uv_loop_t *loop = luv_loop(L);
-  if (!loop) return;
-  zmq_fd_t fd;
-  size_t sz = sizeof fd;
-  if (zmq_getsockopt(c->sock, ZMQ_FD, &fd, &sz) != 0) return;
-  pollbox *pb = (pollbox *)calloc(1, sizeof(*pb));
-  if (!pb) return;
-  if (uv_poll_init_socket(loop, &pb->p, (uv_os_sock_t)fd) != 0) {
-    free(pb);
-    return;
-  }
-  pb->conn = c;
-  pb->p.data = pb;
-  if (uv_poll_start(&pb->p, UV_READABLE, station_poll_cb) != 0) {
-    pb->p.data = pb;
-    uv_close((uv_handle_t *)&pb->p, pollbox_close_cb);
-    return;
-  }
-  uv_unref((uv_handle_t *)&pb->p);
-  c->pb = pb;
+  c->w = bzmq_watch_start(L, c->sock, station_ready, c, 0);
 }
 
 static int l_conn_endpoint_of(lua_State *L) {
@@ -1034,27 +844,10 @@ static int l_conn_endpoint_of(lua_State *L) {
   return 1;
 }
 
-/* Neutralise the raw uv_poll handles before lua_close(), the
- * boggart_http_shutdown doctrine: luv's loop_gc close-walk casts
- * handle->data to luv_handle_t*, ours is a pollbox*, and the confusion
- * faults at exit. Stop each poll, NULL its data (luv_close_cb no-ops on
- * NULL), detach, and leak the box; loop_gc still touches the handle memory.
- * Idempotent. */
-void boggart_station_shutdown(lua_State *L) {
-  lua_rawgetp(L, LUA_REGISTRYINDEX, &g_zctx_key);
-  zctxbox *b = (zctxbox *)lua_touserdata(L, -1);
-  lua_pop(L, 1);
-  if (!b) return;
-  for (int i = 0; i < ST_MAX_CONNS; i++) {
-    stconn *c = b->conns[i];
-    if (c && c->pb) {
-      uv_poll_stop(&c->pb->p);
-      c->pb->p.data = NULL;
-      c->pb->conn = NULL;
-      c->pb = NULL; /* box leaks at exit, as lhttp's ctx does, on purpose */
-    }
-  }
-}
+/* Neutralise the raw uv handles before lua_close(), the
+ * boggart_http_shutdown doctrine. The watches are the shared ones now, so
+ * this is boggart_zmq_shutdown (idempotent; kept for the callers). */
+void boggart_station_shutdown(lua_State *L) { boggart_zmq_shutdown(L); }
 
 #else /* !BOGGART_STATION ---------------------------------------------------- */
 

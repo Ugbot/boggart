@@ -585,6 +585,44 @@ do
   eq(start.chars, 5000, "...and says how much it truncated")
 end
 
+-- ---- turn:thinking: reasoning streams over the bus, with no front-end sink --
+do
+  reset()
+  local thoughts, sessions = {}, {}
+  events.on("turn:thinking", function(_, d) thoughts[#thoughts + 1] = d.text; sessions[#sessions + 1] = d.session end)
+  bog.session.messages = {}
+  local thinking = ev("content_block_start", { type = "content_block_start", index = 0,
+      content_block = { type = "thinking", thinking = "" } })
+    .. ev("content_block_delta", { type = "content_block_delta", index = 0,
+      delta = { type = "thinking_delta", thinking = "let me " } })
+    .. ev("content_block_delta", { type = "content_block_delta", index = 0,
+      delta = { type = "thinking_delta", thinking = "think" } })
+    .. ev("content_block_stop", { type = "content_block_stop", index = 0 })
+  queue = { message_start() .. thinking .. text_block(1, { "done" }) .. finish("end_turn") }
+  drive(function() bog.api.run_turn("ponder", nil) end)
+  eq(table.concat(thoughts), "let me think", "turn:thinking delivers every reasoning delta")
+  ok(sessions[1] ~= nil and sessions[1] == bog.session.id, "...tagged with the turn's session")
+end
+
+-- ---- permission:ask / permission:resolved: a parked gate on the bus --------
+do
+  reset()
+  local asked, resolved
+  events.on("permission:ask", function(_, d) asked = d end)
+  events.on("permission:resolved", function(_, d) resolved = d end)
+  local perm = require "perm"
+  local tools = require "tools"
+  tools.register("_events_gated", { effect = "write", run = function() return "ran" end })
+  perm.GATED._events_gated = true
+  local run = perm.wrap_run(nil, { mode = "smart", guards = false, tool_policy = { _events_gated = "ask" } },
+    { on_ask = function(rec) rec.decision = "approve" end })
+  eq(run("_events_gated", { path = "p" }), "ran", "an approved gated call runs")
+  ok(asked and asked.tool == "_events_gated" and asked.request_id, "the gate emits permission:ask with a request id")
+  ok(resolved and resolved.request_id == asked.request_id and resolved.decision == "approve",
+     "and permission:resolved once decided")
+  perm.GATED._events_gated = nil
+end
+
 -- ---- turn:error ------------------------------------------------------------
 do
   reset()

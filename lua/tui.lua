@@ -804,7 +804,9 @@ local function run_turn(st, text)
   -- does the waiting -- so nothing here polls.
   st.dirty, st.last_paint = true, 0
   st.wake:start(HEARTBEAT_MS, HEARTBEAT_MS, function() end) -- wake to tick the clock
-  while bog.sched.count() > 0 do
+  -- count_foreground: tasks served for a remote controller are background
+  -- actors; they must not hold the turn open.
+  while bog.sched.count_foreground() > 0 do
     local ev = tc.poll(0)
     while ev.type ~= "none" do
       -- Mouse wheel scrolls the transcript (64 = up, 65 = down), even mid-turn.
@@ -861,7 +863,7 @@ local function run_turn(st, text)
     if st.abort then break end
 
     bog.sched.resume_ready()               -- advance the swarm (coroutines only)
-    if bog.sched.count() == 0 then break end
+    if bog.sched.count_foreground() == 0 then break end
 
     local dt = now_ms() - st.last_paint
     if dt >= FRAME_MS and (st.dirty or dt >= HEARTBEAT_MS) then

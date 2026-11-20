@@ -61,12 +61,25 @@ end
 studio.LAST_KEY = "studio.last_session"
 local tracking = false
 
+-- The last conversation is remembered PER PROJECT (or per working folder when
+-- no project is set), so opening the studio in one book never lands in a chat
+-- from another. A folder with no conversation of its own starts fresh.
+function studio.last_key()
+  local okp, proj = pcall(require, "project")
+  local name = okp and proj.current and proj.current() or nil
+  if name and not (proj.is_global and proj.is_global(name)) then
+    return studio.LAST_KEY .. ":project:" .. tostring(name)
+  end
+  local cwd = (sys and sys.cwd and sys.cwd()) or ""
+  return studio.LAST_KEY .. ":dir:" .. cwd
+end
+
 function studio.track_last()
   if tracking or not (bog.events and bog.events.on) then return end
   tracking = true
   local function remember(_, data)
     local id = data and data.id
-    if id and bog.store and bog.store.kv_set then pcall(bog.store.kv_set, studio.LAST_KEY, tostring(id)) end
+    if id and bog.store and bog.store.kv_set then pcall(bog.store.kv_set, studio.last_key(), tostring(id)) end
   end
   bog.events.on("session:created", remember)
   bog.events.on("session:saved", remember)
@@ -76,7 +89,7 @@ function studio.resume_last(view)
   studio.track_last()
   if require("core.welcomeview").is_first_run() then return end
   if not (bog.resume_startup and bog.resume_startup()) then
-    local id = bog.store and bog.store.kv_get and tonumber(bog.store.kv_get(studio.LAST_KEY))
+    local id = bog.store and bog.store.kv_get and tonumber(bog.store.kv_get(studio.last_key()))
     if id then bog.resume_session(id) end
   end
   if view and bog.session and bog.session.id then view:repaint(bog.session.messages) end

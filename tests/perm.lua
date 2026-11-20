@@ -232,5 +232,61 @@ do
   bog.perm_state, bog.store = saved_state, saved_store
 end
 
+-- ---- the session's own agent follows the live state (Studio's flow) ------------
+-- A turn's agent context is made when the message is sent; the studio then gates
+-- every tool call through perm.wrap_run with that context as the parent. "Always
+-- allow" or a switch to Autonomous made DURING the turn must apply to the next
+-- call. A spawned agent must not widen that way.
+do
+  local thread = require "thread"
+  local saved = bog.perm_state
+  bog.perm_state = { mode = "smart", approve_all = false, tool_policy = {}, hydrated = true }
+  perm.GATED.probe_gated = true
+  bog.tools.register("probe_gated", { description = "test", input_schema = { type = "object" },
+    run = function() return "ran" end })
+  local asked = 0
+  local function gate(ctx, view)
+    return perm.wrap_run(bog.tools.run, view, { context = ctx,
+      on_ask = function(rec) asked = asked + 1; rec.decision = "reject" end })
+  end
+  local view = { mode = "smart", approve_all = false, tool_policy = bog.perm_state.tool_policy }
+
+  local rec = thread.session_agent({ id = "perm-live", messages = {} })
+  local ctx = rec.opts.invocation_context
+  local out = gate(ctx, view)("probe_gated", {})
+  ok(asked == 1 and out:find("permission_error", 1, true), "smart: a gated tool asks")
+
+  -- "always allow", mid-turn: same context, next call
+  bog.perm_state.approve_all, view.approve_all = true, true
+  asked = 0
+  out = gate(ctx, view)("probe_gated", {})
+  eq(out, "ran", "always allow applies to the next call in the same turn")
+  ok(asked == 0, "and nothing is asked")
+
+  -- Autonomous, mid-turn
+  bog.perm_state.approve_all, view.approve_all = false, false
+  bog.perm_state.mode, view.mode = "auto", "auto"
+  asked = 0
+  out = gate(ctx, view)("probe_gated", {})
+  eq(out, "ran", "switching to Autonomous applies to the next call in the same turn")
+
+  -- and back: a narrower mode narrows at once too
+  bog.perm_state.mode, view.mode = "smart", "smart"
+  asked = 0
+  out = gate(ctx, view)("probe_gated", {})
+  ok(asked == 1, "switching back to smart asks again at once")
+
+  -- a spawned agent keeps its floor: a later grant never widens it
+  local child = { id = "perm-child", allow = nil }
+  local cctx = thread.agent_opts(child).invocation_context
+  bog.perm_state.approve_all = true
+  asked = 0
+  out = gate(cctx, { mode = "smart", approve_all = true, tool_policy = {} })("probe_gated", {})
+  ok(asked == 1, "a spawned agent is not widened by a later grant")
+
+  bog.tools.registry.probe_gated, perm.GATED.probe_gated = nil, nil
+  bog.perm_state = saved
+end
+
 io.write(string.format("perm: %d passed, %d failed\n", passed, failed))
 os.exit(failed == 0 and 0 or 1)

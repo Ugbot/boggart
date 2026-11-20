@@ -51,7 +51,16 @@ function M.agent_opts(rec)
   local st={}
   for k,v in pairs(require("perm").state()) do st[k]=v end
   st.agent_rules=rec.perms
-  local context=invoke.context({state=st,
+  -- The session's own agent follows the live permission state (invoke.context
+  -- `follow`): a grant made mid-turn applies at once. Spawned agents keep the
+  -- snapshot they were created with.
+  local follow = rec.root and function()
+    local cur={}
+    for k,v in pairs(require("perm").state()) do cur[k]=v end
+    cur.agent_rules=rec.perms
+    return cur
+  end or nil
+  local context=invoke.context({state=st, follow=follow,
     allow=rec.allow and next(rec.allow) and rec.allow or nil,
     approve=bog.approve and function(name,input) return bog.approve(name,input,rec.id)==true end or nil},
     rec.invocation_context)
@@ -136,7 +145,7 @@ function M.session_agent(sess, skills, text)
   if M.live < 1 then M.live = 1 end
   local rec = {
     id = sess.id, skills = skills, allow = allow, instructions = instructions,
-    may_spawn = not M.at_capacity(), session = sess, routed = routed ~= nil,
+    may_spawn = not M.at_capacity(), session = sess, routed = routed ~= nil, root = true,
   }
   rec.opts = M.agent_opts(rec)
   sess.agent = rec
@@ -400,7 +409,10 @@ function M._run(rec, task)
   for attempt = 1, max_attempts do
     local buf = {}
     local ran, _msg, _stop = pcall(bog.api.run_on, rec.session, task,
-      function(s) buf[#buf + 1] = s end, rec.opts)
+      function(s)
+        buf[#buf + 1] = s
+        if rec.on_text then pcall(rec.on_text, s) end -- a remote caller's progress stream
+      end, rec.opts)
     stop = _stop
     text = table.concat(buf)
     if not ran then
@@ -448,6 +460,8 @@ function M._run(rec, task)
   M.live_recs[rec.id] = nil
   M.live=math.max(0,M.live-1)
   bog.log(string.format("agent %d (%s) %s", rec.id, rec.spec_name or "agent", status))
+  -- for a caller that ran the record itself (an extension serving remote runs)
+  return ok, text, why, stop
 end
 
 -- Kill one agent from a controlling interface (an operator picking a worker off

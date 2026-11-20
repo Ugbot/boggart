@@ -477,19 +477,30 @@ if(BOGGART_VOICE)
   set(VOICE_DEFS BOGGART_VOICE=1)
 endif()
 
-# ---- LLM Station client: libzmq (opt-in) -----------------------------------
+# ---- ZeroMQ: libzmq (default ON) -------------------------------------------
+# src/lzmq.c is the Lua `zmq` module (DEALER/ROUTER/REQ on the uv loop) that
+# the LLM Station client and any ZMQ-speaking extension run on. Opt-in on the
+# BOGGART_VOICE doctrine: a normal build and CI never fetch libzmq. With
+# -DBOGGART_ZMQ=ON libzmq is fetched and linked statically; without it
+# zmq.built() is false and every socket entry point answers nil plus why (the
+# msgpack codec, src/bmsgpack.c, works in every build). libzmq is C++, so ON
+# turns CXX on and the executables link with the C++ driver.
+option(BOGGART_ZMQ "Build the ZeroMQ transport (libzmq, static)" OFF)
+
 # The native DEALER client for LLM Station's ZeroMQ daemon protocol
-# (src/lstation.c, docs/station-zmq.md). Opt-in behind BOGGART_STATION and OFF
-# by default on the BOGGART_VOICE doctrine: a normal build and CI never fetch
-# libzmq, src/lstation.c is compiled into both binaries regardless, and
+# (src/lstation.c, docs/station-zmq.md) stays opt-in on the BOGGART_VOICE
+# doctrine: src/lstation.c is compiled into both binaries regardless, and
 # without the option it degrades to station.built()==false (discovery and the
-# msgpack codec still work -- they need only sqlite/cJSON). libzmq is C++, so
-# like voice this turns CXX on and the executables link with the C++ driver.
+# envelope codec still work). It rides the shared ZMQ plumbing, so it needs
+# BOGGART_ZMQ.
 option(BOGGART_STATION "Build the native LLM Station ZeroMQ client" OFF)
+if(BOGGART_STATION AND NOT BOGGART_ZMQ)
+  message(FATAL_ERROR "BOGGART_STATION=ON needs BOGGART_ZMQ=ON")
+endif()
 
 set(STATION_LIBS "")
 set(STATION_DEFS "")
-if(BOGGART_STATION)
+if(BOGGART_ZMQ)
   enable_language(CXX)
   set(BOGGART_ZMQ_VERSION 4.3.5)
   set(BOGGART_ZMQ_SHA256 6653ef5910f17954861fe72332e68b03ca6e4d9c7160eb3a8de5a5a913bfab43)
@@ -516,7 +527,10 @@ if(BOGGART_STATION)
   unset(CMAKE_POLICY_VERSION_MINIMUM)
 
   set(STATION_LIBS libzmq-static)
-  set(STATION_DEFS BOGGART_STATION=1)
+  set(STATION_DEFS BOGGART_ZMQ=1)
+  if(BOGGART_STATION)
+    list(APPEND STATION_DEFS BOGGART_STATION=1)
+  endif()
 endif()
 
 # ---- generated embedded Lua ------------------------------------------------
@@ -584,6 +598,7 @@ add_executable(boggart
   src/lserve.c
   src/lvoice.c
   src/lstation.c
+  src/lzmq.c src/bmsgpack.c
   src/ltypesafe.c
   ${EMBEDDED_C})
 
@@ -596,7 +611,7 @@ target_compile_definitions(boggart PRIVATE ${VOICE_DEFS} ${STATION_DEFS})
 if(APPLE)
   target_link_libraries(boggart PRIVATE proc)
 endif()
-if(BOGGART_VOICE OR BOGGART_STATION)
+if(BOGGART_VOICE OR BOGGART_ZMQ)
   # C executable, C++ static deps (whisper/ggml, libzmq): link with the C++
   # driver so libc++/libstdc++ comes along.
   set_target_properties(boggart PROPERTIES LINKER_LANGUAGE CXX)
@@ -835,6 +850,7 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
   src/lserve.c
   src/lvoice.c
   src/lstation.c
+  src/lzmq.c src/bmsgpack.c
   src/ltypesafe.c
     ${EMBEDDED_C})
 
@@ -851,7 +867,7 @@ if(BOGGART_BUILD_APP AND SDL3_FOUND)
     boggart_warnings
     lua_vendor mining_parser_vendor sqlite_vendor cjson_vendor luv_lua uv_a isocline_vendor
     CURL::libcurl freetype boggart_harfbuzz ${VOICE_LIBS} ${STATION_LIBS})
-  if(BOGGART_VOICE OR BOGGART_STATION)
+  if(BOGGART_VOICE OR BOGGART_ZMQ)
     set_target_properties(boggart-studio PROPERTIES LINKER_LANGUAGE CXX)
   endif()
   if(NOT WIN32)

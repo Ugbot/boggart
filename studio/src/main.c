@@ -17,6 +17,7 @@ void boggart_open_libs(lua_State *L);
 int  boggart_boot(lua_State *L, const char *mode, const char *version);
 lua_State *boggart_newstate(void);
 void boggart_http_shutdown(lua_State *L); /* src/lhttp.c: close raw uv handles before lua_close */
+void boggart_zmq_shutdown(lua_State *L); /* src/lzmq.c: the ZMQ watches, same doctrine */
 void boggart_serve_shutdown(lua_State *L);
 void boggart_terminal_shutdown(lua_State *L);
 void boggart_transport_shutdown(lua_State *L);
@@ -289,6 +290,7 @@ int main(int argc, char **argv) {
   boggart_transport_shutdown(L);
   boggart_serve_shutdown(L);
   boggart_http_shutdown(L);
+  boggart_zmq_shutdown(L);
   boggart_station_shutdown(L);
   boggart_terminal_shutdown(L);
   boggart_channel_shutdown(L);

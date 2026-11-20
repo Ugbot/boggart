@@ -57,12 +57,15 @@ function M.install_approve(st)
     end
     local rec = perm.request(name, input)
     rec.agent_id = agent_id
+    rec.why = why
+    perm.track(rec)
     st.pending = rec
     st.dirty = true
     while rec.decision == nil do coroutine.yield("approve") end
+    perm.settle(rec)
     st.pending = nil
     st.dirty = true
-    if rec.decision == "reject" then return false, why end
+    if rec.decision ~= "approve" then return false, why end
     return true
   end
 end
