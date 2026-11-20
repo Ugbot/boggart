@@ -210,14 +210,19 @@ function M.on_fork(psess, csess)
   local pbe, be = M.backend(psess), M.backend(csess)
   if pbe ~= be then return false end
   local psid = M.sid(psess)
-  local chain = { { sid = psid, seq = tonumber(pbe.meta(psid, "seq") or "0") or 0 } }
-  for _, a in ipairs(M.parents(psess)) do chain[#chain + 1] = { sid = a.sid, seq = a.seq } end
+  -- the parent's live steps (lua/ctxgraph/ingest.lua) are not collapsed: the
+  -- child has them in full in its copied transcript
+  local live = {}
+  for _, e in ipairs(require("ctxgraph.ingest").live_list(pbe, psid)) do live[#live + 1] = tonumber(e.n) end
+  local chain = { { sid = psid, seq = tonumber(pbe.meta(psid, "seq") or "0") or 0, live = live } }
+  for _, a in ipairs(M.parents(psess)) do chain[#chain + 1] = { sid = a.sid, seq = a.seq, live = a.live } end
   be.meta(M.sid(csess), M.PARENT_KEY, json.encode(chain))
   M.rt(csess).parents = chain
   return true
 end
 
--- The graphs this conversation was forked from, nearest first: { {sid, seq} }.
+-- The graphs this conversation was forked from, nearest first:
+-- { {sid, seq, live = {step n...}} }.
 function M.parents(sess)
   local rt = M.rt(sess)
   if rt.parents == nil then
@@ -228,11 +233,18 @@ function M.parents(sess)
   return rt.parents
 end
 
--- Where reads look, in order: { { sid, max_seq? } }. The first is the
--- conversation's own graph (no limit); the rest are read-only parents.
+-- Where reads look, in order: { { sid, max_seq?, live } }. The first is the
+-- conversation's own graph (no limit); the rest are read-only parents. `live`
+-- is the set of step numbers not yet collapsed in that graph (as of the fork,
+-- for a parent): their records are searchable but not outline lines.
 function M.sources(sess)
-  local out = { { sid = M.sid(sess) } }
-  for _, p in ipairs(M.parents(sess)) do out[#out + 1] = { sid = p.sid, max_seq = tonumber(p.seq), parent = true } end
+  local ingest = require("ctxgraph.ingest")
+  local out = { { sid = M.sid(sess), live = ingest.live_set(M.backend(sess), M.sid(sess)) } }
+  for _, p in ipairs(M.parents(sess)) do
+    local live = {}
+    for _, n in ipairs(p.live or {}) do live[tonumber(n)] = true end
+    out[#out + 1] = { sid = p.sid, max_seq = tonumber(p.seq), parent = true, live = live }
+  end
   return out
 end
 
@@ -299,6 +311,9 @@ function M.compact(sess, msgs, start, task, opts)
   end
   local rt = M.rt(sess)
   local got = ingest.run(be, sid, msgs, from, start - 1, { root = root, digests = rt.digests, now = opts.now })
+  -- the live-ingest cursor follows the kept tail to its new place (after the
+  -- outline): msgs[i] for i >= start becomes message i - start + 2
+  if rt.cursor then rt.cursor = math.max(2, rt.cursor - start + 2) end
   local k = ingest.counter(be, sid, "compactions", 1)
   local cid = string.format("s/%s/compaction/%d", sid, k)
   local links = {}
@@ -314,12 +329,12 @@ function M.compact(sess, msgs, start, task, opts)
   be.meta(sid, "seq", tostring(crec.seq))
   got.records[#got.records + 1] = crec
   be.put_nodes(sid, got.records)
-  be.put_edges(sid, got.edges)
+  if #got.edges > 0 then be.put_edges(sid, got.edges) end
 
   local cap = math.max(1000, math.min(M.OUTLINE_MAX_TOKENS, math.floor((opts.threshold or 100000) * M.OUTLINE_SHARE)))
-  local inherit = {}
-  for i, src in ipairs(M.sources(sess)) do if i > 1 then inherit[#inherit + 1] = src end end
-  local text, ost = outline.render(be, sid, task, { cap_tokens = cap, inherit = inherit })
+  local inherit, srcs = {}, M.sources(sess)
+  for i, src in ipairs(srcs) do if i > 1 then inherit[#inherit + 1] = src end end
+  local text, ost = outline.render(be, sid, task, { cap_tokens = cap, inherit = inherit, live = srcs[1].live })
   if start <= #msgs then text = text .. "\n\n" .. outline.CONTINUES end
   -- the outline changed: everything is collapsed again
   rt.expanded, rt.digests = {}, {}
@@ -330,6 +345,40 @@ function M.compact(sess, msgs, start, task, opts)
     records = stats.records, outline_bytes = stats.outline_bytes, outline_lines = stats.outline_lines,
     dropped = stats.dropped })
   return text, stats
+end
+
+-- ---- live ingest ------------------------------------------------------------------
+
+-- After a tool round: ingest the messages not yet in the graph (from the
+-- cursor to the end, normally the round just finished, plus a prompt before
+-- it), so graph_recall and expand reach the live tail before any compaction.
+-- The outline is not touched (it changes only at a compaction), and the
+-- compaction that later collapses these steps reuses their records. One
+-- put_nodes per call. -> number of new steps
+function M.ingest_live(sess)
+  if not M.enabled(sess) then return 0 end
+  local msgs = sess.messages or {}
+  local rt = M.rt(sess)
+  local from = rt.cursor
+  if not from then
+    -- a fresh or resumed conversation: everything after the outline; steps
+    -- already in the graph are matched and skipped (ingest's live list)
+    from = (msgs[1] and msgs[1].role == "user" and require("ctxgraph.outline").is_outline(msgs[1].content)) and 2 or 1
+  end
+  if from > #msgs then return 0 end
+  local be = M.backend(sess)
+  local sid = M.sid(sess)
+  local root
+  do
+    local ok, r = pcall(function() return bog.tools.project_root() end)
+    root = ok and r or (sys and sys.cwd and sys.cwd()) or nil
+  end
+  local got = require("ctxgraph.ingest").run(be, sid, msgs, from, #msgs,
+    { root = root, digests = rt.digests, live = true })
+  if #got.records > 0 then be.put_nodes(sid, got.records) end
+  if #got.edges > 0 then be.put_edges(sid, got.edges) end
+  rt.cursor = #msgs + 1
+  return #got.fresh
 end
 
 return M

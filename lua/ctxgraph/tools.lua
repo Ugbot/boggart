@@ -9,6 +9,7 @@ local cg = require("ctxgraph")
 local outline = require("ctxgraph.outline")
 local ex = require("ctxgraph.extract")
 local stubs = require("ctxgraph.stubs")
+local ingest = require("ctxgraph.ingest")
 
 local M = {}
 
@@ -139,7 +140,8 @@ local function index(sess, be)
     for _, r in ipairs(be.scan(src.sid, { "error", "file", "package" })) do
       local f = r.frontmatter or {}
       local key = r.type == "file" and f.path or (r.type == "package" and f.name) or f.line
-      if key and #key >= 3 and not seen[r.id] and cg.visible(r, src) then
+      -- only collapsed records: what a live step touched is in the tail already
+      if key and #key >= 3 and not seen[r.id] and cg.visible(r, src) and ingest.collapsed(r, src.live) then
         seen[r.id] = true
         idx[#idx + 1] = { id = r.id, type = r.type, key = key, src = src }
       end

@@ -168,6 +168,19 @@ do
   ck(tools_seen and tools_seen:find("expand,graph_recall,note", 1, true), "graph tools are offered: " .. tostring(tools_seen))
   local _, n_pre = s.messages[1].content:gsub("Earlier conversation compacted", "")
   eq(n_pre, 1, "one outline after repeated compactions")
+  -- steps were ingested live as each round finished; the compactions reused
+  -- them: one record per step, numbered 1..n
+  local nums, raws, dup = {}, {}, false
+  for _, r in ipairs(require("ctxgraph").backend(s).scan("302", { "step" })) do
+    nums[#nums + 1] = r.frontmatter.n
+    if raws[r.raw] then dup = true end
+    raws[r.raw] = true
+  end
+  table.sort(nums)
+  local contiguous = #nums >= rounds - 1
+  for i, n in ipairs(nums) do if n ~= i then contiguous = false end end
+  ck(not dup, "no step was ingested twice across live ingests and compactions")
+  ck(contiguous, "step numbers run 1.." .. #nums .. " with no gaps (" .. rounds .. " rounds)")
 end
 
 -- ---- summary stays the default --------------------------------------------------------

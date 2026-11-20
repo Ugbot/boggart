@@ -60,6 +60,19 @@ prompt, tools and outline are a byte-identical prefix and prompt caches keep
 hitting; expansions are appended to the tail. Over its budget (8k tokens or
 15% of the threshold) the least useful lines go first and a count says so.
 
+## The live tail
+
+Steps do not wait for a compaction to reach the graph. After each tool round
+the harness ingests the round (and any prompt before it) as **live** steps:
+their step, entity, claim and thread records are written at once, in one
+`put_nodes`, so `graph_recall` and `expand` find what the tail did before
+anything has been compacted. Live records are not collapsed: the outline does
+not list them and auto-expand does not pick them (they are in full in the
+tail), and the outline itself is not touched between compactions. The
+compaction that later collapses those steps reuses their records rather than
+ingesting the messages again; the graph meta key `live` lists the live steps
+(step key and number, in order) so this also holds after a resume.
+
 ## Tools
 
 | tool | does |

@@ -53,7 +53,8 @@ end
 
 -- render(be, sid, task, opts) -> text, stats
 -- opts.cap_tokens bounds the outline (the request is bounded by the caller).
--- opts.inherit = { { sid, max_seq } }: read-only parent graphs (a fork's,
+-- opts.live: the set of step numbers not yet collapsed (their records are left
+-- out). opts.inherit = { { sid, max_seq, live } }: read-only parent graphs (a fork's,
 -- lua/ctxgraph.lua M.sources), nearest first. Their records as of the fork are
 -- listed before the conversation's own, oldest ancestor first; an id the
 -- conversation holds itself is listed once, as its own.
@@ -65,7 +66,11 @@ function M.render(be, sid, task, opts)
   table.sort(types)
   local by = {}
   for i = 1, #SECTIONS do by[i] = {} end
-  local own = be.scan(sid, types)
+  -- only collapsed records earn a line: what belongs to a live step
+  -- (opts.live, a set of step numbers) is still in full in the tail
+  local collapsed = require("ctxgraph.ingest").collapsed
+  local own = {}
+  for _, r in ipairs(be.scan(sid, types)) do if collapsed(r, opts.live) then own[#own + 1] = r end end
   local seen = {}
   for _, r in ipairs(own) do seen[r.id] = true end
   local rows = {}
@@ -73,7 +78,7 @@ function M.render(be, sid, task, opts)
   for k = #inherit, 1, -1 do
     local src = inherit[k]
     for _, r in ipairs(be.scan(src.sid, types)) do
-      if not seen[r.id] and (src.max_seq == nil or (r.seq or 0) <= src.max_seq) then
+      if not seen[r.id] and (src.max_seq == nil or (r.seq or 0) <= src.max_seq) and collapsed(r, src.live) then
         seen[r.id] = true
         rows[#rows + 1] = r
       end

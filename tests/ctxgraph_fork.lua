@@ -29,6 +29,14 @@ local function count(sid) return #be.scan(sid) end
 local parent_n = count("501")
 ck(parent_n > 50, "the parent's graph has records (" .. parent_n .. ")")
 
+-- the parent's next round is ingested live (lua/ctxgraph.lua ingest_live): in
+-- its graph, searchable, but not collapsed
+local pm = parent.messages
+pm[#pm + 1] = { role = "assistant", content = { { type = "tool_use", id = "pl", name = "read", input = { path = "src/parent_live.py" } } } }
+pm[#pm + 1] = { role = "user", content = { { type = "tool_result", tool_use_id = "pl", content = "src/parent_live.py lines 1-1 of 1\n1\tx" } } }
+eq(cg.ingest_live(parent), 2, "the parent's live tail is ingested (the kept round and the new one)")
+parent_n = count("501")
+
 -- ---- the fork --------------------------------------------------------------------------
 local prec = { id = 501, session = parent, skills = {}, allow = nil }
 local crec = { id = 502, session = { id = 502, model = "mock", messages = {} } }
@@ -53,6 +61,14 @@ out = bog.tools.run("expand", { id = "s/501/span/1" })
 ck(not out:find("^Tool error"), "expand through the tool registry, in the child: " .. out:sub(1, 120))
 out = bog.tools.run("graph_recall", { query = "grammarkit" })
 ck(out:find("pkg/pip/grammarkit", 1, true), "graph_recall in the child finds the parent's records: " .. out:sub(1, 120))
+
+out = bog.tools.run("graph_recall", { query = "parent_live" })
+ck(out:find("file/src/parent_live.py", 1, true), "...including the parent's live records as of the fork: " .. out:sub(1, 120))
+do
+  local msg = { role = "assistant", content = { { type = "tool_use", id = "q1", name = "read", input = { path = "src/parent_live.py" } } } }
+  local rmsg = { role = "user", content = { { type = "tool_result", tool_use_id = "q1", content = "ok" } } }
+  eq(gtools.after_round(child, msg, rmsg), 0, "a parent record that was live at the fork is not auto-expanded in the child")
+end
 
 -- ---- the child's writes stay in the child's graph ---------------------------------------
 out = bog.tools.run("note", { text = "the child's own finding", about = "src/parser.py" })

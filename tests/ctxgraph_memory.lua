@@ -65,7 +65,7 @@ local sess = { id = 601, model = "mock", memory = "gestalt", messages = dofile("
 ck(cg.enabled(sess), "the session is on graph memory")
 ck(bog.api.compact(sess, { stream = function() error("no model call") end, system = function() return "" end }), "compacted")
 eq(g.calls.put_nodes, 1, "the registered backend got the compaction's records, in one put_nodes")
-eq(g.calls.put_edges, 1, "...and its edges in one put_edges")
+eq(g.calls.put_edges, nil, "...its edges carried as the records' links, no separate put_edges")
 eq(#require("ctxgraph.sqlite").scan("601"), 0, "nothing went to the sqlite backend")
 ck(#g.scan("601", { "span" }) > 0, "spans are in the registered backend")
 cg.unregister_backend("gestalt")

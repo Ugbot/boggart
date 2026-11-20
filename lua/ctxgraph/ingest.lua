@@ -180,11 +180,83 @@ end
 
 local function digest_of(body, extra) return ex.sha((body or "") .. "\0" .. (extra or "")) end
 
+-- ---- live steps ------------------------------------------------------------------
+-- Steps are ingested as their tool round completes (ctx.live), not only at a
+-- compaction, so the live tail is searchable. Those steps are "live": in the
+-- graph but not collapsed. The graph meta key "live" lists them in
+-- conversation order, as JSON [{k = step key, n = step number}]. A later
+-- ingest of the same messages (the compaction that collapses them, or a live
+-- ingest after a resume) matches its steps against that list in order and
+-- reuses their records instead of ingesting them twice. A compaction drops the
+-- steps it collapses from the list; what is left is the kept tail.
+M.LIVE_KEY = "live"
+
+-- A step's identity across ingests: its opening message, which is never
+-- changed once the next request has been sent.
+function M.step_key(st)
+  local ok, enc = pcall(json.encode, st.messages[1])
+  return ex.sha(ok and enc or tostring(st.text)):sub(1, 32)
+end
+
+function M.live_list(be, sid)
+  local raw = be.meta(sid, M.LIVE_KEY)
+  local ok, t = pcall(json.decode, raw or "")
+  return (ok and type(t) == "table") and t or {}
+end
+
+-- The step numbers of the live (not yet collapsed) steps, as a set.
+function M.live_set(be, sid)
+  local set = {}
+  for _, e in ipairs(M.live_list(be, sid)) do if tonumber(e.n) then set[tonumber(e.n)] = true end end
+  return set
+end
+
+-- The step a record belongs to, for deciding whether it is collapsed: an
+-- entity by the step that first touched it; a model's note has none.
+local function step_of(r)
+  local f = r.frontmatter or {}
+  if r.type == "step" then return tonumber(f.n) end
+  if r.type == "reasoning" or r.type == "thread" or r.type == "version" or r.type == "claim" then return tonumber(f.step) end
+  if r.type == "file" or r.type == "package" or r.type == "command" or r.type == "test" or r.type == "error" then
+    return tonumber(f.first_step)
+  end
+  return nil
+end
+
+-- Is record `r` collapsed, given the live set? Spans and compactions always
+-- are; anything that belongs to a live step is not yet.
+function M.collapsed(r, live)
+  local n = step_of(r)
+  return not (n and live and live[n])
+end
+
 -- ingest(be, sid, msgs, from, to, ctx) -> { steps, spans, records, edges, span_ids }
--- ctx = { root, digests = { [tool_use_id] = content sha256 }, now }
+-- ctx = { root, digests = { [tool_use_id] = content sha256 }, now, live }
+-- ctx.live: a live ingest (after a tool round): steps only, no spans, and the
+-- new steps are added to the live list. Otherwise a compaction: the steps are
+-- collapsed into spans and leave the live list. Steps already on the live list
+-- are reused, never ingested again. Edges from records in the batch are
+-- carried as their links, so a batch is normally one put_nodes; `edges` holds
+-- only those whose source is not in it (normally none).
 function M.run(be, sid, msgs, from, to, ctx)
   ctx = ctx or {}
   local steps = M.steps_of(msgs, from, to)
+  local live = M.live_list(be, sid)
+  local matched, last_matched = {}, 0
+  do
+    local p = 1
+    for _, st in ipairs(steps) do
+      st.key = M.step_key(st)
+      for j = p, #live do
+        if live[j].k == st.key then
+          st.done = tonumber(live[j].n)
+          matched[j] = true
+          last_matched, p = j, j + 1
+          break
+        end
+      end
+    end
+  end
   local recs, edges, cache = {}, {}, {}
   local seq = counter(be, sid, "seq")
   local function nextseq() seq = seq + 1; return seq end
@@ -205,10 +277,16 @@ function M.run(be, sid, msgs, from, to, ctx)
   local function edge(src, t, dst) edges[#edges + 1] = { src = src, type = t, dst = dst } end
 
   local step_n = counter(be, sid, "steps")
+  local fresh = {}
   for _, st in ipairs(steps) do
-    step_n = step_n + 1
-    st.n = step_n
-    st.id = string.format("s/%s/step/%d", sid, step_n)
+    if st.done then
+      st.n = st.done
+    else
+      step_n = step_n + 1
+      st.n = step_n
+      fresh[#fresh + 1] = st
+    end
+    st.id = string.format("s/%s/step/%d", sid, st.n)
     st.ents, st.keys, st.entities, st.claims = {}, {}, {}, {}
     st.tokens = window.tokens_of(st.messages)
     for _, c in ipairs(st.calls) do
@@ -229,10 +307,11 @@ function M.run(be, sid, msgs, from, to, ctx)
     end
     st.stub = stubs.step(st, ex)
   end
-  counter(be, sid, "steps", #steps)
+  if #fresh > 0 then counter(be, sid, "steps", #fresh) end
 
   -- entities and claims, in step order so counts and versions accumulate
-  for _, st in ipairs(steps) do
+  -- (only for steps not already in the graph)
+  for _, st in ipairs(fresh) do
     local body = render(st)
     local ref = body:match("Full output saved to (%S+) %-%-")
     local okr, raw = pcall(json.encode, st.messages)
@@ -364,6 +443,34 @@ function M.run(be, sid, msgs, from, to, ctx)
     end
   end
 
+  -- the live list: a live ingest appends its new steps; a compaction drops
+  -- what it collapses (and anything listed before it, which is stale)
+  local keep = {}
+  if ctx.live then
+    for _, e in ipairs(live) do keep[#keep + 1] = e end
+    for _, st in ipairs(fresh) do keep[#keep + 1] = { k = st.key, n = st.n } end
+  else
+    for j = last_matched + 1, #live do if not matched[j] then keep[#keep + 1] = live[j] end end
+  end
+  if (ctx.live and #fresh > 0) or (not ctx.live and #keep ~= #live) then
+    be.meta(sid, M.LIVE_KEY, #keep > 0 and json.encode(keep) or "[]")
+  end
+
+  local function finish(spans, span_ids)
+    -- carry edges as links of their source record when it is in the batch
+    local rest = {}
+    for _, e in ipairs(edges) do
+      local r = recs[e.src]
+      if r then r.links[#r.links + 1] = { type = e.type, dst = e.dst } else rest[#rest + 1] = e end
+    end
+    local list = {}
+    for _, r in pairs(recs) do list[#list + 1] = r end
+    table.sort(list, function(a, b) return (a.seq or 0) < (b.seq or 0) end)
+    be.meta(sid, "seq", tostring(seq))
+    return { steps = steps, fresh = fresh, spans = spans, records = list, edges = rest, span_ids = span_ids }
+  end
+  if ctx.live then return finish({}, {}) end
+
   -- spans
   local spans = M.spans_of(steps)
   local span_ids = {}
@@ -404,12 +511,7 @@ function M.run(be, sid, msgs, from, to, ctx)
     span_ids[#span_ids + 1] = id
   end
   counter(be, sid, "spans", #spans)
-
-  local list = {}
-  for _, r in pairs(recs) do list[#list + 1] = r end
-  table.sort(list, function(a, b) return (a.seq or 0) < (b.seq or 0) end)
-  be.meta(sid, "seq", tostring(seq))
-  return { steps = steps, spans = spans, records = list, edges = edges, span_ids = span_ids }
+  return finish(spans, span_ids)
 end
 
 return M

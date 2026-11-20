@@ -2439,6 +2439,10 @@ function M.run_on(sess, user_text, on_text, opts)
         local okx, n = pcall(require("ctxgraph.tools").after_round, sess, msg, sess.messages[#sess.messages])
         if not okx then bog.log("graph auto-expand failed: " .. tostring(n))
         elseif n > 0 then checkpoint() end
+        -- then the round itself goes into the graph, so graph_recall reaches
+        -- the live tail before the next compaction (the outline is untouched)
+        local okl, lerr = pcall(require("ctxgraph").ingest_live, sess)
+        if not okl then bog.log("graph live ingest failed: " .. tostring(lerr)) end
       end
     end
 

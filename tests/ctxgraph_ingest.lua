@@ -35,7 +35,21 @@ local want = { step = 41, reasoning = 2, span = 12, thread = 1, file = 17, versi
                command = 6, test = 1, error = 3, claim = 11 }
 for t, n in pairs(want) do eq(by[t], n, "records of type " .. t) end
 eq(#got.records, 107, "records in all")
-eq(#got.edges, 75, "edges put separately (step -> entity / version / claim)")
+-- step -> entity / version / claim edges travel as the step records' links,
+-- so a batch is one put_nodes; none is left for a separate put_edges
+eq(#got.edges, 0, "no edges left over for put_edges")
+do
+  local n = 0
+  local kinds = { reads = true, writes = true, edits = true, runs = true, installs = true, tests = true,
+                  raised = true, produced = true, observes = true }
+  for _, r in ipairs(got.records) do
+    if r.type == "step" then for _, l in ipairs(r.links) do if kinds[l.type] then n = n + 1 end end end
+  end
+  eq(n, 75, "step -> entity / version / claim edges, carried as links")
+  local rows = bog.db:query("SELECT COUNT(*) AS n FROM ctx_edges WHERE session='41' AND src LIKE 's/41/step/%' "
+    .. "AND type NOT IN ('has_reasoning','spawned')")
+  eq(rows[1].n, 75, "...and stored as edges by the backend")
+end
 local all_ok = true
 for _, r in ipairs(got.records) do
   local ok, why = require("ctxgraph.backend").valid_record(r)

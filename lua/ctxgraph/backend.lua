@@ -49,7 +49,12 @@
 -- `sid` is the conversation's key (a string). Every operation is scoped to it:
 -- a backend must never return another session's records from these calls.
 --
---   put_nodes(sid, records)            insert or replace, as one batch
+--   put_nodes(sid, records)            insert or replace, as one batch; each
+--                                       record's links are stored as its edges.
+--                                       Core calls it once per compaction and
+--                                       once per tool round (live ingest), with
+--                                       a batch's edges carried as links, so
+--                                       put_edges is rarely needed
 --   put_edges(sid, edges)              add { src, type, dst } links (idempotent)
 --   get(sid, id) -> record | nil       with its links
 --   children(sid, id, type?) -> {record}   records `id` links to (by edge type),
@@ -64,7 +69,10 @@
 --   record_claim(sid, claim) -> id, created   add a claim record unless one with
 --                                       its id exists (claims only add)
 --   set_claim_state(sid, id, state) -> true | nil, err
---   meta(sid, key, value?) -> value    small per-session counters/state; with a
+--   meta(sid, key, value?) -> value    small per-session counters/state (keys
+--                                       core uses: seq, steps, spans, threads,
+--                                       compactions, live, parent_graph,
+--                                       thread_agent/<id>); with a
 --                                       value, stores it (strings only)
 --   export_bundle(sid) -> { records = {record...} }   the whole graph, for a
 --                                       LOKF bundle (lua/ctxgraph/export.lua)
