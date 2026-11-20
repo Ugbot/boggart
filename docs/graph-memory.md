@@ -100,7 +100,8 @@ A forked child (`spawn{fork=true}`) starts with its parent's outline, whose ids
 name records in the parent's graph. The child reads through to the parent's
 graph for ids it does not hold itself: `expand`, `graph_recall`, auto-expand and
 the child's own later outlines see the parent's records as they were at the
-fork (records the parent puts afterwards are not visible). The view is
+fork (records the parent puts afterwards are not visible, and a parent entity
+or thread the parent changes in place afterwards reads as it was at the fork). The view is
 read-only: the child's notes and compactions go to its own graph, and a note
 about a parent record names it in its frontmatter (`subject`, `subject_graph`)
 without a link. The chain is stored in the child's graph state

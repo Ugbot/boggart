@@ -80,7 +80,7 @@ function M.render(be, sid, task, opts)
     for _, r in ipairs(be.scan(src.sid, types)) do
       if not seen[r.id] and (src.max_seq == nil or (r.seq or 0) <= src.max_seq) and collapsed(r, src.live) then
         seen[r.id] = true
-        rows[#rows + 1] = r
+        rows[#rows + 1] = M.as_of(r, src.max_seq)
       end
     end
   end
@@ -123,6 +123,28 @@ function M.render(be, sid, task, opts)
     text, n = assemble(dropped)
   end
   return text, { lines = n, bytes = #text, dropped = dropped }
+end
+
+-- ---- a fork's view ----------------------------------------------------------
+-- as_of(r, max_seq) -> r as a reader holding a fork at `max_seq` sees it: a
+-- record changed in place after that fork reads as its last state at or
+-- before it (lua/ctxgraph/ingest.lua M.snapshot). Without max_seq, or for a
+-- record unchanged since, r itself.
+function M.as_of(r, max_seq)
+  if not (r and max_seq) then return r end
+  local f = r.frontmatter or {}
+  local u = tonumber(f.useq)
+  if not u or u <= max_seq then return r end
+  local ok, hist = pcall(require("json").decode, f.asof or "")
+  if not (ok and type(hist) == "table") then return r end
+  local pick
+  for _, h in ipairs(hist) do if (tonumber(h.v) or 0) <= max_seq then pick = h end end
+  if not pick then return r end
+  local out = {}
+  for k, v in pairs(r) do out[k] = v end
+  out.title, out.stub, out.body = pick.title or r.title, pick.stub or "", pick.body
+  out.frontmatter = type(pick.fm) == "table" and pick.fm or {}
+  return out
 end
 
 -- ---- expand -----------------------------------------------------------------
@@ -186,10 +208,11 @@ function M.expand(be, sid, id, opts)
   local r = be.get(sid, id)
   if r and opts.max_seq and (r.seq or 0) > opts.max_seq then r = nil end
   if not r then return nil, "no record " .. tostring(id) .. " in this conversation's graph" end
+  r = M.as_of(r, opts.max_seq)
   local function vis(rs)
     if not opts.max_seq then return rs end
     local out = {}
-    for _, x in ipairs(rs) do if (x.seq or 0) <= opts.max_seq then out[#out + 1] = x end end
+    for _, x in ipairs(rs) do if (x.seq or 0) <= opts.max_seq then out[#out + 1] = M.as_of(x, opts.max_seq) end end
     return out
   end
   local out = { header(r) }

@@ -227,6 +227,11 @@ function M.on_fork(psess, csess)
   local pst = M.gstate(psess)
   local chain = { { sid = psid, seq = pst.seq, live = pst.live } }
   for _, a in ipairs(M.parents(psess)) do chain[#chain + 1] = { sid = a.sid, seq = a.seq, live = a.live } end
+  -- the parent keeps the state of records it changes in place after this
+  -- seq, so the child's view of them stays as of now (ingest.lua M.snapshot)
+  pst.forks = pst.forks or {}
+  if pst.forks[#pst.forks] ~= pst.seq then pst.forks[#pst.forks + 1] = pst.seq end
+  M.save_state(psess)
   local cst = M.gstate(csess)
   cst.parents = json.decode(json.encode(chain))   -- a copy: the parent's ranges keep moving
   -- the child's transcript starts with the parent's live steps: their keys,
@@ -274,7 +279,7 @@ function M.locate(sess, id)
   local be = M.backend(sess)
   for _, src in ipairs(M.sources(sess)) do
     local r = be.get(src.sid, id)
-    if M.visible(r, src) then return r, src end
+    if M.visible(r, src) then return require("ctxgraph.outline").as_of(r, src.max_seq), src end
   end
   return nil
 end

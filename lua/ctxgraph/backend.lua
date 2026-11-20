@@ -44,6 +44,11 @@
 -- Entities (file, package, command, test, error) are replaced in place as new
 -- versions or observations arrive; their history is in version records and
 -- links. Claims only add; set_claim_state is the one mutation they allow.
+-- Once a graph has been forked, a record core replaces in place also carries
+-- two frontmatter fields, opaque to a backend: `useq` (the seq of the batch
+-- that last changed it) and `asof` (a JSON string: the earlier states a fork
+-- saw). Core reads them to give a fork its parent's records as of the fork
+-- (lua/ctxgraph/ingest.lua M.snapshot); a backend stores them like any field.
 --
 -- ---- operations ---------------------------------------------------------------
 -- `sid` is the conversation's key (a string). Every operation is scoped to it:

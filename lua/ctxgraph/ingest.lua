@@ -185,7 +185,8 @@ local function digest_of(body, extra) return ex.sha((body or "") .. "\0" .. (ext
 --
 --   { v = 1, seq, steps, spans, threads, compactions,
 --     live = { {lo, hi}... },          -- live (not yet collapsed) step numbers
---     parents = { {sid, seq, live = { {lo, hi}... }}... } }   -- a fork's chain
+--     parents = { {sid, seq, live = { {lo, hi}... }}... },   -- a fork's chain
+--     forks = { seq... } }             -- this graph's seq at each fork of it
 --
 -- Graphs written before this key existed kept each counter, the live list
 -- (JSON [{k, n}]) and the fork chain under their own keys; load_state reads
@@ -268,13 +269,31 @@ end
 
 -- save_state(be, sid, state): one meta write, skipped when nothing changed.
 function M.save_state(be, sid, st)
-  local out = { v = 1, live = st.live, parents = st.parents }
+  local out = { v = 1, live = st.live, parents = st.parents, forks = st.forks }
   for _, k in ipairs(COUNTERS) do out[k] = st[k] end
   local enc = json.encode(out)
   if enc ~= st._saved then
     be.meta(sid, M.STATE_KEY, enc)
     st._saved = enc
   end
+end
+
+-- ---- a fork's view of records changed in place --------------------------------------
+-- Entities (and a thread when its answer arrives) are replaced in place and
+-- keep their seq, so "seq <= the fork's seq" alone would show a fork the
+-- parent's later changes. Once a graph has been forked (state.forks holds the
+-- seq at each fork), a record changed in place carries, in frontmatter:
+--   useq   the seq of the batch that last changed it (after every fork so far)
+--   asof   JSON [{v, title, stub, fm, body}...], oldest first: earlier states
+--          some fork saw, each valid from seq v (its useq, else its seq)
+-- A reader with a fork's max_seq takes the latest state with v <= max_seq
+-- (lua/ctxgraph/outline.lua as_of). A state is kept only while a fork falls
+-- inside its validity, so a graph never forked carries neither field.
+function M.snapshot(r)
+  local f = r.frontmatter or {}
+  local fm = {}
+  for k, v in pairs(f) do if k ~= "asof" and k ~= "useq" then fm[k] = v end end
+  return { v = tonumber(f.useq) or tonumber(r.seq) or 0, title = r.title, stub = r.stub, body = r.body, fm = fm }
 end
 
 -- ---- live steps ------------------------------------------------------------------
@@ -413,10 +432,19 @@ function M.run(be, sid, msgs, from, to, ctx)
     steps = own
   end
   local recs, edges, cache = {}, {}, {}
-  local seq = gs.seq
+  local seq0 = gs.seq
+  local seq = seq0
   local function nextseq() seq = seq + 1; return seq end
+  -- what a record was before this batch changes it, kept for a fork's view
+  -- (M.snapshot), only when this graph has been forked
+  local prior = {}
+  local forked = gs.forks and #gs.forks > 0
   local function load(id)
-    if cache[id] == nil then cache[id] = be.get(sid, id) or false end
+    if cache[id] == nil then
+      local r = be.get(sid, id)
+      cache[id] = r or false
+      if r and forked then prior[id] = M.snapshot(r) end
+    end
     return cache[id] or nil
   end
   local function put(r)
@@ -622,6 +650,21 @@ function M.run(be, sid, msgs, from, to, ctx)
   end
 
   local function finish(spans, span_ids)
+    -- records changed in place after a fork keep the state each fork saw
+    if forked then
+      local last_fork = 0
+      for _, f in ipairs(gs.forks) do last_fork = math.max(last_fork, tonumber(f) or 0) end
+      for id, r in pairs(recs) do
+        local p = prior[id]
+        if p then
+          local ok, hist = pcall(json.decode, r.frontmatter.asof or "")
+          hist = (ok and type(hist) == "table") and hist or {}
+          if last_fork >= p.v then hist[#hist + 1] = p end
+          r.frontmatter.asof = #hist > 0 and json.encode(hist) or nil
+          r.frontmatter.useq = seq0 + 1
+        end
+      end
+    end
     -- carry edges as links of their source record when it is in the batch
     local rest = {}
     for _, e in ipairs(edges) do

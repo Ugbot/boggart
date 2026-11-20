@@ -130,6 +130,41 @@ ck(pn:find("^Noted"), "the parent notes something after the fork")
 ck(gtools.recall(parent, { query = "zanzibar" }):find("claim/", 1, true), "the parent recalls it")
 ck(gtools.recall(child, { query = "zanzibar" }):find("^No records match"), "the child does not see it")
 
+-- ---- a parent entity changed after the fork: the child sees it as it was at the fork -----
+do
+  local before = be.get("501", "file/src/parser.py")
+  local bstub, bver, bseq = before.stub, before.frontmatter.versions, before.seq
+  local pm2 = parent.messages
+  pm2[#pm2 + 1] = { role = "assistant", content = { { type = "tool_use", id = "pe", name = "edit",
+    input = { path = "src/parser.py", old = "a", new = "b" } } } }
+  pm2[#pm2 + 1] = { role = "user", content = { { type = "tool_result", tool_use_id = "pe", content = "edited src/parser.py" } } }
+  eq(cg.ingest_live(parent), 1, "the parent edits parser.py after the fork")
+  local now = be.get("501", "file/src/parser.py")
+  eq(now.frontmatter.versions, bver + 1, "the parent's record moved on (v" .. tostring(bver + 1) .. ")")
+  eq(now.seq, bseq, "...in place, keeping its seq")
+  local r = cg.locate(child, "file/src/parser.py")
+  eq(r and r.frontmatter.versions, bver, "the child reads the parent's entity as of the fork (versions)")
+  eq(r and r.stub, bstub, "...and its stub")
+  local x = gtools.expand(child, { id = "file/src/parser.py" })
+  ck(x:find(bstub, 1, true), "expand in the child shows the stub as of the fork: " .. x:sub(1, 160))
+  ck(not x:find("@v" .. (bver + 1), 1, true) and not x:find(now.stub, 1, true), "...not the parent's later version")
+  local hit = gtools.recall(child, { query = "parser", limit = 50 })
+  ck(hit:find("- file/src/parser.py  " .. bstub, 1, true) and not hit:find(now.stub, 1, true),
+    "graph_recall in the child shows the stub as of the fork: " .. hit:sub(1, 300))
+  -- the parent itself sees its current record
+  ck(gtools.expand(parent, { id = "file/src/parser.py" }):find(now.stub, 1, true), "the parent sees its own latest")
+  -- and a resumed child (state read back from the graph) still gets the fork's view
+  local again = { id = 502, model = "mock", memory = "local", messages = child.messages }
+  eq(cg.locate(again, "file/src/parser.py").frontmatter.versions, bver, "a resumed child too")
+  -- the child's outline (as its next compaction renders it, uncapped here)
+  -- lists the parent's file as it was at the fork
+  local srcs, inherit = cg.sources(child), {}
+  for i = 2, #srcs do inherit[#inherit + 1] = srcs[i] end
+  local text = outline.render(be, "502", "t", { cap_tokens = 100000, inherit = inherit, live = srcs[1].live })
+  ck(text:find("- file/src/parser.py  " .. bstub, 1, true) and not text:find(now.stub, 1, true),
+    "the child's outline lists the parent's file as of the fork")
+end
+
 -- ---- a fresh child of an unforked session has no parent view --------------------------
 local lone = { id = 503, model = "mock", memory = "local", messages = {} }
 ck(gtools.expand(lone, { id = "s/501/span/3" }):find("^Tool error"), "an unrelated session cannot read the parent's graph")

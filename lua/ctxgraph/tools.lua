@@ -49,7 +49,14 @@ function M.recall(sess, a)
     if #hits >= limit then break end
     for _, h in ipairs(be.search(src.sid, q, { limit = limit })) do
       if #hits >= limit then break end
-      if not seen[h.id] and cg.visible(h, src) then seen[h.id] = true; hits[#hits + 1] = h end
+      if not seen[h.id] and cg.visible(h, src) then
+        if src.max_seq then
+          -- a parent's record as of the fork: its stub may have moved on since
+          local r = outline.as_of(be.get(src.sid, h.id), src.max_seq)
+          if r then h = { id = h.id, type = h.type, seq = h.seq, score = h.score, stub = r.stub } end
+        end
+        seen[h.id] = true; hits[#hits + 1] = h
+      end
     end
   end
   cg.count(sess, "recall", { query_bytes = #q, hits = #hits })
