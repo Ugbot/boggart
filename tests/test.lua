@@ -141,6 +141,22 @@ do
   ok(#shaped < #big, "big output truncated")
   ok(shaped:find("output truncated"), "shaped mentions truncation")
   ok(shaped:find("read the read tool") or shaped:find("read tool"), "shaped points at read tool")
+
+  -- The head is bounded in BYTES, not only lines: one huge line (a JSON dump,
+  -- a minified file, a list printed on one line) must not pass through whole.
+  local one_line = string.rep("'L_K.1.200', ", 80000)            -- ~1 MB, no newline
+  local s1 = util.shape_result(one_line, { max_bytes = 6000, head_lines = 100 })
+  ok(#s1 < 6000 + 400, "a single 1 MB line is cut to the byte limit (got " .. #s1 .. " bytes)")
+  ok(s1:find("output truncated", 1, true), "...and says it was truncated")
+
+  local wide = string.rep("é日本", 100000)                         -- multibyte, no newline
+  local s2 = util.shape_result(wide, { max_bytes = 1000, head_lines = 10 })
+  ok(#s2 < 1000 + 400, "a multibyte line is cut to the byte limit (got " .. #s2 .. ")")
+  ok(util.to_valid_utf8(s2) == s2, "...on a character boundary (valid UTF-8)")
+
+  local mixed = string.rep("y", 50000) .. "\n" .. string.rep("z\n", 100)
+  local s3 = util.shape_result(mixed, { max_bytes = 2000, head_lines = 50 })
+  ok(#s3 < 2000 + 400, "a long first line followed by more is cut too (got " .. #s3 .. ")")
 end
 
 -- ---- define_tool round-trip + reload picks it up ----
