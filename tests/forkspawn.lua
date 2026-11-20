@@ -254,7 +254,9 @@ do
   local F = json.decode(bodies[fresh_id][1])
   eq(#F.messages, 1, "a fresh child starts with only its task")
   eq(F.messages[1].content, "T:fresh do a thing", "...exactly the task text, no directive")
-  eq(F.reasoning_effort, bog.thread.default_effort, "a fresh child gets the default effort, not the parent's")
+  -- A fresh child inherits its parent's effort too (api.inherit_limits): an
+  -- effort is a level, not a property of the conversation being copied.
+  eq(F.reasoning_effort, "high", "a fresh child inherits the parent's effort")
   eq(recs[fresh_id].session.token_budget, bog.thread.default_token_budget, "fresh child budget is the default")
   ok(recs[fresh_id].forked_from == nil, "a fresh child is not marked forked")
   local has_comms = false
