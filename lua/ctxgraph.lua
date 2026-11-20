@@ -435,7 +435,13 @@ function M.ingest_live(sess)
   local prev
   local last = rt.last
   if rt.cursor and last and last.at < from and M.fingerprint(msgs[from - 1]) ~= last.fp then
-    from, prev = last.at, last
+    -- only when those messages are still that one step (never re-ingest a
+    -- step under a new number because the transcript was rearranged)
+    local ingest = require("ctxgraph.ingest")
+    local sts = ingest.steps_of(msgs, last.at, from - 1)
+    if #sts == 1 and ingest.step_key(sts[1]) == M.gstate(sess)._keys[last.n] then
+      from, prev = last.at, last
+    end
   end
   if from > #msgs then return 0 end
   local be = M.backend(sess)
