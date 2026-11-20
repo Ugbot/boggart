@@ -6,6 +6,7 @@
 -- link resolves to a record in the bundle. A damaged bundle must fail.
 -- Run: boggart --eval tests/ctxgraph_export.lua
 bog.store.open()
+dofile("tests/ctxgraph_fresh.lua")({ 501 })
 local util = require("util")
 local fails = 0
 local function ck(ok, msg) if not ok then fails = fails + 1; io.write("  FAIL: ", msg, "\n") end end

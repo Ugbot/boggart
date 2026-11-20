@@ -9,6 +9,7 @@
 -- tail are not listed in the outline or auto-expanded: they are not collapsed.
 -- Run: boggart --eval tests/ctxgraph_live.lua
 bog.store.open()
+dofile("tests/ctxgraph_fresh.lua")({ 701, 702 })
 local json = require("json")
 local cg = require("ctxgraph")
 local fails = 0

@@ -9,6 +9,7 @@
 -- byte-identical prefix, and expansions only append.
 -- Run: boggart --eval tests/ctxgraph_compact.lua
 bog.store.open()
+dofile("tests/ctxgraph_fresh.lua")({ 301, 302, 303, 304, 305 })
 local json = require("json")
 local window = require("window")
 local outline = require("ctxgraph.outline")

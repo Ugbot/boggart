@@ -32,7 +32,10 @@ end
 local function contract(be, label)
   local function L(m) return label .. ": " .. m end
   ck(port.check(be), L("implements every operation"))
-  local sid, other = "c-" .. label, "c-" .. label .. "-other"
+  -- a fresh pair of sessions per run: the contract runs against any backend,
+  -- including persistent ones a test cannot clear, and must be re-runnable
+  local sid = string.format("c-%s-%d-%d", label, os.time(), math.random(1, 1e9))
+  local other = sid .. "-other"
   -- put_nodes: one batch, links included
   ck(be.put_nodes(sid, {
     rec("s/1/step/1", "step", "first step", 1, { body = "ran pytest on the zebra module", body_ref = "/tmp/x", raw = "[]" }),

@@ -8,6 +8,7 @@
 -- outline lines, and nothing the parent records after the fork shows through.
 -- Run: boggart --eval tests/ctxgraph_fork.lua
 bog.store.open()
+dofile("tests/ctxgraph_fresh.lua")({ 501, 502, 503 })
 local fork = require("fork")
 local cg = require("ctxgraph")
 local gtools = require("ctxgraph.tools")

@@ -8,6 +8,7 @@
 -- and across backends (SQLite and an in-memory fake).
 -- Run: boggart --eval tests/ctxgraph_ingest.lua
 bog.store.open()
+dofile("tests/ctxgraph_fresh.lua")({ 41 })
 local fails = 0
 local function ck(ok, msg) if not ok then fails = fails + 1; io.write("  FAIL: ", msg, "\n") end end
 local function eq(a, b, msg) ck(a == b, string.format("%s (got %s, want %s)", msg, tostring(a), tostring(b))) end

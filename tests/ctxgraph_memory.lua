@@ -11,6 +11,7 @@
 -- runtime; and the lower-level switches losing to BOGGART_MEMORY.
 -- Run: boggart --eval tests/ctxgraph_memory.lua
 bog.store.open()
+dofile("tests/ctxgraph_fresh.lua")({ 601 })
 local RF = require("runflags")
 local cg = require("ctxgraph")
 local fake = dofile("tests/ctxgraph_fakebackend.lua")

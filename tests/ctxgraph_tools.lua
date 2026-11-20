@@ -4,6 +4,7 @@
 -- error, within its cap of two records and its token budget, once each.
 -- Run: boggart --eval tests/ctxgraph_tools.lua
 bog.store.open()
+dofile("tests/ctxgraph_fresh.lua")({ 401, 402 })
 local util = require("util")
 local gtools = require("ctxgraph.tools")
 local fails = 0

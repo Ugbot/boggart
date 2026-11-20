@@ -7,6 +7,7 @@
 -- await fall in different compactions. A failed child is marked as failed.
 -- Run: boggart --eval tests/ctxgraph_threads.lua
 bog.store.open()
+dofile("tests/ctxgraph_fresh.lua")({ 601, 602 })
 local cg = require("ctxgraph")
 local gtools = require("ctxgraph.tools")
 local fails = 0
