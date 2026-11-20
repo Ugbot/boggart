@@ -184,5 +184,19 @@ do
   ck(not names.expand and not names.graph_recall and not names.note, "graph tools are not offered on the summary tier")
 end
 
+-- ---- the coding profile carries the graph tools on a graph tier ---------------------
+do
+  assert(bog.tools.set_profile("coding"))
+  local names = {}
+  for _, t in ipairs(bog.tools.offered({ id = 304, memory = "local", messages = {} })) do names[#names + 1] = t.name end
+  local list = table.concat(names, ",")
+  ck(list:find("load_tools", 1, true) and list:sub(-#",expand,graph_recall,note") == ",expand,graph_recall,note",
+    "coding profile + graph tier: graph tools follow the profile's: " .. list)
+  names = {}
+  for _, t in ipairs(bog.tools.offered({ id = 305, messages = {} })) do names[t.name] = true end
+  ck(not names.expand, "coding profile on the summary tier: no graph tools")
+  bog.tools.set_profile(nil)
+end
+
 if fails == 0 then io.write("ok  ctxgraph_compact: graph compaction shrinks, keeps the tail, keeps the prefix\n")
 else io.write(string.format("FAIL ctxgraph_compact: %d check(s) failed\n", fails)); os.exit(1) end
