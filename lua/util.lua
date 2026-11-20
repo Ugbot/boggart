@@ -136,6 +136,35 @@ do
   end
 end
 
+-- Colour ------------------------------------------------------------------------
+-- Whether to write ANSI colour to stream `fd` (1 stdout, 2 stderr): only when
+-- that stream is a terminal and NO_COLOR is unset or empty
+-- (https://no-color.org). A headless or -p run is read by a harness or a file,
+-- where escape codes are noise in every line someone has to parse. getenv and
+-- guess (uv.guess_handle) are parameters so a test can stub them.
+function M.color_ok(fd, getenv, guess)
+  getenv = getenv or os.getenv
+  local nc = getenv("NO_COLOR")
+  if nc ~= nil and nc ~= "" then return false end
+  if not guess then
+    local ok, uv = pcall(require, "uv")
+    if not (ok and uv and uv.guess_handle) then return false end
+    guess = uv.guess_handle
+  end
+  local ok, kind = pcall(guess, fd or 1)
+  return ok and kind == "tty"
+end
+
+-- The palette for one stream: the codes when colour is on, empty strings when
+-- it is off, so a call site writes COL.err .. msg .. COL.reset either way.
+function M.palette(on)
+  if not on then
+    return { on = false, dim = "", tool = "", err = "", amber = "", bold = "", reset = "" }
+  end
+  return { on = true, dim = "\27[2m", tool = "\27[36m", err = "\27[31m", amber = "\27[33m",
+           bold = "\27[1m", reset = "\27[0m" }
+end
+
 -- File helpers ----------------------------------------------------------------
 function M.read_file(path)
   local f, err = io.open(path, "rb")

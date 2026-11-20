@@ -70,11 +70,12 @@ end
 --           raw strings given on the command line (the `boggart` table)
 --   getenv  os.getenv, or a stub in a test
 -- settings is { effort?, context_limit?, max_tokens? }, using the session's
--- field names.
+-- field names. sources, the second result, names where each one came from
+-- (the flag or the variable), keyed the same way, for messages about them.
 function M.read(flags, getenv)
   flags = flags or {}
   getenv = getenv or os.getenv
-  local out = {}
+  local out, sources = {}, {}
   local okt, terr = check_tools(getenv("BOGGART_TOOLS"))
   if not okt then return nil, terr end
   for _, s in ipairs(M.SETTINGS) do
@@ -86,26 +87,32 @@ function M.read(flags, getenv)
         if not M.EFFORTS[v] then
           return nil, string.format("%s: %q is not an effort level (%s)", from, raw, M.EFFORT_LIST)
         end
-        out.effort = v
+        out.effort, sources.effort = v, from
       else
         local n = positive_int(raw)
         if not n then
           return nil, string.format("%s: %q is not a positive whole number of tokens", from, raw)
         end
-        if s.key == "context_window" then out.context_limit = n else out.max_tokens = n end
+        local field = (s.key == "context_window") and "context_limit" or "max_tokens"
+        out[field], sources[field] = n, from
       end
     end
   end
-  return out
+  return out, sources
 end
 
 -- Put the settings on a session. A context window smaller than the reply
 -- limit cannot be served, so that combination is refused rather than sent.
-function M.apply(sess, settings)
+-- The refusal names where each value came from (`sources`, from read; the
+-- flags when not given): someone who set only BOGGART_MAX_OUTPUT and
+-- BOGGART_CONTEXT_WINDOW was told about flags they never passed.
+function M.apply(sess, settings, sources)
+  sources = sources or {}
   if settings.context_limit and settings.max_tokens
      and settings.max_tokens >= settings.context_limit then
-    return nil, string.format("--max-output (%d) must be smaller than --context-window (%d)",
-      settings.max_tokens, settings.context_limit)
+    return nil, string.format("%s (%d) must be smaller than %s (%d)",
+      sources.max_tokens or "--max-output", settings.max_tokens,
+      sources.context_limit or "--context-window", settings.context_limit)
   end
   if settings.effort then sess.effort = settings.effort end
   if settings.context_limit then sess.context_limit = settings.context_limit end
@@ -115,9 +122,9 @@ end
 
 -- read + apply, for boot.lua: returns the session or nil, err.
 function M.setup(sess, flags, getenv)
-  local settings, err = M.read(flags, getenv)
-  if not settings then return nil, err end
-  return M.apply(sess, settings)
+  local settings, sources = M.read(flags, getenv)
+  if not settings then return nil, sources end
+  return M.apply(sess, settings, sources)
 end
 
 return M

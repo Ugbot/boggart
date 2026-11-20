@@ -50,10 +50,13 @@ bog.session = {
 bog.skill_trust = (os.getenv("BOGGART_SKILL_TRUST") == "full") and "full" or "sandboxed"
 
 -- ---- logging (kept tiny; ds4/lite both keep this modest) ------------------
-local COL = { dim = "\27[2m", tool = "\27[36m", err = "\27[31m", reset = "\27[0m" }
-local function isatty() return true end -- best-effort; ANSI is harmless if piped
+-- Colour per stream, decided once: on a terminal unless NO_COLOR is set
+-- (util.color_ok). Tool markers and turn errors used to carry escape codes into
+-- every piped headless/-p transcript, NO_COLOR or not.
+local COL = require("util").palette(require("util").color_ok(1))    -- stdout
+local ECOL = require("util").palette(require("util").color_ok(2))   -- stderr
 function bog.log(msg)
-  io.stderr:write(COL.dim, "· ", tostring(msg), COL.reset, "\n")
+  io.stderr:write(ECOL.dim, "· ", tostring(msg), ECOL.reset, "\n")
 end
 function bog.log_tool(name, input)
   -- one-line semantic preview of the call (ds4's two-layer idea, minimal form)
@@ -1317,7 +1320,7 @@ local function status_line()
   pcall(function() frac = bog.api.context_fraction(bog.session) or 0 end)
   local running = 0
   pcall(function() running = bog.worker.count() or 0 end)
-  local amber, sep = "\27[33m", COL.dim .. " \u{00B7} " .. COL.reset
+  local amber, sep = COL.amber, COL.dim .. " \u{00B7} " .. COL.reset
   local prov = (s.is_local and COL.dim or amber) .. s.provider .. COL.reset
   local line = prov .. sep .. COL.dim .. s.model .. COL.reset
   if s.is_local then line = line .. sep .. COL.dim .. s.host .. COL.reset end
@@ -1328,7 +1331,7 @@ end
 
 local function do_repl()
   local tty = term and term.istty and term.istty()
-  io.write(require("logo").render(tty), "\n")
+  io.write(require("logo").render(tty and COL.on), "\n")
   io.write("boggart ", bog.version, "  model=", bog.session.model,
     "  (/help for commands)\n")
   -- Persist REPL history across sessions. isocline handles the file; linenoise
