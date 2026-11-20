@@ -962,6 +962,8 @@ add_test(NAME runflags COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURR
 set_tests_properties(runflags PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} TIMEOUT 120)
 add_test(NAME headless COMMAND ${CMAKE_COMMAND} -E env BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/headless BOGGART_TEST_BIN=$<TARGET_FILE:boggart> $<TARGET_FILE:boggart> --eval ${CMAKE_CURRENT_SOURCE_DIR}/tests/headless.lua)
 set_tests_properties(headless PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} TIMEOUT 120)
+add_test(NAME route_override COMMAND ${CMAKE_COMMAND} -E env HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/route_override BOGGART_HOME=${CMAKE_CURRENT_BINARY_DIR}/testhome/route_override BOGGART_TEST_BIN=$<TARGET_FILE:boggart> $<TARGET_FILE:boggart> --eval ${CMAKE_CURRENT_SOURCE_DIR}/tests/route_override.lua)
+set_tests_properties(route_override PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} TIMEOUT 120)
 add_library(boggart_unicode STATIC src/bunicode.c)
 target_include_directories(boggart_unicode PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_executable(unicode_test tests/c/unicode.c)
