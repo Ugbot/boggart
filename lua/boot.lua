@@ -38,8 +38,9 @@ bog.mode = boggart.mode
 bog.session = {
   model = boggart.model or "claude-opus-5",
   messages = {},
-  max_tokens = 16000,
-  compact_at = 400000,
+  -- No max_tokens: unset means "the catalog's longest reply for the model,
+  -- else 16,000" (api.reply_limit), lowered per request to the room left in
+  -- the window. Setting it here would make every session look explicit.
 }
 
 -- How model-authored skill code (a skill's `provides` body) runs: "sandboxed"
@@ -49,10 +50,13 @@ bog.session = {
 bog.skill_trust = (os.getenv("BOGGART_SKILL_TRUST") == "full") and "full" or "sandboxed"
 
 -- ---- logging (kept tiny; ds4/lite both keep this modest) ------------------
-local COL = { dim = "\27[2m", tool = "\27[36m", err = "\27[31m", reset = "\27[0m" }
-local function isatty() return true end -- best-effort; ANSI is harmless if piped
+-- Colour per stream, decided once: on a terminal unless NO_COLOR is set
+-- (util.color_ok). Tool markers and turn errors used to carry escape codes into
+-- every piped headless/-p transcript, NO_COLOR or not.
+local COL = require("util").palette(require("util").color_ok(1))    -- stdout
+local ECOL = require("util").palette(require("util").color_ok(2))   -- stderr
 function bog.log(msg)
-  io.stderr:write(COL.dim, "· ", tostring(msg), COL.reset, "\n")
+  io.stderr:write(ECOL.dim, "· ", tostring(msg), ECOL.reset, "\n")
 end
 function bog.log_tool(name, input)
   -- one-line semantic preview of the call (ds4's two-layer idea, minimal form)
@@ -1071,6 +1075,11 @@ end
 -- termrender stays wired into the cTUI, which repaints each frame.
 -- text == nil resumes an interrupted turn (finish its tool round, then run on)
 -- rather than starting a new one.
+-- Whether the last run_one_turn ended in an error (the request failed, the
+-- turn raised, the scheduler broke) or was cancelled. Headless and -p exit
+-- non-zero on it, so a script can tell a failed run from a finished one.
+local last_turn_failed = false
+
 local function run_one_turn(text)
   local S = bog.active_session()
   if text and (not S.title or S.title == "") then S.title = text:gsub("%s+", " "):sub(1, 60) end
@@ -1079,6 +1088,12 @@ local function run_one_turn(text)
   bog.activate_agents()
   local uv = require("uv")
   local tty = term and term.istty and term.istty()
+  -- The row first, before anything takes the session's id: the session's own
+  -- agent record and its checkpoint below, and the scheduler actor. Left to
+  -- api.run_on (which creates it lazily), a new conversation reached them with
+  -- no id, so the agent record could not be built, no checkpoint was set, and
+  -- a turn killed part way (a harness's time limit) left an empty transcript.
+  if bog.ensure_session then pcall(bog.ensure_session, S) end
   local myid = S.id or 1
 
   -- A single rewritable activity line at the cursor: "thinking" until the first
@@ -1159,7 +1174,14 @@ local function run_one_turn(text)
 
   local perm = require("perm")
   local st = perm.state()
-  local opts = perm.turn_opts({}, {
+  -- Ask on the terminal only when there is someone at one. A headless run has
+  -- already read its task from stdin (now at EOF) and -p has nobody typing, so
+  -- a prompt there read EOF as "no" and refused every gated tool, whatever
+  -- BOGGART_HEADLESS_POLICY said. With no approver, gated tools resolve
+  -- through perm.headless_decision instead (default deny), the same governed
+  -- point serve and swarm use.
+  local ask_on_stdin = tty and bog.mode ~= "headless" and bog.mode ~= "oneshot"
+  local opts = perm.turn_opts({}, ask_on_stdin and {
     on_ask = function(rec)
       -- Blocking readline, same contract as bog.choose_ask: this runs from the
       -- turn coroutine, sets rec.decision, and wrap_run therefore never parks
@@ -1178,7 +1200,7 @@ local function run_one_turn(text)
         rec.decision = "approve"
       end
     end,
-  })
+  } or {})
   opts.on_tool = function(name, input)
     flush_render()           -- emit the round's prose before its tool marker
     bog.log_tool(name, input)
@@ -1191,6 +1213,8 @@ local function run_one_turn(text)
       if st.mode ~= "chat" and rec.opts.tools then opts.tools = rec.opts.tools end
     end
   end
+  -- No agent record (no store, or it failed): still checkpoint the session.
+  if opts.checkpoint == nil then opts.checkpoint = function() pcall(bog.save_session) end end
 
   local co = coroutine.create(function()
     local ok, e = pcall(bog.api.run_on, S, text, function(t)
@@ -1278,6 +1302,11 @@ local function run_one_turn(text)
   end
   if tty then io.write(CURSOR_SHOW); io.flush() end -- restore the cursor for the prompt
   print_turn_error(ok and turn_err == nil, turn_err or (not ok and "scheduler error") or nil)
+  last_turn_failed = abort or not ok or turn_err ~= nil
+  if bog.thread and bog.thread.session_finished then
+    pcall(bog.thread.session_finished, S,
+      abort and "killed" or (last_turn_failed and "error" or "done"))
+  end
   bog.save_session() -- persist transcript for /resume and crash recovery
   if not abort then
     return require("choose").capture_after_turn(S)
@@ -1295,7 +1324,7 @@ local function status_line()
   pcall(function() frac = bog.api.context_fraction(bog.session) or 0 end)
   local running = 0
   pcall(function() running = bog.worker.count() or 0 end)
-  local amber, sep = "\27[33m", COL.dim .. " \u{00B7} " .. COL.reset
+  local amber, sep = COL.amber, COL.dim .. " \u{00B7} " .. COL.reset
   local prov = (s.is_local and COL.dim or amber) .. s.provider .. COL.reset
   local line = prov .. sep .. COL.dim .. s.model .. COL.reset
   if s.is_local then line = line .. sep .. COL.dim .. s.host .. COL.reset end
@@ -1306,7 +1335,7 @@ end
 
 local function do_repl()
   local tty = term and term.istty and term.istty()
-  io.write(require("logo").render(tty), "\n")
+  io.write(require("logo").render(tty and COL.on), "\n")
   io.write("boggart ", bog.version, "  model=", bog.session.model,
     "  (/help for commands)\n")
   -- Persist REPL history across sessions. isocline handles the file; linenoise
@@ -1561,6 +1590,20 @@ function bog.activate_agents()
   local tr = os.getenv("BOGGART_TRACE")
   if tr and tr ~= "" and tr ~= "0" then
     pcall(function() require("trace").start(tr == "1" and "*" or tr) end)
+  end
+end
+
+-- --effort / --context-window / --max-output (or BOGGART_EFFORT,
+-- BOGGART_CONTEXT_WINDOW, BOGGART_MAX_OUTPUT): the session settings an
+-- interactive user sets with slash commands, for a run that has nobody to type
+-- them (lua/runflags.lua). Every mode that runs a conversation reads them; a
+-- spawned agent or a swarm coordinator inherits them from this session. A bad
+-- value stops the run before any request rather than being quietly ignored.
+if bog.mode == "headless" or bog.mode == "oneshot" or bog.mode == "swarm" or bog.mode == "repl" then
+  local okf, err = require("runflags").setup(bog.session, boggart, os.getenv)
+  if not okf then
+    io.stderr:write("boggart: ", tostring(err), "\n")
+    return 2
   end
 end
 
@@ -1826,12 +1869,12 @@ elseif bog.mode == "headless" then
   local input = io.read("*a") or ""
   input = input:gsub("%s+$", "")
   if input ~= "" then run_one_turn(input) end
-  return 0
+  return last_turn_failed and 1 or 0
 
 elseif bog.mode == "oneshot" then
   bog.new_session()
   run_one_turn(boggart.prompt or "")
-  return 0
+  return last_turn_failed and 1 or 0
 
 else
   -- `boggart --tui` (no subcommand) opens the full-screen chat cTUI. It manages

@@ -3,7 +3,8 @@
 -- one-shot orchestration (`boggart swarm "task"`) or an interactive coordinator
 -- REPL (`boggart swarm`). Everything crossing the bus is journalled to SQLite.
 local M = {}
-local COL = { dim = "\27[2m", tool = "\27[36m", err = "\27[31m", reset = "\27[0m" }
+local util = require("util")
+local COL = util.palette(util.color_ok(1))   -- off when piped or under NO_COLOR
 
 -- Run one coordinator turn (and drain all agents it spawns) to completion.
 function M.run_turn(coord, text)
@@ -119,7 +120,7 @@ end
 function M.repl(coord)
   io.write("boggart swarm  ", bog.version, "  model=", coord.session.model, "  (/help)\n")
   while true do
-    local line = sys.readline("\27[1mswarm>\27[0m ")
+    local line = sys.readline(COL.bold .. "swarm>" .. COL.reset .. " ")
     if line == nil then io.write("\n"); break end
     if line ~= "" then sys.add_history(line) end
     if line:sub(1, 1) == "/" then

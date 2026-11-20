@@ -141,6 +141,16 @@ static void configure(lua_State *L, int argc, char **argv) {
       prompt = argv[++i];
     } else if (strcmp(a, "--model") == 0 && i + 1 < argc) {
       model = argv[++i];
+    } else if ((strcmp(a, "--effort") == 0 || strcmp(a, "--context-window") == 0
+                || strcmp(a, "--max-output") == 0) && i + 1 < argc) {
+      /* Session settings for a run with nobody to type /effort: set as raw
+       * strings on boggart.effort / .context_window / .max_output.
+       * lua/runflags.lua validates them and owns what they mean. */
+      const char *field = strcmp(a, "--effort") == 0 ? "effort"
+                        : strcmp(a, "--context-window") == 0 ? "context_window"
+                        : "max_output";
+      lua_pushstring(L, argv[++i]);
+      lua_setfield(L, -2, field);
     } else if ((strcmp(a, "--port") == 0 || strcmp(a, "--host") == 0
                 || strcmp(a, "--token") == 0 || strcmp(a,"--socket")==0 || strcmp(a,"--bmux-session")==0) && i + 1 < argc) {
       /* Serve options, set straight onto the boggart table as
@@ -281,6 +291,9 @@ static int early_exit_flags(int argc, char **argv) {
         "options:\n"
         "  -p, --prompt <text>        one-shot prompt\n"
         "      --model <id>           model for this run\n"
+        "      --effort <level>       reasoning effort: minimal|low|medium|high|xhigh|max\n"
+        "      --context-window <n>   context window in tokens (compaction, reply room)\n"
+        "      --max-output <n>       longest reply in tokens (default: the model's, else 16000)\n"
         "      --resume [id]          resume a saved session\n"
         "      --eval <file.lua>      run a Lua file in the harness\n"
         "      --tui                  full-screen UI (chat cTUI; swarm dashboard with swarm)\n"
@@ -291,11 +304,29 @@ static int early_exit_flags(int argc, char **argv) {
         "      --bmux-session <name>  serve: saved Bmux session (default: socket path)\n"
         "  -V, --version              print the version\n\n"
         "environment:\n"
-        "  BOGGART_HOME               data directory (store, credentials, overlay Lua)\n"
-        "  BOGGART_MAX_AGENTS         fleet fan-out cap (default 16)\n"
-        "  BOGGART_SERVE_PORT/_HOST/_TOKEN   serve defaults\n"
+        " where requests go\n"
+        "  ANTHROPIC_BASE_URL         endpoint, e.g. a local server; every model id,\n"
+        "                             catalogued or not, goes here when it is set\n"
+        "  ANTHROPIC_WIRE             protocol it speaks: anthropic|openai|responses\n"
         "  ANTHROPIC_API_KEY          API key; overrides the stored credential\n"
-        "  ANTHROPIC_BASE_URL         endpoint, e.g. a local server\n",
+        "  <PROVIDER>_API_KEY         a catalog provider's key, e.g. DEEPSEEK_API_KEY\n"
+        " the run (a flag wins over its variable)\n"
+        "  BOGGART_EFFORT             as --effort\n"
+        "  BOGGART_CONTEXT_WINDOW     as --context-window\n"
+        "  BOGGART_MAX_OUTPUT         as --max-output\n"
+        "  BOGGART_TOOLS              tool profile to offer (full: every tool);\n"
+        "                             an unknown name is refused (exit 2)\n"
+        "  BOGGART_HEADLESS_POLICY    gated tools with nobody to ask (--headless,\n"
+        "                             -p, serve): allow | queue; unset refuses them\n"
+        "  BOGGART_SKILL_TRUST        full: model-written skill code runs unsandboxed\n"
+        " the fleet\n"
+        "  BOGGART_MAX_AGENTS         fan-out cap (default 16)\n"
+        "  BOGGART_AUTO_DISPATCH      1: route matching requests to a specialist\n"
+        " output and data\n"
+        "  NO_COLOR                   set: no colour (none when not a terminal)\n"
+        "  BOGGART_TRACE              1 or a pattern: tail the bus to stderr\n"
+        "  BOGGART_HOME               data directory (store, credentials, overlay Lua)\n"
+        "  BOGGART_SERVE_PORT/_HOST/_TOKEN   serve defaults\n",
         BOGGART_VERSION);
       return 1;
     }

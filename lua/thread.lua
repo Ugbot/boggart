@@ -76,8 +76,23 @@ function M.agent_opts(rec)
     checkpoint = function()
       pcall(bog.store.thread_save, rec.id,
         { messages = rec.session.messages, status = "running" })
+      rec.marked_running = true
     end,
   }
+end
+
+-- The end of a turn of the session's OWN agent (the REPL, --headless, -p,
+-- api.run_turn): record how it ended -- "done", "error", or "killed" for a
+-- cancelled turn. A spawned child's run ends in _run with its own status;
+-- nothing ended the root's, so the "running" its checkpoints set stayed for
+-- good and store.thread_list() listed every past conversation as live. Only a
+-- row this turn marked running is touched: a conversation that never reached a
+-- checkpoint keeps its plain session row.
+function M.session_finished(sess, outcome)
+  local rec = sess and sess.agent
+  if not (sess.id and rec and rec.id == sess.id and rec.marked_running) then return end
+  rec.marked_running = nil
+  pcall(bog.store.thread_set_status, sess.id, outcome or "done")
 end
 
 -- Build the record for the session's own agent (the lone one, or a swarm's
@@ -180,6 +195,14 @@ function M.new_agent(p)
     }
   end
 
+  -- What this agent inherits from the one that spawned it (api.inherit_limits
+  -- says why each part is or is not inherited). The parent is the spawning
+  -- agent's session when it is live, else the root session.
+  local prec = p.parent_id and M.live_recs[p.parent_id]
+  local parent = (prec and prec.session) or bog.session
+  local inherited = bog.api.inherit_limits(parent, model,
+    { max_tokens = p.max_tokens, context_limit = p.context_limit })
+
   local rec = {
     invocation_context = require("invoke").current(),
     id = id, parent_id = p.parent_id, spec_name = p.agent, skills = skills,
@@ -197,13 +220,14 @@ function M.new_agent(p)
     -- only narrow what the run permits; see agent_opts.run_tool.
     perms = p.perms,
     session = { id = id, model = model, route = route,
-                messages = resumed_messages or {}, max_tokens = 16000,
-                compact_at = 400000,
+                messages = resumed_messages or {},
+                context_limit = inherited.context_limit,
+                max_tokens = inherited.max_tokens,
                 -- a per-child budget when the coordinator set one; the turn
                 -- loop in api.lua already enforces token_budget and reports
                 -- stop="token_budget", which the exit contract treats as failure
                 token_budget = tonumber(p.budget) or M.default_token_budget,
-                effort = p.effort or M.default_effort },
+                effort = p.effort or inherited.effort or M.default_effort },
   }
   if fork_parent then
     require("fork").adopt(rec, fork_parent, p, M.default_token_budget)

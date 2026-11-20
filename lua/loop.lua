@@ -25,10 +25,15 @@ M.HARD_MAX = 50           -- an absolute ceiling nothing may exceed
 
 -- ---- sub-sessions ----------------------------------------------------------
 local function sub_session(spec)
+  local parent = bog.active_session and bog.active_session() or bog.session
+  local model = spec.model or (bog.session and bog.session.model)
+  -- the same inheritance a spawned agent gets (api.inherit_limits)
+  local inherited = bog.api.inherit_limits(parent, model)
   return {
-    model = spec.model or (bog.session and bog.session.model),
-    messages = {}, max_tokens = 16000,
-    effort = spec.effort, token_budget = spec.token_budget,
+    model = model,
+    messages = {},
+    context_limit = inherited.context_limit, max_tokens = inherited.max_tokens,
+    effort = spec.effort or inherited.effort, token_budget = spec.token_budget,
   }
 end
 

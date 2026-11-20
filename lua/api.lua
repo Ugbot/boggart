@@ -12,6 +12,7 @@
 local json = require("json")
 local events = require("events")
 local util = require("util")
+local window = require("window")
 local M = {}
 
 local cached_headers = nil
@@ -1184,6 +1185,29 @@ approaches, known bugs, and pending next steps. Do not invent facts, do not
 include raw file contents, and do not call tools. Output only the summary.
 ]]
 
+-- The first message of a compacted conversation is built from these. The
+-- request marker is also how the next compaction finds the original request
+-- again (M.compaction_request).
+local COMPACT_PREAMBLE = "[Earlier conversation compacted. Durable summary follows.]"
+local COMPACT_REQUEST = "[The request being worked on:]"
+local COMPACT_CONTINUES = "[Recent conversation continues below.]"
+
+-- The user's request inside a plain-text user message: the message itself,
+-- or, for the first message of an earlier compaction, the request it carried
+-- (nil when it carried none -- its summary already covers it).
+function M.compaction_request(text)
+  if text:sub(1, #COMPACT_PREAMBLE) ~= COMPACT_PREAMBLE then return text end
+  local at = text:find("\n" .. COMPACT_REQUEST .. "\n", 1, true)
+  if at then
+    local rest = text:sub(at + #COMPACT_REQUEST + 2)
+    local cut = rest:find("\n\n" .. COMPACT_CONTINUES, 1, true)
+    return cut and rest:sub(1, cut - 1) or rest
+  end
+  -- the older layout: summary, the marker, then the request
+  local old = text:find(COMPACT_CONTINUES .. "\n\n", 1, true)
+  return old and text:sub(old + #COMPACT_CONTINUES + 2) or nil
+end
+
 -- Context windows, by model. Only used to decide when to compact, so being
 -- approximately right is enough; sess.context_limit overrides for anything not
 -- listed, and a local server can be told its own number.
@@ -1337,7 +1361,11 @@ function M.use_provider(name, model)
   M.forget_auth()
   return p, pick
 end
-M.COMPACT_RATIO = 0.8   -- compact at 80% of the window, as goose does
+-- When to compact is lua/window.lua's rule: at the window minus a buffer (15%,
+-- at least 16k tokens). It used to be a flat 80% of the window, which on a 1M
+-- window threw away 200k tokens of context that were never in danger, and on a
+-- 32k window left too little headroom for the summary request itself. A
+-- session's own compact_ratio still overrides it.
 
 -- One-time probe of a LOCAL server's /props for its real context window and slot
 -- count. llama.cpp (and compatible servers) publish these; a cloud endpoint has
@@ -1397,13 +1425,98 @@ end
 -- which are in sess.messages. Before the first response there is nothing to
 -- measure, so fall back to characters/4 -- crude, but it only has to be good
 -- enough to catch a resumed session that is already enormous.
+--
+-- The measurement is one request old. Everything added since -- the reply that
+-- request produced and the tool results that answered it, which in an agent
+-- turn is most of the growth -- is estimated on top (last_input_n is how many
+-- messages the measured request carried), with a margin because chars/4 runs
+-- low, plus the framing those messages carry on the wire (window.framing_of).
+-- Without it the size seen at the top of a round lags a whole round behind,
+-- and one large tool result can push the next request over the window before
+-- compaction ever fires.
 function M.context_used(sess)
   sess = sess or bog.session
   local u = sess.usage
-  if u and u.last_input and u.last_input > 0 then return u.last_input, "measured" end
-  local total = 0
-  for _, m in ipairs(sess.messages) do total = total + #msg_text(m) end
-  return total // 4, "estimated"
+  local msgs = sess.messages
+  if u and u.last_input and u.last_input > 0 then
+    local n = u.last_input_n
+    if not n then return u.last_input, "measured" end
+    if n <= #msgs then
+      local newer = window.tokens_of(msgs, n + 1, #msgs)
+      return u.last_input + math.ceil(newer * window.ESTIMATE_MARGIN)
+        + window.framing_of(msgs, n + 1, #msgs), "measured"
+    end
+    -- messages were removed since the measurement (undo, rewind): it no
+    -- longer describes this conversation, so fall through to the estimate
+  end
+  return window.tokens_of(msgs), "estimated"
+end
+
+-- The longest reply a session's requests ask for, before the per-request
+-- clamp: the session's own setting (--max-output, a parent agent's), then
+-- the catalog's longest reply for the model being called, then 16,000. The
+-- catalog figure is per model, which is the point: a model that can write
+-- 64k-token replies is not held to 16k, and one that cannot is not asked for
+-- more than it can give.
+function M.reply_limit(sess, route)
+  sess = sess or bog.session
+  if tonumber(sess.max_tokens) then return math.floor(tonumber(sess.max_tokens)) end
+  local cat = route and tonumber(route.max_output)
+  if not cat then
+    local ok, row = pcall(function()
+      return require("catalog").model((route and route.model) or sess.model)
+    end)
+    cat = ok and row and tonumber(row.max_output) or nil
+  end
+  if cat and cat > 0 then return math.floor(cat) end
+  return window.REPLY_DEFAULT
+end
+
+-- max_tokens for one request: the reply limit, lowered to the room the
+-- prompt leaves in the window (never below window.REPLY_MIN). A provider that
+-- enforces prompt + max_tokens <= window refuses the request outright
+-- otherwise, and that refusal comes exactly when a long task is deepest into
+-- its work. The prompt is the measured size of the last request plus an
+-- estimate of what is newer (context_used); before anything is measured, the
+-- whole body is estimated, since the system prompt and the tool schemas are
+-- not in sess.messages and can be tens of thousands of tokens on their own.
+function M.request_max_tokens(sess, route, body)
+  local want = M.reply_limit(sess, route)
+  local used, how = M.context_used(sess)
+  if how ~= "measured" and body then
+    local ok, s = pcall(json.encode, { system = body.system, messages = body.messages, tools = body.tools })
+    if ok then used = math.ceil(#s / 4 * window.ESTIMATE_MARGIN) end
+  end
+  return window.reply_tokens(want, M.context_limit(sess), used)
+end
+
+-- The limits a sub-agent starts with, from the session that spawned it.
+--
+-- A child on the parent's model gets the parent's context window and reply
+-- limit: they describe that model (or what the user said about it with
+-- --context-window / --max-output), and a child without them compacts against
+-- the wrong window and asks for replies of the wrong length. A child routed
+-- to a DIFFERENT model gets neither -- those numbers describe another model --
+-- and resolves its own from the catalog at request time. Effort is a level,
+-- not a model property, so it is inherited either way. `narrow` (the spawn's
+-- own max_tokens / context_limit) may lower the inherited numbers, never
+-- raise them.
+function M.inherit_limits(parent, child_model, narrow)
+  local out = {}
+  if not parent then return out end
+  narrow = narrow or {}
+  local pmodel = (parent.resolved_route and parent.resolved_route.model)
+    or (type(parent.route) == "table" and parent.route.model) or parent.model
+  local same = child_model == nil or child_model == pmodel
+  local function lower(inherited, asked)
+    asked = tonumber(asked) and math.floor(tonumber(asked)) or nil
+    if inherited and asked then return math.min(inherited, asked) end
+    return inherited or asked
+  end
+  out.context_limit = lower(same and tonumber(parent.context_limit) or nil, narrow.context_limit)
+  out.max_tokens = lower(same and tonumber(parent.max_tokens) or nil, narrow.max_tokens)
+  out.effort = parent.effort
+  return out
 end
 
 -- Fraction of the window in use, 0..1+. What the UI shows.
@@ -1447,12 +1560,28 @@ function M.cost(sess)
         + (u.cache_write or 0) * pin * M.CACHE_WRITE_RATIO) / 1e6
 end
 
+-- The token count at which a session compacts, and that as a fraction of its
+-- window (what a status line shows as "compacts at N%").
+function M.compact_threshold(sess)
+  sess = sess or bog.session
+  return window.threshold(M.context_limit(sess), sess.compact_ratio)
+end
+function M.compact_fraction(sess)
+  sess = sess or bog.session
+  return M.compact_threshold(sess) / M.context_limit(sess)
+end
+
 -- maybe_compact(sess?, opts?) -- defaults to the single-agent session + sync.
 function M.maybe_compact(sess, opts)
   sess = sess or bog.session
+  -- Nothing has been added since the last compaction: compacting again could
+  -- only summarise the summary. This is the backstop that makes a compaction
+  -- loop impossible even when the kept tail alone is over the threshold (a
+  -- tiny window, or a session whose compact_ratio says compact at once).
+  if sess._compacted_n and #sess.messages <= sess._compacted_n then return false end
   local used, how = M.context_used(sess)
   local limit = M.context_limit(sess)
-  if used < limit * (sess.compact_ratio or M.COMPACT_RATIO) then return false end
+  if used < M.compact_threshold(sess) then return false end
   bog.log(string.format("context %d/%d tokens (%s) -- compacting", used, limit, how))
   return M.compact(sess, opts)
 end
@@ -1487,11 +1616,23 @@ function M.compact(sess, opts)
   for _, m in ipairs(sess.messages) do total = total + #msg_text(m) end
 
   bog.log(string.format("compacting context (~%d chars)...", total))
+  -- The summary request: the whole conversation, then the compaction prompt as
+  -- the final user turn. When the conversation already ends on a user message
+  -- (an agent turn always does: the tool results), the prompt joins THAT
+  -- message rather than following it, so the request never has two user
+  -- messages in a row. The Messages API tolerates that, but servers behind the
+  -- same wire that apply a strict chat template refuse it, and on the OpenAI
+  -- wire the tool results still come first and the prompt last either way.
   local copy = {}
   for i = 1, #sess.messages - 1 do copy[i] = sess.messages[i] end
   local last = sess.messages[#sess.messages]
   if last and last.role == "user" and type(last.content) == "string" then
     copy[#copy + 1] = { role = "user", content = last.content .. "\n\n" .. COMPACT_PROMPT }
+  elseif last and last.role == "user" and type(last.content) == "table" then
+    local blocks = {}
+    for i, b in ipairs(last.content) do blocks[i] = b end
+    blocks[#blocks + 1] = { type = "text", text = COMPACT_PROMPT }
+    copy[#copy + 1] = { role = "user", content = blocks }
   else
     copy[#copy + 1] = last
     copy[#copy + 1] = { role = "user", content = COMPACT_PROMPT }
@@ -1500,20 +1641,45 @@ function M.compact(sess, opts)
     messages = copy, stream = true }, nil)
   local summary = msg_text(msg)
 
-  local start = nil
-  for i = #sess.messages, 1, -1 do
-    if sess.messages[i].role == "user" and type(sess.messages[i].content) == "string" then start = i; break end
+  -- What survives verbatim: the most recent messages, up to a token budget,
+  -- starting at a message boundary that keeps every tool call with its result
+  -- (window.tail_start says why an assistant message is that boundary).
+  --
+  -- This used to keep everything after the last plain-text user message. In
+  -- an agent turn that message is the task itself -- every later user message
+  -- carries tool results -- so a long task kept its whole transcript, added a
+  -- summary on top, and grew past the window while "compacting".
+  local msgs = sess.messages
+  local keep = window.keep_budget(M.compact_threshold(sess))
+  local start = window.tail_start(msgs, keep)
+
+  -- The request being worked on survives in words even when the turn that
+  -- asked for it is summarised away: the most recent plain-text user message,
+  -- unless the kept tail already has one. A previous compaction's first
+  -- message is plain text too; take the request out of it rather than nesting
+  -- one summary inside the next.
+  local task
+  local tail_has_request = false
+  for i = start, #msgs do
+    if msgs[i].role == "user" and type(msgs[i].content) == "string" then tail_has_request = true; break end
   end
-  local preamble = "[Earlier conversation compacted. Durable summary follows.]\n" .. summary
-  local newmsgs = {}
-  if start then
-    newmsgs[1] = { role = "user",
-      content = preamble .. "\n\n[Recent conversation continues below.]\n\n" .. sess.messages[start].content }
-    for i = start + 1, #sess.messages do newmsgs[#newmsgs + 1] = sess.messages[i] end
-  else
-    newmsgs[1] = { role = "user", content = preamble }
+  if not tail_has_request then
+    for i = start - 1, 1, -1 do
+      local m = msgs[i]
+      if m.role == "user" and type(m.content) == "string" then task = M.compaction_request(m.content); break end
+    end
   end
+  if task and #task > keep * 4 then
+    task = task:sub(1, keep * 4) .. "\n[... request truncated at compaction ...]"
+  end
+
+  local parts = { COMPACT_PREAMBLE, summary }
+  if task and task ~= "" then parts[#parts + 1] = "\n" .. COMPACT_REQUEST .. "\n" .. task end
+  if start <= #msgs then parts[#parts + 1] = "\n" .. COMPACT_CONTINUES end
+  local newmsgs = { { role = "user", content = table.concat(parts, "\n") } }
+  for i = start, #msgs do newmsgs[#newmsgs + 1] = msgs[i] end
   sess.messages = newmsgs
+  sess._compacted_n = #newmsgs
 
   -- Forget the measured size. It described the request *before* compaction,
   -- and leaving it in place would keep the threshold tripped on every
@@ -1521,13 +1687,16 @@ function M.compact(sess, opts)
   -- until there was nothing left of it. The next response measures the truth.
   if sess.usage then
     sess.usage.last_input = nil
+    sess.usage.last_input_n = nil
     sess.usage.compactions = (sess.usage.compactions or 0) + 1
   end
+  local after = 0
+  for _, m in ipairs(newmsgs) do after = after + #msg_text(m) end
   if opts.on_compact then opts.on_compact(summary) end
   -- Sizes, not text: a handler that wants the summary can read the first
   -- message, and shipping it on the event would put a few thousand tokens on
   -- the bus every time.
-  events.emit("context:compacted", { session = sess.id, before = total, after = #summary })
+  events.emit("context:compacted", { session = sess.id, before = total, after = after })
   return true
 end
 
@@ -1746,7 +1915,10 @@ end
 M.MAX_ROUNDS = 80
 
 -- run_on(sess, user_text, on_text, opts): run one user turn to completion.
--- opts: { async, system=fn, tools=fn, run_tool=fn(name,input), on_tool=fn(name,input) }
+-- opts: { async, system=fn, tools=fn, run_tool=fn(name,input), on_tool=fn(name,input),
+--         model=, route=, effort= }
+-- effort follows the same precedence as the model: this call's opts.effort,
+-- then the agent's sess.effort. `none` means "send no effort setting".
 function M.run_on(sess, user_text, on_text, opts)
   opts = opts or {}
   -- Learn a local server's real context window / slot count once (a fast
@@ -1766,6 +1938,13 @@ function M.run_on(sess, user_text, on_text, opts)
   local route = require("route").resolve(
     opts.route or opts.model or sess.route or sess.model)
   sess.resolved_route = route   -- so a status line can say where a turn went
+  -- The effort this turn asks for. A caller that passes it as a run option
+  -- (workers.agents, loop) used to be ignored -- only sess.effort was read --
+  -- so worker turns went out with no effort at all. `none` is the spawn tool's
+  -- and /effort's "no setting": it must never reach the wire as a level.
+  local effort = opts.effort
+  if effort == nil or effort == "" then effort = sess.effort end
+  if effort == "none" or effort == "" then effort = nil end
   -- A turn is the thing that makes a conversation worth storing, so this is
   -- where the row is created (bog.new_session deliberately does not). Sessions
   -- that already have an id -- resumed ones, and every spawned agent, whose row
@@ -1959,7 +2138,8 @@ function M.run_on(sess, user_text, on_text, opts)
       -- the ROUTE's model: it may differ from sess.model when this call or this
       -- agent was pointed somewhere else
       model = route.model or sess.model,
-      max_tokens = sess.max_tokens or 16000,
+      -- set below, once the tools are known: the clamp needs the whole prompt
+      max_tokens = nil,
       system = system(),
       messages = sess.messages,
       stream = true,
@@ -1968,7 +2148,7 @@ function M.run_on(sess, user_text, on_text, opts)
       -- ones that REJECT it, which is why the catalog records the capability:
       -- `effort = false` on a model means the field is withheld rather than
       -- sent and 400'd. An uncatalogued model is unchanged (sent as before).
-      reasoning_effort = (route.effort ~= false) and sess.effort or nil,
+      reasoning_effort = (route.effort ~= false) and effort or nil,
     }
     local tools = tools_fn()
     -- Tool routing (lua/toolroute.lua, every site opt-in): may narrow the offer,
@@ -1987,6 +2167,7 @@ function M.run_on(sess, user_text, on_text, opts)
       end
     end
     if #tools > 0 then body.tools = tools end
+    body.max_tokens = M.request_max_tokens(sess, route, body)
 
     ttfb_t0 = tel and tel.now_ms() or nil; ttfb_ms = nil
     -- on_think streams the model's reasoning live (reasoning models emit a long
@@ -2051,6 +2232,9 @@ function M.run_on(sess, user_text, on_text, opts)
       sess.usage.last_input = (msg.usage.input_tokens or 0)
         + (msg.usage.cache_read_input_tokens or 0)
         + (msg.usage.cache_creation_input_tokens or 0)
+      -- ...and how many messages that request carried, so context_used can
+      -- add an estimate for the ones that arrive after it.
+      sess.usage.last_input_n = #sess.messages
 
       -- A request that succeeded is proof the window is at least that big.
       --
@@ -2106,7 +2290,14 @@ function M.run_turn(user_text, on_text)
     local ok, s = pcall(bog.active_session)
     if ok and s then sess = s end
   end
-  local opts = sess.agent and sess.agent.opts
+  -- The row first, as run_one_turn does: session_agent keys the record by the
+  -- session's id, so for a new conversation it used to raise (inside the
+  -- pcall), and the first turn ran with neither the record's system prompt nor
+  -- its tools. A record left from another conversation (before /new) names
+  -- that conversation's row, so it is not reused either.
+  if bog.ensure_session then pcall(bog.ensure_session, sess) end
+  local opts = sess.agent and sess.agent.id ~= nil and sess.agent.id == sess.id
+    and sess.agent.opts or nil
   if not opts and bog.thread and bog.thread.session_agent then
     local ok, rec = pcall(bog.thread.session_agent, sess)
     if ok then opts = rec.opts end
@@ -2119,7 +2310,12 @@ function M.run_turn(user_text, on_text)
     setmetatable(merged, { __index = opts })
     opts = merged
   end
-  return M.run_on(sess, user_text, on_text, opts)
+  local res = table.pack(pcall(M.run_on, sess, user_text, on_text, opts))
+  if bog.thread and bog.thread.session_finished then
+    pcall(bog.thread.session_finished, sess, res[1] and "done" or "error")
+  end
+  if not res[1] then error(res[2], 0) end
+  return table.unpack(res, 2, res.n)
 end
 
 -- Continue a turn that was interrupted mid-tool (no new prompt): finish the

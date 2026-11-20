@@ -383,7 +383,7 @@ function studio.status_items()
   if bog.api and bog.api.context_fraction then
     local frac, used = bog.api.context_fraction(bog.session)
     if used > 0 then
-      local ratio = bog.api.COMPACT_RATIO or 0.8
+      local ratio = bog.api.compact_fraction(bog.session)
       out[#out + 1] = (frac >= ratio and (style.warn or style.accent))
         or (frac >= ratio * 0.75 and style.text) or style.dim
       -- math.floor, not a bare "+ 0.5": %d rejects a float in Lua 5.3+, and
@@ -862,7 +862,7 @@ command.add(nil, {
     local frac, used = bog.api.context_fraction(bog.session)
     studio.say("context %d / %d tokens (%d%%), compacts at %d%%; %d compaction(s) so far",
       used, bog.api.context_limit(bog.session), math.floor(frac * 100 + 0.5),
-      (bog.api.COMPACT_RATIO or 0.8) * 100,
+      math.floor(bog.api.compact_fraction(bog.session) * 100 + 0.5),
       (bog.session.usage and bog.session.usage.compactions) or 0)
   end,
 

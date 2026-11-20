@@ -158,16 +158,20 @@ end
 -- HTTP concurrently, so this mainly helps when the sub-agents also do CPU-bound
 -- work; for pure model calls the swarm's cooperative fan-out is just as parallel.
 --
--- opts.model (default: resolved per-worker via auth), opts.effort,
--- opts.max_tokens, opts.slots, opts.timeout. Prompts and texts cross as strings;
--- a per-turn error comes back in errors[i].
+-- opts.model (default: resolved per-worker via auth), opts.effort (a run
+-- option run_on honours; `none` sends no effort), opts.max_tokens, opts.slots,
+-- opts.timeout. Prompts and texts cross as strings; a per-turn error comes back
+-- in errors[i].
 function M.agents(prompts, opts)
   opts = opts or {}
   assert(type(prompts) == "table", "workers.agents: prompts must be a list of strings")
-  local maxt = math.floor(tonumber(opts.max_tokens) or 16000)
-  local sess_lit = opts.model
-    and string.format("{ model = %q, messages = {}, max_tokens = %d }", opts.model, maxt)
-    or  string.format("{ messages = {}, max_tokens = %d }", maxt)
+  -- No max_tokens unless asked: the worker's run_on resolves the reply limit
+  -- for its model (api.reply_limit) like any other session.
+  local maxt = tonumber(opts.max_tokens) and math.floor(tonumber(opts.max_tokens))
+  local fields = { "messages = {}" }
+  if opts.model then fields[#fields + 1] = string.format("model = %q", opts.model) end
+  if maxt then fields[#fields + 1] = string.format("max_tokens = %d", maxt) end
+  local sess_lit = "{ " .. table.concat(fields, ", ") .. " }"
   local run_opts = (opts.effort and opts.effort ~= "")
     and string.format("{ effort = %q }", opts.effort) or "{}"
   local src = string.format([[
