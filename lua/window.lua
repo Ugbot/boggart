@@ -236,7 +236,10 @@ end
 -- The reply limit for one request: the longest reply wanted, lowered to the
 -- room left in a window of `limit` tokens when `used` are already taken (less
 -- reply_safety(limit)), and never below REPLY_MIN (unless the wanted length
--- itself is smaller -- a session that asks for 100 tokens gets 100).
+-- itself is smaller -- a session that asks for 100 tokens gets 100). The
+-- floor can exceed the room left; api.run_on compacts (or shrinks, or
+-- refuses) before a request gets that full, so a request it sends never
+-- overshoots.
 function M.reply_tokens(want, limit, used)
   want = math.floor(want)
   if not (limit and used) then return want end

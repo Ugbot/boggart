@@ -1733,18 +1733,28 @@ end
 --      output saved to a file the model can read (also when compaction
 --      failed: its summary request can be refused too);
 --   3. end the turn with a context_window error, naming the sizes.
+-- "Fits" means room for the prompt, the reply-limit safety margin and the
+-- reply floor (window.REPLY_MIN, or the reply limit when that is smaller):
+-- the reply limit is lowered to the room left but never below the floor, so
+-- with less room than that the floor itself would push prompt + max_tokens
+-- over the window.
 -- body.messages is updated in place to the session's (possibly new) list.
-local function fit_window(sess, body, opts)
+local function fit_window(sess, route, body, opts)
   local limit = M.context_limit(sess)
+  local floor = math.min(M.reply_limit(sess, route), window.REPLY_MIN)
   local function prompt() return M.request_prompt_tokens(sess, body) end
-  local function fits() return prompt() + window.reply_safety(limit) <= limit end
+  local function fits() return prompt() + window.reply_safety(limit) + floor <= limit end
   if fits() then return end
   local first = prompt()
-  bog.log(string.format("request ~%d tokens is over the %d-token context window -- compacting before sending",
-    first, limit))
+  bog.log(string.format("request ~%d tokens leaves under %d tokens for the reply in the %d-token "
+    .. "context window -- compacting before sending", first, floor, limit))
+  local compact_err
   if not (sess._compacted_n and #sess.messages <= sess._compacted_n) then
     local ok, err = pcall(M.compact, sess, opts)
-    if not ok then bog.log("compaction failed: " .. tostring(err)) end
+    if not ok then
+      compact_err = tostring(err)
+      bog.log("compaction failed: " .. compact_err)
+    end
     body.messages = sess.messages
     if fits() then return end
   end
@@ -1755,8 +1765,10 @@ local function fit_window(sess, body, opts)
   end
   if fits() then return end
   fail(M.ERR.context_window, string.format(
-    "not sent: the request is about %d tokens, over the %d-token context window of %s, "
-    .. "even after compacting and shrinking tool results", prompt(), limit, tostring(body.model)),
+    "not sent: the request is about %d tokens, which with a %d-token reply does not fit the "
+    .. "%d-token context window of %s, even after compacting and shrinking tool results",
+    prompt(), floor, limit, tostring(body.model))
+    .. (compact_err and (" (compaction failed: " .. compact_err .. ")") or ""),
     { hint = "Set a larger window if the model has one (--context-window), or start a fresh session." })
 end
 
@@ -2468,7 +2480,7 @@ function M.run_on(sess, user_text, on_text, opts)
       end
     end
     if #tools > 0 then body.tools = tools end
-    fit_window(sess, body, opts)
+    fit_window(sess, route, body, opts)
     body.max_tokens = M.request_max_tokens(sess, route, body)
 
     ttfb_t0 = tel and tel.now_ms() or nil; ttfb_ms = nil

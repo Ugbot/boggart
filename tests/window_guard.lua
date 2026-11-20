@@ -108,7 +108,45 @@ do
   ck(api.is_error(err) and err.kind == "context_window",
      "a context_window error (got " .. tostring(api.is_error(err) and err.kind or err) .. ")")
   ck(tostring(err):find("window", 1, true) ~= nil, "the message names the window: " .. tostring(err):sub(1, 160))
+  ck(tostring(err):find("compaction failed", 1, true) ~= nil, "and why compaction did not help")
   ck(ep.over == 0, "no over-window request was sent (" .. ep.over .. ")")
+end
+
+-- ---- the reply floor never pushes a request over ------------------------------------
+-- The reply limit is lowered to the room left, but never below 1,024 tokens
+-- (window.REPLY_MIN). With less room than that, the floor itself used to push
+-- prompt + max_tokens over the window. Now the request compacts first.
+do
+  local WIN = 50000
+  local s
+  local over, compactions = 0, 0
+  local function mock(body, sink)
+    if is_compaction(body) then
+      compactions = compactions + 1
+      return { role = "assistant", content = { { type = "text", text = "SUMMARY" } },
+               usage = { input_tokens = 100, output_tokens = 5 } }, "end_turn"
+    end
+    local est = api.request_prompt_tokens(s, body)
+    if est + body.max_tokens > WIN then
+      over = over + 1
+      ck(false, string.format("floor: estimated prompt %d + max_tokens %d > %d", est, body.max_tokens, WIN))
+    end
+    if sink then sink("ok") end
+    return { role = "assistant", content = { { type = "text", text = "ok" } },
+             usage = { input_tokens = est, output_tokens = 2 } }, "end_turn"
+  end
+  -- 49,400 of 50,000 measured; the threshold (compact_ratio 0.999) is not
+  -- reached, but less than 1,024 tokens of room is left.
+  s = { id = 974, model = "guard-model", context_limit = WIN, compact_ratio = 0.999,
+    messages = { { role = "user", content = "earlier" },
+                 { role = "assistant", content = { { type = "text", text = "reply" } } } },
+    usage = { input = 0, output = 0, cached = 0, cache_write = 0, turns = 1,
+              last_input = 49400, last_input_n = 2 } }
+  local ok, err = pcall(api.run_on, s, "next", nil, { stream = mock,
+    system = function() return "" end, tools = function() return {} end })
+  ck(ok, "the nearly-full turn completed (" .. tostring(err) .. ")")
+  ck(over == 0, "no request overshot the window (" .. over .. ")")
+  ck(compactions == 1, "it compacted instead (" .. compactions .. ")")
 end
 
 if fails == 0 then

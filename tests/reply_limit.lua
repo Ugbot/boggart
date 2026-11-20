@@ -77,7 +77,10 @@ do
     usage = { input = 0, output = 0, cached = 0, cache_write = 0, turns = 1,
               last_input = 49400, last_input_n = 2 } }
   local b = turn(sess, "next")
-  ck(b.max_tokens == 1024, "never below 1024 however full (got " .. tostring(b.max_tokens) .. ")")
+  -- Less than the 1,024-token floor is left: the request compacts rather than
+  -- ask for a reply that would overshoot the window (tests/window_guard.lua).
+  ck(sess.usage.compactions == 1, "a window too full for the floor compacts first")
+  ck(b.max_tokens >= 1024, "and the reply is never below 1024 (got " .. tostring(b.max_tokens) .. ")")
   local small = fresh{ id = 806, model = "uncatalogued-model", context_limit = 50000, max_tokens = 100 }
   ck(turn(small, "x").max_tokens == 100, "a session asking for less than the floor gets what it asked for")
 end

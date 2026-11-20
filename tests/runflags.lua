@@ -166,13 +166,16 @@ else
   eq(turn.max_tokens, 3000, "BOGGART_MAX_OUTPUT is the request's max_tokens")
   eq(turn.output_config and turn.output_config.effort, "low", "BOGGART_EFFORT is the request's effort")
 
-  -- the context window lowers the reply limit to the room left in it
-  out, code = run("--model claude-test-local --context-window 20000", nil, string.rep("word ", 4000))
+  -- the context window lowers the reply limit to the room left in it. (The
+  -- headless system prompt and tools are about 19k tokens by the estimate, so
+  -- a 20k window leaves less than the 1,024-token reply floor and the run is
+  -- refused rather than sent over the window: tests/window_guard.lua.)
+  out, code = run("--model claude-test-local --context-window 32000", nil, string.rep("word ", 4000))
   eq(code, 0, "headless run with a small window exits 0")
   reqs = requests()
   turn = reqs[#reqs] or {}
   ck(type(turn.max_tokens) == "number" and turn.max_tokens < 16000,
-     "--context-window 20000 lowers max_tokens below the 16000 default (got " .. tostring(turn.max_tokens) .. ")")
+     "--context-window 32000 lowers max_tokens below the 16000 default (got " .. tostring(turn.max_tokens) .. ")")
 
   -- a bad value stops the run before any request
   out, code = run("--model claude-test-local --effort turbo", nil, "say done")
