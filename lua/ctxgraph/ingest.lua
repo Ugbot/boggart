@@ -231,9 +231,10 @@ function M.collapsed(r, live)
 end
 
 -- ingest(be, sid, msgs, from, to, ctx) -> { steps, spans, records, edges, span_ids }
--- ctx = { root, digests = { [tool_use_id] = content sha256 }, now, live }
+-- ctx = { root, digests = { [tool_use_id] = content sha256 }, now, live, match }
 -- ctx.live: a live ingest (after a tool round): steps only, no spans, and the
--- new steps are added to the live list. Otherwise a compaction: the steps are
+-- new steps are added to the live list; with ctx.match (no cursor: a resume)
+-- its steps are matched against the live list first. Otherwise a compaction: the steps are
 -- collapsed into spans and leave the live list. Steps already on the live list
 -- are reused, never ingested again. Edges from records in the batch are
 -- carried as their links, so a batch is normally one put_nodes; `edges` holds
@@ -243,11 +244,15 @@ function M.run(be, sid, msgs, from, to, ctx)
   local steps = M.steps_of(msgs, from, to)
   local live = M.live_list(be, sid)
   local matched, last_matched = {}, 0
+  -- A live ingest from a known cursor covers only messages never ingested,
+  -- so it does not match: two rounds can be byte-identical (servers that
+  -- number calls per response reuse call_0) and must stay two steps.
+  local match = not ctx.live or ctx.match
   do
     local p = 1
     for _, st in ipairs(steps) do
       st.key = M.step_key(st)
-      for j = p, #live do
+      for j = p, match and #live or 0 do
         if live[j].k == st.key then
           st.done = tonumber(live[j].n)
           matched[j] = true

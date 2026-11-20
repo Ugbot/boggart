@@ -151,5 +151,25 @@ ck(not dup2, "no duplicate steps after the second compaction")
 ck(s.messages[1].content:find("file/src/tail_only.py", 1, true), "the old tail's file is listed once it is collapsed")
 eq(be.get("701", "file/src/tail_only.py").frontmatter.reads, 1, "...with one read")
 
+-- ---- servers that reuse tool-call ids ---------------------------------------------------
+-- Some OpenAI-compatible servers number calls per response (call_0 every
+-- time), so two rounds can be byte-identical. Each is still its own step.
+do
+  local r = { id = 702, model = "mock", memory = "local", messages = { { role = "user", content = "poll it" } } }
+  local function poll()
+    r.messages[#r.messages + 1] = { role = "assistant", content = { { type = "tool_use", id = "call_0", name = "bash", input = { command = "ls" } } } }
+    r.messages[#r.messages + 1] = { role = "user", content = { { type = "tool_result", tool_use_id = "call_0", content = "[exit=0]\nx" } } }
+    return cg.ingest_live(r)
+  end
+  eq(poll(), 2, "first round: the prompt and the call")
+  eq(poll(), 1, "an identical second round is a new step")
+  eq(poll(), 1, "...and a third")
+  eq(#be.scan("702", { "step" }), 4, "four steps in the graph")
+  r.context_limit, r.compact_ratio = 100000, 0.0001
+  ck(bog.api.compact(r, { stream = function() error("no model call") end, system = function() return "" end }), "compacted")
+  eq(#be.scan("702", { "step" }), 4, "the compaction reused all four")
+  eq(be.get("702", "cmd/" .. require("ctxgraph.extract").sha("ls"):sub(1, 12)).frontmatter.runs, 3, "the command ran three times, counted once each")
+end
+
 if fails == 0 then io.write("ok  ctxgraph_live: the live tail is searchable, one put per round, no duplicates\n")
 else io.write(string.format("FAIL ctxgraph_live: %d check(s) failed\n", fails)); os.exit(1) end

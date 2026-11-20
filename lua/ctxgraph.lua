@@ -374,7 +374,7 @@ function M.ingest_live(sess)
     root = ok and r or (sys and sys.cwd and sys.cwd()) or nil
   end
   local got = require("ctxgraph.ingest").run(be, sid, msgs, from, #msgs,
-    { root = root, digests = rt.digests, live = true })
+    { root = root, digests = rt.digests, live = true, match = rt.cursor == nil })
   if #got.records > 0 then be.put_nodes(sid, got.records) end
   if #got.edges > 0 then be.put_edges(sid, got.edges) end
   rt.cursor = #msgs + 1
