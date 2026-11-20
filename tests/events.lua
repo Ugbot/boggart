@@ -816,7 +816,7 @@ do
   end
   ok(#missing == 0, "every documented event is emitted by a real code path"
     .. (#missing > 0 and (" -- never saw: " .. table.concat(missing, ", ")) or ""))
-  eq(#names, 24, "the documented event list is the one this suite drove")
+  eq(#names, 28, "the documented event list is the one this suite drove")
 end
 
 -- ---- the fabric bridge (events -> src/lbus.c `bus`) ------------------------

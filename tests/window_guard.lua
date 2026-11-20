@@ -70,6 +70,31 @@ do
   ck(ep.rounds == 2, "and the model got its second round (" .. ep.rounds .. ")")
 end
 
+-- ---- graph memory: the guard compacts into the graph, no model call ------------------
+-- With BOGGART_MEMORY=local (sess.memory) compaction collapses the old part
+-- into records and an outline instead of asking a model for a summary. The
+-- guard must still keep every request inside the window, and the compaction
+-- it triggers must not reach the endpoint at all.
+do
+  local WIN = 50000
+  local ep = endpoint(WIN, "graph")
+  local events = require("events")
+  local modes = {}
+  local unsub = events.on("context:compacted", function(_, e) modes[#modes + 1] = e.mode end)
+  local s = { id = 975, model = "guard-model", context_limit = WIN, compact_ratio = 5,
+              memory = "local", messages = {} }
+  local ok, err = pcall(api.run_on, s, "list everything", nil, {
+    stream = ep.fn, system = function() return "" end, tools = TOOLS,
+    run_tool = function() return HUGE end })
+  events.off(unsub)
+  ck(ok, "graph: the turn completed (" .. tostring(err) .. ")")
+  ck(ep.over == 0, "graph: no over-window request was sent (" .. ep.over .. ")")
+  ck(ep.compactions == 0, "graph: compaction made no model call (" .. ep.compactions .. ")")
+  ck(#modes >= 1 and modes[1] == "graph", "graph: the guard compacted into the graph ("
+    .. table.concat(modes, ",") .. ")")
+  ck(ep.rounds == 2, "graph: the model got its second round (" .. ep.rounds .. ")")
+end
+
 -- ---- compaction fails: shrink the largest tool results ----------------------------
 do
   local WIN = 50000

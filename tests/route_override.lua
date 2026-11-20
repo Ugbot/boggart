@@ -56,6 +56,13 @@ do
   eq(r.provider, nil, "with no catalog provider attached")
   eq(r.key_slot, nil, "and no catalog key slot (C matches the key to the url)")
   eq(r.context, row.context, "the catalog's context window still applies")
+  -- ...and it is the window the request path uses (api.context_limit, BB-15):
+  -- a model sent to the configured endpoint is sized by the catalog's row, not
+  -- the built-in fallback table, while that endpoint reports no window itself.
+  if not bog.api.local_context() then
+    eq(bog.api.context_limit({ model = CLAUDE, messages = {} }), row.context,
+       "api.context_limit for the overridden model is the catalog's window")
+  end
   eq(r.max_output, row.max_output, "the catalog's longest reply still applies")
   eq(r.effort, row.effort, "the catalog's effort capability still applies")
 
