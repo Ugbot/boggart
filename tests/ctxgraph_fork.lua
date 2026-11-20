@@ -80,8 +80,19 @@ ck(cid and not be.get("501", cid), "...and not in the parent's")
 eq(count("501"), parent_n, "the parent's graph is unchanged by the child's note")
 bog.session = saved
 
--- the child works, then compacts on its own
+-- ---- the child's first live round ingests only its own round --------------------------
+-- The copied transcript's steps are the parent's live steps, readable through
+-- the parent's graph; the child's graph does not take them again.
 local cm = child.messages
+cm[#cm + 1] = { role = "assistant", content = { { type = "tool_use", id = "c0", name = "read", input = { path = "src/child0.py" } } } }
+cm[#cm + 1] = { role = "user", content = { { type = "tool_result", tool_use_id = "c0", content = "src/child0.py lines 1-1 of 1\n1\tx" } } }
+eq(cg.ingest_live(child), 1, "the child's first live ingest is its own round only")
+eq(#be.scan("502", { "step" }), 1, "...one step in the child's graph")
+eq(be.get("502", "s/502/step/1") and be.get("502", "s/502/step/1").frontmatter.tools, "read", "...the child's read")
+-- a resumed child (nothing cached) matches the copied steps the same way
+eq(cg.ingest_live({ id = 502, model = "mock", memory = "local", messages = cm }), 0, "a resumed child ingests nothing again")
+
+-- the child works, then compacts on its own
 for i = 1, 6 do
   local id = "c" .. i
   cm[#cm + 1] = { role = "assistant", content = { { type = "tool_use", id = id, name = "read", input = { path = "src/child" .. i .. ".py" } } } }
@@ -100,6 +111,15 @@ for id in cout:gmatch("\n%- (%S+)  ") do
   seen[id] = true
 end
 ck(not dup, "no id is listed twice in the child's outline")
+do
+  local praw, copied = {}, 0
+  for _, r in ipairs(be.scan("501", { "step" })) do praw[r.raw or ""] = true end
+  for _, r in ipairs(be.scan("502", { "step" })) do if praw[r.raw or ""] then copied = copied + 1 end end
+  eq(copied, 0, "the compaction did not copy the parent's steps into the child's graph")
+  ck(#be.scan("502", { "step" }) >= 6, "...and holds the child's own steps (" .. #be.scan("502", { "step" }) .. ")")
+end
+ck(cout:find("- file/src/parent_live.py  ", 1, true),
+  "a parent record live at the fork is listed once the child's compaction has collapsed it")
 out = gtools.expand(child, { id = "s/501/span/3" })
 ck(out:find("s/501/step/9", 1, true), "a parent stub still expands after the child's own compaction")
 

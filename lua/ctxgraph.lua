@@ -229,6 +229,14 @@ function M.on_fork(psess, csess)
   for _, a in ipairs(M.parents(psess)) do chain[#chain + 1] = { sid = a.sid, seq = a.seq, live = a.live } end
   local cst = M.gstate(csess)
   cst.parents = json.decode(json.encode(chain))   -- a copy: the parent's ranges keep moving
+  -- the child's transcript starts with the parent's live steps: their keys,
+  -- so the child's first ingest matches them without a get each
+  cst._pkeys = { [psid] = {} }
+  for n, k in pairs(pst._keys or {}) do cst._pkeys[psid][n] = k end
+  for sid, keys in pairs(pst._pkeys or {}) do
+    cst._pkeys[sid] = {}
+    for n, k in pairs(keys) do cst._pkeys[sid][n] = k end
+  end
   M.save_state(csess)
   return true
 end

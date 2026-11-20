@@ -296,17 +296,47 @@ function M.step_key(st)
   return ex.sha(ok and enc or tostring(st.text)):sub(1, 32)
 end
 
+-- A step record's key: its frontmatter, or (a record written before steps
+-- carried it) recomputed from the messages it holds.
+function M.key_of_record(r)
+  local f = r and r.frontmatter or {}
+  if f.key then return f.key end
+  local ok, ms = pcall(json.decode, r and r.raw or "")
+  if ok and type(ms) == "table" and ms[1] then return M.step_key({ messages = ms }) end
+  return nil
+end
+
+local function entries(be, sid, ranges, keys, src)
+  local out = {}
+  for _, n in ipairs(ranges_numbers(ranges)) do
+    local k = keys[n]
+    if k == nil then
+      k = M.key_of_record(be.get(sid, string.format("s/%s/step/%d", sid, n))) or false
+      keys[n] = k
+    end
+    out[#out + 1] = { k = k or nil, n = n, src = src }
+  end
+  return out
+end
+
 -- The live steps in conversation order: { {k = step key, n = step number} }.
 function M.live_entries(be, sid, st)
+  return entries(be, sid, st.live, st._keys)
+end
+
+-- A fork's transcript starts with a copy of its parent's, so its first steps
+-- are the parent's live steps at the fork (and, deeper, the grandparent's):
+-- { {k, n, src = index in st.parents} }, farthest ancestor first. Their keys
+-- are cached in st._pkeys[sid] (seeded at the fork; after a resume, a get each).
+function M.inherited_entries(be, st)
   local out = {}
-  for _, n in ipairs(ranges_numbers(st.live)) do
-    local k = st._keys[n]
-    if k == nil then
-      local r = be.get(sid, string.format("s/%s/step/%d", sid, n))
-      k = r and r.frontmatter and r.frontmatter.key or false
-      st._keys[n] = k
-    end
-    out[#out + 1] = { k = k or nil, n = n }
+  local ps = st.parents or {}
+  st._pkeys = st._pkeys or {}
+  for i = #ps, 1, -1 do
+    local p = ps[i]
+    local keys = st._pkeys[p.sid] or {}
+    st._pkeys[p.sid] = keys
+    for _, e in ipairs(entries(be, p.sid, p.live, keys, i)) do out[#out + 1] = e end
   end
   return out
 end
@@ -356,21 +386,31 @@ function M.run(be, sid, msgs, from, to, ctx)
   -- so it does not match: two rounds can be byte-identical (servers that
   -- number calls per response reuse call_0) and must stay two steps.
   local match = not ctx.live or ctx.match
+  -- Candidates, in conversation order: a fork's inherited steps (its parents'
+  -- live steps at the fork, copied at the head of its transcript), then its
+  -- own live steps. An inherited step stays the parent's: it is neither
+  -- ingested nor spanned here (the read view reaches it in the parent's graph).
   local live = match and M.live_entries(be, sid, gs) or {}
+  local cands = match and M.inherited_entries(be, gs) or {}
+  local base = #cands
+  for _, e in ipairs(live) do cands[#cands + 1] = e end
   local matched, last_matched = {}, 0
   do
     local p = 1
     for _, st in ipairs(steps) do
       st.key = M.step_key(st)
-      for j = p, match and #live or 0 do
-        if live[j].k == st.key then
-          st.done = tonumber(live[j].n)
+      for j = p, #cands do
+        if cands[j].k == st.key then
+          if cands[j].src then st.inherited = cands[j] else st.done = tonumber(cands[j].n) end
           matched[j] = true
           last_matched, p = j, j + 1
           break
         end
       end
     end
+    local own = {}
+    for _, st in ipairs(steps) do if not st.inherited then own[#own + 1] = st end end
+    steps = own
   end
   local recs, edges, cache = {}, {}, {}
   local seq = gs.seq
@@ -565,8 +605,20 @@ function M.run(be, sid, msgs, from, to, ctx)
     for _, st in ipairs(fresh) do ranges_add(gs.live, st.n); gs._keys[st.n] = st.key end
   else
     local keep = {}
-    for j = last_matched + 1, #live do if not matched[j] then keep[#keep + 1] = live[j].n end end
+    for j = math.max(last_matched, base) + 1, #cands do if not matched[j] then keep[#keep + 1] = cands[j].n end end
     gs.live = M.ranges_of(keep)
+    -- inherited steps this compaction passed are collapsed in this view now
+    if base > 0 then
+      local kept = {}
+      for j = last_matched + 1, base do
+        if not matched[j] then
+          local i = cands[j].src
+          kept[i] = kept[i] or {}
+          kept[i][#kept[i] + 1] = cands[j].n
+        end
+      end
+      for i, p in ipairs(gs.parents) do p.live = M.ranges_of(kept[i] or {}) end
+    end
   end
 
   local function finish(spans, span_ids)

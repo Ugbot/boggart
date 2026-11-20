@@ -107,6 +107,14 @@ without a link. The chain is stored in the child's graph state
 (meta key `graph`), so it survives a resume; a child on a different backend
 from its parent gets no view.
 
+The child's copied transcript begins with the parent's live steps. Those stay
+the parent's: the child's live ingest and its compactions match them, by step
+key, against the parent's live steps at the fork and do not ingest them again,
+so the child's first round ingests only that round. Until a compaction of the
+child's collapses them they are live in the child's view too (in full in its
+tail, not listed or auto-expanded); after it, their records are listed in the
+child's outline as inherited lines. They are in no span of the child's graph.
+
 ## Backends
 
 Storage sits behind a port, `lua/ctxgraph/backend.lua`: `put_nodes`,
