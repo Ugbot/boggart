@@ -129,6 +129,8 @@ M.ERR = {
   overloaded  = "overloaded",
   server      = "server",
   stream      = "stream",
+  -- a request that cannot be made to fit the model's context window
+  context_window = "context_window",
 }
 
 local ERRMT = {
@@ -1286,6 +1288,60 @@ M.COMPACT_REPLY = 4096
 -- route that withholds effort (catalog effort=false) gets none.
 -- sess.compact_effort overrides.
 M.COMPACT_EFFORT = "low"
+-- When the conversation is too big for one summary request, its largest
+-- parts are cut to this many bytes in the request (the transcript itself is
+-- untouched), and if that is not enough the oldest messages are left out.
+M.COMPACT_HEAD = 2000
+local COMPACT_OMITTED = "[%d earlier messages left out: the conversation was larger than the "
+  .. "summary model's context window.]"
+
+-- The conversation `msgs`, made to fit a summary request of at most `budget`
+-- tokens alongside the system prompt `sys`. Returns the list to send (the
+-- original when it fits, otherwise a copy: sess.messages is never edited),
+-- the number of parts cut and of messages left out; nil when nothing fits.
+--
+-- First the largest parts (tool results, text, tool inputs) are cut to a
+-- head, biggest first, until it fits: what is left still shows what each
+-- step did. If it still does not fit -- many messages, none of them large --
+-- the oldest are left out: the first message (the request, or an earlier
+-- compaction's summary) is kept as text, shortened if need be, then as many
+-- recent messages as fit, starting at an assistant message so no tool call is
+-- separated from its result.
+local function fit_for_summary(msgs, sys, budget)
+  local function est(l) return window.request_tokens(l, sys) end
+  if est(msgs) <= budget then return msgs, 0, 0 end
+  local out = {}
+  for i, m in ipairs(msgs) do out[i] = m end
+  local cut = 0
+  local content = window.tokens_of(out)
+  local fixed = est(out) - math.ceil(content * window.ESTIMATE_MARGIN)
+  for _, part in ipairs(window.large_parts(out, M.COMPACT_HEAD)) do
+    if math.ceil(content * window.ESTIMATE_MARGIN) + fixed <= budget then break end
+    local before = window.tokens(out[part.i])
+    part.cut(out, "cut to fit the summary request")
+    content = content - before + window.tokens(out[part.i])
+    cut = cut + 1
+  end
+  if est(out) <= budget then return out, cut, 0 end
+
+  local text = out[1] and msg_text(out[1]) or ""
+  local share = math.floor(budget * 0.25) * 4
+  if #text > share then text = window.head(text, share) .. "\n[... cut to fit the summary request ...]" end
+  local function opener(dropped)
+    return { role = "user", content = text .. "\n\n" .. string.format(COMPACT_OMITTED, dropped) }
+  end
+  local room = budget - est({ opener(#out) })
+  local start, used = #out + 1, 0
+  for i = #out, 2, -1 do
+    used = used + math.ceil(window.tokens(out[i]) * window.ESTIMATE_MARGIN) + window.framing_of(out, i, i)
+    if used > room then break end
+    if out[i].role == "assistant" then start = i end
+  end
+  local fitted = { opener(start - 2) }
+  for i = start, #out do fitted[#fitted + 1] = out[i] end
+  if est(fitted) > budget then return nil end
+  return fitted, cut, start - 2
+end
 local COMPACT_CONTINUES = "[Recent conversation continues below.]"
 
 -- The user's request inside a plain-text user message: the message itself,
@@ -1724,10 +1780,15 @@ function M.compact(sess, opts)
   -- need the model doing the work. If a `cheap` (or `fast`) preset exists, the
   -- summary goes there and the conversation stays where it is -- the one place
   -- a per-call model change is worth it on every long session. With no such
-  -- preset, route.utility() returns the current route and nothing changes.
-  local route = opts.compact_route and require("route").resolve(opts.compact_route)
-    or (sess.compact_route and require("route").resolve(sess.compact_route))
-    or require("route").utility()
+  -- preset, the summary goes to the session's own route (the one its turns
+  -- resolved to): not route.current(), which is bog.session's and so the
+  -- wrong model -- and the wrong window -- for a sub-agent on another model.
+  local R = require("route")
+  local route = opts.compact_route and R.resolve(opts.compact_route)
+    or (sess.compact_route and R.resolve(sess.compact_route))
+    or R.utility_configured()
+    or sess.resolved_route
+    or R.resolve(sess.route or sess.model)
   local stream_impl = opts.stream or stream_async
   local stream = function(body, sink, think_sink)
     return stream_impl(body, sink, think_sink, route)
@@ -1746,9 +1807,31 @@ function M.compact(sess, opts)
   -- messages in a row. The Messages API tolerates that, but servers behind the
   -- same wire that apply a strict chat template refuse it, and on the OpenAI
   -- wire the tool results still come first and the prompt last either way.
+  --
+  -- The request has to fit the summary route's window, with room for at
+  -- least a short summary: a conversation already over the window (resumed,
+  -- or grown by one huge tool result) or a utility model with a smaller
+  -- window than the session's would otherwise be refused right here.
+  local sys = system()
+  local limit = M.context_limit(sess, route)
+  local want = math.min(M.COMPACT_REPLY, M.reply_limit(sess, route))
+  local prompt_cost = window.request_tokens({ { role = "user", content = COMPACT_PROMPT } })
+  local budget = limit - window.reply_safety(limit) - math.min(want, window.REPLY_MIN) - prompt_cost
+  local base, n_cut, n_left = fit_for_summary(sess.messages, sys, budget)
+  if not base then
+    fail(M.ERR.context_window, string.format(
+      "cannot compact: even a shortened summary request does not fit the %d-token context "
+      .. "window of %s (the system prompt alone is about %d tokens)",
+      limit, tostring(route.model or sess.model), window.request_tokens({}, sys)))
+  end
+  if n_cut > 0 or n_left > 0 then
+    bog.log(string.format("compaction: the conversation is larger than the summary model's "
+      .. "%d-token window; %d large part(s) cut, %d earlier message(s) left out of the request",
+      limit, n_cut, n_left))
+  end
   local copy = {}
-  for i = 1, #sess.messages - 1 do copy[i] = sess.messages[i] end
-  local last = sess.messages[#sess.messages]
+  for i = 1, #base - 1 do copy[i] = base[i] end
+  local last = base[#base]
   if last and last.role == "user" and type(last.content) == "string" then
     copy[#copy + 1] = { role = "user", content = last.content .. "\n\n" .. COMPACT_PROMPT }
   elseif last and last.role == "user" and type(last.content) == "table" then
@@ -1760,14 +1843,12 @@ function M.compact(sess, opts)
     copy[#copy + 1] = last
     copy[#copy + 1] = { role = "user", content = COMPACT_PROMPT }
   end
-  local sys = system()
-  local want = math.min(M.COMPACT_REPLY, M.reply_limit(sess, route))
   local est = window.request_tokens(copy, sys)
   local effort = sess.compact_effort or (sess.effort and M.COMPACT_EFFORT) or nil
   if route.effort == false then effort = nil end
   local model = route.model or sess.model
   local msg, stop = stream({ model = model,
-    max_tokens = window.reply_tokens(want, M.context_limit(sess, route), est),
+    max_tokens = window.reply_tokens(want, limit, est),
     reasoning_effort = effort, system = sys, messages = copy, stream = true }, nil)
   -- A model call like any other: one span:turn record, marked as compaction,
   -- and its tokens on sess.usage. Not the conversation's measured size,
