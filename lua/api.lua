@@ -1208,9 +1208,10 @@ function M.compaction_request(text)
   return old and text:sub(old + #COMPACT_CONTINUES + 2) or nil
 end
 
--- Context windows, by model. Only used to decide when to compact, so being
--- approximately right is enough; sess.context_limit overrides for anything not
--- listed, and a local server can be told its own number.
+-- Context windows, by model: the fallback for a model the catalog has no
+-- window for (M.context_limit has the whole precedence). Used to decide when
+-- to compact and how long a reply may be; sess.context_limit overrides for
+-- anything not listed, and a local server can be told its own number.
 M.CONTEXT = {
   default = 200000,
   ["claude-opus-5"] = 200000,
@@ -1407,13 +1408,39 @@ function M.warm_local() pcall(fetch_props) end
 function M.local_context() local p = local_props(); return p and p.n_ctx end
 function M.local_slots()   local p = local_props(); return p and p.slots end
 
-function M.context_limit(sess)
+-- The catalog's context window for a model id, or nil when the model is not
+-- catalogued or its row carries no window.
+local function catalog_context(model)
+  if not model then return nil end
+  local ok, row = pcall(function() return require("catalog").model(model) end)
+  local n = ok and row and tonumber(row.context) or nil
+  return (n and n > 0) and math.floor(n) or nil
+end
+
+-- The context window, in tokens, for a session's requests -- or, given
+-- `route`, for requests to that route's model (the compaction summary may go
+-- to another model). Precedence:
+--   1. the session's own setting (--context-window, a parent agent's, or a
+--      window raised by a served request -- see run_on); it describes the
+--      session's model, so it applies only to that model;
+--   2. config.context in the store, for the model (the user's own table);
+--   3. a local server's self-reported window (llama.cpp /props);
+--   4. the model catalog's window for the model;
+--   5. M.CONTEXT, the built-in fallback table;
+--   6. config.context.default, then M.CONTEXT.default.
+-- The session's model is the one its turns resolved to (sess.resolved_route),
+-- else sess.model.
+function M.context_limit(sess, route)
   sess = sess or bog.session
+  local own = (sess.resolved_route and sess.resolved_route.model) or sess.model
+  local model = (route and route.model) or own
   local cfg = M.context_config()
-  return sess.context_limit                 -- an explicit user override always wins
-    or (cfg and cfg[sess.model])
+  local same = model == own or model == sess.model
+  return (same and sess.context_limit)      -- an explicit user override always wins
+    or (cfg and cfg[model])
     or M.local_context()                    -- a local server's real, self-reported window
-    or M.CONTEXT[sess.model]
+    or catalog_context(model)
+    or M.CONTEXT[model]
     or (cfg and cfg.default)
     or M.CONTEXT.default
 end
